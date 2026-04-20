@@ -98,6 +98,31 @@ def filter_by_type(chunks: list[Aep.Chunk], chunk_type: str) -> list[Aep.Chunk]:
     )
 
 
+def _find_anchor_index(
+    chunks: list[Aep.Chunk],
+    anchor_type: str,
+) -> int:
+    """Return the index of the first chunk matching *anchor_type*.
+
+    *anchor_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
+
+    Raises:
+        ChunkNotFoundError: If no matching chunk is found.
+    """
+    if anchor_type.startswith("LIST:"):
+        list_type = anchor_type[5:]
+        for i, chunk in enumerate(chunks):
+            if chunk.chunk_type == "LIST" and chunk.body.list_type == list_type:
+                return i
+        raise ChunkNotFoundError(f"Missing LIST/{list_type} chunk")
+
+    for i, chunk in enumerate(chunks):
+        if chunk.chunk_type == anchor_type:
+            return i
+    raise ChunkNotFoundError(f"Missing {anchor_type} chunk")
+
+
 def find_chunks_before(
     chunks: list[Aep.Chunk],
     chunk_type: str,
@@ -108,6 +133,9 @@ def find_chunks_before(
     Scans *chunks* for the first occurrence of *before_type*, then collects the
     uninterrupted run of *chunk_type* chunks that directly precede it.
 
+    *before_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
+
     Args:
         chunks: List of chunks to search.
         chunk_type: The type of chunks to collect.
@@ -116,18 +144,44 @@ def find_chunks_before(
     Raises:
         ChunkNotFoundError: If no chunk with *before_type* is found.
     """
-    anchor_index = None
-    for i, chunk in enumerate(chunks):
-        if chunk.chunk_type == before_type:
-            anchor_index = i
-            break
-    if anchor_index is None:
-        raise ChunkNotFoundError(f"Missing {before_type} chunk")
+    anchor_index = _find_anchor_index(chunks, before_type)
 
     result: list[Aep.Chunk] = []
     for i in range(anchor_index - 1, -1, -1):
         if chunks[i].chunk_type == chunk_type:
             result.insert(0, chunks[i])
+        else:
+            break
+    return result
+
+
+def find_chunks_after(
+    chunks: list[Aep.Chunk],
+    chunk_type: str,
+    after_type: str,
+) -> list[Aep.Chunk]:
+    """Return consecutive chunks of `chunk_type` immediately after `after_type`.
+
+    Scans *chunks* for the first occurrence of *after_type*, then collects the
+    uninterrupted run of *chunk_type* chunks that directly follow it.
+
+    *after_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
+
+    Args:
+        chunks: List of chunks to search.
+        chunk_type: The type of chunks to collect.
+        after_type: The anchor chunk type that precedes the desired run.
+
+    Raises:
+        ChunkNotFoundError: If no chunk with *after_type* is found.
+    """
+    anchor_index = _find_anchor_index(chunks, after_type)
+
+    result: list[Aep.Chunk] = []
+    for i in range(anchor_index + 1, len(chunks)):
+        if chunks[i].chunk_type == chunk_type:
+            result.append(chunks[i])
         else:
             break
     return result

@@ -52,7 +52,7 @@ class Application:
     build_number = ChunkField[str](
         "_head",
         "ae_build_number",
-        reverse=int,
+        reverse_seq_field=int,
         invalidates=["version"],
     )
     """The build number of After Effects that last saved the project.
@@ -66,7 +66,7 @@ class Application:
     version = ChunkField[str](
         "_head",
         "version",
-        reverse=_reverse_version,
+        reverse_instance_field=_reverse_version,
         invalidates=["ae_version_major"],
     )
     """The version of After Effects that last saved the project, formatted as

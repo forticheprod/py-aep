@@ -2,7 +2,7 @@
 
 Reverse functions decompose user-facing values back into the binary fields
 stored in the Kaitai chunk body. Each factory returns a callable matching
-the `ChunkField` reverse signature: `(value, body) -> dict`.
+the `ChunkField` `reverse_instance_field` signature: `(value, body) -> dict`.
 """
 
 from __future__ import annotations

@@ -36,6 +36,7 @@ from py_aep.models.layers import (
     TextLayer,
 )
 from py_aep.models.layers.three_d_model_layer import ThreeDModelLayer
+from py_aep.models.properties.property import Property
 from py_aep.models.properties.property_base import PropertyBase
 from py_aep.models.properties.property_group import PropertyGroup
 
@@ -767,6 +768,54 @@ class TestActiveAtTime:
             layer = non_solo_layers[0]
             midpoint = (layer.in_point + layer.out_point) / 2
             assert layer.active_at_time(midpoint) is False
+
+
+class TestAudioActiveAtTime:
+    """Tests for AVLayer.audio_active_at_time() method."""
+
+    def test_audio_active_within_range(self) -> None:
+        """Layer with audio enabled returns True inside its time range."""
+        project = parse_project(SAMPLES_DIR / "audioEnabled.aep")
+        layer = get_layer(project, "audioEnabled_true")
+        assert isinstance(layer, AVLayer)
+        midpoint = (layer.in_point + layer.out_point) / 2
+        assert layer.audio_active_at_time(midpoint) is True
+
+    def test_audio_disabled(self) -> None:
+        """Layer with audio_enabled=False returns False."""
+        project = parse_project(SAMPLES_DIR / "audioEnabled.aep")
+        layer = get_layer(project, "audioEnabled_false")
+        assert isinstance(layer, AVLayer)
+        midpoint = (layer.in_point + layer.out_point) / 2
+        assert layer.audio_active_at_time(midpoint) is False
+
+    def test_before_in_point(self) -> None:
+        """Layer is not audio-active before its in_point."""
+        project = parse_project(SAMPLES_DIR / "audioEnabled.aep")
+        layer = get_layer(project, "audioEnabled_true")
+        assert isinstance(layer, AVLayer)
+        assert layer.audio_active_at_time(layer.in_point - 1) is False
+
+    def test_at_out_point(self) -> None:
+        """Layer is not audio-active at its out_point (exclusive)."""
+        project = parse_project(SAMPLES_DIR / "audioEnabled.aep")
+        layer = get_layer(project, "audioEnabled_true")
+        assert isinstance(layer, AVLayer)
+        assert layer.audio_active_at_time(layer.out_point) is False
+
+    def test_at_in_point(self) -> None:
+        """Layer is audio-active at its in_point (inclusive)."""
+        project = parse_project(SAMPLES_DIR / "audioEnabled.aep")
+        layer = get_layer(project, "audioEnabled_true")
+        assert isinstance(layer, AVLayer)
+        assert layer.audio_active_at_time(layer.in_point) is True
+
+    def test_audio_active_property(self) -> None:
+        """audio_active property delegates to audio_active_at_time(time)."""
+        project = parse_project(SAMPLES_DIR / "audioEnabled.aep")
+        layer = get_layer(project, "audioEnabled_true")
+        assert isinstance(layer, AVLayer)
+        assert layer.audio_active == layer.audio_active_at_time(layer.time)
 
 
 class TestLayerPropertyGroupInheritance:
@@ -1610,3 +1659,309 @@ class TestRoundtripLayerName:
         layer2 = get_layer(parse_project(out), "comment")
         assert layer2.name == "CustomName"
         assert layer2.is_name_set
+
+
+# ---------------------------------------------------------------------------
+# Invariant tests for top-level property synthesis and ordering.
+# These lock down the behavior of synthesize_layer_properties
+# (in parsers/synthesis.py) so refactoring can be validated against them.
+# ---------------------------------------------------------------------------
+
+
+class TestTopLevelGroupOrder:
+    """Canonical order of top-level property groups per layer type."""
+
+    def test_camera_layer(self) -> None:
+        layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
+        assert isinstance(layer, CameraLayer)
+        match_names = [p.match_name for p in layer.properties]
+        # Canonical groups first, then non-canonical tail (Camera Options)
+        assert match_names == [
+            "ADBE Marker",
+            "ADBE Transform Group",
+            "ADBE Camera Options Group",
+        ]
+
+    def test_light_layer(self) -> None:
+        project = parse_project(SAMPLES_DIR / "lightType.aep")
+        # Use any light comp
+        layer = get_layer(project, "lightType_PARALLEL")
+        assert isinstance(layer, LightLayer)
+        match_names = [p.match_name for p in layer.properties]
+        assert match_names == [
+            "ADBE Marker",
+            "ADBE Transform Group",
+            "ADBE Light Options Group",
+        ]
+
+    def test_shape_layer(self) -> None:
+        layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_shape")
+        assert isinstance(layer, ShapeLayer)
+        match_names = [p.match_name for p in layer.properties]
+        assert match_names == [
+            "ADBE Marker",
+            "ADBE Root Vectors Group",
+            "ADBE Mask Parade",
+            "ADBE Effect Parade",
+            "ADBE Transform Group",
+            "ADBE Layer Styles",
+            "ADBE Extrsn Options Group",
+            "ADBE Material Options Group",
+            "ADBE Audio Group",
+            "ADBE Layer Sets",
+        ]
+
+    def test_text_layer(self) -> None:
+        layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_text")
+        assert isinstance(layer, TextLayer)
+        match_names = [p.match_name for p in layer.properties]
+        assert match_names == [
+            "ADBE Marker",
+            "ADBE Text Properties",
+            "ADBE Mask Parade",
+            "ADBE Effect Parade",
+            "ADBE Transform Group",
+            "ADBE Layer Styles",
+            "ADBE Extrsn Options Group",
+            "ADBE Material Options Group",
+            "ADBE Audio Group",
+            "ADBE Layer Sets",
+        ]
+
+    def test_regular_av_layer(self) -> None:
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        assert isinstance(layer, AVLayer)
+        assert not layer.three_d_layer
+        match_names = [p.match_name for p in layer.properties]
+        assert match_names == [
+            "ADBE Marker",
+            "ADBE Time Remapping",
+            "ADBE MTrackers",
+            "ADBE Mask Parade",
+            "ADBE Effect Parade",
+            "ADBE Transform Group",
+            "ADBE Layer Styles",
+            "ADBE Plane Options Group",
+            "ADBE Extrsn Options Group",
+            "ADBE Material Options Group",
+            "ADBE Audio Group",
+            "ADBE Data Group",
+            "ADBE Layer Overrides",
+            "ADBE Layer Sets",
+            "ADBE Source Options Group",
+        ]
+
+    def test_three_d_av_layer(self) -> None:
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "threeDLayer_true",
+        )
+        assert isinstance(layer, AVLayer)
+        assert layer.three_d_layer
+        match_names = [p.match_name for p in layer.properties]
+        assert match_names == [
+            "ADBE Marker",
+            "ADBE Time Remapping",
+            "ADBE MTrackers",
+            "ADBE Mask Parade",
+            "ADBE Effect Parade",
+            "ADBE Transform Group",
+            "ADBE Layer Styles",
+            "ADBE Plane Options Group",
+            "ADBE Extrsn Options Group",
+            "ADBE Material Options Group",
+            "ADBE Audio Group",
+            "ADBE Data Group",
+            "ADBE Layer Overrides",
+            "ADBE Layer Sets",
+            "ADBE Source Options Group",
+        ]
+
+
+class TestTopLevelSpecialCases:
+    """Special metadata on specific top-level groups."""
+
+    def test_marker_is_leaf_property(self) -> None:
+        """Marker is a Property (leaf), not a PropertyGroup."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        marker = next(p for p in layer.properties if p.match_name == "ADBE Marker")
+        assert isinstance(marker, Property)
+        assert not isinstance(marker, PropertyGroup)
+
+    def test_marker_metadata(self) -> None:
+        """Synthesized Marker has dimensions=0 and empty units_text."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        marker = next(p for p in layer.properties if p.match_name == "ADBE Marker")
+        assert isinstance(marker, Property)
+        assert marker.dimensions == 0
+        assert marker.units_text == ""
+
+    def test_layer_sets_elided(self) -> None:
+        """Layer Sets group has elided=True."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        layer_sets = next(
+            p for p in layer.properties if p.match_name == "ADBE Layer Sets"
+        )
+        assert isinstance(layer_sets, PropertyGroup)
+        assert layer_sets.elided is True
+
+    def test_all_canonical_groups_depth_one(self) -> None:
+        """Every canonical top-level group has property_depth == 1."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        for prop in layer.properties:
+            assert prop.property_depth == 1, (
+                f"{prop.match_name} has depth {prop.property_depth}"
+            )
+
+    def test_canonical_names(self) -> None:
+        """Canonical groups have expected display names."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        expected_names = {
+            "ADBE Marker": "Marker",
+            "ADBE Time Remapping": "Time Remap",
+            "ADBE MTrackers": "Motion Trackers",
+            "ADBE Mask Parade": "Masks",
+            "ADBE Effect Parade": "Effects",
+            "ADBE Transform Group": "Transform",
+            "ADBE Layer Styles": "Layer Styles",
+            "ADBE Plane Options Group": "Geometry Options",
+            "ADBE Extrsn Options Group": "Geometry Options",
+            "ADBE Material Options Group": "Material Options",
+            "ADBE Audio Group": "Audio",
+            "ADBE Data Group": "Data",
+            "ADBE Layer Overrides": "Essential Properties",
+            "ADBE Layer Sets": "Sets",
+            "ADBE Source Options Group": "Replace Source",
+        }
+        for prop in layer.properties:
+            if prop.match_name in expected_names:
+                assert prop.name == expected_names[prop.match_name], (
+                    f"{prop.match_name}: expected name {expected_names[prop.match_name]!r}, "
+                    f"got {prop.name!r}"
+                )
+
+
+class TestLayerStylesEnabled:
+    """Layer Styles collapsed enabled state and Blend Options mirroring."""
+
+    def test_layer_styles_disabled_when_no_style_enabled(self) -> None:
+        """Layer Styles group reports enabled=False when no style is on."""
+        layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_shape")
+        layer_styles = next(
+            p for p in layer.properties if p.match_name == "ADBE Layer Styles"
+        )
+        assert isinstance(layer_styles, PropertyGroup)
+        assert layer_styles.enabled is False
+
+        # Blend Options mirrors the parent
+        blend_options = next(
+            p for p in layer_styles.properties
+            if p.match_name == "ADBE Blend Options Group"
+        )
+        assert isinstance(blend_options, PropertyGroup)
+        assert blend_options.enabled is False
+
+        # No individual style is enabled
+        for child in layer_styles.properties:
+            if (
+                isinstance(child, PropertyGroup)
+                and child.match_name != "ADBE Blend Options Group"
+            ):
+                assert child.enabled is False, (
+                    f"{child.match_name} should be disabled"
+                )
+
+
+class TestTransformNaming:
+    """Phase 3 context-dependent naming on transform properties."""
+
+    def test_2d_rotate_z_named_rotation(self) -> None:
+        """2D layers show Rotate Z as 'Rotation'."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        rotate_z = next(
+            p for p in layer.transform if p.match_name == "ADBE Rotate Z"
+        )
+        assert rotate_z.name == "Rotation"
+
+    def test_3d_rotate_z_named_z_rotation(self) -> None:
+        """3D layers show Rotate Z as 'Z Rotation'."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "threeDLayer_true",
+        )
+        rotate_z = next(
+            p for p in layer.transform if p.match_name == "ADBE Rotate Z"
+        )
+        assert rotate_z.name == "Z Rotation"
+
+    def test_camera_rotate_z_named_z_rotation(self) -> None:
+        """Camera layers show Rotate Z as 'Z Rotation'."""
+        layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
+        rotate_z = next(
+            p for p in layer.transform if p.match_name == "ADBE Rotate Z"
+        )
+        assert rotate_z.name == "Z Rotation"
+
+    def test_camera_anchor_named_point_of_interest(self) -> None:
+        """Camera layers show Anchor Point as 'Point of Interest'."""
+        layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
+        anchor = next(
+            p for p in layer.transform if p.match_name == "ADBE Anchor Point"
+        )
+        assert anchor.name == "Point of Interest"
+
+    def test_light_anchor_named_point_of_interest(self) -> None:
+        """Light layers show Anchor Point as 'Point of Interest'."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_PARALLEL"
+        )
+        anchor = next(
+            p for p in layer.transform if p.match_name == "ADBE Anchor Point"
+        )
+        assert anchor.name == "Point of Interest"
+
+    def test_2d_anchor_named_anchor_point(self) -> None:
+        """2D layers show Anchor Point as 'Anchor Point'."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        anchor = next(
+            p for p in layer.transform if p.match_name == "ADBE Anchor Point"
+        )
+        assert anchor.name == "Anchor Point"
+
+    def test_non_canonical_tail_preserved(self) -> None:
+        """Non-canonical groups appear after canonical ones."""
+        layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
+        match_names = [p.match_name for p in layer.properties]
+        # Camera Options is non-canonical, should be last
+        assert match_names[-1] == "ADBE Camera Options Group"
+        # Marker and Transform are canonical, should come before
+        assert match_names.index("ADBE Marker") < match_names.index(
+            "ADBE Camera Options Group"
+        )
+        assert match_names.index("ADBE Transform Group") < match_names.index(
+            "ADBE Camera Options Group"
+        )

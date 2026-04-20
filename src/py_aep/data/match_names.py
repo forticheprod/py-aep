@@ -1,4 +1,4 @@
-"""Match name to nice name mapping for After Effects properties.
+"""Match name to auto name mapping for After Effects properties.
 
 This dictionary maps internal AE match names to human-readable display names.
 Match names are stable identifiers that don't change between AE versions,
@@ -9,7 +9,7 @@ See: https://ae-scripting.docsforadobe.dev/matchnames/layer/avlayer/
 
 from __future__ import annotations
 
-MATCH_NAME_TO_NICE_NAME = {
+MATCH_NAME_TO_AUTO_NAME = {
     # AV Layer > Top-Level
     "ADBE Marker": "Marker",
     "ADBE Time Remapping": "Time Remap",

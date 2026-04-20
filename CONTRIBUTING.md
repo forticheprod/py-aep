@@ -87,14 +87,14 @@ Each instance has an `if` guard on `list_type`, so accessing e.g. `.tdsb` on a n
 class CompItem(AVItem):
     frame_rate = ChunkField[float](
         "_cdta", "frame_rate",
-        transform=..., reverse=...,
+        transform=..., reverse_instance_field=...,
     )
     """The frame rate of the composition. Read / Write."""
 ```
 
 When a user writes `comp.frame_rate = 30.0`, the descriptor converts the value back to binary representation and writes it to the underlying chunk body.
 
-**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate Kaitai chunk data. ChunkField descriptors use `reverse` functions to convert user-facing values back to binary format, and `propagate_check` to update parent chunk sizes.
+**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate Kaitai chunk data. ChunkField descriptors use `reverse_seq_field` (scalar) or `reverse_instance_field` (multi-field) functions to convert user-facing values back to binary format, and `propagate_check` to update parent chunk sizes.
 
 ### Property & Effect Parsing Flow
 
@@ -130,46 +130,165 @@ flowchart TD
         PE --> FN["fnam (effect name)"]
         PE --> PD["parse_effect_param_defs()\nfallback: project._effect_param_defs"]
         PD --> EPP["_parse_effect_properties()"]
-        EPP --> Merge["_merge_param_def()\nfor existing properties"]
-        EPP --> Synth["_synthesize_effect_property()\nfor missing params (ProxyBody)"]
-        EPP --> Reorder["reorder to parT order"]
+        EPP --> Walk["ordered walk over param_defs:\nmerge existing | synthesize missing"]
+        Walk --> Tail["append tail children\n+ synthesize Compositing Options"]
     end
 
-    subgraph Phase3["Phase 3 - Post-Processing"]
-        Result["Layer with properties"] --> TD["set_transform_defaults()\ndefault_value + synthesize missing"]
-        TD --> LD["set_layer_property_defaults()"]
-        LD --> SMTLG["_synthesize_missing_top_level_groups()\nvia _TOP_LEVEL_GROUP_ORDER"]
-        SMTLG --> SC["_synthesize_children()\nrecursive on all groups"]
-        SC --> FFS["_fill_from_specs()"]
-        SC --> AMXB["_apply_min_max_bounds()"]
-        AMXB --> DLSE["_derive_layer_styles_enabled()"]
-    end
-
-    subgraph Synthesis["_fill_from_specs detail"]
-        FFS --> Exists{"child exists\nin binary?"}
-        Exists -->|"yes"| RO["reorder + update metadata\n(_auto_name, color,\nmin/max, default_value,\ncan_vary_over_time)"]
-        Exists -->|"no, _PropSpec"| FS["Property.from_spec()\nProxyBody + spec values"]
-        Exists -->|"no, _GroupSpec"| GS["new PropertyGroup\nwith ProxyBody"]
-    end
-
-    PG --> Result
+    PG --> Result["Layer with properties"]
     PP --> Result
     PE --> Result
     PM --> Result
     PS --> Result
     MK --> Result
+    Result --> PostProc["Post-processing\n(see lifecycle below)"]
     Phase1 -.-> PE
 ```
 
-#### Real vs. Synthetic Properties
+#### Property Synthesis Lifecycle
 
-| Aspect | Real (from binary) | Synthetic (from specs) |
-|---|---|---|
-| **Origin** | Kaitai chunks (tdsb, tdb4, cdat) | `Property.from_spec()` or `_synthesize_effect_property()` |
-| **Chunk bodies** | Real Kaitai body objects | `ProxyBody` (absorbs writes until materialized) |
-| **When created** | During `parse_properties()` dispatch | During post-processing (`_fill_from_specs`, `set_transform_defaults`, `_synthesize_missing_top_level_groups`) |
-| **Value source** | `cdat` chunk or keyframes | `_PropSpec.value` / `_PropSpec.default_value` / effect param def |
-| **Materialization** | N/A | On first user write, `ProxyBody._materialize()` creates real chunks |
+Every property on a layer goes through a well-defined lifecycle from binary parsing to user-facing API. The diagram below shows every state a property can be in and what triggers transitions between them.
+
+##### State Diagram
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    state "1. Binary Parsing" as Phase1
+    state "2. Post-Processing (Synthesis)" as Phase2
+    state "3. User API" as Phase3
+
+    state Phase1 {
+        direction LR
+        state "parse_properties()\ndispatch by list_type" as Dispatch
+        state "parse_property()\nparse_property_group()" as ParseProp
+        state "parse_effect()\n+ _synthesize_effect_property()" as ParseEffect
+
+        Dispatch --> ParseProp : tdbs / tdgp
+        Dispatch --> ParseEffect : sspc
+    }
+
+    state Phase2 {
+        direction TB
+        state "synthesize_layer_properties()" as SLP
+        state "_set_transform_defaults()\ndefault_value + reorder + synthesize + bounds" as STD
+        state "_synthesize_missing_top_level_groups()\nreorder + synthesize top-level" as SMTLG
+        state "synthesize_children()\nrecursive _reorder_and_fill()\n+ Layer Styles enabled\n+ min/max bounds" as SC
+
+        SLP --> STD
+        STD --> SMTLG
+        SMTLG --> SC
+    }
+
+    state Phase3 {
+        direction LR
+        state "Read\n(works on real & synthesized)" as Read
+        state "Write" as Write
+        state "_ensure_materialized()\nProxyBody -> real Kaitai chunks" as Mat
+
+        Read --> Read
+        Write --> Mat : if ProxyBody
+        Write --> Read : if already real
+        Mat --> Read : materialized
+    }
+
+    [*] --> Phase1 : parse(aep_file)
+    Phase1 --> Phase2
+    Phase2 --> Phase3 : _suppress_materialization released
+```
+
+The entire parse pipeline runs inside `_suppress_materialization()`, which prevents writes from triggering materialization. After `parse()` returns, the context is released and end-user writes are allowed.
+
+Each property in the tree is in one of two states:
+
+| State | Backing | Created by | Value source | Writable? |
+|---|---|---|---|---|
+| **Real** | Kaitai `TdsbBody` + `Tdb4Body` + `CdatBody` | `parse_property()`, `parse_property_group()`, `parse_effect()` (existing params) | `cdat` chunk or keyframes | Yes, directly |
+| **Synthesized** | `ProxyBody` (lightweight attribute bag) | `Property.synthesized()`, `_synthesize_effect_property()`, `_reorder_and_fill()` (in `models/properties/property_group.py`) | `_PropSpec.value` / `_PropSpec.default_value` / effect param def | Yes, triggers materialization on first write |
+
+##### Lifecycle Phases in Detail
+
+**Phase 1 - Binary parsing**: Dispatch by `list_type` is shown in the overview flowchart above. Most dispatch targets produce properties with real Kaitai chunk backing. The exception is `parse_effect()` (sspc), which produces a mix: existing params get real backing, missing params are synthesized with `ProxyBody` via `_synthesize_effect_property()`.
+
+**Phase 2 - Post-processing** (single pass in `parsers/synthesis.py`):
+
+After `parse_properties` returns, `parse_layer` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use `ProxyBody` and bypass materialization (the `_suppress_materialization` context is active).
+
+```
+parse_layer()
+  |
+  +-- synthesize_layer_properties(layer)     # parsers/synthesis.py
+        |
+        +-- _set_transform_defaults(layer)            # Site 1: Transform
+        |     Phase 1: set default_value on parsed transform properties
+        |     Phase 2: _reorder_and_fill() with _TRANSFORM_SPECS
+        |              - synthesizes missing transform properties (up to 12)
+        |              - reorders to canonical ExtendScript order
+        |     Phase 3: context-dependent naming (2D/3D, Camera/Light)
+        |     Phase 4: apply min/max bounds on transform leaf properties
+        |
+        +-- _synthesize_missing_top_level_groups()    # Site 2: Top-level groups
+        |     _reorder_and_fill() with _TOP_LEVEL_SPECS
+        |     - synthesizes missing groups (up to 17 for AVLayer)
+        |     - skips groups irrelevant to layer type (text-only, shape-only)
+        |     - reorders to canonical ExtendScript order
+        |
+        +-- for each top-level PropertyGroup:         # Site 3: Sub-properties
+              synthesize_children(group)
+                _reorder_and_fill() with _GROUP_CHILD_SPECS
+                - synthesizes missing children for known groups
+                - special handling for Layer Styles sub-groups
+                - derives collapsed enabled state for Layer Styles
+                  and mirrors it onto Blend Options
+                - applies _PROPERTY_MIN_MAX bounds to leaf children
+                - recurses into PropertyGroup children
+```
+
+Effect parameter synthesis (Site 4) remains a separate dynamic step inside `parse_effect()` > `_parse_effect_properties()` during Phase 1, because it relies on binary parT/pard data rather than static spec tables. See the effect parameter definitions section below.
+
+**Phase 3 - User API** (materialization on write):
+
+After `parse()` returns, `_suppress_materialization` is released and the property tree is ready for use. Properties with real Kaitai backing are directly readable and writable. Synthesized properties (`ProxyBody` backing) are readable immediately - writes trigger materialization:
+
+```
+user writes comp.layers[0].transform.opacity.value = 50
+  |
+  +-- ChunkField.__set__() on Property
+  |     calls obj._ensure_materialized()
+  |
+  +-- Property._ensure_materialized()
+  |     if _tdsb is ProxyBody:
+  |       parent._ensure_materialized()     # recursive: ensure parent group exists
+  |       materialize_property(parent._tdgp, ...)
+  |       replace _tdsb, _tdb4, _tdbs, _name_utf8, _cdat with real chunks
+  |     else: no-op (already real)
+  |
+  +-- ChunkField writes value to real chunk body
+  +-- propagate_check() updates parent chunk sizes
+```
+
+After materialization the property is indistinguishable from one parsed from binary. The `ProxyBody` instances are discarded and all subsequent reads and writes go through real Kaitai chunk bodies.
+
+##### Materialization Trigger Convention
+
+Materialization is triggered explicitly:
+
+- **`ChunkField.__set__`** calls `obj._ensure_materialized()` automatically.
+- **`@property` setters** must call `self._ensure_materialized()` as their first statement.
+
+When adding a new writable `@property` on `PropertyBase`, `Property`, or `PropertyGroup`, add `self._ensure_materialized()` as the first line of the setter.
+
+##### _reorder_and_fill - The Core Synthesis Primitive
+
+All static synthesis sites delegate to `_reorder_and_fill()` (in `models/properties/property_group.py`). This function takes a container (layer or group), a list of canonical specs, and:
+
+1. **Preserves** existing children: moves them to canonical position, updates metadata (`_auto_name`, `color`, `min_value`, `max_value`, `default_value`, `can_vary_over_time`)
+2. **Synthesizes** missing children: creates `Property.synthesized()` (for `_PropSpec`) or empty `PropertyGroup` (for `_GroupSpec`) with `ProxyBody` backing
+3. **Skips** match names in the `skip` set (layer-type filtering)
+4. **Appends** non-spec children at the end, controlled by `tail_mode`:
+   - `"none"` - drop non-spec children (transform)
+   - `"groups"` - keep only `PropertyGroup` children (default)
+   - `"all"` - keep everything (top-level groups)
 
 #### Key Spec Tables (in `models/properties/specs.py`)
 
@@ -178,7 +297,7 @@ flowchart TD
 - **`_GROUP_CHILD_SPECS`** - Maps group match_name to ordered child specs (Material Options, Camera, Light, Masks, Blend Options, Vector shapes, etc.)
 - **`_LAYER_STYLE_CHILD_SPECS`** - Maps Layer Style sub-group match_name to child specs (Drop Shadow, Inner Glow, etc.)
 - **`_TRANSFORM_SPECS`** / **`_TRANSFORM_FIXED_DEFAULTS`** - Transform property canonical order and fixed defaults
-- **`_TOP_LEVEL_GROUP_ORDER`** - Canonical order of top-level property groups on a layer
+- **`_TOP_LEVEL_SPECS`** - Canonical order and specs of top-level property groups on a layer
 
 #### Effect Parameter Definitions
 
@@ -188,9 +307,9 @@ Effects use a two-level param def system:
 2. **Layer-level** (`LIST:parT` inside `LIST:sspc`): Parsed per effect instance. Overrides project-level if present.
 
 During `_parse_effect_properties()`:
-- Existing binary properties are enriched via `_merge_param_def()` (sets name, type, default, min/max, options)
-- Missing parameters are synthesized via `_synthesize_effect_property()` (creates `Property` with `ProxyBody`)
-- Children are reordered to match the `parT` canonical order
+- A single ordered walk over `param_defs` handles both cases: existing binary properties are enriched via `_merge_param_def()`, while missing parameters are synthesized via `_synthesize_effect_property()` (creates `Property` with `ProxyBody`). Children come out in canonical `parT` order without a separate sort.
+- Tail children not in `param_defs` (e.g. `ADBE Effect Built In Params`) are appended in their original parsed order.
+- If `ADBE Effect Built In Params` (Compositing Options) is absent from the binary, it is synthesized as an empty `PropertyGroup` so that `synthesize_children()` can fill it from `_COMPOSITING_OPTIONS_SPECS` during post-processing.
 
 #### Chunk Types Reference
 
@@ -243,7 +362,7 @@ uv run pytest --cov=src/py_aep --cov-report html --cov-report term:skip-covered
 uv run mypy src/py_aep
 
 # Linting and formatting
-uv run ruff check src/ ; uv run ruff format src/
+uv run ruff check src/ tests/ ; uv run ruff format src/ tests/
 ```
 
 ### CLI Tools
@@ -402,6 +521,7 @@ For read-only fields, set `read_only=True`:
 | `ChunkField("_body", "field")` | Direct 1:1 mapping to a `seq:` field |
 | `ChunkField.bool("_body", "field")` | Binary integer exposed as `bool` |
 | `ChunkField.enum(MyEnum, "_body", "field")` | IntEnum field (auto-detects `from_binary`/`to_binary`) |
+| `ChunkField("_body", "inst", reverse_instance_field=fn)` | Kaitai instance backed by multiple `seq:` fields; `fn(value, body)` returns `dict` of source fields |
 | `@property` (with optional setter) | Computed from multiple fields or non-chunk data |
 
 **Important**: Always add docstrings referencing the [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/). Keep docstring lines under 80 characters. End each docstring with "Read-only." or "Read / Write." as appropriate.
@@ -598,7 +718,7 @@ Test samples should be minimal and focused:
 
 ```bash
 # Check code style and auto-fix
-uv run ruff check src/ ; uv run ruff format src/
+uv run ruff check src/ tests/ ; uv run ruff format src/ tests/
 
 # Type checking
 uv run mypy src/py_aep

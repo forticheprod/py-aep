@@ -43,7 +43,7 @@ class JpegFormatOptions:
         "_body",
         "format_type",
         transform=JpegFormatType,
-        reverse=int,
+        reverse_seq_field=int,
     )
     """
     JPEG format option type: Baseline (Standard), Baseline Optimized,
@@ -54,7 +54,7 @@ class JpegFormatOptions:
         "_body",
         "scans",
         transform=lambda x: x + 2,
-        reverse=lambda x: x - 2,
+        reverse_seq_field=lambda x: x - 2,
         validate=validate_one_of([3, 4, 5]),
     )
     """

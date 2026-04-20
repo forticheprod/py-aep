@@ -57,7 +57,7 @@ class FeatherPoint:
         "_fp",
         "interp_raw",
         transform=_interp_transform,
-        reverse=_interp_reverse,
+        reverse_seq_field=_interp_reverse,
     )
     """Radius interpolation type: 0 for non-Hold feather points,
     1 for Hold feather points. Read / Write."""
@@ -128,7 +128,7 @@ class Shape:
         app = parse("project.aep")
         comp = app.project.compositions[0]
         shape_layer = comp.shape_layers[0]
-        shape_prop = shape_layer.content.property(name="ADBE Vector Shape - Group").property(name="ADBE Vector Shape")
+        shape_prop = shape_layer.content.property("ADBE Vector Shape - Group").property("ADBE Vector Shape")
         print(shape_prop.value.vertices)
         ```
 

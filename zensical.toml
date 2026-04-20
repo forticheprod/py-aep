@@ -70,6 +70,7 @@ nav = [
         ] },
         { "Other" = [
             { "Guide" = "api/other/guide.md" },
+            { "Essential Graphics Controller" = "api/other/essential_graphics.md" },
             { "Enums" = "api/other/enums.md" },
         ] },
     ] },

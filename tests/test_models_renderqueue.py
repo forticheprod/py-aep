@@ -13,6 +13,7 @@ from py_aep.enums import (
     ConvertToLinearLight,
     FieldRender,
     FrameRateSetting,
+    GetSettingsFormat,
     LogType,
     MotionBlurSetting,
     OutputChannels,
@@ -28,6 +29,7 @@ from py_aep.resolvers.output import resolve_output_filename
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "renderqueue"
 OM_SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "output_module"
+BUGS_DIR = Path(__file__).parent.parent / "samples" / "bugs"
 
 
 class TestRenderQueueBasic:
@@ -67,6 +69,16 @@ class TestOutputModule:
         assert len(rqi.output_modules) >= 1
         om = rqi.output_modules[0]
         assert om.name is not None
+
+    def test_outputModule_no_hdrm_chunk(self) -> None:
+        """Files without hdrm chunk should still parse name/file_template/file
+        correctly (Utf8 chunks identified by position relative to Als2)."""
+        project = parse_project(BUGS_DIR / "outputmodule_path.aep")
+        rqi = project.render_queue.items[0]
+        om = rqi.output_modules[0]
+        assert om.name == "H.264 - Match Render Settings - 15 Mbps"
+        assert "[compName]" in om.file_template
+        assert "[compName]" not in om.file
 
     def test_numOutputModules_2(self) -> None:
         expected = load_expected(OM_SAMPLES_DIR, "numOutputModules_2")
@@ -1202,3 +1214,112 @@ class TestRoundtripOutputModuleSettings:
         project.save(out)
         rqi2 = get_rqi(parse_aep(out).project, "base")
         assert rqi2.settings["Time Span"] == TimeSpanSource.WORK_AREA_ONLY
+
+
+class TestGetSettings:
+    """Tests for RenderQueueItem.get_settings/get_setting and OutputModule.get_settings/get_setting."""
+
+    def test_rqi_get_settings_string(self) -> None:
+        """get_settings(STRING) returns all string values."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        result = rqi.get_settings(GetSettingsFormat.STRING)
+        assert isinstance(result, dict)
+        assert all(isinstance(v, str) for v in result.values())
+
+    def test_rqi_get_settings_number(self) -> None:
+        """get_settings(NUMBER) returns numeric values."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        result = rqi.get_settings(GetSettingsFormat.NUMBER)
+        assert isinstance(result, dict)
+        assert len(result) > 0
+
+    def test_rqi_get_settings_default_is_string(self) -> None:
+        """get_settings() defaults to STRING format."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        default_result = rqi.get_settings()
+        string_result = rqi.get_settings(GetSettingsFormat.STRING)
+        assert default_result == string_result
+
+    def test_rqi_get_setting_string(self) -> None:
+        """get_setting returns a single string value."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        result = rqi.get_setting("Quality")
+        assert isinstance(result, str)
+
+    def test_rqi_get_setting_number(self) -> None:
+        """get_setting with NUMBER format returns the numeric value."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        result = rqi.get_setting("Quality", GetSettingsFormat.NUMBER)
+        assert isinstance(result, (int, float))
+
+    def test_rqi_get_setting_invalid_key(self) -> None:
+        """get_setting with unknown key raises KeyError."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        with pytest.raises(KeyError):
+            rqi.get_setting("NonExistentKey12345")
+
+    def test_rqi_get_settings_invalid_format(self) -> None:
+        """get_settings with invalid format raises ValueError."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        with pytest.raises(ValueError):
+            rqi.get_settings(9999)  # type: ignore[arg-type]
+
+    def test_om_get_settings_string(self) -> None:
+        """get_settings(STRING) returns string values (except nested dicts)."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        om = rqi.output_modules[0]
+        result = om.get_settings(GetSettingsFormat.STRING)
+        assert isinstance(result, dict)
+        # All values are strings except 'Output File Info' which is a dict
+        for key, val in result.items():
+            if key != "Output File Info":
+                assert isinstance(val, str), f"{key} is {type(val)}, expected str"
+
+    def test_om_get_settings_number(self) -> None:
+        """OutputModule.get_settings(NUMBER) returns numeric values."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        om = rqi.output_modules[0]
+        result = om.get_settings(GetSettingsFormat.NUMBER)
+        assert isinstance(result, dict)
+        assert len(result) > 0
+
+    def test_om_get_setting_string(self) -> None:
+        """OutputModule.get_setting returns a single string value."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        om = rqi.output_modules[0]
+        result = om.get_setting("Channels")
+        assert isinstance(result, str)
+
+    def test_om_get_setting_number(self) -> None:
+        """OutputModule.get_setting with NUMBER format."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        om = rqi.output_modules[0]
+        result = om.get_setting("Channels", GetSettingsFormat.NUMBER)
+        assert isinstance(result, (int, float))
+
+    def test_om_get_setting_invalid_key(self) -> None:
+        """OutputModule.get_setting with unknown key raises KeyError."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        om = rqi.output_modules[0]
+        with pytest.raises(KeyError):
+            om.get_setting("NonExistentKey12345")
+
+    def test_om_get_settings_invalid_format(self) -> None:
+        """OutputModule.get_settings with invalid format raises ValueError."""
+        project = parse_project(SAMPLES_DIR / "render_settings.aep")
+        rqi = get_rqi(project, "base")
+        om = rqi.output_modules[0]
+        with pytest.raises(ValueError):
+            om.get_settings(9999)  # type: ignore[arg-type]

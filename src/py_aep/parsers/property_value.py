@@ -95,9 +95,9 @@ def parse_property(
     # interpolation-type overrides.  Percent/color/effect scaling of both
     # values and ease speeds is applied at access time.
 
-    # Resolve _name_utf8 from the LIST:tdbs tdsn child
+    # Resolve _name_utf8 from the LIST:tdbs tdsn child (always at index 1).
     tdsn = tdbs_chunk.body.tdsn
-    name_utf8 = tdsn.body.chunks[0].body if tdsn is not None else None
+    name_utf8 = tdsn.body.chunks[0].body
 
     prop = Property(
         _tdsb=tdsb_chunk.body,

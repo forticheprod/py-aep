@@ -120,7 +120,7 @@ class Layer(PropertyGroup):
     start_time = ChunkField[float](
         "_ldta",
         "start_time",
-        reverse=_reverse_start_time,
+        reverse_instance_field=_reverse_start_time,
     )
     """The start time of the layer, expressed in composition time (seconds).
     Read / Write."""
@@ -128,7 +128,7 @@ class Layer(PropertyGroup):
     stretch = ChunkField[float](
         "_ldta",
         "stretch",
-        reverse=_reverse_stretch,
+        reverse_instance_field=_reverse_stretch,
     )
     """The layer's time stretch, expressed as a percentage. A value of 100
     means no stretch. Values between 0 and 1 are set to 1, and values
@@ -138,7 +138,7 @@ class Layer(PropertyGroup):
         AutoOrientType,
         "_ldta",
         "auto_orient_type",
-        reverse=_reverse_auto_orient,
+        reverse_instance_field=_reverse_auto_orient,
     )
     """The type of automatic orientation to perform for the layer.
     Read / Write."""
@@ -196,7 +196,7 @@ class Layer(PropertyGroup):
             self._otln_entry.selected = int(value)
             propagate_check(self._otln_entry)
         else:
-            self.__dict__["_selected"] = value
+            self._selected = value
 
     @property
     def comment(self) -> str:

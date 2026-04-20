@@ -15,21 +15,28 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
 
 1. **Binary parsing**: `parse_layer()` > `get_chunks_by_match_name()` > `parse_properties()` dispatches by chunk list_type (tdgp > PropertyGroup, tdbs > Property, sspc > Effect, etc.)
 2. **Effect enrichment**: `parse_effect()` merges param defs from `LIST:parT` (layer-level, with project-level fallback from `LIST:EfdG`) into parsed properties via `_merge_param_def()`, and synthesizes missing params via `_synthesize_effect_property()`
-3. **Post-processing**: `set_transform_defaults()` > `set_layer_property_defaults()` > `_synthesize_children()` > `_fill_from_specs()` > `_apply_min_max_bounds()`. Synthesis uses `_PropSpec` (leaf Property) and `_GroupSpec` (empty PropertyGroup) with `ProxyBody` for chunk bodies.
+3. **Post-processing**: `synthesize_layer_properties()` runs a single pass (in `parsers/synthesis.py`) handling transform defaults, top-level group ordering, recursive child synthesis via `_reorder_and_fill()`, and min/max bounds. Effect param synthesis remains a separate dynamic step inside `parse_effect()`. Synthesis uses `_PropSpec` (leaf Property) and `_GroupSpec` (empty PropertyGroup) with `ProxyBody` for chunk bodies.
 
 ### Key Directories
 - **`src/py_aep/kaitai/`** - Binary parsing layer
   - `aep.ksy` - Kaitai schema defining RIFX chunk structure (auto-generates `aep.py`)
   - `utils.py` - Chunk filtering helpers (`find_by_type`, `filter_by_list_type`)
   - `patches.py` - Monkey-patches on auto-generated Kaitai body classes (e.g. `_recompute_size` for variable-size bodies)
+  - `descriptors.py` - `ChunkField` descriptors for chunk-backed model fields (read/write through to Kaitai bodies)
+  - `proxy.py` - `ProxyBody` for synthesized properties without backing chunks
+  - `materializer.py` - Chunk builders for property materialization on first write
+  - `transforms.py` / `reverses.py` - Transform and reverse functions for binary value conversion
 - **`src/py_aep/__init__.py`** - Public API entry point: `parse()`
 - **`src/py_aep/parsers/`** - Transform raw chunks into models
-  - `application.py`, `project.py`, `match_names.py`, `render_queue.py`, ...
+  - `application.py`, `project.py`, `layer.py`, `property.py`, `synthesis.py`, `effect.py`, ...
   - Pattern: Each parser receives chunks + context, returns a model instance
-- **`src/py_aep/models/`** - Typed dataclasses mirroring AE's object model
-  - `application.py`, `items/`, `layers/`, `properties/`, `sources/`, `renderqueue/`, ...
-- **`src/py_aep/enums/`** - Enumerations matching ExtendScript values (`general.py`, `property.py`, `render_settings.py`, ...)
-- **`src/py_aep/resolvers/`** - Business logic for computing derived values (e.g. `output.py` resolves render filenames, dimensions, timecodes)
+- **`src/py_aep/models/`** - Typed model classes mirroring AE's object model
+  - `application.py`, `project.py`, `items/`, `layers/`, `properties/`, `sources/`, `renderqueue/`, `text/`, `viewer/`
+  - `validators.py` - Validator factories for model field constraints
+- **`src/py_aep/data/`** - Static data tables
+  - `match_names.py` - Match name constants; `units.py` - Unit definitions for properties
+- **`src/py_aep/enums/`** - Enumerations matching ExtendScript values (`general.py`, `property.py`, `mappings.py`, ...)
+- **`src/py_aep/resolvers/`** - Business logic for computing derived values (`output.py` for render filenames, `interpolation.py` for keyframes)
 - **`src/py_aep/cli/`** - `visualize.py`, `validate.py`, `compare.py`
 - **`src/py_aep/cos/`** - COS (PDF) format parser for embedded text data
 - **`scripts/`** - Dev/analysis scripts; `jsx/` has ExtendScript JSON exporters
@@ -43,7 +50,7 @@ uv sync --extra docs                 # Install with docs dependencies
 uv run pytest                        # Run tests (parallel)
 uv run pytest --cov=src/py_aep --cov-report html --cov-report term:skip-covered  # With coverage
 uv run mypy src/py_aep           # Type checking
-uv run ruff check src/ ; uv run ruff format src/  # Linting (excludes auto-generated kaitai/aep.py)
+uv run ruff check src/ tests/ ; uv run ruff format src/ tests/  # Linting (excludes auto-generated kaitai/aep.py)
 uv run zensical build --strict         # Build documentation
 uv run zensical serve --strict         # Serve documentation locally (with live reload)
 ```
@@ -89,7 +96,7 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 5. Add test case in `tests/test_models_*.py` using sample .aep files
 
 ### Binary Format Debugging
-See `docs/flags_tutorial.md` for reverse-engineering bitflags:
+Use `aep-compare` to investigate unknown binary fields by diffing `.aep` files that differ in a single AE setting. For reverse-engineering bitflags in `aep.ksy`:
 ```yml
 - id: preserve_nested_resolution
   type: b1

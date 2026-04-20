@@ -55,7 +55,7 @@ class FootageSource:
         FieldSeparationType,
         "_sspc",
         "field_separation_type",
-        reverse=_reverse_field_separation_type,
+        reverse_instance_field=_reverse_field_separation_type,
     )
     """How the fields are to be separated in non-still footage.
     Read / Write."""
@@ -70,7 +70,7 @@ class FootageSource:
         "_sspc",
         "high_quality_field_separation",
         transform=lambda v: v % 2 != 0,
-        reverse=int,
+        reverse_seq_field=int,
     )
     """When `True`, After Effects uses special algorithms to determine how to
     perform high-quality field separation. Read / Write."""
@@ -94,7 +94,7 @@ class FootageSource:
         "_sspc",
         "premul_color",
         transform=normalize_values,
-        reverse=denormalize_values,
+        reverse_seq_field=denormalize_values,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The color to be premultiplied. This attribute is valid only if
@@ -117,7 +117,7 @@ class FootageSource:
     conform_frame_rate = ChunkField[float](
         "_sspc",
         "conform_frame_rate",
-        reverse=reverse_fractional(
+        reverse_instance_field=reverse_fractional(
             "conform_frame_rate_integer", "conform_frame_rate_fractional"
         ),
         validate=validate_number(min=0.0, max=999.0),

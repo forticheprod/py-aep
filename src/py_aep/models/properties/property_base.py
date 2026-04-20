@@ -5,15 +5,14 @@ from typing import Any, cast
 
 from py_aep.enums import PropertyType
 
-from ...data.match_names import MATCH_NAME_TO_NICE_NAME
+from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ...kaitai.descriptors import ChunkField
+from ...kaitai.materializer import _TDSN_SENTINEL
 from ...kaitai.utils import propagate_check
 
 if typing.TYPE_CHECKING:
     from ...kaitai import Aep
     from .property_group import PropertyGroup
-
-_TDSN_SENTINEL = "-_0_/-"
 
 
 class PropertyBase:
@@ -27,61 +26,51 @@ class PropertyBase:
     See: https://ae-scripting.docsforadobe.dev/property/propertybase/
     """
 
-    match_name: str
-    """A special name for the property used to build unique naming paths. The
-    match name is not displayed, but you can refer to it in scripts. Every
-    property has a unique match-name identifier. Read-only."""
-
-    property_depth: int
-    """The number of levels of parent groups between this property and the
-    containing layer. The value is 0 for a layer. Read-only."""
-
-    elided: bool
-    """When `True`, the property is not shown in the UI. An elided property is
-    still present in the timeline but hidden from view."""
-
-    is_effect: bool
-    """When `True`, this property is an effect [PropertyGroup][]."""
-
-    is_mask: bool
-    """When `True`, this property is a mask [PropertyGroup][]."""
-
-    property_type: PropertyType
-    """The type of this property. One of `PropertyType.PROPERTY`,
-    `PropertyType.NAMED_GROUP`, or `PropertyType.INDEXED_GROUP`.
-    Read-only."""
-
-    parent_property: PropertyGroup | None
-    """The parent [PropertyGroup][] of this property, or `None` for
-    top-level layer property groups. Read-only."""
-
     enabled = ChunkField.bool("_tdsb", "enabled", default=True)
     """Corresponds to the setting of the eyeball icon. Read / Write."""
+
+    _match_name: str
+    _property_depth: int
+    _elided: bool
+    _is_effect: bool
+    _is_mask: bool
+    _parent_property: PropertyGroup | None
+    _property_type: PropertyType
 
     def __init__(
         self,
         *,
         _tdsb: Aep.TdsbBody | None,
         _name_utf8: Aep.Utf8Body | None = None,
+        parent_property: PropertyGroup | None = None,
         match_name: str,
         property_depth: int,
         auto_name: str | None = None,
     ) -> None:
         self._tdsb = _tdsb
         self._name_utf8 = _name_utf8
-        self.match_name = match_name
+        self._match_name = match_name
         self._auto_name = auto_name
-        self.property_depth = property_depth
+        self._property_depth = property_depth
 
         self._ewot_entry: Aep.EwotEntry | None = None
 
-        self.__dict__["_selected"] = False
+        self._name: str | None = None
+        self._selected = False
 
-        self.elided = False
-        self.is_effect = False
-        self.is_mask = False
-        self.parent_property = None
-        self.property_type = PropertyType.NAMED_GROUP
+        self._elided = False
+        self._is_effect = False
+        self._is_mask = False
+        self._parent_property = parent_property
+        self._property_type = PropertyType.NAMED_GROUP
+
+    def _ensure_materialized(self) -> None:
+        """Ensure this property has real Kaitai chunk backing.
+
+        No-op on `PropertyBase`. Overridden by `Property` and
+        `PropertyGroup` to replace `ProxyBody` with real chunks on
+        first user write.
+        """
 
     @property
     def selected(self) -> bool:
@@ -96,18 +85,67 @@ class PropertyBase:
             self._ewot_entry.selected = int(value)
             propagate_check(self._ewot_entry)
         else:
-            self.__dict__["_selected"] = value
+            self._selected = value
+
+    @property
+    def match_name(self) -> str:
+        """A special name for the property used to build unique naming
+        paths. The match name is not displayed, but you can refer to it
+        in scripts. Every property has a unique match-name identifier.
+        Read-only."""
+        return self._match_name
+
+    @property
+    def property_depth(self) -> int:
+        """The number of levels of parent groups between this property
+        and the containing layer. The value is 0 for a layer.
+        Read-only."""
+        return self._property_depth
+
+    @property
+    def elided(self) -> bool:
+        """When `True`, the property is not shown in the UI. An elided
+        property is still present in the timeline but hidden from view.
+        Read-only."""
+        return self._elided
+
+    @property
+    def is_effect(self) -> bool:
+        """When `True`, this property is an effect [PropertyGroup][].
+        Read-only."""
+        return self._is_effect
+
+    @property
+    def is_mask(self) -> bool:
+        """When `True`, this property is a mask [PropertyGroup][].
+        Read-only."""
+        return self._is_mask
+
+    @property
+    def property_type(self) -> PropertyType:
+        """The type of this property. One of `PropertyType.PROPERTY`,
+        `PropertyType.NAMED_GROUP`, or `PropertyType.INDEXED_GROUP`.
+        Read-only."""
+        return self._property_type
+
+    @property
+    def parent_property(self) -> PropertyGroup | None:
+        """The parent [PropertyGroup][] of this property, or `None` for
+        top-level layer property groups. Read-only."""
+        return self._parent_property
 
     @property
     def auto_name(self) -> str:
         """The automatic (display) name derived from `match_name`."""
         if self._auto_name is not None:
             return self._auto_name
-        return MATCH_NAME_TO_NICE_NAME.get(self.match_name, self.match_name)
+        return MATCH_NAME_TO_AUTO_NAME.get(self.match_name, self.match_name)
 
     @property
     def name(self) -> str:
         """Display name of the property. Read / Write."""
+        if self._name is not None:
+            return self._name
         if self._name_utf8 is not None:
             text: str = self._name_utf8.contents.split("\0")[0]
             if text and text != _TDSN_SENTINEL:
@@ -116,18 +154,17 @@ class PropertyBase:
 
     @name.setter
     def name(self, value: str) -> None:
-        if self._name_utf8 is None:
-            # Synthesized property - materialize to create the tdsn chunk.
-            materialize = getattr(self, "_materialize", None)
-            if materialize is not None:
-                materialize()
-        if self._name_utf8 is not None:
-            self._name_utf8.contents = value + "\0"
-            propagate_check(self._name_utf8)
+        self._ensure_materialized()
+        self._name = value
+        assert self._name_utf8 is not None
+        self._name_utf8.contents = value + "\0"
+        propagate_check(self._name_utf8)
 
     @property
     def is_name_set(self) -> bool:
         """`True` if the name has been explicitly set by the user. Read-only."""
+        if self._name is not None:
+            return True
         if self._name_utf8 is not None:
             text: str = self._name_utf8.contents.split("\0")[0]
             return bool(text) and text != _TDSN_SENTINEL

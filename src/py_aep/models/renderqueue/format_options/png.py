@@ -70,7 +70,7 @@ class PngFormatOptions:
         "_body",
         "compression",
         transform=PngCompression,
-        reverse=int,
+        reverse_seq_field=int,
     )
     """
     The PNG compression / interlace mode. Corresponds to the

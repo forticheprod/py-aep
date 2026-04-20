@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import (
@@ -22,6 +23,7 @@ from py_aep.enums import (
     MaskFeatherFalloff,
     MaskMode,
     MaskMotionBlur,
+    PropertyControlType,
     PropertyType,
     PropertyValueType,
 )
@@ -1129,6 +1131,22 @@ class TestUnitsText:
         assert opacity is not None
         assert opacity.units_text == "percent"
 
+    def test_compositing_options_always_present(self) -> None:
+        """Every effect has Compositing Options with its expected children."""
+        project = parse_project(SAMPLES_DIR / "effects.aep")
+        layer = get_layer(project, "effect_2dPoint")
+        assert layer.effects is not None
+        for effect in layer.effects:
+            comp_opts = effect.property("ADBE Effect Built In Params")
+            assert comp_opts is not None, (
+                f"Effect {effect.name!r} missing Compositing Options"
+            )
+            assert comp_opts.name == "Compositing Options"
+            child_mns = [c.match_name for c in comp_opts.properties]
+            assert "ADBE Effect Mask Parade" in child_mns
+            assert "ADBE Effect Mask Opacity" in child_mns
+            assert "ADBE Force CPU GPU" in child_mns
+
     def test_effect_property_no_unit(self) -> None:
         """Gaussian Blur Blurriness has no units in the map > empty string."""
         layer = get_first_layer(parse_project(SAMPLES_DIR / "2_gaussian_20_30.aep"))
@@ -2034,7 +2052,7 @@ class TestRoundtripShapeClosed:
         layer = comp.layers[0]
         mask = layer.masks[0]
         assert isinstance(mask, MaskPropertyGroup)
-        mask_path = mask.property(name="ADBE Mask Shape")
+        mask_path = mask.property("ADBE Mask Shape")
         shape = mask_path.value
         assert shape.closed is True
 
@@ -2045,7 +2063,7 @@ class TestRoundtripShapeClosed:
         project2 = parse_aep(out).project
         comp2 = get_comp(project2, "is_mask_true")
         mask2 = comp2.layers[0].masks[0]
-        mask_path2 = mask2.property(name="ADBE Mask Shape")
+        mask_path2 = mask2.property("ADBE Mask Shape")
         assert mask_path2.value.closed is False
 
     def test_close_open_mask(self, tmp_path: Path) -> None:
@@ -2053,7 +2071,7 @@ class TestRoundtripShapeClosed:
         comp = get_comp(project, "is_mask_true")
         layer = comp.layers[0]
         mask = layer.masks[0]
-        mask_path = mask.property(name="ADBE Mask Shape")
+        mask_path = mask.property("ADBE Mask Shape")
         shape = mask_path.value
 
         # Open the mask
@@ -2065,7 +2083,7 @@ class TestRoundtripShapeClosed:
         project2 = parse_aep(out).project
         comp2 = get_comp(project2, "is_mask_true")
         mask2 = comp2.layers[0].masks[0]
-        mask_path2 = mask2.property(name="ADBE Mask Shape")
+        mask_path2 = mask2.property("ADBE Mask Shape")
         mask_path2.value.closed = True
         out2 = tmp_path / "step2.aep"
         project2.save(out2)
@@ -2073,7 +2091,7 @@ class TestRoundtripShapeClosed:
         project3 = parse_aep(out2).project
         comp3 = get_comp(project3, "is_mask_true")
         mask3 = comp3.layers[0].masks[0]
-        mask_path3 = mask3.property(name="ADBE Mask Shape")
+        mask_path3 = mask3.property("ADBE Mask Shape")
         assert mask_path3.value.closed is True
 
 
@@ -2359,6 +2377,18 @@ class TestRoundtripProxyBody:
                 return prop
         raise AssertionError(f"Property {match_name} not found in effect")
 
+    def test_synthesized_effect_property_is_attached(self) -> None:
+        """Synthesized effect properties are attached before user code sees them."""
+        project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
+        layer = get_first_layer(project)
+        effect = layer.effects.properties[0]
+        blur = self._find_synthesized_effect_prop(
+            layer, 0, "ADBE Gaussian Blur 2-0001"
+        )
+
+        assert isinstance(effect, PropertyGroup)
+        assert blur.parent_property is effect
+
     def test_modify_synthesized_value(self, tmp_path: Path) -> None:
         """Modify the value of a synthesized (default) effect property."""
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
@@ -2481,3 +2511,154 @@ class TestValueValidation:
         assert position.dimensions == 3
         with pytest.raises(TypeError, match="expected a sequence of 3 elements"):
             position.value = 42.0
+
+
+class TestResolveEffectValue:
+    """Tests for _resolve_effect_value pure helper."""
+
+    @pytest.mark.parametrize(
+        ("param_def", "control_type", "expected"),
+        [
+            pytest.param(
+                {"property_control_type": PropertyControlType.ENUM, "default_value": 0},
+                PropertyControlType.ENUM,
+                (1, 1),
+                id="enum_default_0_becomes_1",
+            ),
+            pytest.param(
+                {"property_control_type": PropertyControlType.ENUM, "default_value": 2},
+                PropertyControlType.ENUM,
+                (3, 3),
+                id="enum_default_2_becomes_3",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.ENUM,
+                    "default_value": 0,
+                    "last_value": 5,
+                },
+                PropertyControlType.ENUM,
+                (5, 5),
+                id="enum_last_value_takes_precedence",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.BOOLEAN,
+                    "default_value": 1,
+                },
+                PropertyControlType.BOOLEAN,
+                (1, 1),
+                id="boolean_default_value",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.BOOLEAN,
+                    "last_value": 0,
+                },
+                PropertyControlType.BOOLEAN,
+                (0, 0),
+                id="boolean_falls_back_to_last_value",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.SCALAR,
+                    "last_value": 42.0,
+                    "default_value": 10.0,
+                },
+                PropertyControlType.SCALAR,
+                (42.0, 10.0),
+                id="general_last_value_preferred",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.SCALAR,
+                    "default_value": 10.0,
+                },
+                PropertyControlType.SCALAR,
+                (10.0, 10.0),
+                id="general_falls_back_to_default",
+            ),
+            pytest.param(
+                {"property_control_type": PropertyControlType.SCALAR},
+                PropertyControlType.SCALAR,
+                (None, None),
+                id="general_no_values_returns_none",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.SCALAR,
+                    "last_value": 7.0,
+                },
+                PropertyControlType.SCALAR,
+                (7.0, 7.0),
+                id="general_default_falls_back_to_value",
+            ),
+        ],
+    )
+    def test_resolve_effect_value(
+        self,
+        param_def: dict[str, Any],
+        control_type: PropertyControlType,
+        expected: tuple[Any, Any],
+    ) -> None:
+        from py_aep.parsers.effect import _resolve_effect_value
+
+        result = _resolve_effect_value("TEST-0001", param_def, control_type)
+        assert result == expected
+
+
+class TestEffectMetadata:
+    """Tests for effect property metadata not covered by aep-validate."""
+
+    def test_gaussian_blur_dimensions_dropdown(self) -> None:
+        """Blur Dimensions is a dropdown with 3 options."""
+        project = parse_project(SAMPLES_DIR / "2_gaussian.aep")
+        layer = get_first_layer(project)
+        assert layer.effects is not None
+        effect = layer.effects.properties[0]
+        blur_dims = None
+        for prop in effect.properties:
+            if prop.match_name == "ADBE Gaussian Blur 2-0002":
+                blur_dims = prop
+                break
+        assert blur_dims is not None
+        assert blur_dims.nb_options == 3
+        assert blur_dims.property_parameters is not None
+        assert len(blur_dims.property_parameters) == 3
+
+    def test_synthesized_property_not_modified(self) -> None:
+        """Synthesized default properties have is_modified == False."""
+        project = parse_project(SAMPLES_DIR / "2_gaussian.aep")
+        layer = get_first_layer(project)
+        assert layer.effects is not None
+        effect = layer.effects.properties[0]
+        # Repeat Edge Pixels is a boolean at its default - should not be modified
+        repeat_edge = None
+        for prop in effect.properties:
+            if prop.match_name == "ADBE Gaussian Blur 2-0003":
+                repeat_edge = prop
+                break
+        assert repeat_edge is not None
+        assert repeat_edge.is_modified is False
+
+    def test_2d_point_scaled_to_composition(self) -> None:
+        """Synthesized 2D point values are scaled to composition dimensions."""
+        project = parse_project(SAMPLES_DIR / "effects.aep")
+        comp = get_comp(project, "effect_2dPoint")
+        assert len(comp.layers) >= 1
+        layer = comp.layers[0]
+        assert layer.effects is not None
+        effect = layer.effects.properties[0]
+        flare_center = None
+        for prop in effect.properties:
+            if prop.match_name == "ADBE Lens Flare-0001":
+                flare_center = prop
+                break
+        assert flare_center is not None
+        assert flare_center.property_value_type == PropertyValueType.TwoD_SPATIAL
+        # Value should be in pixel coordinates, not parT's 0-512 range
+        assert isinstance(flare_center.value, list)
+        assert len(flare_center.value) == 2
+        # Composition dimensions determine the scale
+        assert flare_center.value[0] <= comp.width
+        assert flare_center.value[1] <= comp.height

@@ -21,7 +21,7 @@ class _PropSpec(NamedTuple):
     """Metadata for a synthesized property."""
 
     match_name: str
-    name: str
+    auto_name: str
     value: Any
     pvt: PropertyValueType
     dimensions: int = 1
@@ -37,7 +37,7 @@ class _GroupSpec(NamedTuple):
     """Metadata for a synthesized property group."""
 
     match_name: str
-    name: str
+    auto_name: str
 
 
 # Color min/max bounds used by Layer Styles and Material Shadow Color.
@@ -2214,32 +2214,25 @@ _TRANSFORM_FIXED_DEFAULTS: dict[str, Any] = {
 }
 
 
-_TOP_LEVEL_GROUP_ORDER: list[tuple[str, str]] = [
-    ("ADBE Marker", "Marker"),
-    ("ADBE Text Properties", "Text"),
-    ("ADBE Root Vectors Group", "Contents"),
-    ("ADBE Time Remapping", "Time Remap"),
-    ("ADBE MTrackers", "Motion Trackers"),
-    ("ADBE Mask Parade", "Masks"),
-    ("ADBE Effect Parade", "Effects"),
-    ("ADBE Transform Group", "Transform"),
-    ("ADBE Layer Styles", "Layer Styles"),
-    ("ADBE Plane Options Group", "Geometry Options"),
-    ("ADBE Extrsn Options Group", "Geometry Options"),
-    ("ADBE Material Options Group", "Material Options"),
-    ("ADBE Audio Group", "Audio"),
-    ("ADBE Data Group", "Data"),
-    ("ADBE Layer Overrides", "Essential Properties"),
-    ("ADBE Layer Sets", "Sets"),
-    ("ADBE Source Options Group", "Replace Source"),
+_TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
+    _PropSpec("ADBE Marker", "Marker", None, PropertyValueType.MARKER, dimensions=0),
+    _GroupSpec("ADBE Text Properties", "Text"),
+    _GroupSpec("ADBE Root Vectors Group", "Contents"),
+    _PropSpec("ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD),
+    _GroupSpec("ADBE MTrackers", "Motion Trackers"),
+    _GroupSpec("ADBE Mask Parade", "Masks"),
+    _GroupSpec("ADBE Effect Parade", "Effects"),
+    _GroupSpec("ADBE Transform Group", "Transform"),
+    _GroupSpec("ADBE Layer Styles", "Layer Styles"),
+    _GroupSpec("ADBE Plane Options Group", "Geometry Options"),
+    _GroupSpec("ADBE Extrsn Options Group", "Geometry Options"),
+    _GroupSpec("ADBE Material Options Group", "Material Options"),
+    _GroupSpec("ADBE Audio Group", "Audio"),
+    _GroupSpec("ADBE Data Group", "Data"),
+    _GroupSpec("ADBE Layer Overrides", "Essential Properties"),
+    _GroupSpec("ADBE Layer Sets", "Sets"),
+    _GroupSpec("ADBE Source Options Group", "Replace Source"),
 ]
-
-# Match names that are leaf Properties (not PropertyGroups) at the top level,
-# mapped to the PropertyValueType they report in ExtendScript.
-_TOP_LEVEL_LEAF_PROPERTIES: dict[str, PropertyValueType] = {
-    "ADBE Marker": PropertyValueType.MARKER,
-    "ADBE Time Remapping": PropertyValueType.OneD,
-}
 
 # Groups only present on regular AVLayers, NOT on TextLayer or ShapeLayer.
 _REGULAR_AV_ONLY_GROUPS: frozenset[str] = frozenset(

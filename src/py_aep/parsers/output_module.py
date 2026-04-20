@@ -3,9 +3,9 @@ from __future__ import annotations
 from ..kaitai import Aep
 from ..kaitai.utils import (
     ChunkNotFoundError,
-    filter_by_type,
     find_by_list_type,
     find_by_type,
+    find_chunks_after,
 )
 from ..models.renderqueue.output_module import OutputModule
 from ..models.renderqueue.render_queue_item import RenderQueueItem
@@ -23,12 +23,15 @@ def parse_output_module(
     Each output module consists of:
     - Roou: Output options (binary data)
     - Ropt: Render options (binary data)
-    - hdrm: HDR metadata
-    - Utf8: HDR10 / color metadata JSON (e.g. `{"colorMetadataPresent":true}`)
+    - hdrm: HDR metadata (optional)
+    - Utf8: HDR10 / color metadata JSON (optional, only when hdrm present)
     - LIST Als2: Output file path info
       - alas: JSON with fullpath and target_is_folder
     - Utf8: Template/format name (e.g., "H.264 - Match Render Settings - 15 Mbps")
     - Utf8: File name template (e.g., "[compName].[fileextension]" or "output.mp4")
+
+    The Utf8 chunks after Als2 are always name + file template. Files without
+    hdrm have only 2 Utf8 chunks total.
 
     Args:
         chunks: List of chunks belonging to this output module.
@@ -41,24 +44,18 @@ def parse_output_module(
     roou_chunk = find_by_type(chunks=chunks, chunk_type="Roou")
 
     # Get the alas chunk body for write-through
+    # Utf8 chunks after the Als2 LIST: [0] = format/template name, [1] = file
+    # name template. Files without hdrm (pre-2024) have no Utf8 before Als2.
     try:
         als2_chunk = find_by_list_type(chunks=chunks, list_type="Als2")
         alas_utf8 = find_by_type(chunks=als2_chunk.body.chunks, chunk_type="alas").body
+        post_als2_utf8 = find_chunks_after(chunks, "Utf8", "LIST:Als2")
+        name_utf8 = post_als2_utf8[0].body
+        file_name_utf8 = post_als2_utf8[1].body
     except ChunkNotFoundError:
         alas_utf8 = None
-
-    utf8_chunks = filter_by_type(chunks, "Utf8")
-
-    # Utf8[0] = HDR10 / color metadata JSON (e.g. '{"colorMetadataPresent":true}')
-    # Utf8[1] = template/format name
-    # Utf8[2] = file name template
-    name_utf8 = None
-    file_name_utf8 = None
-
-    if len(utf8_chunks) > 1:
-        name_utf8 = utf8_chunks[1].body
-    if len(utf8_chunks) > 2:
-        file_name_utf8 = utf8_chunks[2].body
+        name_utf8 = None
+        file_name_utf8 = None
 
     format_options = parse_format_options(chunks)
 

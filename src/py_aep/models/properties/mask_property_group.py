@@ -44,7 +44,7 @@ class MaskPropertyGroup(PropertyGroup):
         "_mkif",
         "color",
         transform=normalize_values,
-        reverse=denormalize_values,
+        reverse_seq_field=denormalize_values,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The color used to draw the mask outline as it appears in the user

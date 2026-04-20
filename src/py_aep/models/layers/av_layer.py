@@ -86,7 +86,7 @@ class AVLayer(Layer):
         FrameBlendingType,
         "_ldta",
         "frame_blending_type",
-        reverse=_reverse_frame_blending,
+        reverse_instance_field=_reverse_frame_blending,
     )
     """The type of frame blending for the layer. Read / Write."""
 

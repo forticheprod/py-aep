@@ -33,7 +33,7 @@ class Keyframe:
 
         app = parse("project.aep")
         comp = app.project.compositions[0]
-        position = comp.layers[0].transform.property(name="ADBE Position")
+        position = comp.layers[0].transform.property("ADBE Position")
         keyframe = position.keyframes[0]
         print(keyframe.time)
         ```
