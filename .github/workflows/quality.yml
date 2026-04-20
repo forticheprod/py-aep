@@ -61,7 +61,7 @@ jobs:
     - name: Install dependencies
       run: pip install kaitaistruct>=0.9 "pytest>=7.0,<8.0"
     - name: Test with pytest
-      run: PYTHONPATH=src pytest -v --no-header -ra --tb=short
+      run: PYTHONPATH=src pytest -v --no-header -ra --tb=short -o "addopts="
   pytest:
     needs: lfs
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-quality')

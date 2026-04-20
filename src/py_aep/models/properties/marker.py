@@ -46,7 +46,7 @@ class MarkerValue:
     duration = ChunkField[float](
         "_nmhd",
         "duration",
-        reverse=_reverse_duration,
+        reverse_instance_field=_reverse_duration,
     )
     """The marker's duration, in seconds. Read / Write."""
 

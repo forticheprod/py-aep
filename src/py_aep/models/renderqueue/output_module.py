@@ -227,7 +227,7 @@ class OutputModule:
     _format = ChunkField[OutputFormat](
         "_roou",
         "format_id",
-        reverse=OutputFormat.to_format_id,
+        reverse_seq_field=OutputFormat.to_format_id,
         transform=OutputFormat.from_format_id,
         read_only=True,
     )

@@ -13,26 +13,11 @@ This module mirrors the role of
 
 from __future__ import annotations
 
-import inspect
 from typing import Any, Callable, Generic, TypeVar, overload
 
 T = TypeVar("T")
 
 _SENTINEL = object()
-
-
-def _reverse_arity(fn: Callable[..., Any]) -> int:
-    """Return the number of required positional parameters *fn* accepts."""
-    try:
-        sig = inspect.signature(fn)
-    except (ValueError, TypeError):
-        return 1
-    return sum(
-        1
-        for p in sig.parameters.values()
-        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-        and p.default is p.empty
-    )
 
 
 class CosField(Generic[T]):
@@ -42,14 +27,17 @@ class CosField(Generic[T]):
     dict_attr)``.  When the dict is ``None`` the descriptor returns
     ``default`` (which defaults to ``None``).
 
+    Unlike `ChunkField`, this descriptor is scalar-only: ``reverse``
+    always returns a single value written to one dict key.
+
     Args:
         dict_attr: Name of the model attribute holding the COS sub-dict
             (e.g. ``"_char_style"``).
         key: String key into that dict (e.g. ``"1"`` for font_size).
         transform: Optional callable applied when *getting* (COS value
             -> user-facing value).
-        reverse: Callable applied when *setting* (user-facing -> COS
-            value).
+        reverse: 1-arg callable applied when *setting* (user-facing ->
+            COS value). Always returns a scalar.
         read_only: When ``True``, the field cannot be set.
         validate: Optional callable called with the user-facing value
             before any ``reverse`` transform.

@@ -25,11 +25,11 @@ VAT_DIR = SAMPLES_DIR / "value_at_time"
 
 # Maps matchName -> function to find the property from a parsed layer
 _FINDERS: dict[str, object] = {
-    "ADBE Opacity": lambda ly: ly.transform.property(name="ADBE Opacity"),
-    "ADBE Position": lambda ly: ly.transform.property(name="ADBE Position"),
-    "ADBE Position_0": lambda ly: ly.transform.property(name="ADBE Position_0"),
-    "ADBE Scale": lambda ly: ly.transform.property(name="ADBE Scale"),
-    "ADBE Rotate Z": lambda ly: ly.transform.property(name="ADBE Rotate Z"),
+    "ADBE Opacity": lambda ly: ly.transform.property("ADBE Opacity"),
+    "ADBE Position": lambda ly: ly.transform.property("ADBE Position"),
+    "ADBE Position_0": lambda ly: ly.transform.property("ADBE Position_0"),
+    "ADBE Scale": lambda ly: ly.transform.property("ADBE Scale"),
+    "ADBE Rotate Z": lambda ly: ly.transform.property("ADBE Rotate Z"),
 }
 
 

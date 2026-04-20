@@ -21,8 +21,14 @@ Always consult the ExtendScript scripting guide for accurate docstrings, types, 
 
 - **`src/py_aep/kaitai/aep.ksy`** - Binary schema (Kaitai Struct). All binary decoding lives here. Never use the `struct` module.
 - **`src/py_aep/kaitai/aep.py`** - Auto-generated from `aep.ksy`. Never edit directly.
+- **`src/py_aep/kaitai/descriptors.py`** - `ChunkField` descriptors for chunk-backed model fields (read/write through to Kaitai bodies).
+- **`src/py_aep/kaitai/proxy.py`** - `ProxyBody` for synthesized properties without backing chunks.
+- **`src/py_aep/kaitai/materializer.py`** - Chunk builders for property materialization on first write.
+- **`src/py_aep/kaitai/transforms.py`** / **`reverses.py`** - Transform and reverse functions for binary value conversion.
 - **`src/py_aep/parsers/`** - Transform raw chunks into model instances.
-- **`src/py_aep/models/`** - Typed dataclasses mirroring AE's object model.
+- **`src/py_aep/models/`** - Typed model classes mirroring AE's object model.
+- **`src/py_aep/models/validators.py`** - Validator factories for model field constraints.
+- **`src/py_aep/data/`** - Static data tables (`match_names.py`, `units.py`).
 - **`src/py_aep/enums/`** - Enumerations matching ExtendScript values.
 - **`samples/`** - Test `.aep` files and their `.json` ExtendScript exports.
 - **`scripts/`** - CLI and investigation scripts.
@@ -43,13 +49,13 @@ uv run aep-compare samples/models/<category>/file1.aep samples/models/<category>
 - Edit `src/py_aep/kaitai/aep.ksy` to add the new field
 - Regenerate the parser:
 ```powershell
-kaitai-struct-compiler --target python --outdir src/py_aep/kaitai src/py_aep/kaitai/aep.ksy
+kaitai-struct-compiler --target python --outdir src/py_aep/kaitai src/py_aep/kaitai/aep.ksy --read-write --no-auto-read
 ```
 
 ### 3. Update Parser and Model
 - Add/update the model dataclass in `src/py_aep/models/` with docstrings copied from AE equivalents
 - Add/update the parser in `src/py_aep/parsers/` to extract the new field from chunks
-- If the binary value differs from ExtendScript value, add mapping in `enums/` or `parsers/mappings.py`
+- If the binary value differs from ExtendScript value, add mapping in `enums/` (single-param `from_binary`) or `enums/mappings.py` (multi-param)
 
 ### 4. Update Tests and Documentation
 - Add test cases in `tests/test_models_*.py` using sample `.aep` files
@@ -61,8 +67,13 @@ Run all checks through the venv and fix any errors:
 ```powershell
 uv run pytest
 uv run mypy src/py_aep
-uv run ruff check src/ ; uv run ruff format src/
+uv run ruff check src/ tests/ ; uv run ruff format src/ tests/
 uv run zensical build --strict
+```
+
+Regenerate Kaitai parser after modifying `aep.ksy`:
+```powershell
+kaitai-struct-compiler --target python --outdir src/py_aep/kaitai src/py_aep/kaitai/aep.ksy --read-write --no-auto-read
 ```
 
 ### 6. Cross-validate Against ExtendScript
@@ -102,7 +113,7 @@ ldta_chunk = find_by_type(chunks=child_chunks, chunk_type="ldta")
 
 `chunk_tree(chunks, depth)` prints the chunk hierarchy; `recursive_find(chunks, chunk_type, list_type)` searches the tree recursively.
 
-Chunk attribute proxy: `chunk.field` delegates to `chunk.body.field` via `__getattr__`.
+Chunk attributes live on `chunk.body`, not on the chunk itself. Always use explicit `chunk.body.X` access.
 
 ### Typed LIST Instances
 
@@ -123,4 +134,4 @@ Use `find_by_type` when the LIST type is unknown or when a function handles mult
 When implementing a new feature, provide:
 1. Summary of binary analysis findings (chunk type, byte offset, bit meaning)
 2. All files changed with brief explanation
-3. Validation results (pytest, mypy, ruff, mkzensicaldocs, aep-validate)
+3. Validation results (pytest, mypy, ruff, zensical, aep-validate)

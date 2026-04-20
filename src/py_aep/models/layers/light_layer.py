@@ -42,7 +42,7 @@ class LightLayer(Layer):
         "_ldta",
         "source_id",
         transform=lambda v: 0 if v == _UNDEFINED_ID else v,
-        reverse=lambda v: _UNDEFINED_ID if v == 0 else v,
+        reverse_seq_field=lambda v: _UNDEFINED_ID if v == 0 else v,
     )
     """The ID of the layer used as a light source. `0` if none."""
 

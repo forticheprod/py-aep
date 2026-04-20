@@ -208,7 +208,7 @@ class ViewOptions:
         FastPreviewType,
         "_fips",
         "fast_preview_type",
-        reverse=_reverse_fast_preview,
+        reverse_instance_field=_reverse_fast_preview,
     )
     """The state of the Fast Previews menu. Read / Write."""
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import typing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from py_aep.data.match_names import MATCH_NAME_TO_NICE_NAME
+from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyType
 
+from ...kaitai.materializer import materialize_group
 from ...kaitai.proxy import ProxyBody
-from ...kaitai.utils import create_chunk, create_tdsb_chunk
 from .overrides import _PROPERTY_MIN_MAX
 from .property import Property
 from .property_base import PropertyBase
@@ -20,9 +20,105 @@ from .specs import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from typing import Literal
 
     from ...kaitai import Aep
     from .specs import _GroupSpec, _PropSpec
+
+
+def _reorder_and_fill(
+    container: PropertyGroup | Any,
+    specs: Sequence[_PropSpec | _GroupSpec],
+    child_depth: int,
+    *,
+    skip: frozenset[str] = frozenset(),
+    value_overrides: dict[str, tuple[Any, Any]] | None = None,
+    tail_mode: Literal["none", "groups", "all"] = "groups",
+) -> None:
+    """Reorder *container.properties* according to *specs*, synthesizing missing entries.
+
+    Existing children whose match name appears in *specs* are preserved in
+    canonical order. Missing children are created via `Property.synthesized`
+    (for `_PropSpec`) or as empty `PropertyGroup` instances (for `_GroupSpec`).
+
+    Args:
+        container: Object whose `.properties` list is reordered/filled.
+            Also set as `parent_property` on synthesized children.
+        specs: Full canonical spec list (NOT pre-filtered by *skip*).
+        child_depth: `property_depth` for synthesized children.
+        skip: Match names to skip synthesis for.  Checked only when the
+            match name is **not** already in the container - existing
+            children are always preserved in canonical position.
+        value_overrides: ``{match_name: (value, default_value)}`` for
+            overriding synthesized property values.  When ``None``, uses
+            ``spec.value`` / ``spec.default_value``.
+        tail_mode: What non-spec children to append after the canonical
+            entries: ``"groups"`` (only `PropertyGroup`), ``"all"``
+            (everything), or ``"none"`` (nothing).
+    """
+    existing: dict[str, Property | PropertyGroup] = {}
+    for child in container.properties:
+        existing[child.match_name] = child
+
+    ordered: list[Property | PropertyGroup] = []
+    for spec in specs:
+        mn = spec.match_name
+        if mn in existing:
+            child = existing[mn]
+            child._auto_name = spec.auto_name
+            if not isinstance(spec, _GroupSpec) and isinstance(child, Property):
+                child.__dict__["_color"] = spec.color
+                if spec.min_value is not None:
+                    child._min_value_fallback = spec.min_value
+                if spec.max_value is not None:
+                    child._max_value_fallback = spec.max_value
+                if spec.can_vary_over_time is not None:
+                    child._can_vary_over_time = spec.can_vary_over_time
+                if child.default_value is None:
+                    dv = (
+                        spec.value
+                        if spec.default_value is _USE_VALUE
+                        else spec.default_value
+                    )
+                    if dv is not None:
+                        child.default_value = dv
+            ordered.append(child)
+        elif mn in skip:
+            continue
+        elif isinstance(spec, _GroupSpec):
+            group = PropertyGroup(
+                _tdsb=ProxyBody(
+                    enabled=1,
+                    locked_ratio=0,
+                    roto_bezier=0,
+                    dimensions_separated=0,
+                ),
+                match_name=spec.match_name,
+                auto_name=spec.auto_name,
+                property_depth=child_depth,
+                properties=[],
+                parent_property=container,
+            )
+            ordered.append(group)
+        else:
+            v, d = (value_overrides or {}).get(mn, (_USE_VALUE, _USE_VALUE))
+            prop = Property.synthesized(
+                spec,
+                child_depth,
+                parent_property=container,
+                value=v,
+                default_value=d,
+            )
+            ordered.append(prop)
+
+    if tail_mode != "none":
+        spec_match_names = {s.match_name for s in specs}
+        for child in container.properties:
+            if child.match_name not in spec_match_names:
+                if tail_mode == "all" or isinstance(child, PropertyGroup):
+                    ordered.append(child)
+
+    container.properties = ordered  # type: ignore[assignment]
 
 
 _INDEXED_GROUP_MATCH_NAMES: set[str] = {
@@ -77,6 +173,7 @@ class PropertyGroup(PropertyBase):
         _tdsb: Aep.TdsbBody | None,
         _name_utf8: Aep.Utf8Body | None = None,
         _fnam_utf8: Aep.Utf8Body | None = None,
+        parent_property: PropertyGroup | Any | None = None,
         match_name: str,
         property_depth: int,
         properties: list[Property | PropertyGroup],
@@ -85,6 +182,7 @@ class PropertyGroup(PropertyBase):
         super().__init__(
             _tdsb=_tdsb,
             _name_utf8=_name_utf8,
+            parent_property=parent_property,
             match_name=match_name,
             property_depth=property_depth,
             auto_name=auto_name,
@@ -96,15 +194,15 @@ class PropertyGroup(PropertyBase):
         self.properties = properties
 
         for child in self.properties:
-            child.parent_property = self
+            child._parent_property = self
 
         if match_name in _INDEXED_GROUP_MATCH_NAMES:
-            self.property_type = PropertyType.INDEXED_GROUP
+            self._property_type = PropertyType.INDEXED_GROUP
 
         if match_name in ("ADBE Effect Mask Parade", "ADBE Vectors Group"):
-            self.elided = True
+            self._elided = True
         elif match_name == "ADBE Text Animators" and not properties:
-            self.elided = True
+            self._elided = True
 
     @property
     def auto_name(self) -> str:
@@ -114,14 +212,15 @@ class PropertyGroup(PropertyBase):
         if self._fnam_utf8 is not None:
             name: str = self._fnam_utf8.contents.split("\0")[0]
             return name
-        return MATCH_NAME_TO_NICE_NAME.get(self.match_name, self.match_name)
+        return MATCH_NAME_TO_AUTO_NAME.get(self.match_name, self.match_name)
 
-    def _materialize_group(self) -> None:
+    def _ensure_materialized(self) -> None:
         """Replace ProxyBody backing with real Kaitai chunks.
 
-        Creates a tdmn + LIST:tdgp in the parent's _tdgp, with a
-        group-level tdsb inside. After this, child properties can
-        materialize into this group's _tdgp.
+        Called automatically by `__setattr__` on first end-user write
+        to a synthesized group. Creates a tdmn + LIST:tdgp in the
+        parent's _tdgp, with a group-level tdsb inside. After this,
+        child properties can materialize into this group's _tdgp.
         """
         if not isinstance(self._tdsb, ProxyBody):
             return
@@ -130,48 +229,18 @@ class PropertyGroup(PropertyBase):
         if parent is None:
             return
 
-        # Recurse: ensure parent group is materialized first.
-        if hasattr(parent, "_materialize_group"):
-            parent._materialize_group()
+        parent._ensure_materialized()
 
         parent_tdgp = parent._tdgp
         if parent_tdgp is None:
             return
 
-        proxy_tdsb = self._tdsb
-
-        # 1. tdmn with this group's match name.
-        create_chunk(
-            parent_tdgp,
-            "tdmn",
-            "Utf8Body",
-            contents=self.match_name + "\x00",
+        result = materialize_group(
+            parent_tdgp, self.match_name, self._tdsb, display_name=self._name
         )
-
-        # 2. LIST:tdgp container.
-        tdgp_chunk = create_chunk(
-            parent_tdgp,
-            "LIST",
-            "ListBody",
-            list_type="tdgp",
-            chunks=[],
-        )
-        tdgp_body = tdgp_chunk.body
-
-        # 3. Group-level tdsb inside the new tdgp.
-        tdsb_chunk = create_tdsb_chunk(tdgp_body, proxy_tdsb)
-
-        # 4. "ADBE Group End" sentinel.
-        create_chunk(
-            parent_tdgp,
-            "tdmn",
-            "Utf8Body",
-            contents="ADBE Group End\x00",
-        )
-
-        # Replace proxy references with real chunk bodies.
-        self._tdsb = tdsb_chunk.body
-        self._tdgp = tdgp_body
+        object.__setattr__(self, "_tdsb", result.tdsb)
+        object.__setattr__(self, "_tdgp", result.tdgp)
+        object.__setattr__(self, "_name_utf8", result.name_utf8)
 
     def __iter__(self) -> typing.Iterator[Property | PropertyGroup]:
         """Return an iterator over the properties in this group."""
@@ -214,9 +283,8 @@ class PropertyGroup(PropertyBase):
     def __getitem__(self, key: int | str) -> Property | PropertyGroup:
         """Look up a child property by index or name.
 
-        Supports both integer indices and string keys (display name or
-        match name), mirroring ExtendScript's `property()` accessor with
-        Python's `[]` operator.
+        This is the canonical access method. Both `property()` and
+        `__getattr__` (snake_case attribute access) delegate here.
 
         Example:
             ```python
@@ -269,98 +337,16 @@ class PropertyGroup(PropertyBase):
         """
         return len(self.properties)
 
-    def property(
-        self, index: int | None = None, name: str | None = None
-    ) -> Property | PropertyGroup:
-        """
-        Find and return a child property of this group.
+    def property(self, key: int | str) -> Property | PropertyGroup:
+        """Look up a child property by index or name.
 
-        The property can be specified by either its index or name (match name
-        or display name).
+        Mirrors ExtendScript `PropertyGroup.property(indexOrName)`.
+        Delegates to `__getitem__`.
 
         Args:
-            index: The index of the property to return.
-            name: The name of the property to return.
+            key: An `int` index or a `str` display name / match name.
         """
-        if index is not None:
-            return self.properties[index]
-        elif name is not None:
-            return self[name]
-        else:
-            raise ValueError("Either index or name must be provided to get a property.")
-
-    def _fill_from_specs(
-        self,
-        specs: Sequence[_PropSpec | _GroupSpec],
-    ) -> None:
-        """Fill missing children using *specs* in canonical order.
-
-        Existing children are preserved and reordered.  Missing children
-        are synthesized via `Property.from_spec` (for `_PropSpec`) or as
-        empty `PropertyGroup` instances (for `_GroupSpec`).
-
-        Args:
-            specs: Ordered list of child property specifications.
-        """
-        existing: dict[str, Property | PropertyGroup] = {}
-        for child in self.properties:
-            existing[child.match_name] = child
-
-        child_depth = self.property_depth + 1
-        ordered: list[Property | PropertyGroup] = []
-        for spec in specs:
-            if spec.match_name in existing:
-                child = existing[spec.match_name]
-                child._auto_name = spec.name
-                if not isinstance(spec, _GroupSpec) and isinstance(child, Property):
-                    child.__dict__["_color"] = spec.color
-                    if spec.min_value is not None:
-                        child._min_value_fallback = spec.min_value
-                    if spec.max_value is not None:
-                        child._max_value_fallback = spec.max_value
-                    if spec.can_vary_over_time is not None:
-                        child._can_vary_over_time = spec.can_vary_over_time
-                    if child.default_value is None:
-                        dv = (
-                            spec.value
-                            if spec.default_value is _USE_VALUE
-                            else spec.default_value
-                        )
-                        if dv is not None:
-                            child.default_value = dv
-                ordered.append(child)
-            elif isinstance(spec, _GroupSpec):
-                group = PropertyGroup(
-                    _tdsb=ProxyBody(
-                        enabled=1,
-                        locked_ratio=0,
-                        roto_bezier=0,
-                        dimensions_separated=0,
-                    ),
-                    match_name=spec.match_name,
-                    auto_name=spec.name,
-                    property_depth=child_depth,
-                    properties=[],
-                )
-                group.parent_property = self
-                ordered.append(group)
-            else:
-                prop = Property.from_spec(spec, child_depth)
-                prop.parent_property = self
-                ordered.append(prop)
-
-        # Preserve existing PropertyGroup children not covered by specs
-        # (e.g. Dashes/Taper/Wave inside Stroke, Contents/Transform in
-        # Vector Group).
-        spec_match_names = {s.match_name for s in specs}
-        for child in self.properties:
-            if (
-                isinstance(child, PropertyGroup)
-                and child.match_name not in spec_match_names
-            ):
-                ordered.append(child)
-
-        self.properties = ordered  # type: ignore[assignment]
+        return self[key]
 
     def _apply_min_max_bounds(self) -> None:
         """Set `min_value`/`max_value` on properties with known bounds.
@@ -381,20 +367,35 @@ class PropertyGroup(PropertyBase):
     def _synthesize_children(self) -> None:
         """Synthesize missing children in this standard property group.
 
-        Dispatches to `_fill_from_specs` for groups with known canonical
-        children, or to a specialized handler for layer styles.
+        Uses `_reorder_and_fill` for groups with known canonical children,
+        or a specialized handler for layer styles.  For Layer Styles, also
+        derives the collapsed `enabled` state: ExtendScript reports the
+        group as disabled when no individual style is enabled, and Blend
+        Options mirrors the parent.
         """
         specs = _GROUP_CHILD_SPECS.get(self.match_name)
         if specs is not None:
-            self._fill_from_specs(specs)
+            _reorder_and_fill(self, specs, self.property_depth + 1)
             # Don't return: recurse into preserved sub-groups below.
 
         if self.match_name == "ADBE Layer Styles":
+            any_style_enabled = False
+            blend_options: PropertyGroup | None = None
             for child in self.properties:
-                if isinstance(child, PropertyGroup):
-                    child_specs = _LAYER_STYLE_CHILD_SPECS.get(child.match_name)
-                    if child_specs is not None:
-                        child._fill_from_specs(child_specs)
+                if not isinstance(child, PropertyGroup):
+                    continue
+                child_specs = _LAYER_STYLE_CHILD_SPECS.get(child.match_name)
+                if child_specs is not None:
+                    _reorder_and_fill(child, child_specs, child.property_depth + 1)
+                # Blend Options mirrors the parent; skip for the check
+                if child.match_name == "ADBE Blend Options Group":
+                    blend_options = child
+                elif child.enabled:
+                    any_style_enabled = True
+            # Avoid mutating chunk fields (preserves round-trip)
+            self.__dict__["enabled"] = any_style_enabled
+            if blend_options is not None:
+                blend_options.__dict__["enabled"] = any_style_enabled
 
         for child in self.properties:
             if isinstance(child, PropertyGroup):

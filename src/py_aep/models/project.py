@@ -115,7 +115,7 @@ class Project:
     display_start_frame = ChunkField[int](
         "_nnhd",
         "display_start_frame",
-        reverse=lambda value, _body: {"frames_count_type": value},
+        reverse_instance_field=lambda value, _body: {"frames_count_type": value},
         validate=validate_one_of((0, 1)),
     )
     """The start frame number for the project display (0 or 1). An alternate
@@ -168,7 +168,7 @@ class Project:
     working_gamma = ChunkField[float](
         "_dwga",
         "working_gamma",
-        reverse=_reverse_working_gamma,
+        reverse_instance_field=_reverse_working_gamma,
         validate=validate_one_of((2.2, 2.4)),
     )
     """The gamma value used for the working color space, either 2.2 or 2.4.
@@ -178,7 +178,7 @@ class Project:
         "_aep",
         "xmp_packet",
         transform=ET.fromstring,
-        reverse=lambda el: ET.tostring(el, encoding="unicode"),
+        reverse_seq_field=lambda el: ET.tostring(el, encoding="unicode"),
     )
     """The XMP packet for the project, containing metadata.
     Read / Write."""
@@ -187,7 +187,7 @@ class Project:
         "_gpug_utf8",
         "contents",
         transform=lambda contents: GpuAccelType.from_binary(strip_null(contents)),
-        reverse=GpuAccelType.to_binary,
+        reverse_seq_field=GpuAccelType.to_binary,
     )
     """The GPU acceleration type for the project. None if not
     recognised. Read / Write."""

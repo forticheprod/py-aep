@@ -51,12 +51,17 @@ For each design decision, document:
 - Public API surface belongs in `models/`
 - Value conversions belong in `enums/` (single-param `from_binary`) or `enums/mappings.py` (multi-param)
 - Derived computations belong in `resolvers/`
+- Static data tables belong in `data/` (`match_names.py`, `units.py`)
+- Transform/reverse functions for binary values belong in `kaitai/transforms.py` / `kaitai/reverses.py`
+- Field validators belong in `models/validators.py`
 
 ### 2. Serialization Roundtrip
 - `parse()` then `save()` must produce byte-identical output
 - Parsers must not mutate Kaitai chunk data
 - ChunkField descriptors write through to underlying chunks
-- Kaitai `instances:` need instance-mode ChunkField (dict-returning `reverse`) or `@property` setters - never plain ChunkField
+- Kaitai `instances:` need `reverse_instance_field` ChunkField or `@property` setters - never plain ChunkField
+- Materialization (`kaitai/materializer.py`) creates real chunks for synthesized properties on first write
+- ProxyBody (`kaitai/proxy.py`) handles synthesized properties without backing chunks
 
 ### 3. Defensive Parsing
 - Older AE versions may have shorter chunks (use `getattr` for conditional Kaitai fields)
@@ -84,7 +89,7 @@ For each design decision, document:
 ### Property Parsing (3 stages)
 1. **Binary parsing**: `parse_layer()` > `get_chunks_by_match_name()` > `parse_properties()` dispatches by list_type
 2. **Effect enrichment**: `parse_effect()` merges param defs from `LIST:parT` into parsed properties
-3. **Post-processing**: `set_transform_defaults()` > `set_layer_property_defaults()` > `_synthesize_children()` > `_fill_from_specs()` > `_apply_min_max_bounds()`
+3. **Post-processing**: `synthesize_layer_properties()` runs a single pass (in `parsers/synthesis.py`) handling transform defaults, top-level group ordering, recursive child synthesis via `_reorder_and_fill()`, and min/max bounds. Effect param synthesis remains a separate dynamic step inside `parse_effect()`.
 
 ### Chunk Navigation
 ```python
@@ -105,19 +110,21 @@ filter_by_list_type(chunks=comp_chunks, list_type="Layr")
 width = ChunkField("_cdta", "width")
 
 # seq: field - with transform/reverse
-frame_rate = ChunkField("_cdta", "frame_rate_dividend",
+frame_rate = ChunkField("_cdta", "frame_rate",
     transform=lambda v, s: v / s._cdta.frame_rate_divisor,
-    reverse=reverse_ratio("_cdta", "frame_rate_dividend", "frame_rate_divisor"))
+    reverse_instance_field=reverse_ratio("_cdta", "frame_rate_dividend", "frame_rate_divisor"))
 
-# Kaitai instance - must use dict-returning reverse
+# Kaitai instance - must use reverse_instance_field
 linear_blending = ChunkField("_cdta", "linear_blending",
-    reverse=lambda v: {"linear_blending_raw": int(v)},
+    reverse_instance_field=lambda v, _body: {"linear_blending_raw": int(v)},
     invalidates=["linear_blending"])
 
 # Boolean / Enum shortcuts
 shy = ChunkField.bool("_ldta", "shy")
 blending_mode = ChunkField.enum(BlendingMode, "_ldta", "blending_mode")
 ```
+
+Descriptors defined in `kaitai/descriptors.py`. Validators in `models/validators.py`. Transforms/reverses in `kaitai/transforms.py` / `kaitai/reverses.py`.
 
 ### Value Mapping
 ```python
@@ -153,7 +160,7 @@ attributes, replacing @dataclass fields for all chunk-backed data.
 
 ### Negative
 - Cannot use @dataclass (conflicts with descriptors)
-- Kaitai instances need special handling (dict-returning reverse)
+- Kaitai instances need special handling (`reverse_instance_field`)
 - More verbose __init__ (explicit chunk body params)
 
 ### Alternatives Considered
@@ -182,8 +189,8 @@ When designing a new parsed feature:
 - [ ] Enum/mapping added if binary != ExtendScript value
 
 ### Serialization (if read/write)
-- [ ] ChunkField descriptor type chosen (direct, bool, enum, instance-mode)
-- [ ] `reverse` function implemented where needed
+- [ ] ChunkField descriptor type chosen (direct, bool, enum, `reverse_instance_field`)
+- [ ] `reverse_seq_field` or `reverse_instance_field` function implemented where needed
 - [ ] Validators added for writable fields
 - [ ] Roundtrip test written (parse > modify > save > re-parse > assert)
 
@@ -199,7 +206,7 @@ When designing a new parsed feature:
 Watch for these architectural anti-patterns in this codebase:
 - **Leaking binary details**: Exposing chunk internals through the public model API
 - **Wrong layer**: Binary decoding outside `aep.ksy`, business logic in parsers, chunk navigation in models
-- **Silent data loss**: Writing to Kaitai instances without dict-returning reverse (stamps cache but doesn't update seq fields)
+- **Silent data loss**: Writing to Kaitai instances without `reverse_instance_field` (stamps cache but doesn't update seq fields)
 - **Mutation during parse**: Modifying chunk data in parsers (breaks roundtrip invariant)
 - **Over-synthesis**: Creating ProxyBody-backed properties when the chunk data is actually present
 - **Catch-all exceptions**: `except Exception: pass` hiding real parsing failures

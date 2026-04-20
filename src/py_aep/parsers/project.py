@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import contextlib
-import os
-from typing import Any
 
 from ..kaitai import Aep
 from ..kaitai.utils import (
     ChunkNotFoundError,
-    filter_by_list_type,
     filter_by_type,
     find_by_list_type,
     find_by_type,
@@ -18,36 +15,12 @@ from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
 from ..models.project import Project
 from ..models.properties.property import Property
-from ..utils import deprecated
-from .application import parse_app
+from .effect import parse_effect_definitions
 from .item import parse_folder
-from .property import parse_effect_param_defs
 from .render_queue import parse_render_queue
 
 
-@deprecated(
-    "Use py_aep.parse() instead, which returns an Application object. "
-    "Access the project via app.project."
-)
-def parse_project(aep_file_path: str | os.PathLike[str]) -> Project:
-    """Parse an After Effects (.aep) project file.
-
-    Warning: Deprecated
-        Use [py_aep.parse][] instead which returns an
-        [Application][py_aep.models.application.Application] instance.  Access the project
-        via `app.project`.
-
-    Args:
-        aep_file_path: path to the project file
-    """
-    file_path = os.fspath(aep_file_path)
-    with Aep.from_file(file_path) as aep:
-        aep._read()
-        project = _parse_project(aep, file_path)
-        return parse_app(aep, project).project
-
-
-def _parse_project(aep: Aep, file_path: str) -> Project:
+def parse_project(aep: Aep, file_path: str) -> Project:
     """Parse an After Effects (.aep) project file into a Project.
 
     Args:
@@ -106,7 +79,7 @@ def _parse_project(aep: Aep, file_path: str) -> Project:
         render_queue=None,
     )
 
-    project._effect_param_defs = _parse_effect_definitions(root_chunks)
+    project._effect_param_defs = parse_effect_definitions(root_chunks)
 
     root_folder = parse_folder(
         is_root=True,
@@ -145,7 +118,7 @@ def _link_layers(project: Project) -> None:
 def _fix_anchor_defaults(project: Project) -> None:
     """Recompute Anchor Point defaults now that all sources are resolvable.
 
-    During initial parsing, `set_transform_defaults` may run before the
+    During initial parsing, `synthesize_layer_properties` may run before the
     layer's source item is in `project.items`, causing the anchor default
     to fall back to composition center.  This pass corrects those defaults.
     """
@@ -173,41 +146,3 @@ def _fix_anchor_defaults(project: Project) -> None:
             # Update synthesized value (no cdat) to match
             if anchor._cdat is None and not anchor.keyframes:
                 anchor._value = correct
-
-
-def _parse_effect_definitions(
-    root_chunks: list[Aep.Chunk],
-) -> dict[str, dict[str, dict[str, Any]]]:
-    """Parse project-level effect definitions from LIST:EfdG.
-
-    EfdG contains parameter definitions for every effect type used in the
-    project. Unlike layer-level sspc chunks, the EfdG definitions always
-    include a parT chunk.
-
-    Args:
-        root_chunks: The root chunks of the AEP file.
-
-    Returns:
-        Dict mapping effect match names to their parameter definitions
-        (effect_match_name -> param_match_name -> param_def dict).
-    """
-    try:
-        efdg_chunk = find_by_list_type(chunks=root_chunks, list_type="EfdG")
-    except ChunkNotFoundError:
-        return {}
-
-    effect_defs: dict[str, dict[str, dict[str, Any]]] = {}
-    efdf_chunks = filter_by_list_type(chunks=efdg_chunk.body.chunks, list_type="EfDf")
-
-    for efdf_chunk in efdf_chunks:
-        efdf_child_chunks = efdf_chunk.body.chunks
-        # First tdmn in EfDf contains the effect match name
-        tdmn_chunk = find_by_type(chunks=efdf_child_chunks, chunk_type="tdmn")
-        effect_match_name = str_contents(tdmn_chunk)
-
-        # Parse param defs from the sspc chunk
-        sspc_chunk = find_by_list_type(chunks=efdf_child_chunks, list_type="sspc")
-        param_defs = parse_effect_param_defs(sspc_chunk.body.chunks)
-        effect_defs[effect_match_name] = param_defs
-
-    return effect_defs

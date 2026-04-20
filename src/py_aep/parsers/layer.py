@@ -15,8 +15,8 @@ from ..models.layers.light_layer import LightLayer
 from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
 from ..models.layers.three_d_model_layer import ThreeDModelLayer
-from .defaults import set_layer_property_defaults, set_transform_defaults
 from .property import parse_properties
+from .synthesis import synthesize_layer_properties
 from .utils import (
     get_chunks_by_match_name,
 )
@@ -94,8 +94,7 @@ def parse_layer(
 
     layer.properties = properties
     for child in properties:
-        child.parent_property = layer
+        child._parent_property = layer
 
-    set_transform_defaults(layer)
-    set_layer_property_defaults(layer)
+    synthesize_layer_properties(layer)
     return layer

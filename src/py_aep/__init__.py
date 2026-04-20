@@ -150,8 +150,6 @@ from .models import (
     ViewOptions,
     XmlFormatOptions,
 )
-from .parsers.application import parse_app
-from .parsers.project import _parse_project, parse_project
 
 try:
     __version__ = version("py_aep")
@@ -251,7 +249,6 @@ __all__ = [
     "ParagraphDirection",
     "ParagraphJustification",
     "parse",
-    "parse_project",
     "PlaceholderSource",
     "PlayMode",
     "PngFormatOptions",
@@ -318,8 +315,12 @@ def parse(aep_file_path: str | os.PathLike[str]) -> Application:
         print(app.version)
         ```
     """
+    from .kaitai.proxy import _suppress_materialization
+    from .parsers.application import parse_app
+    from .parsers.project import parse_project
+
     file_path = os.fspath(aep_file_path)
-    with Aep.from_file(file_path) as aep:
+    with _suppress_materialization(), Aep.from_file(file_path) as aep:
         aep._read()
-        project = _parse_project(aep, file_path)
+        project = parse_project(aep, file_path)
         return parse_app(aep, project)

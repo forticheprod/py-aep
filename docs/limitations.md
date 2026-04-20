@@ -49,7 +49,7 @@ result of evaluating the expression. After Effects computes expression results
 at runtime using its expression engine; py_aep has no expression evaluator.
 
 ```python
-prop = layer.transform.property(name="ADBE Position")
+prop = layer.transform.property("ADBE Position")
 if prop.expression_enabled:
     # prop.value is the pre-expression value, not the expression result
     print(prop.expression)  # the expression string is available
@@ -65,7 +65,7 @@ information is not stored in the binary `.aep` file.
 
 ### Property.default_value
 
-Default values are set **heuristically** by the parser in `defaults.py`, not
+Default values are set **heuristically** by the parser in `synthesis.py`, not
 read from the binary format. They are used for `Property.is_modified` checks.
 Some default values may be inaccurate for non-standard property types.
 

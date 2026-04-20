@@ -12,30 +12,15 @@ the body's serialized size has changed.
 
 from __future__ import annotations
 
-import inspect
 from enum import IntEnum
 from typing import Any, Callable, Generic, TypeVar, overload
 
-from .proxy import ProxyBody
+from .proxy import ProxyBody, _materialization_allowed
 from .utils import propagate_check
 
 T = TypeVar("T")
 
 _SENTINEL = object()
-
-
-def _reverse_arity(fn: Callable[..., Any]) -> int:
-    """Return the number of required positional parameters *fn* accepts."""
-    try:
-        sig = inspect.signature(fn)
-    except (ValueError, TypeError):
-        return 1
-    return sum(
-        1
-        for p in sig.parameters.values()
-        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-        and p.default is p.empty
-    )
 
 
 def _invalidate(body: Any, names: list[str]) -> None:
@@ -86,10 +71,17 @@ def _validate_enum(
 class ChunkField(Generic[T]):
     """Descriptor that proxies a single field on a chunk body.
 
-    When `reverse` returns a `dict`, the descriptor operates in
-    *instance mode*: each key/value pair is written to the body and the
-    field's own name is automatically invalidated (in addition to any
-    names listed in `invalidates`).
+    Two mutually exclusive write hooks are available:
+
+    - `reverse_seq_field` (scalar): a 1-arg callable that converts the
+      user-facing value to a single binary value, written to `field`.
+      Use when `field` targets a Kaitai `seq:` field.
+    - `reverse_instance_field` (multi-field): a 2-arg callable
+      `(value, body)` that returns a `dict` of `{field_name: value}`
+      pairs. Each pair is written to the body, and the field's own
+      name is automatically invalidated (in addition to any names in
+      `invalidates`). Use when `field` targets a Kaitai `instances:`
+      field.
 
     Args:
         chunk_attr: Name of the model attribute holding the chunk body
@@ -97,19 +89,22 @@ class ChunkField(Generic[T]):
         field: Name of the field on the chunk body (e.g. `"width"`).
         transform: Optional callable applied when *getting* (binary ->
             user-facing value).
-        reverse: Callable applied when *setting* (user-facing -> binary
-            value). May return a scalar (written to `field`) or a dict
-            of `{field_name: value}` pairs (instance mode).
+        reverse_seq_field: 1-arg callable applied when *setting*
+            (user-facing -> binary value). Returns a scalar written
+            to `field`.
+        reverse_instance_field: 2-arg callable `(value, body)` applied
+            when *setting*. Returns a `dict` of field-name/value
+            pairs. Mutually exclusive with `reverse_seq_field`.
         read_only: When `True`, the field cannot be set. Defaults to
             `False`.
         validate: Optional callable called with the user-facing value
-            before any `reverse` transform. Must raise `ValueError`
+            before any reverse transform. Must raise `ValueError`
             or `TypeError` if the value is invalid.
         invalidates: Kaitai instance names to clear after a set so they
             are recomputed on next access.
         default: Optional default value returned when the chunk body is
-            `None`. If not given, accessing the field when the body is `None`
-            raises `AttributeError`.
+            `None`. If not given, accessing the field when the body is
+            `None` raises `AttributeError`.
         post_set: Optional method name on the model instance to call
             after the value has been written and propagated.
     """
@@ -120,23 +115,28 @@ class ChunkField(Generic[T]):
         field: str,
         *,
         transform: Callable[..., Any] | None = None,
-        reverse: Callable[..., Any] | None = None,
+        reverse_seq_field: Callable[..., Any] | None = None,
+        reverse_instance_field: Callable[..., dict[str, Any]] | None = None,
         read_only: bool = False,
         validate: Callable[..., None] | None = None,
         invalidates: list[str] | None = None,
         default: Any = _SENTINEL,
         post_set: str | None = None,
     ) -> None:
+        if reverse_seq_field is not None and reverse_instance_field is not None:
+            raise TypeError(
+                "Cannot set both 'reverse_seq_field' and 'reverse_instance_field'."
+            )
         self.chunk_attr = chunk_attr
         self.field = field
         self.transform = transform
-        self.reverse = reverse
+        self.reverse_seq_field = reverse_seq_field
+        self.reverse_instance_field = reverse_instance_field
         self.read_only = read_only
         self.validate = validate
         self.invalidates = invalidates or []
         self.default = default
         self.post_set = post_set
-        self._reverse_takes_body = reverse is not None and _reverse_arity(reverse) >= 2
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.public_name = name
@@ -166,6 +166,12 @@ class ChunkField(Generic[T]):
     def __set__(self, obj: Any, value: T) -> None:
         if self.read_only:
             raise AttributeError(f"{self.public_name!r} is read-only.")
+        if not _materialization_allowed.get():
+            raise RuntimeError(
+                f"Cannot write {self.public_name!r} via ChunkField during "
+                f"parsing. Use obj.__dict__[{self.public_name!r}] for "
+                f"parse-time overrides."
+            )
         # Clear any parse-time override so the write goes to the chunk.
         obj.__dict__.pop(self.public_name, None)
         body = getattr(obj, self.chunk_attr)
@@ -176,24 +182,20 @@ class ChunkField(Generic[T]):
             return
         # Eager materialization: when an end-user writes to a synthesized
         # property, replace the ProxyBody with real Kaitai chunks.
-        if (
-            isinstance(body, ProxyBody)
-            and getattr(obj, "parent_property", None) is not None
-        ):
-            obj._materialize()
+        if isinstance(body, ProxyBody):
+            obj._ensure_materialized()
             body = getattr(obj, self.chunk_attr)
         if self.validate:
             self.validate(value, obj)
         _validate_enum(self.transform, value, self.public_name)
-        if self.reverse is not None:
-            result = self._apply_reverse(value, body)
-            if isinstance(result, dict):
-                for field_name, field_value in result.items():
-                    setattr(body, field_name, field_value)
-                _invalidate(body, [self.field, *self.invalidates])
-            else:
-                setattr(body, self.field, result)
-                _invalidate(body, self.invalidates)
+        if self.reverse_instance_field is not None:
+            fields = self.reverse_instance_field(value, body)
+            for field_name, field_value in fields.items():
+                setattr(body, field_name, field_value)
+            _invalidate(body, [self.field, *self.invalidates])
+        elif self.reverse_seq_field is not None:
+            setattr(body, self.field, self.reverse_seq_field(value))
+            _invalidate(body, self.invalidates)
         else:
             setattr(body, self.field, value)
             _invalidate(body, self.invalidates)
@@ -201,20 +203,14 @@ class ChunkField(Generic[T]):
         if self.post_set is not None:
             getattr(obj, self.post_set)()
 
-    def _apply_reverse(self, value: Any, body: Any) -> Any:
-        """Call `self.reverse` with the correct arity."""
-        if self._reverse_takes_body:
-            return self.reverse(value, body)  # type: ignore[misc]
-        return self.reverse(value)  # type: ignore[misc]
-
     @classmethod
     def bool(cls, chunk_attr: str, field: str, **kwargs: Any) -> ChunkField[bool]:
         """Create a ChunkField for boolean flags.
 
-        Bakes in `transform=bool` and `reverse=int` so call sites only
+        Bakes in `transform=bool` and `reverse_seq_field=int` so call sites only
         need the chunk attribute and field name.
         """
-        return cls(chunk_attr, field, transform=bool, reverse=int, **kwargs)  # type: ignore[return-value]
+        return cls(chunk_attr, field, transform=bool, reverse_seq_field=int, **kwargs)  # type: ignore[return-value]
 
     @classmethod
     def enum(
@@ -230,6 +226,6 @@ class ChunkField(Generic[T]):
         """
         if "transform" not in kwargs:
             kwargs["transform"] = getattr(enum_cls, "from_binary", enum_cls)
-        if "reverse" not in kwargs:
-            kwargs["reverse"] = getattr(enum_cls, "to_binary", int)
+        if "reverse_seq_field" not in kwargs and "reverse_instance_field" not in kwargs:
+            kwargs["reverse_seq_field"] = getattr(enum_cls, "to_binary", int)
         return cls(chunk_attr, field, **kwargs)

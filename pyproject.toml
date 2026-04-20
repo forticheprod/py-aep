@@ -109,7 +109,7 @@ ignore_errors = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v -ra --showlocals"
+addopts = "-v -ra --showlocals -n auto"
 
 [tool.coverage.run]
 source = ["src/py_aep"]

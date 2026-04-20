@@ -110,7 +110,7 @@ class CompItem(AVItem):
         "_cdta",
         "bg_color",
         transform=normalize_values,
-        reverse=denormalize_values,
+        reverse_seq_field=denormalize_values,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The background color of the composition. The three array values specify
@@ -223,7 +223,7 @@ class CompItem(AVItem):
     frame_rate = ChunkField[float](
         "_cdta",
         "frame_rate",
-        reverse=_reverse_frame_rate,
+        reverse_instance_field=_reverse_frame_rate,
         validate=validate_number(min=1.0, max=999.0),
         invalidates=[
             "display_start_frame",
@@ -238,7 +238,7 @@ class CompItem(AVItem):
     duration = ChunkField[float](
         "_cdta",
         "duration",
-        reverse=_reverse_duration,
+        reverse_instance_field=_reverse_duration,
         validate=validate_number(min=0.0, max=10800.0),
         invalidates=["frame_duration"],
     )
@@ -248,7 +248,7 @@ class CompItem(AVItem):
         "_cdta",
         "frame_duration",
         transform=int,
-        reverse=_reverse_frame_duration,
+        reverse_instance_field=_reverse_frame_duration,
         validate=validate_number(
             min=1,
             max=lambda self: int(self.duration * self.frame_rate),
@@ -261,7 +261,7 @@ class CompItem(AVItem):
     pixel_aspect = ChunkField[float](
         "_cdta",
         "pixel_aspect",
-        reverse=_reverse_pixel_aspect,
+        reverse_instance_field=_reverse_pixel_aspect,
         validate=validate_number(min=0.01, max=100.0),
     )
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
@@ -272,7 +272,7 @@ class CompItem(AVItem):
     display_start_time = ChunkField[float](
         "_cdta",
         "display_start_time",
-        reverse=_reverse_display_start_time,
+        reverse_instance_field=_reverse_display_start_time,
         validate=validate_number(min=-10800.0, max=86340.0),
         invalidates=[
             "display_start_frame",
@@ -294,7 +294,7 @@ class CompItem(AVItem):
         "_cdta",
         "display_start_frame",
         transform=int,
-        reverse=_reverse_display_start_frame,
+        reverse_instance_field=_reverse_display_start_frame,
         validate=validate_number(
             min=lambda self: int(-10800.0 * self.frame_rate),
             max=lambda self: int(86340.0 * self.frame_rate),
@@ -317,7 +317,7 @@ class CompItem(AVItem):
     work_area_start = ChunkField[float](
         "_cdta",
         "work_area_start_relative",
-        reverse=_reverse_work_area_start,
+        reverse_instance_field=_reverse_work_area_start,
         validate=validate_number(
             min=0.0,
             max=lambda self: self.duration - 1 / self.frame_rate,
@@ -337,7 +337,7 @@ class CompItem(AVItem):
         "_cdta",
         "frame_work_area_start_relative",
         transform=int,
-        reverse=_reverse_work_area_start_frame,
+        reverse_instance_field=_reverse_work_area_start_frame,
         validate=validate_number(
             min=0,
             max=lambda self: self.frame_duration - 1,
@@ -357,7 +357,7 @@ class CompItem(AVItem):
     work_area_duration = ChunkField[float](
         "_cdta",
         "work_area_duration",
-        reverse=_reverse_work_area_duration,
+        reverse_instance_field=_reverse_work_area_duration,
         validate=validate_number(
             min=lambda self: 1 / self.frame_rate,
             max=lambda self: self.duration - self.work_area_start,
@@ -376,7 +376,7 @@ class CompItem(AVItem):
         "_cdta",
         "frame_work_area_duration",
         transform=int,
-        reverse=_reverse_work_area_duration_frame,
+        reverse_instance_field=_reverse_work_area_duration_frame,
         validate=validate_number(
             min=1,
             max=lambda self: self.frame_duration - self.work_area_start_frame,
@@ -395,7 +395,7 @@ class CompItem(AVItem):
     time: float = ChunkField[float](  # type: ignore[assignment]
         "_cdta",
         "time",
-        reverse=reverse_ratio("time"),
+        reverse_instance_field=reverse_ratio("time"),
         validate=validate_number(
             min=lambda self: self.display_start_time,
             max=lambda self: (
@@ -413,7 +413,7 @@ class CompItem(AVItem):
         "_cdta",
         "frame_time",
         transform=int,
-        reverse=reverse_frame_ticks("time"),
+        reverse_instance_field=reverse_frame_ticks("time"),
         validate=validate_number(
             min=lambda self: self.display_start_frame,
             max=lambda self: self.display_start_frame + self.frame_duration - 1,
