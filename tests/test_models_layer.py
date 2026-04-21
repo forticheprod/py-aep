@@ -49,14 +49,18 @@ class TestLayerBasic:
 
     def test_enabled_false(self) -> None:
         expected = load_expected(SAMPLES_DIR, "layer_switches")
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "enabled_false")
         assert layer_json["enabled"] is False
         assert layer.enabled == layer_json["enabled"]
 
     def test_locked_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "layer_switches")
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "locked_true")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "locked_true"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "locked_true")
         assert layer_json["locked"] is True
         assert layer.locked == layer_json["locked"]
@@ -70,7 +74,9 @@ class TestLayerBasic:
 
     def test_solo_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "layer_switches")
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "solo_true")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "solo_true"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "solo_true")
         assert layer_json["solo"] is True
         assert layer.solo == layer_json["solo"]
@@ -100,7 +106,9 @@ class TestLayerTiming:
 
     def test_startTime_5(self) -> None:
         expected = load_expected(SAMPLES_DIR, "layer_timing")
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_timing.aep"), "startTime_5")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_timing.aep"), "startTime_5"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "startTime_5")
         assert layer_json["startTime"] == 5
         assert math.isclose(layer.start_time, layer_json["startTime"])
@@ -121,14 +129,18 @@ class TestLayerTiming:
 
     def test_stretch_200(self) -> None:
         expected = load_expected(SAMPLES_DIR, "layer_timing")
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_timing.aep"), "stretch_200")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_timing.aep"), "stretch_200"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "stretch_200")
         assert layer_json["stretch"] == 200
         assert math.isclose(layer.stretch, layer_json["stretch"])
 
     def test_stretch_minus100(self) -> None:
         expected = load_expected(SAMPLES_DIR, "layer_timing")
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_timing.aep"), "stretch_minus100")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_timing.aep"), "stretch_minus100"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "stretch_minus100")
         assert layer_json["stretch"] == -100
         assert math.isclose(layer.stretch, layer_json["stretch"])
@@ -151,7 +163,8 @@ class TestTimingEdgeCases:
         """Precomp dur=5s, stretch=200%. OutPoint clamped to 10."""
         expected = load_expected(SAMPLES_DIR, "outPoint_clamp")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "outPoint_clamp.aep"), "outPoint_clamp_stretch_200"
+            parse_project(SAMPLES_DIR / "outPoint_clamp.aep"),
+            "outPoint_clamp_stretch_200",
         )
         layer_json = get_layer_from_json_by_comp(expected, "outPoint_clamp_stretch_200")
         assert math.isclose(layer.stretch, 200.0)
@@ -162,7 +175,8 @@ class TestTimingEdgeCases:
         """Precomp dur=5s, stretch=400%. OutPoint clamped to 20."""
         expected = load_expected(SAMPLES_DIR, "outPoint_clamp")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "outPoint_clamp.aep"), "outPoint_clamp_stretch_400"
+            parse_project(SAMPLES_DIR / "outPoint_clamp.aep"),
+            "outPoint_clamp_stretch_400",
         )
         layer_json = get_layer_from_json_by_comp(expected, "outPoint_clamp_stretch_400")
         assert math.isclose(layer.stretch, 400.0)
@@ -173,7 +187,8 @@ class TestTimingEdgeCases:
         """Precomp dur=5s, collapse=True. AE still clamps to 5."""
         expected = load_expected(SAMPLES_DIR, "outPoint_no_clamp")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep"), "outPoint_no_clamp_collapse"
+            parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep"),
+            "outPoint_no_clamp_collapse",
         )
         layer_json = get_layer_from_json_by_comp(expected, "outPoint_no_clamp_collapse")
         assert layer.collapse_transformation is True
@@ -184,9 +199,12 @@ class TestTimingEdgeCases:
         """Precomp dur=5s, timeRemap=True. OutPoint NOT clamped (stays 30)."""
         expected = load_expected(SAMPLES_DIR, "outPoint_no_clamp")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep"), "outPoint_no_clamp_timeRemap"
+            parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep"),
+            "outPoint_no_clamp_timeRemap",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "outPoint_no_clamp_timeRemap")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "outPoint_no_clamp_timeRemap"
+        )
         assert layer.time_remap_enabled is True
         assert math.isclose(layer.out_point, layer_json["outPoint"], abs_tol=0.001)
         assert math.isclose(layer.out_point, 30.0, abs_tol=0.001)
@@ -195,9 +213,12 @@ class TestTimingEdgeCases:
         """Precomp dur=5s, stretch=-100%. Clamping skipped."""
         expected = load_expected(SAMPLES_DIR, "outPoint_no_clamp")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep"), "outPoint_no_clamp_negative_stretch"
+            parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep"),
+            "outPoint_no_clamp_negative_stretch",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "outPoint_no_clamp_negative_stretch")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "outPoint_no_clamp_negative_stretch"
+        )
         assert math.isclose(layer.stretch, -100.0)
         assert math.isclose(layer.out_point, layer_json["outPoint"], abs_tol=0.001)
 
@@ -205,9 +226,12 @@ class TestTimingEdgeCases:
         """Precomp dur=5s, startTime=3s. OutPoint clamped to 3+5=8."""
         expected = load_expected(SAMPLES_DIR, "outPoint_clamp")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "outPoint_clamp.aep"), "outPoint_clamp_with_startTime"
+            parse_project(SAMPLES_DIR / "outPoint_clamp.aep"),
+            "outPoint_clamp_with_startTime",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "outPoint_clamp_with_startTime")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "outPoint_clamp_with_startTime"
+        )
         assert math.isclose(layer.start_time, 3.0, abs_tol=0.001)
         assert math.isclose(layer.out_point, layer_json["outPoint"], abs_tol=0.001)
         assert math.isclose(layer.out_point, 8.0, abs_tol=0.001)
@@ -228,9 +252,12 @@ class TestTimingEdgeCases:
         """Layer with negative startTime (-5) and outPoint (20)."""
         expected = load_expected(SAMPLES_DIR, "outPoint")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "outPoint.aep"), "outPoint_with_negative_startTime"
+            parse_project(SAMPLES_DIR / "outPoint.aep"),
+            "outPoint_with_negative_startTime",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "outPoint_with_negative_startTime")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "outPoint_with_negative_startTime"
+        )
         assert math.isclose(layer.start_time, layer_json["startTime"])
         assert math.isclose(layer.start_time, -5.0)
         assert math.isclose(layer.in_point, layer_json["inPoint"])
@@ -270,25 +297,33 @@ class TestLightTypes:
 
     def test_lightType_AMBIENT(self) -> None:
         expected = load_expected(SAMPLES_DIR, "lightType")
-        layer = get_layer(parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_AMBIENT")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_AMBIENT"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "lightType_AMBIENT")
         assert layer.light_type == layer_json["lightType"] == LightType.AMBIENT
 
     def test_lightType_POINT(self) -> None:
         expected = load_expected(SAMPLES_DIR, "lightType")
-        layer = get_layer(parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_POINT")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_POINT"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "lightType_POINT")
         assert layer.light_type == layer_json["lightType"] == LightType.POINT
 
     def test_lightType_SPOT(self) -> None:
         expected = load_expected(SAMPLES_DIR, "lightType")
-        layer = get_layer(parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_SPOT")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_SPOT"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "lightType_SPOT")
         assert layer.light_type == layer_json["lightType"] == LightType.SPOT
 
     def test_lightType_PARALLEL(self) -> None:
         expected = load_expected(SAMPLES_DIR, "lightType")
-        layer = get_layer(parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_PARALLEL")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_PARALLEL"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "lightType_PARALLEL")
         assert layer.light_type == layer_json["lightType"] == LightType.PARALLEL
 
@@ -346,7 +381,9 @@ class TestAVLayerAttributes:
 
     def test_threeDLayer_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "avlayer_flags")
-        layer = get_layer(parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "threeDLayer_true")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "threeDLayer_true"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "threeDLayer_true")
         assert isinstance(layer, AVLayer)
         assert layer_json["threeDLayer"] is True
@@ -354,22 +391,29 @@ class TestAVLayerAttributes:
 
     def test_adjustmentLayer_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "avlayer_flags")
-        layer = get_layer(parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "adjustmentLayer_true")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "adjustmentLayer_true"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "adjustmentLayer_true")
         assert layer.adjustment_layer == layer_json["adjustmentLayer"] is True
 
     def test_guideLayer_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "avlayer_flags")
-        layer = get_layer(parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "guideLayer_true")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "guideLayer_true"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "guideLayer_true")
         assert layer.guide_layer == layer_json["guideLayer"] is True
 
     def test_collapseTransformation_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "avlayer_flags")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "collapseTransformation_true"
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "collapseTransformation_true",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "collapseTransformation_true")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "collapseTransformation_true"
+        )
         assert (
             layer.collapse_transformation
             == layer_json["collapseTransformation"]
@@ -379,20 +423,25 @@ class TestAVLayerAttributes:
     def test_preserveTransparency_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "avlayer_flags")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "preserveTransparency_true"
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "preserveTransparency_true",
         )
         layer_json = get_layer_from_json_by_comp(expected, "preserveTransparency_true")
         assert layer.preserve_transparency == layer_json["preserveTransparency"] is True
 
     def test_motionBlur_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "avlayer_flags")
-        layer = get_layer(parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "motionBlur_true")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "motionBlur_true"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "motionBlur_true")
         assert layer.motion_blur == layer_json["motionBlur"] is True
 
     def test_effectsActive_false(self) -> None:
         expected = load_expected(SAMPLES_DIR, "avlayer_flags")
-        layer = get_layer(parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "effectsActive_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"), "effectsActive_false"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "effectsActive_false")
         assert layer_json["effectsActive"] is False
         assert layer.effects_active == layer_json["effectsActive"]
@@ -403,7 +452,9 @@ class TestBlendingModes:
 
     def test_blendingMode_ADD(self) -> None:
         expected = load_expected(SAMPLES_DIR, "blendingMode")
-        layer = get_layer(parse_project(SAMPLES_DIR / "blendingMode.aep"), "blendingMode_ADD")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "blendingMode.aep"), "blendingMode_ADD"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "blendingMode_ADD")
         assert layer.blending_mode == layer_json["blendingMode"] == BlendingMode.ADD
 
@@ -419,7 +470,9 @@ class TestBlendingModes:
 
     def test_blendingMode_SCREEN(self) -> None:
         expected = load_expected(SAMPLES_DIR, "blendingMode")
-        layer = get_layer(parse_project(SAMPLES_DIR / "blendingMode.aep"), "blendingMode_SCREEN")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "blendingMode.aep"), "blendingMode_SCREEN"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "blendingMode_SCREEN")
         assert layer.blending_mode == layer_json["blendingMode"] == BlendingMode.SCREEN
 
@@ -441,7 +494,9 @@ class TestQualitySettings:
 
     def test_quality_WIREFRAME(self) -> None:
         expected = load_expected(SAMPLES_DIR, "quality")
-        layer = get_layer(parse_project(SAMPLES_DIR / "quality.aep"), "quality_WIREFRAME")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "quality.aep"), "quality_WIREFRAME"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "quality_WIREFRAME")
         assert layer.quality == layer_json["quality"] == LayerQuality.WIREFRAME
 
@@ -464,9 +519,12 @@ class TestFrameBlending:
     def test_frameBlendingType_NO_FRAME_BLEND(self) -> None:
         expected = load_expected(SAMPLES_DIR, "frameBlendingType")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "frameBlendingType.aep"), "frameBlendingType_NO_FRAME_BLEND"
+            parse_project(SAMPLES_DIR / "frameBlendingType.aep"),
+            "frameBlendingType_NO_FRAME_BLEND",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "frameBlendingType_NO_FRAME_BLEND")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "frameBlendingType_NO_FRAME_BLEND"
+        )
         assert (
             layer.frame_blending_type
             == layer_json["frameBlendingType"]
@@ -477,9 +535,12 @@ class TestFrameBlending:
     def test_frameBlendingType_FRAME_MIX(self) -> None:
         expected = load_expected(SAMPLES_DIR, "frameBlendingType")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "frameBlendingType.aep"), "frameBlendingType_FRAME_MIX"
+            parse_project(SAMPLES_DIR / "frameBlendingType.aep"),
+            "frameBlendingType_FRAME_MIX",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "frameBlendingType_FRAME_MIX")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "frameBlendingType_FRAME_MIX"
+        )
         assert (
             layer.frame_blending_type
             == layer_json["frameBlendingType"]
@@ -489,9 +550,12 @@ class TestFrameBlending:
     def test_frameBlendingType_PIXEL_MOTION(self) -> None:
         expected = load_expected(SAMPLES_DIR, "frameBlendingType")
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "frameBlendingType.aep"), "frameBlendingType_PIXEL_MOTION"
+            parse_project(SAMPLES_DIR / "frameBlendingType.aep"),
+            "frameBlendingType_PIXEL_MOTION",
         )
-        layer_json = get_layer_from_json_by_comp(expected, "frameBlendingType_PIXEL_MOTION")
+        layer_json = get_layer_from_json_by_comp(
+            expected, "frameBlendingType_PIXEL_MOTION"
+        )
         assert (
             layer.frame_blending_type
             == layer_json["frameBlendingType"]
@@ -514,7 +578,9 @@ class TestAutoOrient:
 
     def test_autoOrient_CAMERA(self) -> None:
         expected = load_expected(SAMPLES_DIR, "autoOrient")
-        layer = get_layer(parse_project(SAMPLES_DIR / "autoOrient.aep"), "autoOrient_CAMERA")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "autoOrient.aep"), "autoOrient_CAMERA"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "autoOrient_CAMERA")
         assert (
             layer.auto_orient
@@ -684,13 +750,17 @@ class TestAudio:
 
     def test_audioEnabled_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "audioEnabled")
-        layer = get_layer(parse_project(SAMPLES_DIR / "audioEnabled.aep"), "audioEnabled_true")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "audioEnabled.aep"), "audioEnabled_true"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "audioEnabled_true")
         assert layer.audio_enabled == layer_json["audioEnabled"] is True
 
     def test_audioEnabled_false(self) -> None:
         expected = load_expected(SAMPLES_DIR, "audioEnabled")
-        layer = get_layer(parse_project(SAMPLES_DIR / "audioEnabled.aep"), "audioEnabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "audioEnabled.aep"), "audioEnabled_false"
+        )
         layer_json = get_layer_from_json_by_comp(expected, "audioEnabled_false")
         assert layer_json["audioEnabled"] is False
         assert layer.audio_enabled == layer_json["audioEnabled"]
@@ -823,69 +893,93 @@ class TestLayerPropertyGroupInheritance:
 
     def test_layer_is_property_group(self) -> None:
         """Layer is an instance of PropertyGroup."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert isinstance(layer, PropertyGroup)
 
     def test_layer_is_property_base(self) -> None:
         """Layer is an instance of PropertyBase."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert isinstance(layer, PropertyBase)
 
     def test_property_depth_is_zero(self) -> None:
         """Layers are at depth 0 (root of the property hierarchy)."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert layer.property_depth == 0
 
     def test_property_type_named_group(self) -> None:
         """Layer property_type is NAMED_GROUP."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert layer.property_type == PropertyType.NAMED_GROUP
 
     def test_av_layer_match_name(self) -> None:
         """AVLayer has the correct ExtendScript match name."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert isinstance(layer, AVLayer)
         assert layer.match_name == "ADBE AV Layer"
 
     def test_properties_contains_transform(self) -> None:
         """Layer.properties includes the Transform group."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         match_names = [p.match_name for p in layer.properties]
         assert "ADBE Transform Group" in match_names
 
     def test_transform_accessor(self) -> None:
         """Layer.transform returns the Transform PropertyGroup."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert isinstance(layer.transform, PropertyGroup)
         assert layer.transform.match_name == "ADBE Transform Group"
 
     def test_effects_none_when_no_effects(self) -> None:
         """Layer.effects is None when there are no effects."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         # Basic layer without effects
         assert layer.effects is None
 
     def test_num_properties_positive(self) -> None:
         """Layer.num_properties returns the count of top-level property groups."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert layer.num_properties == len(layer.properties)
         assert layer.num_properties > 0
 
     def test_active_property(self) -> None:
         """Layer.active reflects active_at_time(time)."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert layer.active == layer.active_at_time(layer.time)
 
     def test_identity_equality(self) -> None:
         """Two Layer objects are only equal when they are the same object."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert layer == layer
         # A copy (different object) should not be equal
         assert layer != object()
 
     def test_transform_is_same_object_in_properties(self) -> None:
         """Layer.transform returns the same PropertyGroup as in properties list."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         transform_from_list = next(
             p for p in layer.properties if p.match_name == "ADBE Transform Group"
         )
@@ -893,18 +987,24 @@ class TestLayerPropertyGroupInheritance:
 
     def test_len_equals_num_properties(self) -> None:
         """len(layer) equals layer.num_properties."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert len(layer) == layer.num_properties
         assert len(layer) == len(layer.properties)
 
     def test_getitem_by_int_index(self) -> None:
         """layer[0] returns the first child property group."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         assert layer[0] is layer.properties[0]
 
     def test_getitem_by_match_name(self) -> None:
         """layer['ADBE Transform Group'] returns the Transform group."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         result = layer["ADBE Transform Group"]
         assert isinstance(result, PropertyGroup)
         assert result.match_name == "ADBE Transform Group"
@@ -912,58 +1012,76 @@ class TestLayerPropertyGroupInheritance:
 
     def test_getitem_by_display_name(self) -> None:
         """layer['Transform'] returns the Transform group by display name."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         result = layer["Transform"]
         assert isinstance(result, PropertyGroup)
         assert result.match_name == "ADBE Transform Group"
 
     def test_getitem_chained(self) -> None:
         """layer['ADBE Transform Group']['ADBE Position'] chains correctly."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         transform = layer["ADBE Transform Group"]
         position = transform["ADBE Position"]
         assert position.match_name == "ADBE Position"
 
     def test_getitem_key_error(self) -> None:
         """layer['nonexistent'] raises KeyError."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         with pytest.raises(KeyError):
             layer["nonexistent_match_name"]
 
     def test_getitem_index_error(self) -> None:
         """layer[9999] raises IndexError."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         with pytest.raises(IndexError):
             layer[9999]
 
     def test_getitem_type_error(self) -> None:
         """layer[1.5] raises TypeError."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         with pytest.raises(TypeError):
             layer[1.5]  # type: ignore[index]
 
     def test_getattr_single_word(self) -> None:
         """layer.transform.position resolves via __getattr__."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         position = layer.transform.position  # type: ignore[attr-defined]
         assert position.match_name == "ADBE Position"
 
     def test_getattr_multi_word(self) -> None:
         """layer.transform.anchor_point resolves 'Anchor Point'."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         anchor = layer.transform.anchor_point  # type: ignore[attr-defined]
         assert anchor.match_name == "ADBE Anchor Point"
 
     def test_getattr_attribute_error(self) -> None:
         """Accessing a nonexistent child raises AttributeError."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
         with pytest.raises(AttributeError):
             layer.transform.nonexistent  # type: ignore[attr-defined]  # noqa: B018
 
     def test_getattr_does_not_shadow_fields(self) -> None:
-        """Dataclass fields take priority over __getattr__."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false")
-        # 'name' is a dataclass field, should NOT look in children
+        """Class attributes take priority over __getattr__."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
+        )
+        # 'name' is a class attribute, should NOT look in children
         assert isinstance(layer.transform.name, str)
 
 
@@ -1324,9 +1442,7 @@ class TestRoundtripFrameBlendingType:
     """Roundtrip tests for AVLayer.frame_blending_type."""
 
     def test_no_blend_to_frame_mix(self, tmp_path: Path) -> None:
-        project = parse_project(
-            SAMPLES_DIR / "frameBlendingType.aep"
-        )
+        project = parse_project(SAMPLES_DIR / "frameBlendingType.aep")
         layer = get_layer(project, "frameBlendingType_NO_FRAME_BLEND")
         assert layer.frame_blending_type == FrameBlendingType.NO_FRAME_BLEND
         assert layer.frame_blending is False
@@ -1339,9 +1455,7 @@ class TestRoundtripFrameBlendingType:
         assert layer2.frame_blending is True
 
     def test_frame_mix_to_pixel_motion(self, tmp_path: Path) -> None:
-        project = parse_project(
-            SAMPLES_DIR / "frameBlendingType.aep"
-        )
+        project = parse_project(SAMPLES_DIR / "frameBlendingType.aep")
         layer = get_layer(project, "frameBlendingType_FRAME_MIX")
         assert layer.frame_blending_type == FrameBlendingType.FRAME_MIX
 
@@ -1352,9 +1466,7 @@ class TestRoundtripFrameBlendingType:
         assert layer2.frame_blending_type == FrameBlendingType.PIXEL_MOTION
 
     def test_pixel_motion_to_no_blend(self, tmp_path: Path) -> None:
-        project = parse_project(
-            SAMPLES_DIR / "frameBlendingType.aep"
-        )
+        project = parse_project(SAMPLES_DIR / "frameBlendingType.aep")
         layer = get_layer(project, "frameBlendingType_PIXEL_MOTION")
         assert layer.frame_blending_type == FrameBlendingType.PIXEL_MOTION
 
@@ -1370,9 +1482,7 @@ class TestRoundtripTimeRemapEnabled:
     """Roundtrip tests for AVLayer.time_remap_enabled."""
 
     def test_disable_time_remap(self, tmp_path: Path) -> None:
-        project = parse_project(
-            SAMPLES_DIR / "outPoint_no_clamp.aep"
-        )
+        project = parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep")
         layer = get_layer(project, "outPoint_no_clamp_timeRemap")
         assert isinstance(layer, AVLayer)
         assert layer.time_remap_enabled is True
@@ -1385,9 +1495,7 @@ class TestRoundtripTimeRemapEnabled:
         assert layer2.time_remap_enabled is False
 
     def test_enable_time_remap(self, tmp_path: Path) -> None:
-        project = parse_project(
-            SAMPLES_DIR / "outPoint_no_clamp.aep"
-        )
+        project = parse_project(SAMPLES_DIR / "outPoint_no_clamp.aep")
         layer = get_layer(project, "outPoint_no_clamp_timeRemap")
         assert isinstance(layer, AVLayer)
 
@@ -1483,9 +1591,7 @@ class TestRoundtripAVLayerBoolFlags:
         assert layer2.audio_enabled is True
 
     def test_modify_collapse_transformation(self, tmp_path: Path) -> None:
-        project = parse_project(
-            SAMPLES_DIR / "avlayer_flags.aep"
-        )
+        project = parse_project(SAMPLES_DIR / "avlayer_flags.aep")
         layer = get_layer(project, "collapseTransformation_true")
         assert isinstance(layer, AVLayer)
         assert layer.collapse_transformation is True
@@ -1537,9 +1643,7 @@ class TestRoundtripAVLayerBoolFlags:
         assert layer2.motion_blur is False
 
     def test_modify_preserve_transparency(self, tmp_path: Path) -> None:
-        project = parse_project(
-            SAMPLES_DIR / "avlayer_flags.aep"
-        )
+        project = parse_project(SAMPLES_DIR / "avlayer_flags.aep")
         layer = get_layer(project, "preserveTransparency_true")
         assert isinstance(layer, AVLayer)
         assert layer.preserve_transparency is True
@@ -1873,7 +1977,8 @@ class TestLayerStylesEnabled:
 
         # Blend Options mirrors the parent
         blend_options = next(
-            p for p in layer_styles.properties
+            p
+            for p in layer_styles.properties
             if p.match_name == "ADBE Blend Options Group"
         )
         assert isinstance(blend_options, PropertyGroup)
@@ -1885,9 +1990,7 @@ class TestLayerStylesEnabled:
                 isinstance(child, PropertyGroup)
                 and child.match_name != "ADBE Blend Options Group"
             ):
-                assert child.enabled is False, (
-                    f"{child.match_name} should be disabled"
-                )
+                assert child.enabled is False, f"{child.match_name} should be disabled"
 
 
 class TestTransformNaming:
@@ -1899,9 +2002,7 @@ class TestTransformNaming:
             parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
             "adjustmentLayer_true",
         )
-        rotate_z = next(
-            p for p in layer.transform if p.match_name == "ADBE Rotate Z"
-        )
+        rotate_z = next(p for p in layer.transform if p.match_name == "ADBE Rotate Z")
         assert rotate_z.name == "Rotation"
 
     def test_3d_rotate_z_named_z_rotation(self) -> None:
@@ -1910,25 +2011,19 @@ class TestTransformNaming:
             parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
             "threeDLayer_true",
         )
-        rotate_z = next(
-            p for p in layer.transform if p.match_name == "ADBE Rotate Z"
-        )
+        rotate_z = next(p for p in layer.transform if p.match_name == "ADBE Rotate Z")
         assert rotate_z.name == "Z Rotation"
 
     def test_camera_rotate_z_named_z_rotation(self) -> None:
         """Camera layers show Rotate Z as 'Z Rotation'."""
         layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
-        rotate_z = next(
-            p for p in layer.transform if p.match_name == "ADBE Rotate Z"
-        )
+        rotate_z = next(p for p in layer.transform if p.match_name == "ADBE Rotate Z")
         assert rotate_z.name == "Z Rotation"
 
     def test_camera_anchor_named_point_of_interest(self) -> None:
         """Camera layers show Anchor Point as 'Point of Interest'."""
         layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
-        anchor = next(
-            p for p in layer.transform if p.match_name == "ADBE Anchor Point"
-        )
+        anchor = next(p for p in layer.transform if p.match_name == "ADBE Anchor Point")
         assert anchor.name == "Point of Interest"
 
     def test_light_anchor_named_point_of_interest(self) -> None:
@@ -1936,9 +2031,7 @@ class TestTransformNaming:
         layer = get_layer(
             parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_PARALLEL"
         )
-        anchor = next(
-            p for p in layer.transform if p.match_name == "ADBE Anchor Point"
-        )
+        anchor = next(p for p in layer.transform if p.match_name == "ADBE Anchor Point")
         assert anchor.name == "Point of Interest"
 
     def test_2d_anchor_named_anchor_point(self) -> None:
@@ -1947,9 +2040,7 @@ class TestTransformNaming:
             parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
             "adjustmentLayer_true",
         )
-        anchor = next(
-            p for p in layer.transform if p.match_name == "ADBE Anchor Point"
-        )
+        anchor = next(p for p in layer.transform if p.match_name == "ADBE Anchor Point")
         assert anchor.name == "Anchor Point"
 
     def test_non_canonical_tail_preserved(self) -> None:

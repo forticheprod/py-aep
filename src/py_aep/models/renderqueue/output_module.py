@@ -9,6 +9,7 @@ from py_aep.enums import (
     AudioBitDepth,
     AudioChannels,
     AudioSampleRate,
+    CineonFileFormat,
     ConvertToLinearLight,
     GetSettingsFormat,
     OutputAudio,
@@ -26,7 +27,7 @@ from ...kaitai.descriptors import ChunkField
 from ...kaitai.transforms import strip_null
 from ...kaitai.utils import propagate_check
 from ...resolvers.output import (
-    TEMPLATE_EXTENSIONS,
+    FORMAT_ID_EXTENSIONS,
     VIDEO_CODEC_NAMES,
     resolve_output_filename,
     resolve_time_span,
@@ -604,6 +605,17 @@ class OutputModule:
         return strip_null(self._roou.video_codec) or None
 
     @property
+    def _resolve_extension(self) -> str | None:
+        """Derive file extension from format_id, with Cineon special case."""
+        format_id = strip_null(self._roou.format_id)
+        if format_id == "sDPX":
+            fo = self._format_options
+            if isinstance(fo, CineonFormatOptions):
+                return "dpx" if fo.file_format == CineonFileFormat.DPX else "cin"
+            return "dpx"
+        return FORMAT_ID_EXTENSIONS.get(format_id, None)
+
+    @property
     def _folder_path(self) -> str:
         """The output folder path from the alas chunk."""
         return str(self._alas_data.get("fullpath", ""))
@@ -667,7 +679,7 @@ class OutputModule:
         comp = self.parent.comp
         rq_settings = self.parent.settings
 
-        extension = TEMPLATE_EXTENSIONS.get(self.name, None) if self.name else None
+        extension = self._resolve_extension
         om_channels = self.settings["Channels"]
         om_depth = self.settings["Depth"]
         compressor = (

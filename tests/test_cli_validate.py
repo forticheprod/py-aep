@@ -183,9 +183,7 @@ class TestCompareLayer:
         aep_path = SAMPLES_DIR / "models" / "layer" / "enabled_false.aep"
         project = parse_project(aep_path)
         parsed = to_dict(project)
-        expected = load_expected(
-            SAMPLES_DIR / "models" / "layer", "enabled_false"
-        )
+        expected = load_expected(SAMPLES_DIR / "models" / "layer", "enabled_false")
         # Find matching comp and layers
         for item in expected["items"]:
             if "layers" in item and len(item["layers"]) > 0:

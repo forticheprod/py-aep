@@ -198,9 +198,7 @@ class _CosModel:
 
     _style: dict[str, object] | None
 
-    font_size = CosField[float](
-        "_style", "1", transform=float, reverse=float
-    )
+    font_size = CosField[float]("_style", "1", transform=float, reverse=float)
 
     def __init__(self, style: dict[str, object] | None) -> None:
         self._style = style

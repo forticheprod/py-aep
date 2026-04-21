@@ -7,9 +7,7 @@ from pathlib import Path
 from conftest import parse_project
 
 SELECTION_DIR = Path(__file__).parent.parent / "samples" / "models" / "selection"
-COMP_SELECTION_DIR = (
-    Path(__file__).parent.parent / "samples" / "models" / "composition"
-)
+COMP_SELECTION_DIR = Path(__file__).parent.parent / "samples" / "models" / "composition"
 
 
 class TestLayerSelectedRead:

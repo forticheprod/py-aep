@@ -102,33 +102,42 @@ class TestCompItemMotionBlur:
     def test_motionBlur_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
         comp_json = get_comp_from_json_by_name(expected, "motionBlur_true")
-        comp = get_comp(parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlur_true")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlur_true"
+        )
         assert comp_json["motionBlur"] is True
         assert comp.motion_blur == comp_json["motionBlur"]
 
     def test_shutterAngle_180(self) -> None:
         expected = load_expected(SAMPLES_DIR, "shutterAngle")
         comp_json = get_comp_from_json_by_name(expected, "shutterAngle_180")
-        comp = get_comp(parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180"
+        )
         assert comp.shutter_angle == comp_json["shutterAngle"] == 180
 
     def test_shutterAngle_360(self) -> None:
         expected = load_expected(SAMPLES_DIR, "shutterAngle")
         comp_json = get_comp_from_json_by_name(expected, "shutterAngle_360")
-        comp = get_comp(parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_360")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_360"
+        )
         assert comp.shutter_angle == comp_json["shutterAngle"] == 360
 
     def test_shutterPhase_minus90(self) -> None:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
         comp_json = get_comp_from_json_by_name(expected, "shutterPhase_minus90")
-        comp = get_comp(parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90"
+        )
         assert comp.shutter_phase == comp_json["shutterPhase"] == -90
 
     def test_motionBlurSamplesPerFrame_32(self) -> None:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
         comp_json = get_comp_from_json_by_name(expected, "motionBlurSamplesPerFrame_32")
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurSamplesPerFrame_32"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurSamplesPerFrame_32",
         )
         assert (
             comp.motion_blur_samples_per_frame
@@ -138,9 +147,12 @@ class TestCompItemMotionBlur:
 
     def test_motionBlurAdaptiveSampleLimit_256(self) -> None:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
-        comp_json = get_comp_from_json_by_name(expected, "motionBlurAdaptiveSampleLimit_256")
+        comp_json = get_comp_from_json_by_name(
+            expected, "motionBlurAdaptiveSampleLimit_256"
+        )
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurAdaptiveSampleLimit_256"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurAdaptiveSampleLimit_256",
         )
         assert (
             comp.motion_blur_adaptive_sample_limit
@@ -155,14 +167,17 @@ class TestCompItemResolution:
     def test_resolutionFactor_half(self) -> None:
         expected = load_expected(SAMPLES_DIR, "resolutionFactor")
         comp_json = get_comp_from_json_by_name(expected, "resolutionFactor_half")
-        comp = get_comp(parse_project(SAMPLES_DIR / "resolutionFactor.aep"), "resolutionFactor_half")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "resolutionFactor.aep"), "resolutionFactor_half"
+        )
         assert comp.resolution_factor == comp_json["resolutionFactor"]
 
     def test_resolutionFactor_quarter(self) -> None:
         expected = load_expected(SAMPLES_DIR, "resolutionFactor")
         comp_json = get_comp_from_json_by_name(expected, "resolutionFactor_quarter")
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "resolutionFactor.aep"), "resolutionFactor_quarter"
+            parse_project(SAMPLES_DIR / "resolutionFactor.aep"),
+            "resolutionFactor_quarter",
         )
         assert comp.resolution_factor == comp_json["resolutionFactor"]
 
@@ -174,16 +189,20 @@ class TestCompItemNestedOptions:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
         comp_json = get_comp_from_json_by_name(expected, "preserveNestedFrameRate_true")
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "preserveNestedFrameRate_true"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "preserveNestedFrameRate_true",
         )
         assert comp_json["preserveNestedFrameRate"] is True
         assert comp.preserve_nested_frame_rate == comp_json["preserveNestedFrameRate"]
 
     def test_preserveNestedResolution_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
-        comp_json = get_comp_from_json_by_name(expected, "preserveNestedResolution_true")
+        comp_json = get_comp_from_json_by_name(
+            expected, "preserveNestedResolution_true"
+        )
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "preserveNestedResolution_true"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "preserveNestedResolution_true",
         )
         assert comp_json["preserveNestedResolution"] is True
         assert comp.preserve_nested_resolution == comp_json["preserveNestedResolution"]
@@ -195,7 +214,9 @@ class TestCompItemFrameBlending:
     def test_frameBlending_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
         comp_json = get_comp_from_json_by_name(expected, "frameBlending_true")
-        comp = get_comp(parse_project(SAMPLES_DIR / "comp_flags.aep"), "frameBlending_true")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "comp_flags.aep"), "frameBlending_true"
+        )
         assert comp_json["frameBlending"] is True
         assert comp.frame_blending == comp_json["frameBlending"]
 
@@ -206,7 +227,9 @@ class TestCompItemShyLayers:
     def test_hideShyLayers_true(self) -> None:
         expected = load_expected(SAMPLES_DIR, "comp_flags")
         comp_json = get_comp_from_json_by_name(expected, "hideShyLayers_true")
-        comp = get_comp(parse_project(SAMPLES_DIR / "comp_flags.aep"), "hideShyLayers_true")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "comp_flags.aep"), "hideShyLayers_true"
+        )
         assert comp_json["hideShyLayers"] is True
         assert comp.hide_shy_layers == comp_json["hideShyLayers"]
 
@@ -248,7 +271,9 @@ class TestCompItemWorkArea:
     def test_workAreaDuration_10(self) -> None:
         expected = load_expected(SAMPLES_DIR, "workArea")
         comp_json = get_comp_from_json_by_name(expected, "workAreaDuration_10")
-        comp = get_comp(parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10"
+        )
         assert math.isclose(
             comp.work_area_duration, comp_json["workAreaDuration"], rel_tol=0.001
         )
@@ -260,13 +285,17 @@ class TestCompItemDisplayStart:
     def test_displayStartFrame_100(self) -> None:
         expected = load_expected(SAMPLES_DIR, "displayStart")
         comp_json = get_comp_from_json_by_name(expected, "displayStartFrame_100")
-        comp = get_comp(parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartFrame_100")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartFrame_100"
+        )
         assert comp.display_start_frame == comp_json["displayStartFrame"] == 100
 
     def test_displayStartTime_10(self) -> None:
         expected = load_expected(SAMPLES_DIR, "displayStart")
         comp_json = get_comp_from_json_by_name(expected, "displayStartTime_10")
-        comp = get_comp(parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10"
+        )
         assert comp_json["displayStartTime"] == 10
         assert math.isclose(comp.display_start_time, comp_json["displayStartTime"])
 
@@ -277,7 +306,9 @@ class TestCompItemPixelAspect:
     def test_pixelAspect_0_75(self) -> None:
         expected = load_expected(SAMPLES_DIR, "pixelAspect")
         comp_json = get_comp_from_json_by_name(expected, "pixelAspect_0.75")
-        comp = get_comp(parse_project(SAMPLES_DIR / "pixelAspect.aep"), "pixelAspect_0.75")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "pixelAspect.aep"), "pixelAspect_0.75"
+        )
         assert math.isclose(comp.pixel_aspect, comp_json["pixelAspect"])
 
     def test_pixelAspect_2_0(self) -> None:
@@ -425,7 +456,9 @@ class TestCompItemLayerFiltering:
         assert all(isinstance(layer, CameraLayer) for layer in comp.camera_layers)
 
     def test_light_layers(self) -> None:
-        comp = get_comp(parse_project(LAYER_SAMPLES_DIR / "lightType.aep"), "lightType_POINT")
+        comp = get_comp(
+            parse_project(LAYER_SAMPLES_DIR / "lightType.aep"), "lightType_POINT"
+        )
         assert len(comp.light_layers) == 1
         assert all(isinstance(layer, LightLayer) for layer in comp.light_layers)
 
@@ -436,7 +469,8 @@ class TestCompItemLayerFiltering:
 
     def test_adjustment_layers(self) -> None:
         comp = get_comp(
-            parse_project(LAYER_SAMPLES_DIR / "avlayer_flags.aep"), "adjustmentLayer_true"
+            parse_project(LAYER_SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
         )
         assert len(comp.adjustment_layers) == 1
         assert all(
@@ -445,7 +479,9 @@ class TestCompItemLayerFiltering:
         )
 
     def test_three_d_layers(self) -> None:
-        comp = get_comp(parse_project(LAYER_SAMPLES_DIR / "avlayer_flags.aep"), "threeDLayer_true")
+        comp = get_comp(
+            parse_project(LAYER_SAMPLES_DIR / "avlayer_flags.aep"), "threeDLayer_true"
+        )
         assert len(comp.three_d_layers) == 1
         assert all(
             isinstance(layer, AVLayer) and layer.three_d_layer
@@ -453,7 +489,9 @@ class TestCompItemLayerFiltering:
         )
 
     def test_guide_layers(self) -> None:
-        comp = get_comp(parse_project(LAYER_SAMPLES_DIR / "avlayer_flags.aep"), "guideLayer_true")
+        comp = get_comp(
+            parse_project(LAYER_SAMPLES_DIR / "avlayer_flags.aep"), "guideLayer_true"
+        )
         assert len(comp.guide_layers) == 1
         assert all(
             isinstance(layer, AVLayer) and layer.guide_layer
@@ -461,7 +499,9 @@ class TestCompItemLayerFiltering:
         )
 
     def test_solo_layers(self) -> None:
-        comp = get_comp(parse_project(LAYER_SAMPLES_DIR / "layer_switches.aep"), "solo_true")
+        comp = get_comp(
+            parse_project(LAYER_SAMPLES_DIR / "layer_switches.aep"), "solo_true"
+        )
         assert len(comp.solo_layers) == 1
         assert all(layer.solo for layer in comp.solo_layers)
 
@@ -513,8 +553,6 @@ class TestCompItemLayerFiltering:
         assert comp.file_layers == []
 
 
-
-
 class TestRoundtripBgColor:
     """Roundtrip tests for CompItem.bg_color."""
 
@@ -543,8 +581,6 @@ class TestRoundtripBgColor:
         comp = get_comp(parse_project(SAMPLES_DIR / "bgColor.aep"), "bgColor_red")
         with pytest.raises(ValueError, match="must be <= 1.0"):
             comp.bg_color = [1.5, 0.0, 0.0]
-
-
 
 
 class TestRoundtripFrameRate:
@@ -582,8 +618,6 @@ class TestRoundtripFrameRate:
             comp.frame_rate = 1000.0
 
 
-
-
 class TestRoundtripPixelAspect:
     """Roundtrip tests for CompItem.pixel_aspect."""
 
@@ -602,8 +636,6 @@ class TestRoundtripPixelAspect:
         comp = get_comp(parse_project(SAMPLES_DIR / "pixelAspect.aep"), "pixelAspect_2")
         with pytest.raises(ValueError, match="must be >= 0.01"):
             comp.pixel_aspect = -5
-
-
 
 
 class TestRoundtripSize:
@@ -649,8 +681,6 @@ class TestRoundtripSize:
             comp.height = 30001
 
 
-
-
 class TestRoundtripFlags:
     """Roundtrip tests for boolean CompItem flags."""
 
@@ -688,8 +718,6 @@ class TestRoundtripFlags:
         assert comp2.hide_shy_layers is False
 
 
-
-
 class TestRoundtripShutter:
     """Roundtrip tests for shutter settings."""
 
@@ -704,17 +732,23 @@ class TestRoundtripShutter:
         assert comp2.shutter_angle == 360
 
     def test_shutter_angle_validation_rejects_negative(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180"
+        )
         with pytest.raises(ValueError, match="must be >= 0"):
             comp.shutter_angle = -1
 
     def test_shutter_angle_validation_rejects_too_large(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180"
+        )
         with pytest.raises(ValueError, match="must be <= 720"):
             comp.shutter_angle = 721
 
     def test_shutter_angle_validation_rejects_non_int(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "shutterAngle.aep"), "shutterAngle_180"
+        )
         with pytest.raises(TypeError, match="expected an integer"):
             comp.shutter_angle = 180.5  # type: ignore[assignment]
 
@@ -729,21 +763,25 @@ class TestRoundtripShutter:
         assert comp2.shutter_phase == -180
 
     def test_shutter_phase_validation_rejects_too_small(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90"
+        )
         with pytest.raises(ValueError, match="must be >= -360"):
             comp.shutter_phase = -361
 
     def test_shutter_phase_validation_rejects_too_large(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90"
+        )
         with pytest.raises(ValueError, match="must be <= 360"):
             comp.shutter_phase = 361
 
     def test_shutter_phase_validation_rejects_non_int(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "comp_flags.aep"), "shutterPhase_minus90"
+        )
         with pytest.raises(TypeError, match="expected an integer"):
             comp.shutter_phase = -90.5  # type: ignore[assignment]
-
-
 
 
 class TestRoundtripResolution:
@@ -760,8 +798,6 @@ class TestRoundtripResolution:
         assert comp2.resolution_factor == [1, 1]
 
 
-
-
 class TestTimeScaleReadOnly:
     """Test that time_scale is read-only."""
 
@@ -769,8 +805,6 @@ class TestTimeScaleReadOnly:
         comp = get_comp(parse_project(SAMPLES_DIR / "frameRate.aep"), "frameRate_30")
         with pytest.raises(AttributeError, match="read-only"):
             comp.time_scale = 12345
-
-
 
 
 class TestRoundtripDerivedTimes:
@@ -790,8 +824,6 @@ class TestRoundtripDerivedTimes:
         assert math.isclose(comp2.duration, comp.duration, rel_tol=0.01)
         # Frame duration should be roughly double at 60fps
         assert comp2.frame_duration > original_frame_duration
-
-
 
 
 class TestRoundtripCombined:
@@ -818,8 +850,6 @@ class TestRoundtripCombined:
         assert math.isclose(comp2.frame_rate, 25.0, rel_tol=0.001)
 
 
-
-
 class TestRoundtripDisplayStartTime:
     """Roundtrip tests for CompItem.display_start_time."""
 
@@ -834,16 +864,18 @@ class TestRoundtripDisplayStartTime:
         assert math.isclose(comp2.display_start_time, 5.0, abs_tol=0.01)
 
     def test_display_start_time_validation_rejects_too_small(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10"
+        )
         with pytest.raises(ValueError, match="must be >= -10800.0"):
             comp.display_start_time = -10801.0
 
     def test_display_start_time_validation_rejects_too_large(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10"
+        )
         with pytest.raises(ValueError, match="must be <= 86340.0"):
             comp.display_start_time = 86341.0
-
-
 
 
 class TestRoundtripDuration:
@@ -898,8 +930,6 @@ class TestRoundtripDuration:
             comp.frame_duration = max_frames + 1
 
 
-
-
 class TestRoundtripMotionBlurSamples:
     """Roundtrip tests for motion blur sample settings."""
 
@@ -915,29 +945,30 @@ class TestRoundtripMotionBlurSamples:
 
     def test_samples_per_frame_validation_rejects_too_small(self) -> None:
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurSamplesPerFrame_32"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurSamplesPerFrame_32",
         )
         with pytest.raises(ValueError, match="must be >= 2"):
             comp.motion_blur_samples_per_frame = 1
 
     def test_samples_per_frame_validation_rejects_too_large(self) -> None:
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurSamplesPerFrame_32"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurSamplesPerFrame_32",
         )
         with pytest.raises(ValueError, match="must be <= 64"):
             comp.motion_blur_samples_per_frame = 65
 
     def test_samples_per_frame_validation_rejects_non_int(self) -> None:
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurSamplesPerFrame_32"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurSamplesPerFrame_32",
         )
         with pytest.raises(TypeError, match="expected an integer"):
             comp.motion_blur_samples_per_frame = 16.5  # type: ignore[assignment]
 
     def test_modify_adaptive_sample_limit(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "comp_flags.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "comp_flags.aep").project
         comp = get_comp(project, "motionBlurAdaptiveSampleLimit_256")
 
         comp.motion_blur_adaptive_sample_limit = 128
@@ -948,21 +979,24 @@ class TestRoundtripMotionBlurSamples:
 
     def test_adaptive_sample_limit_validation_rejects_too_small(self) -> None:
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurAdaptiveSampleLimit_256"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurAdaptiveSampleLimit_256",
         )
         with pytest.raises(ValueError, match=r"must be >= \d+"):
             comp.motion_blur_adaptive_sample_limit = 1
 
     def test_adaptive_sample_limit_validation_rejects_too_large(self) -> None:
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurAdaptiveSampleLimit_256"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurAdaptiveSampleLimit_256",
         )
         with pytest.raises(ValueError, match="must be <= 256"):
             comp.motion_blur_adaptive_sample_limit = 257
 
     def test_adaptive_sample_limit_validation_rejects_non_int(self) -> None:
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurAdaptiveSampleLimit_256"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurAdaptiveSampleLimit_256",
         )
         with pytest.raises(TypeError, match="expected an integer"):
             comp.motion_blur_adaptive_sample_limit = 128.5  # type: ignore[assignment]
@@ -971,14 +1005,13 @@ class TestRoundtripMotionBlurSamples:
         self,
     ) -> None:
         comp = get_comp(
-            parse_project(SAMPLES_DIR / "comp_flags.aep"), "motionBlurAdaptiveSampleLimit_256"
+            parse_project(SAMPLES_DIR / "comp_flags.aep"),
+            "motionBlurAdaptiveSampleLimit_256",
         )
         # samples_per_frame is 16, so 8 must be rejected
         assert comp.motion_blur_samples_per_frame == 16
         with pytest.raises(ValueError, match="must be >= 16"):
             comp.motion_blur_adaptive_sample_limit = 8
-
-
 
 
 class TestRoundtripWorkAreaStart:
@@ -1049,26 +1082,32 @@ class TestRoundtripWorkAreaDuration:
         assert comp2.work_area_duration_frame == 120
 
     def test_work_area_duration_validation_rejects_too_small(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10"
+        )
         with pytest.raises(ValueError, match="must be >="):
             comp.work_area_duration = 0.0
 
     def test_work_area_duration_validation_rejects_too_large(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10"
+        )
         with pytest.raises(ValueError, match="must be <="):
             comp.work_area_duration = comp.duration + 1.0
 
     def test_work_area_duration_frame_validation_rejects_zero(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10"
+        )
         with pytest.raises(ValueError, match="must be >= 1"):
             comp.work_area_duration_frame = 0
 
     def test_work_area_duration_frame_validation_rejects_too_large(self) -> None:
-        comp = get_comp(parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10")
+        comp = get_comp(
+            parse_project(SAMPLES_DIR / "workArea.aep"), "workAreaDuration_10"
+        )
         with pytest.raises(ValueError, match="must be <="):
             comp.work_area_duration_frame = comp.frame_duration + 1
-
-
 
 
 class TestCompItemGuides:
@@ -1109,7 +1148,11 @@ class TestCompItemGuides:
 
     def test_guide_orientation_vertical(self) -> None:
         comp = get_comp(parse_project(SAMPLES_DIR / "guides.aep"), "guides_both")
-        vertical_guides = [g for g in comp.guides if g.orientation_type == GuideOrientationType.VERTICAL]
+        vertical_guides = [
+            g
+            for g in comp.guides
+            if g.orientation_type == GuideOrientationType.VERTICAL
+        ]
         assert len(vertical_guides) == 1
         assert vertical_guides[0].position == 960.0
 
@@ -1179,12 +1222,8 @@ class TestRoundtripDraft3d:
 class TestRoundtripPreserveNested:
     """Roundtrip tests for CompItem.preserve_nested_*."""
 
-    def test_toggle_preserve_nested_frame_rate(
-        self, tmp_path: Path
-    ) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "comp_flags.aep"
-        ).project
+    def test_toggle_preserve_nested_frame_rate(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "comp_flags.aep").project
         comp = get_comp(project, "preserveNestedFrameRate_true")
         assert comp.preserve_nested_frame_rate is True
 
@@ -1194,12 +1233,8 @@ class TestRoundtripPreserveNested:
         comp2 = get_comp(parse_aep(out).project, "preserveNestedFrameRate_true")
         assert comp2.preserve_nested_frame_rate is False
 
-    def test_toggle_preserve_nested_resolution(
-        self, tmp_path: Path
-    ) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "comp_flags.aep"
-        ).project
+    def test_toggle_preserve_nested_resolution(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "comp_flags.aep").project
         comp = get_comp(project, "preserveNestedResolution_true")
         assert comp.preserve_nested_resolution is True
 
@@ -1225,7 +1260,9 @@ class TestRoundtripDropFrame:
         assert comp2.drop_frame is False
 
 
-EG_SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "essential_graphics"
+EG_SAMPLES_DIR = (
+    Path(__file__).parent.parent / "samples" / "models" / "essential_graphics"
+)
 
 
 class TestEssentialGraphics:
@@ -1334,12 +1371,10 @@ class TestRoundtripEssentialGraphics:
         )
         assert comp2.get_motion_graphics_template_controller_name(1) == "Brightness"
         assert (
-            comp2.get_motion_graphics_template_controller_name(2)
-            == "Renamed Opacity"
+            comp2.get_motion_graphics_template_controller_name(2) == "Renamed Opacity"
         )
         assert (
-            comp2.get_motion_graphics_template_controller_name(3)
-            == "Background Color"
+            comp2.get_motion_graphics_template_controller_name(3) == "Background Color"
         )
 
     def test_create_template_name(self, tmp_path: Path) -> None:
@@ -1353,9 +1388,7 @@ class TestRoundtripEssentialGraphics:
         comp.motion_graphics_template_name = "Brand New Template"
         out = tmp_path / "modified.aep"
         project.save(out)
-        comp2 = next(
-            c for c in parse_aep(out).project.compositions if c.name == "main"
-        )
+        comp2 = next(c for c in parse_aep(out).project.compositions if c.name == "main")
         assert comp2.motion_graphics_template_name == "Brand New Template"
 
     def test_create_template_name_from_scratch(self) -> None:

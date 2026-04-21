@@ -91,28 +91,48 @@ class TestFindChunksBefore:
     """Tests for find_chunks_before."""
 
     def test_finds_run_before_anchor(self) -> None:
-        a, b, c, d = _chunk("tdmn"), _chunk("tdmn"), _chunk("LIST", "Als2"), _chunk("cdta")
-        result = find_chunks_before(chunks=[a, b, c, d], chunk_type="tdmn", before_type="LIST:Als2")
+        a, b, c, d = (
+            _chunk("tdmn"),
+            _chunk("tdmn"),
+            _chunk("LIST", "Als2"),
+            _chunk("cdta"),
+        )
+        result = find_chunks_before(
+            chunks=[a, b, c, d], chunk_type="tdmn", before_type="LIST:Als2"
+        )
         assert result == [a, b]
 
     def test_non_contiguous_stops_at_gap(self) -> None:
-        a, b, c, d = _chunk("tdmn"), _chunk("cdta"), _chunk("tdmn"), _chunk("LIST", "Als2")
-        result = find_chunks_before(chunks=[a, b, c, d], chunk_type="tdmn", before_type="LIST:Als2")
+        a, b, c, d = (
+            _chunk("tdmn"),
+            _chunk("cdta"),
+            _chunk("tdmn"),
+            _chunk("LIST", "Als2"),
+        )
+        result = find_chunks_before(
+            chunks=[a, b, c, d], chunk_type="tdmn", before_type="LIST:Als2"
+        )
         assert result == [c]
 
     def test_empty_when_no_match_before(self) -> None:
         a, b = _chunk("cdta"), _chunk("LIST", "Als2")
-        result = find_chunks_before(chunks=[a, b], chunk_type="tdmn", before_type="LIST:Als2")
+        result = find_chunks_before(
+            chunks=[a, b], chunk_type="tdmn", before_type="LIST:Als2"
+        )
         assert result == []
 
     def test_plain_chunk_type_anchor(self) -> None:
         a, b = _chunk("tdmn"), _chunk("opti")
-        result = find_chunks_before(chunks=[a, b], chunk_type="tdmn", before_type="opti")
+        result = find_chunks_before(
+            chunks=[a, b], chunk_type="tdmn", before_type="opti"
+        )
         assert result == [a]
 
     def test_raises_when_anchor_not_found(self) -> None:
         with pytest.raises(ChunkNotFoundError):
-            find_chunks_before(chunks=[_chunk("tdmn")], chunk_type="tdmn", before_type="opti")
+            find_chunks_before(
+                chunks=[_chunk("tdmn")], chunk_type="tdmn", before_type="opti"
+            )
 
 
 class TestFindChunksAfter:
@@ -120,12 +140,16 @@ class TestFindChunksAfter:
 
     def test_finds_run_after_anchor(self) -> None:
         a, b, c = _chunk("opti"), _chunk("tdmn"), _chunk("tdmn")
-        result = find_chunks_after(chunks=[a, b, c], chunk_type="tdmn", after_type="opti")
+        result = find_chunks_after(
+            chunks=[a, b, c], chunk_type="tdmn", after_type="opti"
+        )
         assert result == [b, c]
 
     def test_stops_at_different_type(self) -> None:
         a, b, c, d = _chunk("opti"), _chunk("tdmn"), _chunk("cdta"), _chunk("tdmn")
-        result = find_chunks_after(chunks=[a, b, c, d], chunk_type="tdmn", after_type="opti")
+        result = find_chunks_after(
+            chunks=[a, b, c, d], chunk_type="tdmn", after_type="opti"
+        )
         assert result == [b]
 
     def test_empty_when_no_match_after(self) -> None:
@@ -135,7 +159,9 @@ class TestFindChunksAfter:
 
     def test_list_type_anchor(self) -> None:
         a, b = _chunk("LIST", "Als2"), _chunk("tdmn")
-        result = find_chunks_after(chunks=[a, b], chunk_type="tdmn", after_type="LIST:Als2")
+        result = find_chunks_after(
+            chunks=[a, b], chunk_type="tdmn", after_type="LIST:Als2"
+        )
         assert result == [b]
 
 
