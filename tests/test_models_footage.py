@@ -277,9 +277,7 @@ class TestFootageSettings:
     def test_loop_3(self) -> None:
         expected = load_expected(SAMPLES_DIR, "footage_misc")
         footage_json = get_footage_from_json_by_name(expected, "loop_3")
-        footage = get_footage(
-            parse_project(SAMPLES_DIR / "footage_misc.aep"), "loop_3"
-        )
+        footage = get_footage(parse_project(SAMPLES_DIR / "footage_misc.aep"), "loop_3")
         assert footage.main_source.loop == footage_json["mainSource"]["loop"] == 3
 
     def test_pixelAspect_2(self) -> None:
@@ -378,8 +376,6 @@ class TestFootageReadOnly:
             footage.footage_missing = False  # type: ignore[misc]
 
 
-
-
 class TestRoundtripLoop:
     """Roundtrip tests for FootageSource.loop."""
 
@@ -410,8 +406,6 @@ class TestRoundtripLoop:
             source.loop = 10000
 
 
-
-
 class TestRoundtripInvertAlpha:
     """Roundtrip tests for FootageSource.invert_alpha."""
 
@@ -426,8 +420,6 @@ class TestRoundtripInvertAlpha:
         project.save(out)
         source2 = get_footage(parse_aep(out).project, "invertAlpha_true").main_source
         assert source2.invert_alpha is False
-
-
 
 
 class TestRoundtripHighQualityFieldSeparation:
@@ -448,14 +440,10 @@ class TestRoundtripHighQualityFieldSeparation:
         assert source2.high_quality_field_separation is False
 
 
-
-
 class TestRoundtripAlphaMode:
     """Roundtrip tests for FootageSource.alpha_mode."""
 
-    def test_modify_alpha_mode_straight_to_premultiplied(
-        self, tmp_path: Path
-    ) -> None:
+    def test_modify_alpha_mode_straight_to_premultiplied(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "alphaMode.aep").project
         footage = get_footage(project, "alphaMode_STRAIGHT")
         source = footage.main_source
@@ -464,9 +452,7 @@ class TestRoundtripAlphaMode:
         source.alpha_mode = AlphaMode.PREMULTIPLIED
         out = tmp_path / "modified.aep"
         project.save(out)
-        source2 = get_footage(
-            parse_aep(out).project, "alphaMode_STRAIGHT"
-        ).main_source
+        source2 = get_footage(parse_aep(out).project, "alphaMode_STRAIGHT").main_source
         assert source2.alpha_mode == AlphaMode.PREMULTIPLIED
 
     def test_modify_alpha_mode_to_ignore(self, tmp_path: Path) -> None:
@@ -477,9 +463,7 @@ class TestRoundtripAlphaMode:
         source.alpha_mode = AlphaMode.IGNORE
         out = tmp_path / "modified.aep"
         project.save(out)
-        source2 = get_footage(
-            parse_aep(out).project, "alphaMode_STRAIGHT"
-        ).main_source
+        source2 = get_footage(parse_aep(out).project, "alphaMode_STRAIGHT").main_source
         assert source2.alpha_mode == AlphaMode.IGNORE
 
     def test_alpha_mode_validation_rejects_invalid(self) -> None:
@@ -488,8 +472,6 @@ class TestRoundtripAlphaMode:
         ).main_source
         with pytest.raises(ValueError, match="Invalid value.*alpha_mode"):
             source.alpha_mode = 999  # type: ignore[assignment]
-
-
 
 
 class TestRoundtripFieldSeparationType:
@@ -531,8 +513,6 @@ class TestRoundtripFieldSeparationType:
             source.field_separation_type = "invalid"  # type: ignore[assignment]
 
 
-
-
 class TestRoundtripPremulColor:
     """Roundtrip tests for FootageSource.premul_color."""
 
@@ -564,8 +544,6 @@ class TestRoundtripPremulColor:
             source.premul_color = [1.5, 0.0, 0.0]
 
 
-
-
 class TestRoundtripConformFrameRate:
     """Roundtrip tests for FootageSource.conform_frame_rate."""
 
@@ -578,9 +556,7 @@ class TestRoundtripConformFrameRate:
         source.conform_frame_rate = 24.0
         out = tmp_path / "modified.aep"
         project.save(out)
-        source2 = get_footage(
-            parse_aep(out).project, "conformFrameRate_30"
-        ).main_source
+        source2 = get_footage(parse_aep(out).project, "conformFrameRate_30").main_source
         assert source2.conform_frame_rate == 24.0
 
     def test_modify_conform_frame_rate_to_zero(self, tmp_path: Path) -> None:
@@ -591,9 +567,7 @@ class TestRoundtripConformFrameRate:
         source.conform_frame_rate = 0.0
         out = tmp_path / "modified.aep"
         project.save(out)
-        source2 = get_footage(
-            parse_aep(out).project, "conformFrameRate_30"
-        ).main_source
+        source2 = get_footage(parse_aep(out).project, "conformFrameRate_30").main_source
         assert source2.conform_frame_rate == 0.0
 
     def test_modify_conform_frame_rate_fractional(self, tmp_path: Path) -> None:
@@ -623,8 +597,6 @@ class TestRoundtripConformFrameRate:
             source.conform_frame_rate = 1000.0
 
 
-
-
 class TestNativeFrameRate:
     """Read-only tests for FootageSource.native_frame_rate."""
 
@@ -633,8 +605,6 @@ class TestNativeFrameRate:
             parse_project(SAMPLES_DIR / "conformFrameRate.aep"), "conformFrameRate_24"
         ).main_source
         assert source.native_frame_rate == 30.0
-
-
 
 
 class TestDisplayFrameRate:
@@ -666,8 +636,6 @@ class TestDisplayFrameRate:
         ).main_source
         assert source.conform_frame_rate == 2.5
         assert source.display_frame_rate == 2.5
-
-
 
 
 class TestRemovePulldown:
@@ -717,8 +685,6 @@ class TestRemovePulldown:
         assert source.display_frame_rate == 2.0
 
 
-
-
 class TestInterpretAsLinearLight:
     """Tests for FootageSource.interpret_as_linear_light."""
 
@@ -736,9 +702,7 @@ class TestInterpretAsLinearLight:
 
     def test_on_for_32_bpc(self) -> None:
         source = get_first_footage(
-            parse_project(
-                SAMPLES_DIR / "interpret_as_linear_light_on_for_32_bpc.aep"
-            )
+            parse_project(SAMPLES_DIR / "interpret_as_linear_light_on_for_32_bpc.aep")
         ).main_source
         assert source.interpret_as_linear_light == LinearLightMode.ON_FOR_32BPC
 
@@ -750,9 +714,7 @@ class TestInterpretAsLinearLight:
         assert source.interpret_as_linear_light == LinearLightMode.ON
 
     def test_modify_roundtrip(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "interpret_as_linear_light_off.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "interpret_as_linear_light_off.aep").project
         source = get_first_footage(project).main_source
         assert source.interpret_as_linear_light == LinearLightMode.OFF
 
@@ -761,8 +723,6 @@ class TestInterpretAsLinearLight:
         project.save(out)
         source2 = get_first_footage(parse_aep(out).project).main_source
         assert source2.interpret_as_linear_light == LinearLightMode.ON
-
-
 
 
 class TestPreserveRgb:
@@ -788,24 +748,18 @@ class TestPreserveRgb:
         assert source.preserve_rgb is False
 
 
-
-
 class TestOverrideMediaColorSpace:
     """Tests for FootageSource.media_color_space."""
 
     def test_embedded(self) -> None:
         source = get_first_footage(
-            parse_project(
-                SAMPLES_DIR / "override_media_colorspace_embedded.aep"
-            )
+            parse_project(SAMPLES_DIR / "override_media_colorspace_embedded.aep")
         ).main_source
         assert source.media_color_space == "Embedded"
 
     def test_custom_profile(self) -> None:
         source = get_first_footage(
-            parse_project(
-                SAMPLES_DIR / "override_media_colorspace_apple_rgb.aep"
-            )
+            parse_project(SAMPLES_DIR / "override_media_colorspace_apple_rgb.aep")
         ).main_source
         assert source.media_color_space == "Apple RGB"
 
@@ -828,14 +782,10 @@ class TestOverrideMediaColorSpace:
 
     def test_is_read_only(self) -> None:
         source = get_first_footage(
-            parse_project(
-                SAMPLES_DIR / "override_media_colorspace_embedded.aep"
-            )
+            parse_project(SAMPLES_DIR / "override_media_colorspace_embedded.aep")
         ).main_source
         with pytest.raises(AttributeError):
             source.media_color_space = "Apple RGB"  # type: ignore[misc]
-
-
 
 
 class TestRoundtripSolidColor:
@@ -877,15 +827,12 @@ class TestHasAudio:
 
     def test_footage_with_audio(self) -> None:
         project = parse_project(SAMPLES_DIR / "no_audio.aep")
-        footage = next(
-            f for f in project.footages if f.name == "mov_23_976.mov"
-        )
+        footage = next(f for f in project.footages if f.name == "mov_23_976.mov")
         assert footage.has_audio is True
 
     def test_footage_without_audio(self) -> None:
         project = parse_project(SAMPLES_DIR / "no_audio.aep")
         footage = next(
-            f for f in project.footages
-            if f.name == "mov_23_976_no_audio.mov"
+            f for f in project.footages if f.name == "mov_23_976_no_audio.mov"
         )
         assert footage.has_audio is False

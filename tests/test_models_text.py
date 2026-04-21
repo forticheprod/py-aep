@@ -243,7 +243,9 @@ class TestRoundtripTracking:
 class TestParseTextDocument:
     """Unit tests for Source Text property parsing fallbacks."""
 
-    def test_ignores_malformed_cos_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ignores_malformed_cos_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Malformed COS data should keep the property but skip the value."""
         prop = SimpleNamespace(
             keyframes=[],

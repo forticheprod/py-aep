@@ -410,8 +410,6 @@ class TestOutputColorSpace:
         assert om.settings["Output Color Space"] == project.working_space
 
 
-
-
 class TestRoundtripLogType:
     """Roundtrip tests for RenderQueueItem.log_type."""
 
@@ -732,9 +730,7 @@ class TestRoundtripOutputModuleIncludeSourceXmp:
     """Roundtrip tests for OutputModule.include_source_xmp."""
 
     def test_modify_include_source_xmp(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            OM_SAMPLES_DIR / "om_misc.aep"
-        ).project
+        project = parse_aep(OM_SAMPLES_DIR / "om_misc.aep").project
         rqi = get_rqi(project, "include_source_xmp_data_on")
         om = rqi.output_modules[0]
         assert om.include_source_xmp is True
@@ -747,9 +743,7 @@ class TestRoundtripOutputModuleIncludeSourceXmp:
         assert om2.include_source_xmp is False
 
     def test_enable_include_source_xmp(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            OM_SAMPLES_DIR / "include_source_xmp_data_off.aep"
-        ).project
+        project = parse_aep(OM_SAMPLES_DIR / "include_source_xmp_data_off.aep").project
         om = project.render_queue.items[0].output_modules[0]
         assert om.include_source_xmp is False
         om.include_source_xmp = True
@@ -802,7 +796,7 @@ class TestRoundtripFileTemplate:
         # Replace the filename portion with a custom template
         sep = "\\" if "\\" in original else "/"
         last_sep = original.rfind(sep)
-        new_template = original[:last_sep + 1] + "custom_output.[fileExtension]"
+        new_template = original[: last_sep + 1] + "custom_output.[fileExtension]"
         om.file_template = new_template
 
         out = tmp_path / "ft_roundtrip.aep"
@@ -851,12 +845,8 @@ class TestRoundtripTimeSpanStart:
         rqi2 = get_rqi(parse_aep(out).project, "time_span_custom_start_1s23f")
         assert rqi2.time_span_start == pytest.approx(2.0, abs=0.04)
 
-    def test_set_time_span_start_switches_to_custom(
-        self, tmp_path: Path
-    ) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "time_span.aep"
-        ).project
+    def test_set_time_span_start_switches_to_custom(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "time_span.aep").project
         rqi = get_rqi(project, "time_span_length_of_comp")
         rqi.time_span_start = 1.0
 
@@ -957,9 +947,7 @@ class TestRoundtripSettingsFrameRate:
         assert rqi2.settings["Use this frame rate"] == pytest.approx(29.97, abs=0.01)
 
     def test_integer_frame_rate_24(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "frame_rate.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "frame_rate.aep").project
         rqi = get_rqi(project, "frame_rate_24")
         assert rqi.settings["Use this frame rate"] == pytest.approx(24.0)
 
@@ -971,9 +959,7 @@ class TestRoundtripSettingsFrameRate:
 
     def test_existing_fractional_roundtrip(self, tmp_path: Path) -> None:
         """Parse and save 29.97 without modification preserves the value."""
-        project = parse_aep(
-            SAMPLES_DIR / "frame_rate.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "frame_rate.aep").project
         rqi = get_rqi(project, "frame_rate_29_97")
         original = rqi.settings["Use this frame rate"]
         assert original == pytest.approx(29.97, abs=0.01)
@@ -1091,9 +1077,7 @@ class TestRoundtripOutputModuleResize:
     """Roundtrip tests for OutputModule Resize to (2-field getter/setter)."""
 
     def test_set_resize_to(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            OM_SAMPLES_DIR / "resize_custom_960x540.aep"
-        ).project
+        project = parse_aep(OM_SAMPLES_DIR / "resize_custom_960x540.aep").project
         om = project.render_queue.items[0].output_modules[0]
         assert om.settings["Resize to"] == [960, 540]
 
@@ -1104,9 +1088,7 @@ class TestRoundtripOutputModuleResize:
         assert om2.settings["Resize to"] == [1280, 720]
 
     def test_resize_roundtrip_back(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            OM_SAMPLES_DIR / "resize_custom_960x540.aep"
-        ).project
+        project = parse_aep(OM_SAMPLES_DIR / "resize_custom_960x540.aep").project
         om = project.render_queue.items[0].output_modules[0]
         om.settings["Resize to"] = [3840, 2160]
 
@@ -1126,9 +1108,7 @@ class TestRoundtripOutputModuleCrop:
     """Roundtrip tests for OutputModule crop settings."""
 
     def test_set_all_crop_values(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            OM_SAMPLES_DIR / "om_crop.aep"
-        ).project
+        project = parse_aep(OM_SAMPLES_DIR / "om_crop.aep").project
         rqi = get_rqi(project, "crop_checked")
         om = rqi.output_modules[0]
 
@@ -1147,9 +1127,7 @@ class TestRoundtripOutputModuleCrop:
         assert om2.settings["Crop Right"] == 50
 
     def test_toggle_crop_and_set_values(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            OM_SAMPLES_DIR / "crop_unchecked.aep"
-        ).project
+        project = parse_aep(OM_SAMPLES_DIR / "crop_unchecked.aep").project
         om = project.render_queue.items[0].output_modules[0]
         assert om.settings["Crop"] is False
 
@@ -1169,9 +1147,7 @@ class TestRoundtripOutputModuleSettings:
     """Roundtrip tests for various OutputModule settings via dict access."""
 
     def test_set_resize_quality(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            OM_SAMPLES_DIR / "om_resize.aep"
-        ).project
+        project = parse_aep(OM_SAMPLES_DIR / "om_resize.aep").project
         rqi = get_rqi(project, "resize_quality_low")
         om = rqi.output_modules[0]
         assert om.settings["Resize Quality"] == ResizeQuality.LOW

@@ -62,8 +62,8 @@ custom collection objects (`ItemCollection`, `LayerCollection`,
 ## Keyframes
 
 ExtendScript accesses keyframe data through `Property.key*()` methods that take
-a 1-based key index. py_aep exposes keyframes as a list of `Keyframe`
-dataclass objects on `Property.keyframes`:
+a 1-based key index. py_aep exposes keyframes as a list of `Keyframe` objects on
+`Property.keyframes`:
 
 === "ExtendScript"
 
@@ -275,7 +275,7 @@ ExtendScript exposes as plain integers or doesn't expose at all:
 ## Output Module Format Options
 
 ExtendScript provides no access to format-specific render settings. py_aep
-parses these from the binary and exposes them as typed dataclasses:
+parses these from the binary and exposes them as typed classes:
 
 - `CineonFormatOptions` - black/white points, gamma, bit depth
 - `JpegFormatOptions` - quality, format type, scans

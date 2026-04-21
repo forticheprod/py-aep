@@ -99,8 +99,7 @@ def get_footage(project: Project, name: str) -> FootageItem:
         if item.name == name:
             return item
     raise ValueError(
-        f"Footage '{name}' not found. "
-        f"Available: {[f.name for f in project.footages]}"
+        f"Footage '{name}' not found. Available: {[f.name for f in project.footages]}"
     )
 
 
@@ -110,8 +109,7 @@ def get_folder(project: Project, name: str) -> FolderItem:
         if folder.name == name:
             return folder
     raise ValueError(
-        f"Folder '{name}' not found. "
-        f"Available: {[f.name for f in project.folders]}"
+        f"Folder '{name}' not found. Available: {[f.name for f in project.folders]}"
     )
 
 

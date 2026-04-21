@@ -264,7 +264,7 @@ class PropertyGroup(PropertyBase):
 
         Note:
             Only invoked when normal attribute lookup has already
-            failed, so dataclass fields and `@property` descriptors
+            failed, so class attributes and `@property` descriptors
             always take priority.
         """
         # Avoid infinite recursion during __init__ (before

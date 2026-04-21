@@ -1,13 +1,13 @@
 # py_aep - AI Coding Agent Instructions
 
 ## Project Overview
-A Python library for parsing Adobe After Effects project files (.aep). The binary RIFX format is decoded using [Kaitai Struct](https://kaitai.io/), then transformed into typed Python dataclasses representing the AE object model (Application > Project > Items > Layers > Properties).
+A Python library for parsing Adobe After Effects project files (.aep). The binary RIFX format is decoded using [Kaitai Struct](https://kaitai.io/), then transformed into typed Python classes representing the AE object model (Application > Project > Items > Layers > Properties).
 
 ## Architecture
 
 ### Data Flow
 ```
-.aep file > Kaitai (kaitai/aep.ksy) > Raw chunks > Parsers > Model dataclasses
+.aep file > Kaitai (kaitai/aep.ksy) > Raw chunks > Parsers > Model classes
 ```
 
 ### Property Parsing Pipeline
@@ -45,14 +45,14 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
 ## Development Commands
 
 ```powershell
-uv sync --extra dev                  # Install with dev dependencies
-uv sync --extra docs                 # Install with docs dependencies
-uv run pytest                        # Run tests (parallel)
-uv run pytest --cov=src/py_aep --cov-report html --cov-report term:skip-covered  # With coverage
-uv run mypy src/py_aep           # Type checking
-uv run ruff check src/ tests/ ; uv run ruff format src/ tests/  # Linting (excludes auto-generated kaitai/aep.py)
-uv run zensical build --strict         # Build documentation
-uv run zensical serve --strict         # Serve documentation locally (with live reload)
+uv sync --extra dev --extra docs
+uv run mypy src/py_aep
+uv run ruff check src/ tests/  # Linting (excludes auto-generated kaitai/aep.py)
+uv run ruff format src/ tests/
+uv run zensical build --strict  # Build documentation
+uv run pytest 2>&1 | Select-Object -Last 40
+uv sync --python 3.7 --extra dev  # For Python 3.7
+uv run --python 3.7 python -m pytest -o "addopts=" 2>&1 | Select-Object -Last 60
 ```
 
 JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json`.
@@ -85,7 +85,7 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 
 ### Adding New Parsed Data
 1. Find/add chunk type in `kaitai/aep.ksy`
-2. Create/update model dataclass in `models/` with docstrings referencing AE equivalents
+2. Create/update model class in `models/` with docstrings referencing AE equivalents
 3. Add parser in `parsers/`:
    ```python
    def parse_thing(chunk: Aep.Chunk, context: ...) -> ThingModel:
@@ -173,6 +173,7 @@ kaitai-struct-compiler --target python --outdir src/py_aep/kaitai src/py_aep/kai
 - Run python code through a temporary file, not `python.exe -c`
 - Python 3.7+ compatibility (no walrus operator, no match/case, union types via annotations)
 - Model docstrings should reference [AE Scripting Guide](https://ae-scripting.docsforadobe.dev/)
+- DO NOT switch to plan agent prematurely - exhaust terminal-based investigation first
 
 ## CLI Tools
 Installed via `uv sync --extra dev`. Also invocable as `uv run python -m py_aep.cli.{visualize,validate,compare}`.
@@ -199,9 +200,8 @@ Zensical; auto-deployed to [GitHub Pages](https://forticheprod.github.io/py-aep/
 
 ### Docstring Conventions
 - **Functions**: Google-style (Args, Returns, Raises sections)
-- **Dataclass fields**: inline docstrings after each field (not `Attributes:` section):
+- **Class attributes**: inline docstrings after each field (not `Attributes:` section):
   ```python
-  @dataclass
   class CompItem(AVItem):
       """Composition item containing layers."""
 

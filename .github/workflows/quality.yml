@@ -27,6 +27,7 @@ jobs:
       - name: Type check with mypy
         run: uv run mypy src/py_aep
   lfs:
+    needs: [ruff, mypy]
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-quality')
     runs-on: ubuntu-latest
     steps:

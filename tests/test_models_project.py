@@ -225,8 +225,6 @@ class TestActiveItem:
         assert project.active_item.name == "Comp 2"
 
 
-
-
 class TestRoundtripLinearBlending:
     """Roundtrip tests for Project.linear_blending."""
 
@@ -265,8 +263,6 @@ class TestRoundtripLinearBlending:
         project2 = parse_aep(out).project
 
         assert project2.linear_blending is True
-
-
 
 
 class TestRoundtripLinearizeWorkingSpace:
@@ -309,8 +305,6 @@ class TestRoundtripLinearizeWorkingSpace:
         assert project2.linearize_working_space is False
 
 
-
-
 class TestRoundtripExpressionEngine:
     """Roundtrip tests for Project.expression_engine."""
 
@@ -351,8 +345,6 @@ class TestRoundtripExpressionEngine:
         assert project2.expression_engine == "javascript-1.0"
 
 
-
-
 class TestRoundtripColorManagementSystem:
     """Roundtrip tests for Project.color_management_system."""
 
@@ -379,8 +371,6 @@ class TestRoundtripColorManagementSystem:
         project2 = parse_aep(out).project
 
         assert project2.color_management_system == ColorManagementSystem.ADOBE
-
-
 
 
 class TestRoundtripLutInterpolationMethod:
@@ -415,8 +405,6 @@ class TestRoundtripLutInterpolationMethod:
         assert project2.lut_interpolation_method == LutInterpolationMethod.TRILINEAR
 
 
-
-
 class TestRoundtripOcioConfigurationFile:
     """Roundtrip tests for Project.ocio_configuration_file."""
 
@@ -430,8 +418,6 @@ class TestRoundtripOcioConfigurationFile:
         project2 = parse_aep(out).project
 
         assert project2.ocio_configuration_file == "new_config.ocio"
-
-
 
 
 class TestRoundtripBitsPerChannel:
@@ -474,8 +460,6 @@ class TestRoundtripBitsPerChannel:
         assert project2.bits_per_channel == BitsPerChannel.EIGHT
 
 
-
-
 class TestRoundtripFeetFramesFilmType:
     """Roundtrip tests for Project.feet_frames_film_type."""
 
@@ -505,8 +489,6 @@ class TestRoundtripFeetFramesFilmType:
         project3 = parse_aep(out).project
 
         assert project3.feet_frames_film_type == FeetFramesFilmType.MM35
-
-
 
 
 class TestRoundtripFootageTimecodeDisplayStartType:
@@ -587,8 +569,6 @@ class TestRoundtripFramesCountType:
         assert project2.frames_count_type == FramesCountType.FC_START_0
 
 
-
-
 class TestRoundtripDisplayStartFrame:
     """Roundtrip tests for Project.display_start_frame."""
 
@@ -615,8 +595,6 @@ class TestRoundtripDisplayStartFrame:
         project2 = parse_aep(out).project
 
         assert project2.display_start_frame == 0
-
-
 
 
 class TestRoundtripFramesUseFeetFrames:
@@ -647,8 +625,6 @@ class TestRoundtripFramesUseFeetFrames:
         assert project2.frames_use_feet_frames == 0
 
 
-
-
 class TestRoundtripTimeDisplayType:
     """Roundtrip tests for Project.time_display_type."""
 
@@ -677,8 +653,6 @@ class TestRoundtripTimeDisplayType:
         assert project2.time_display_type == TimeDisplayType.TIMECODE
 
 
-
-
 class TestRoundtripTransparencyGridThumbnails:
     """Roundtrip tests for Project.transparency_grid_thumbnails."""
 
@@ -697,9 +671,7 @@ class TestRoundtripTransparencyGridThumbnails:
         assert project2.transparency_grid_thumbnails is True
 
     def test_disable(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "transparencyGridThumbnails_true.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "transparencyGridThumbnails_true.aep").project
         assert project.transparency_grid_thumbnails is True
 
         project.transparency_grid_thumbnails = False
@@ -709,8 +681,6 @@ class TestRoundtripTransparencyGridThumbnails:
         project2 = parse_aep(out).project
 
         assert project2.transparency_grid_thumbnails is False
-
-
 
 
 class TestRoundtripCompensateForSceneReferredProfiles:
@@ -745,8 +715,6 @@ class TestRoundtripCompensateForSceneReferredProfiles:
         assert project2.compensate_for_scene_referred_profiles is False
 
 
-
-
 class TestRoundtripAudioSampleRate:
     """Roundtrip tests for Project.audio_sample_rate."""
 
@@ -775,8 +743,6 @@ class TestRoundtripAudioSampleRate:
         assert project2.audio_sample_rate == 22050.0
 
 
-
-
 class TestRoundtripWorkingGamma:
     """Roundtrip tests for Project.working_gamma."""
 
@@ -803,8 +769,6 @@ class TestRoundtripWorkingGamma:
         project2 = parse_aep(out).project
 
         assert project2.working_gamma == 2.4
-
-
 
 
 class TestRoundtripGpuAccelType:
@@ -837,8 +801,6 @@ class TestRoundtripGpuAccelType:
         project2 = parse_aep(out).project
 
         assert project2.gpu_accel_type == GpuAccelType.CUDA
-
-
 
 
 class TestRoundtripRevision:

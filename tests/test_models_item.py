@@ -10,9 +10,7 @@ from py_aep import parse as parse_aep
 from py_aep.enums import Label
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "item"
-COMP_SAMPLES_DIR = (
-    Path(__file__).parent.parent / "samples" / "models" / "composition"
-)
+COMP_SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "composition"
 
 
 class TestItemSelected:
@@ -32,9 +30,7 @@ class TestRoundtripItemLabel:
     """Roundtrip tests for Item.label."""
 
     def test_modify_item_label(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            COMP_SAMPLES_DIR / "bgColor.aep"
-        ).project
+        project = parse_aep(COMP_SAMPLES_DIR / "bgColor.aep").project
         comp = get_comp(project, "bgColor_custom")
         original_label = comp.label
 
@@ -52,9 +48,7 @@ class TestRoundtripItemComment:
     """Roundtrip tests for Item.comment."""
 
     def test_modify_item_comment(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            COMP_SAMPLES_DIR / "bgColor.aep"
-        ).project
+        project = parse_aep(COMP_SAMPLES_DIR / "bgColor.aep").project
         comp = get_comp(project, "bgColor_custom")
 
         comp.comment = "roundtrip item comment"
@@ -70,9 +64,7 @@ class TestRoundtripItemName:
     """Roundtrip tests for Item.name."""
 
     def test_modify_item_name(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            COMP_SAMPLES_DIR / "bgColor.aep"
-        ).project
+        project = parse_aep(COMP_SAMPLES_DIR / "bgColor.aep").project
         comp = get_comp(project, "bgColor_custom")
 
         comp.name = "Renamed Composition"
@@ -82,4 +74,3 @@ class TestRoundtripItemName:
         project2 = parse_aep(out).project
         comp2 = get_comp(project2, "Renamed Composition")
         assert comp2.name == "Renamed Composition"
-

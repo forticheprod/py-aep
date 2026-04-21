@@ -15,20 +15,23 @@ from ..enums import OutputChannels, OutputColorDepth, TimeSpanSource
 if TYPE_CHECKING:
     from ..models.items.composition import CompItem
 
-TEMPLATE_EXTENSIONS: dict[str, str] = {
-    "H.264": "mp4",
-    "H.264 - Match Render Settings - 15 Mbps": "mp4",
-    "H.264 - Match Render Settings - 40 Mbps": "mp4",
-    "H.264 - Match Render Settings - 50 Mbps": "mp4",
-    "Lossless": "avi",
-    "Lossless with Alpha": "avi",
-    "AIFF 48kHz": "aif",
-    "Apple ProRes 422": "mov",
-    "Apple ProRes 422 HQ": "mov",
-    "Apple ProRes 422 LT": "mov",
-    "Apple ProRes 422 Proxy": "mov",
-    "Apple ProRes 4444": "mov",
-    "Multi-Machine Sequence": "psd",
+# Roou format_id (4-char) to file extension.
+FORMAT_ID_EXTENSIONS: dict[str, str] = {
+    "H264": "mp4",
+    ".AVI": "avi",
+    "MooV": "mov",
+    "Mp3 ": "mp3",
+    "wao_": "wav",
+    "TIF ": "tif",
+    "8BPS": "psd",
+    "png!": "png",
+    "JPEG": "jpg",
+    "oEXR": "exr",
+    "AIFF": "aif",
+    "SGI ": "sgi",
+    "IFF ": "iff",
+    "TPIC": "tga",
+    "RHDR": "hdr",
 }
 
 FIELD_ORDER_NAMES: dict[int, str] = {

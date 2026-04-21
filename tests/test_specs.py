@@ -171,7 +171,9 @@ class TestPropSpecFieldConsistency:
     )
     def test_color_flag_iff_color_pvt(self, spec_id: str, spec: _PropSpec) -> None:
         is_color_pvt = spec.pvt == PropertyValueType.COLOR
-        assert spec.color == is_color_pvt, f"{spec_id}: color={spec.color!r} but pvt={spec.pvt.name}"
+        assert spec.color == is_color_pvt, (
+            f"{spec_id}: color={spec.color!r} but pvt={spec.pvt.name}"
+        )
 
     @pytest.mark.parametrize(
         "spec_id, spec",
@@ -182,7 +184,9 @@ class TestPropSpecFieldConsistency:
         self, spec_id: str, spec: _PropSpec
     ) -> None:
         if spec.pvt in _SPATIAL_PVTS:
-            assert spec.is_spatial, f"{spec_id}: pvt={spec.pvt.name} requires is_spatial=True"
+            assert spec.is_spatial, (
+                f"{spec_id}: pvt={spec.pvt.name} requires is_spatial=True"
+            )
 
     @pytest.mark.parametrize(
         "spec_id, spec",
@@ -214,8 +218,12 @@ class TestPropSpecFieldConsistency:
     def test_color_specs_have_bounds(self, spec_id: str, spec: _PropSpec) -> None:
         if spec.pvt != PropertyValueType.COLOR:
             return
-        assert spec.min_value == _COLOR_MIN, f"{spec_id}: COLOR spec missing min_value=_COLOR_MIN"
-        assert spec.max_value == _COLOR_MAX, f"{spec_id}: COLOR spec missing max_value=_COLOR_MAX"
+        assert spec.min_value == _COLOR_MIN, (
+            f"{spec_id}: COLOR spec missing min_value=_COLOR_MIN"
+        )
+        assert spec.max_value == _COLOR_MAX, (
+            f"{spec_id}: COLOR spec missing max_value=_COLOR_MAX"
+        )
 
     @pytest.mark.parametrize(
         "spec_id, spec",
@@ -247,7 +255,9 @@ class TestSpecStringFields:
         _ALL_SPECS,
         ids=[s[0] for s in _ALL_SPECS],
     )
-    def test_non_empty_auto_name(self, spec_id: str, spec: _PropSpec | _GroupSpec) -> None:
+    def test_non_empty_auto_name(
+        self, spec_id: str, spec: _PropSpec | _GroupSpec
+    ) -> None:
         assert isinstance(spec.auto_name, str) and spec.auto_name
 
 
@@ -266,7 +276,9 @@ class TestSpecListUniqueness:
     ) -> None:
         match_names = [s.match_name for s in specs]
         duplicates = [mn for mn in match_names if match_names.count(mn) > 1]
-        assert not duplicates, f"{list_name} has duplicate match_names: {sorted(set(duplicates))}"
+        assert not duplicates, (
+            f"{list_name} has duplicate match_names: {sorted(set(duplicates))}"
+        )
 
 
 # Known intentional divergences: spec name differs from registry name.
@@ -306,7 +318,9 @@ class TestSpecNamesMatchRegistry:
         self, spec_id: str, spec: _PropSpec | _GroupSpec
     ) -> None:
         expected = MATCH_NAME_TO_AUTO_NAME[spec.match_name]
-        assert spec.auto_name == expected, f"{spec_id}: spec auto_name {spec.auto_name!r} != registry {expected!r}"
+        assert spec.auto_name == expected, (
+            f"{spec_id}: spec auto_name {spec.auto_name!r} != registry {expected!r}"
+        )
 
     @pytest.mark.parametrize(
         "match_name, expected_spec_name",
@@ -319,5 +333,9 @@ class TestSpecNamesMatchRegistry:
         """Guard that allowlisted divergences haven't been fixed without
         removing the allowlist entry."""
         registry_name = MATCH_NAME_TO_AUTO_NAME.get(match_name)
-        assert registry_name is not None, f"allowlisted match_name {match_name!r} no longer in registry"
-        assert registry_name != expected_spec_name, f"divergence for {match_name!r} has been resolved - remove from allowlist"
+        assert registry_name is not None, (
+            f"allowlisted match_name {match_name!r} no longer in registry"
+        )
+        assert registry_name != expected_spec_name, (
+            f"divergence for {match_name!r} has been resolved - remove from allowlist"
+        )

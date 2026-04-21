@@ -59,7 +59,9 @@ class TestExpressions:
     def test_expression_enabled(self) -> None:
         """Position has expression 'wiggle(2, 50)' and is enabled."""
         expected = load_expected(SAMPLES_DIR, "expression")
-        layer = get_layer(parse_project(SAMPLES_DIR / "expression.aep"), "expression_enabled")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "expression.aep"), "expression_enabled"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         assert position.expression_enabled is True
@@ -73,7 +75,9 @@ class TestExpressions:
     def test_expression_disabled(self) -> None:
         """Opacity has expression '50' but expression is disabled."""
         expected = load_expected(SAMPLES_DIR, "expression")
-        layer = get_layer(parse_project(SAMPLES_DIR / "expression.aep"), "expression_disabled")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "expression.aep"), "expression_disabled"
+        )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
         assert opacity.expression_enabled is False
@@ -88,7 +92,9 @@ class TestExpressions:
     def test_expression_time(self) -> None:
         """Rotation has expression 'time * 36' and is enabled."""
         expected = load_expected(SAMPLES_DIR, "expression")
-        layer = get_layer(parse_project(SAMPLES_DIR / "expression.aep"), "expression_time")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "expression.aep"), "expression_time"
+        )
         rotation = _find_property(layer, "ADBE Rotate Z")
         assert rotation is not None
         assert rotation.expression_enabled is True
@@ -105,7 +111,9 @@ class TestKeyframes:
 
     def test_keyframe_LINEAR(self) -> None:
         """Position has 2 LINEAR keyframes with values [0,50,0] and [100,50,0]."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         assert position._animated
@@ -117,7 +125,9 @@ class TestKeyframes:
 
     def test_keyframe_BEZIER(self) -> None:
         """Position has 2 BEZIER keyframes with values [0,50,0] and [100,50,0]."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_BEZIER")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_BEZIER"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         assert position._animated
@@ -129,7 +139,9 @@ class TestKeyframes:
 
     def test_keyframe_HOLD(self) -> None:
         """Opacity has 3 keyframes, second is HOLD, values 1.0/0.0/1.0."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_HOLD")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_HOLD"
+        )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
         assert opacity._animated
@@ -149,7 +161,9 @@ class TestPropertyStructure:
 
     def test_transform_properties_depth(self) -> None:
         """Transform properties are at depth 2 (layer=0, transform-group=1, prop=2)."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         # All transform properties should be at depth 2
         for prop in layer.transform.properties:
             assert prop.property_depth == 2, (
@@ -170,21 +184,27 @@ class TestPropertyStructure:
 
     def test_is_time_varying_with_keyframes(self) -> None:
         """Opacity with keyframes has is_time_varying == True."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
         assert opacity.is_time_varying is True
 
     def test_is_time_varying_with_expression(self) -> None:
         """Position with enabled expression has is_time_varying == True."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "expression.aep"), "expression_enabled")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "expression.aep"), "expression_enabled"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         assert position.is_time_varying is True
 
     def test_is_time_varying_static(self) -> None:
         """A non-animated property with no actual expression has is_time_varying == False."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation"
+        )
         # Only ADBE Rotate Z is animated; ADBE Rotate X is static
         rotate_x = _find_property(layer, "ADBE Rotate X")
         assert rotate_x is not None
@@ -197,7 +217,9 @@ class TestPropertyDimensions:
 
     def test_property_1D_opacity(self) -> None:
         """Opacity is a 1D property with 2 keyframes going 0>100."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
         assert opacity.dimensions == 1
@@ -233,7 +255,9 @@ class TestPropertyDimensions:
     def test_property_rotation(self) -> None:
         """Rotation is a 1D property with 2 keyframes going 0>360."""
         expected = load_expected(SAMPLES_DIR, "property_types")
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation"
+        )
         rotation = _find_property(layer, "ADBE Rotate Z")
         assert rotation is not None
         assert rotation.dimensions == 1
@@ -247,7 +271,9 @@ class TestPropertyDimensions:
     def test_property_scale(self) -> None:
         """Scale has 2 keyframes."""
         expected = load_expected(SAMPLES_DIR, "property_types")
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_scale")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_scale"
+        )
         scale = _find_property(layer, "ADBE Scale")
         assert scale is not None
         assert scale._animated
@@ -449,7 +475,9 @@ class TestEffectProperties:
 
     def test_property_selected_default_false(self) -> None:
         """Non-effect properties default to selected=False."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
         assert opacity.selected is False
@@ -527,7 +555,9 @@ class TestMasks:
 
     def test_no_masks(self) -> None:
         """Layer without masks has masks=None."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         assert layer.masks is None
 
     def test_mask_parent_property(self) -> None:
@@ -751,7 +781,9 @@ class TestIsModified:
 
     def test_animated_property_is_modified(self) -> None:
         """An animated property (with keyframes) has is_modified=True."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
         assert opacity._animated
@@ -759,7 +791,9 @@ class TestIsModified:
 
     def test_expression_enabled_is_modified(self) -> None:
         """Property with enabled expression has is_modified=True."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "expression.aep"), "expression_enabled")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "expression.aep"), "expression_enabled"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         assert position.expression_enabled is True
@@ -767,7 +801,9 @@ class TestIsModified:
 
     def test_expression_disabled_not_modified(self) -> None:
         """Property with disabled expression is still modified (expression text present)."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "expression.aep"), "expression_disabled")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "expression.aep"), "expression_disabled"
+        )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
         assert opacity.expression_enabled is False
@@ -778,7 +814,9 @@ class TestIsModified:
 
     def test_scale_at_default_not_modified(self) -> None:
         """Scale [100,100,100] at default is is_modified=False."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation"
+        )
         scale = _find_property(layer, "ADBE Scale")
         if scale is not None and scale.default_value is not None:
             assert scale.is_modified is False, (
@@ -817,7 +855,9 @@ class TestIsModified:
 
     def test_no_default_value_not_modified(self) -> None:
         """Property with no default_value returns is_modified=False (conservative)."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         # Check a property that might not have a default
         for prop in layer.transform.properties:
             if isinstance(prop, Property) and prop.default_value is None:
@@ -952,7 +992,9 @@ class TestTransformSynthesis:
 
     def test_synthesized_orientation_metadata(self) -> None:
         """Orientation always present with correct defaults."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         orientation = _find_property(layer, "ADBE Orientation")
         assert orientation is not None
         assert orientation.default_value is not None
@@ -960,7 +1002,9 @@ class TestTransformSynthesis:
 
     def test_synthesized_rotate_x_metadata(self) -> None:
         """X Rotation always present with correct defaults."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         rotate_x = _find_property(layer, "ADBE Rotate X")
         assert rotate_x is not None
         assert rotate_x.dimensions == 1
@@ -969,7 +1013,9 @@ class TestTransformSynthesis:
 
     def test_synthesized_value_equals_default(self) -> None:
         """Non-animated transform properties at default have is_modified=False."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         # All non-animated transform properties should have a default and
         # be at that default (the sample only animates Opacity).
         for prop in layer.transform.properties:
@@ -990,7 +1036,9 @@ class TestTransformSynthesis:
 
     def test_synthesized_not_animated(self) -> None:
         """Synthesized properties have animated=False."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         for match_name in ("ADBE Orientation", "ADBE Rotate X", "ADBE Rotate Y"):
             prop = _find_property(layer, match_name)
             assert prop is not None
@@ -1000,7 +1048,9 @@ class TestTransformSynthesis:
 
     def test_synthesized_parent_property(self) -> None:
         """Synthesized properties point to the transform group as parent."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         for prop in layer.transform.properties:
             assert prop.parent_property is layer.transform, (
                 f"{prop.match_name} parent should be transform group"
@@ -1008,7 +1058,9 @@ class TestTransformSynthesis:
 
     def test_envir_appear_in_reflect(self) -> None:
         """Appears in Reflections is synthesised with correct name and value."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         envir = _find_property(layer, "ADBE Envir Appear in Reflect")
         assert envir is not None
         assert envir.name == "Appears in Reflections"
@@ -1018,7 +1070,9 @@ class TestTransformSynthesis:
 
     def test_property_rotation_twelve_properties(self) -> None:
         """Another sample (property_rotation) also gets 12 transform props."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation"
+        )
         assert layer.transform is not None
         assert len(layer.transform.properties) == 12
         match_names = [p.match_name for p in layer.transform.properties]
@@ -1040,7 +1094,9 @@ class TestUnitsText:
 
     def test_transform_pixels(self) -> None:
         """Anchor Point and Position report 'pixels'."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         anchor = _find_property(layer, "ADBE Anchor Point")
         assert anchor is not None
         assert anchor.units_text == "pixels"
@@ -1051,7 +1107,9 @@ class TestUnitsText:
 
     def test_transform_percent(self) -> None:
         """Scale and Opacity report 'percent'."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         scale = _find_property(layer, "ADBE Scale")
         assert scale is not None
         assert scale.units_text == "percent"
@@ -1062,7 +1120,9 @@ class TestUnitsText:
 
     def test_transform_degrees(self) -> None:
         """Rotation and Orientation report 'degrees'."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_rotation"
+        )
         rotate_z = _find_property(layer, "ADBE Rotate Z")
         assert rotate_z is not None
         assert rotate_z.units_text == "degrees"
@@ -1073,7 +1133,9 @@ class TestUnitsText:
 
     def test_transform_no_unit(self) -> None:
         """Appears in Reflections has empty units_text."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         envir = _find_property(layer, "ADBE Envir Appear in Reflect")
         assert envir is not None
         assert envir.units_text == ""
@@ -1164,7 +1226,9 @@ class TestUnitsText:
 
     def test_unknown_match_name_empty(self) -> None:
         """Unknown match names default to empty string."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
+        )
         envir = _find_property(layer, "ADBE Envir Appear in Reflect")
         assert envir is not None
         assert envir.units_text == ""
@@ -1175,7 +1239,9 @@ class TestKeyframeInterpolationTypes:
 
     def test_linear_in_out_match(self) -> None:
         """LINEAR keyframes have matching in/out interpolation types."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         for kf in position.keyframes:
@@ -1184,7 +1250,9 @@ class TestKeyframeInterpolationTypes:
 
     def test_bezier_in_out_match(self) -> None:
         """BEZIER keyframes have matching in/out interpolation types."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_BEZIER")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_BEZIER"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         for kf in position.keyframes:
@@ -1194,7 +1262,8 @@ class TestKeyframeInterpolationTypes:
     def test_mixed_interpolation(self) -> None:
         """Mixed interpolation keyframes have different in/out types."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_mixed_interpolation"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_mixed_interpolation",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1242,7 +1311,8 @@ class TestTemporalEase:
     def test_bezier_ease_in_out_1d(self) -> None:
         """1D Bezier ease has one KeyframeEase per keyframe."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_bezier_ease_in_out_1D"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_bezier_ease_in_out_1D",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1253,7 +1323,8 @@ class TestTemporalEase:
     def test_bezier_ease_scale_multi_dim(self) -> None:
         """Scale (3D) has three KeyframeEase per keyframe."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_misc.aep"), "keyframe_bezier_ease_scale"
+            parse_project(SAMPLES_DIR / "keyframe_misc.aep"),
+            "keyframe_bezier_ease_scale",
         )
         scale = _find_property(layer, "ADBE Scale")
         assert scale is not None
@@ -1265,7 +1336,8 @@ class TestTemporalEase:
     def test_bezier_ease_scale_influence_values(self) -> None:
         """Scale ease-scale sample: KF0 out influence=75, KF1 in influence=75."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_misc.aep"), "keyframe_bezier_ease_scale"
+            parse_project(SAMPLES_DIR / "keyframe_misc.aep"),
+            "keyframe_bezier_ease_scale",
         )
         scale = _find_property(layer, "ADBE Scale")
         assert scale is not None
@@ -1279,7 +1351,8 @@ class TestTemporalEase:
     def test_bezier_nonzero_speed(self) -> None:
         """Percent property speeds are scaled to match ExtendScript units."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_bezier_nonzero_speed"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_bezier_nonzero_speed",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1290,7 +1363,8 @@ class TestTemporalEase:
     def test_bezier_asymmetric_ease(self) -> None:
         """Asymmetric ease has different in/out influence values."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_bezier_asymmetric_ease_1D"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_bezier_asymmetric_ease_1D",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1302,7 +1376,8 @@ class TestTemporalEase:
     def test_spatial_position_single_ease(self) -> None:
         """Spatial properties (Position) always have 1 ease element."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"), "keyframe_spatial_bezier_arc"
+            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"),
+            "keyframe_spatial_bezier_arc",
         )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
@@ -1329,7 +1404,8 @@ class TestSpatialTangents:
     def test_spatial_tangents_present(self) -> None:
         """Spatial bezier arc has non-None tangent vectors."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"), "keyframe_spatial_bezier_arc"
+            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"),
+            "keyframe_spatial_bezier_arc",
         )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
@@ -1342,7 +1418,8 @@ class TestSpatialTangents:
     def test_spatial_tangent_values_arc(self) -> None:
         """Spatial bezier arc: KF0 out tangent = [60, -80, 0]."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"), "keyframe_spatial_bezier_arc"
+            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"),
+            "keyframe_spatial_bezier_arc",
         )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
@@ -1355,7 +1432,8 @@ class TestSpatialTangents:
     def test_non_spatial_no_tangents(self) -> None:
         """Non-spatial properties (Opacity) have None tangents."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_bezier_ease_in_out_1D"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_bezier_ease_in_out_1D",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1366,7 +1444,8 @@ class TestSpatialTangents:
     def test_3d_spatial_tangents(self) -> None:
         """3D spatial bezier has 3-component tangent vectors."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"), "keyframe_spatial_bezier_3D"
+            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"),
+            "keyframe_spatial_bezier_3D",
         )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
@@ -1379,7 +1458,8 @@ class TestSpatialTangents:
     def test_s_curve_spatial_tangents(self) -> None:
         """S-curve: KF1 in tangent = [-40, -60, 0]."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"), "keyframe_spatial_bezier_s_curve"
+            parse_project(SAMPLES_DIR / "keyframe_spatial.aep"),
+            "keyframe_spatial_bezier_s_curve",
         )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
@@ -1401,7 +1481,9 @@ class TestLinearHoldEase:
 
     def test_linear_position_out_speed(self) -> None:
         """LINEAR position: KF0 out speed = distance / time."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         kf0 = position.keyframes[0]
@@ -1412,7 +1494,9 @@ class TestLinearHoldEase:
 
     def test_linear_position_in_speed(self) -> None:
         """LINEAR position: KF1 in speed = distance / time."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         kf1 = position.keyframes[1]
@@ -1421,7 +1505,9 @@ class TestLinearHoldEase:
 
     def test_linear_first_keyframe_in_speed_zero(self) -> None:
         """First keyframe in a LINEAR property has in speed = 0."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         kf0 = position.keyframes[0]
@@ -1430,7 +1516,9 @@ class TestLinearHoldEase:
 
     def test_linear_last_keyframe_out_speed_zero(self) -> None:
         """Last keyframe in a LINEAR property has out speed = 0."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_interpolation.aep"), "keyframe_LINEAR"
+        )
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         kf_last = position.keyframes[-1]
@@ -1442,7 +1530,8 @@ class TestLinearHoldEase:
     def test_mixed_linear_opacity_speed(self) -> None:
         """Mixed interpolation: LINEAR opacity out speed = value_change / time."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_mixed_interpolation"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_mixed_interpolation",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1455,7 +1544,8 @@ class TestLinearHoldEase:
     def test_mixed_hold_out_speed_zero(self) -> None:
         """HOLD out keyframe has speed = 0 and influence = 100/6."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_mixed_interpolation"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_mixed_interpolation",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1467,7 +1557,8 @@ class TestLinearHoldEase:
     def test_mixed_hold_in_speed_zero(self) -> None:
         """HOLD in keyframe has speed = 0 and influence = 100/6."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_mixed_interpolation"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_mixed_interpolation",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1479,7 +1570,8 @@ class TestLinearHoldEase:
     def test_mixed_linear_out_after_hold(self) -> None:
         """LINEAR out after HOLD in computes speed from adjacent keyframes."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_mixed_interpolation"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_mixed_interpolation",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1492,7 +1584,8 @@ class TestLinearHoldEase:
     def test_bezier_ease_unchanged(self) -> None:
         """BEZIER keyframes retain their stored binary ease values."""
         layer = get_layer(
-            parse_project(SAMPLES_DIR / "keyframe_1D.aep"), "keyframe_mixed_interpolation"
+            parse_project(SAMPLES_DIR / "keyframe_1D.aep"),
+            "keyframe_mixed_interpolation",
         )
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
@@ -1517,7 +1610,9 @@ class TestShapeValue:
 
     def test_closed_square_vertices(self) -> None:
         """Closed square mask has 4 vertices at the expected positions."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_square")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_square"
+        )
         shape = _get_mask_shape(layer).value
         assert shape.closed is True
         assert len(shape.vertices) == 4
@@ -1530,20 +1625,26 @@ class TestShapeValue:
 
     def test_closed_square_tangents_zero(self) -> None:
         """Closed square mask has zero tangents (straight line segments)."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_square")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_square"
+        )
         shape = _get_mask_shape(layer).value
         for t in shape.in_tangents + shape.out_tangents:
             assert t == [0, 0]
 
     def test_closed_square_no_feather(self) -> None:
         """Closed square mask has no feather points."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_square")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_square"
+        )
         shape = _get_mask_shape(layer).value
         assert shape.feather_points == []
 
     def test_closed_oval_tangents(self) -> None:
         """Closed oval mask has non-zero tangents."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_oval")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "shape_basic.aep"), "shape_closed_oval"
+        )
         shape = _get_mask_shape(layer).value
         assert shape.closed is True
         assert len(shape.vertices) == 4
@@ -1560,7 +1661,9 @@ class TestShapeValue:
 
     def test_feather_points(self) -> None:
         """Feather points mask has 2 outer feather points at segments 1 and 2."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "shape_feather.aep"), "shape_feather_points")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "shape_feather.aep"), "shape_feather_points"
+        )
         shape = _get_mask_shape(layer).value
         assert len(shape.feather_points) == 2
         fp0, fp1 = shape.feather_points
@@ -1600,7 +1703,9 @@ class TestShapeValue:
 
     def test_animated_keyframes(self) -> None:
         """Animated mask shape has 2 keyframes with different vertices."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "shape_misc.aep"), "shape_animated")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "shape_misc.aep"), "shape_animated"
+        )
         prop = _get_mask_shape(layer)
         assert len(prop.keyframes) == 2
         kf0 = prop.keyframes[0].value
@@ -1620,13 +1725,27 @@ class TestShapeValue:
 
     def test_many_points_seg_locs(self) -> None:
         """300-vertex mask with feather seg_locs >255 proves u4le field width."""
-        layer = get_layer(parse_project(SAMPLES_DIR / "shape_misc.aep"), "shape_many_points")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "shape_misc.aep"), "shape_many_points"
+        )
         shape = _get_mask_shape(layer).value
         assert len(shape.vertices) == 300
-        assert [fp.seg_loc for fp in shape.feather_points] == [0, 128, 255, 256, 270, 299]
-        assert [fp.radius for fp in shape.feather_points] == [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
-
-
+        assert [fp.seg_loc for fp in shape.feather_points] == [
+            0,
+            128,
+            255,
+            256,
+            270,
+            299,
+        ]
+        assert [fp.radius for fp in shape.feather_points] == [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+        ]
 
 
 class TestRoundtripPropertyEnabled:
@@ -1728,9 +1847,7 @@ class TestRoundtripMaskMotionBlur:
     """Roundtrip: change MaskPropertyGroup.mask_motion_blur."""
 
     def test_change_motion_blur(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "mask_motion_blur_same_as_layer.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "mask_motion_blur_same_as_layer.aep").project
         layer = project.compositions[0].layers[0]
         mask = layer.masks[0]
         assert isinstance(mask, MaskPropertyGroup)
@@ -1772,9 +1889,7 @@ class TestRoundtripMaskFeatherFalloff:
     """Roundtrip: change MaskPropertyGroup.mask_feather_falloff."""
 
     def test_change_feather_falloff(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "mask_feather_falloff_smooth.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "mask_feather_falloff_smooth.aep").project
         layer = project.compositions[0].layers[0]
         mask = layer.masks[0]
         assert isinstance(mask, MaskPropertyGroup)
@@ -1830,9 +1945,7 @@ class TestRoundtripFeatherPointRadius:
         assert shape2.feather_points[0].seg_loc == 3
 
     def test_modify_feather_tension(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "shape_feather.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "shape_feather.aep").project
         comp = get_comp(project, "shape_feather_inner_hold")
         layer = comp.layers[0]
         shape = layer.masks[0].properties[0].value
@@ -1899,18 +2012,14 @@ class TestValidateFeatherPoint:
             fp.feather_points[0].rel_seg_loc = 1.1
 
     def test_tension_rejects_negative(self) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "shape_feather.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "shape_feather.aep").project
         comp = get_comp(project, "shape_feather_inner_hold")
         fp = comp.layers[0].masks[0].properties[0].value
         with pytest.raises(ValueError, match="must be >= 0"):
             fp.feather_points[1].tension = -0.1
 
     def test_tension_rejects_above_one(self) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "shape_feather.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "shape_feather.aep").project
         comp = get_comp(project, "shape_feather_inner_hold")
         fp = comp.layers[0].masks[0].properties[0].value
         with pytest.raises(ValueError, match="must be <= 1"):
@@ -1921,9 +2030,7 @@ class TestRoundtripKeyframeLabel:
     """Roundtrip: modify Keyframe.label and verify save/reload."""
 
     def test_modify_keyframe_label(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "keyframe_1D.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "keyframe_1D.aep").project
         comp = get_comp(project, "keyframe_bezier_ease_in_out_1D")
         layer = comp.layers[0]
         # Find the animated opacity property
@@ -1943,9 +2050,7 @@ class TestRoundtripKeyframeLabel:
         assert prop2.keyframes[0].label == Label.RED
 
     def test_modify_keyframe_roving(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "keyframe_1D.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "keyframe_1D.aep").project
         comp = get_comp(project, "keyframe_bezier_ease_in_out_1D")
         layer = comp.layers[0]
         prop = _find_property(layer, "ADBE Opacity")
@@ -1958,9 +2063,7 @@ class TestRoundtripKeyframeLabel:
 
             project2 = parse_aep(out).project
             comp2 = get_comp(project2, "keyframe_bezier_ease_in_out_1D")
-            prop2 = _find_property(
-                comp2.layers[0], "ADBE Opacity"
-            )
+            prop2 = _find_property(comp2.layers[0], "ADBE Opacity")
             assert prop2.keyframes[1].roving is True
 
 
@@ -1974,13 +2077,10 @@ class TestRoundtripKeyframeInterpolationType:
         prop = _find_property(layer, "ADBE Position")
         assert len(prop.keyframes) >= 2
         assert (
-            prop.keyframes[0].out_interpolation_type
-            == KeyframeInterpolationType.LINEAR
+            prop.keyframes[0].out_interpolation_type == KeyframeInterpolationType.LINEAR
         )
 
-        prop.keyframes[0].out_interpolation_type = (
-            KeyframeInterpolationType.HOLD
-        )
+        prop.keyframes[0].out_interpolation_type = KeyframeInterpolationType.HOLD
         out = tmp_path / "modified_kf_interp.aep"
         project.save(out)
 
@@ -1989,8 +2089,7 @@ class TestRoundtripKeyframeInterpolationType:
             get_comp(project2, "keyframe_LINEAR").layers[0], "ADBE Position"
         )
         assert (
-            prop2.keyframes[0].out_interpolation_type
-            == KeyframeInterpolationType.HOLD
+            prop2.keyframes[0].out_interpolation_type == KeyframeInterpolationType.HOLD
         )
 
     def test_change_in_interpolation(self, tmp_path: Path) -> None:
@@ -2000,9 +2099,7 @@ class TestRoundtripKeyframeInterpolationType:
         prop = _find_property(layer, "ADBE Position")
         assert len(prop.keyframes) >= 2
 
-        prop.keyframes[1].in_interpolation_type = (
-            KeyframeInterpolationType.LINEAR
-        )
+        prop.keyframes[1].in_interpolation_type = KeyframeInterpolationType.LINEAR
         out = tmp_path / "modified_kf_in_interp.aep"
         project.save(out)
 
@@ -2011,8 +2108,7 @@ class TestRoundtripKeyframeInterpolationType:
             get_comp(project2, "keyframe_BEZIER").layers[0], "ADBE Position"
         )
         assert (
-            prop2.keyframes[1].in_interpolation_type
-            == KeyframeInterpolationType.LINEAR
+            prop2.keyframes[1].in_interpolation_type == KeyframeInterpolationType.LINEAR
         )
 
 
@@ -2099,9 +2195,7 @@ class TestRoundtripKeyframeEase:
     """Roundtrip: modify KeyframeEase speed/influence."""
 
     def test_change_bezier_ease(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "keyframe_interpolation.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "keyframe_interpolation.aep").project
         comp = get_comp(project, "keyframe_BEZIER")
         layer = comp.layers[0]
         prop = _find_property(layer, "ADBE Position")
@@ -2122,9 +2216,7 @@ class TestRoundtripKeyframeEase:
         )
         assert prop2 is not None
         assert abs(prop2.keyframes[0].out_temporal_ease[0].speed - 42.0) < 0.01
-        assert abs(
-            prop2.keyframes[0].out_temporal_ease[0].influence - 75.0
-        ) < 0.01
+        assert abs(prop2.keyframes[0].out_temporal_ease[0].influence - 75.0) < 0.01
 
 
 class TestValidateKeyframeEaseInfluence:
@@ -2166,9 +2258,7 @@ class TestRoundtripPropertyValue:
         project.save(out)
 
         project2 = parse_aep(out).project
-        prop2 = _find_property(
-            project2.compositions[0].layers[0], "ADBE Rotate X"
-        )
+        prop2 = _find_property(project2.compositions[0].layers[0], "ADBE Rotate X")
         assert abs(prop2.value - 45.0) < 0.01
 
     def test_change_multidim_value(self, tmp_path: Path) -> None:
@@ -2183,9 +2273,7 @@ class TestRoundtripPropertyValue:
         project.save(out)
 
         project2 = parse_aep(out).project
-        prop2 = _find_property(
-            project2.compositions[0].layers[0], "ADBE Orientation"
-        )
+        prop2 = _find_property(project2.compositions[0].layers[0], "ADBE Orientation")
         assert abs(prop2.value[0] - 10.0) < 0.01
         assert abs(prop2.value[1] - 20.0) < 0.01
         assert abs(prop2.value[2] - 30.0) < 0.01
@@ -2208,9 +2296,7 @@ class TestRoundtripExpressionCreate:
         project.save(out)
 
         project2 = parse_aep(out).project
-        prop2 = _find_property(
-            project2.compositions[0].layers[0], "ADBE Rotate X"
-        )
+        prop2 = _find_property(project2.compositions[0].layers[0], "ADBE Rotate X")
         assert prop2.expression == "time * 90"
 
 
@@ -2241,9 +2327,7 @@ class TestRoundtripExpressionEnabled:
         assert prop2.expression != ""
 
     def test_enable_expression(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "expression.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "expression.aep").project
         comp = get_comp(project, "expression_disabled")
         layer = comp.layers[0]
         prop = None
@@ -2269,9 +2353,7 @@ class TestRoundtripRotoBezier:
     """Roundtrip: toggle MaskPropertyGroup.roto_bezier."""
 
     def test_disable_roto_bezier(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "mask_rotobezier_on.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "mask_rotobezier_on.aep").project
         layer = project.compositions[0].layers[0]
         mask = layer.masks[0]
         assert isinstance(mask, MaskPropertyGroup)
@@ -2291,9 +2373,7 @@ class TestRoundtripDimensionsSeparated:
     """Roundtrip: toggle Property.dimensions_separated and verify save/reload."""
 
     def test_separate_dimensions(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "transform_separated.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "transform_separated.aep").project
         layer = project.compositions[0].layers[0]
         prop = _find_property(layer, "ADBE Position")
         assert prop is not None
@@ -2304,15 +2384,11 @@ class TestRoundtripDimensionsSeparated:
         project.save(out)
 
         project2 = parse_aep(out).project
-        prop2 = _find_property(
-            project2.compositions[0].layers[0], "ADBE Position"
-        )
+        prop2 = _find_property(project2.compositions[0].layers[0], "ADBE Position")
         assert prop2.dimensions_separated is False
 
     def test_unseparate_dimensions(self, tmp_path: Path) -> None:
-        project = parse_aep(
-            SAMPLES_DIR / "transform_separated.aep"
-        ).project
+        project = parse_aep(SAMPLES_DIR / "transform_separated.aep").project
         layer = project.compositions[0].layers[0]
         prop = _find_property(layer, "ADBE Position")
         assert prop is not None
@@ -2323,9 +2399,7 @@ class TestRoundtripDimensionsSeparated:
         project.save(out)
 
         project2 = parse_aep(out).project
-        prop2 = _find_property(
-            project2.compositions[0].layers[0], "ADBE Position"
-        )
+        prop2 = _find_property(project2.compositions[0].layers[0], "ADBE Position")
         assert prop2.dimensions_separated is False
 
 
@@ -2382,9 +2456,7 @@ class TestRoundtripProxyBody:
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
         layer = get_first_layer(project)
         effect = layer.effects.properties[0]
-        blur = self._find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = self._find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
 
         assert isinstance(effect, PropertyGroup)
         assert blur.parent_property is effect
@@ -2394,9 +2466,7 @@ class TestRoundtripProxyBody:
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
         layer = get_first_layer(project)
         # Blurriness is the main slider - find it
-        blur = self._find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = self._find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         original = blur.value
         blur.value = 42.0
         out = tmp_path / "proxy_value.aep"
@@ -2414,9 +2484,7 @@ class TestRoundtripProxyBody:
         """Modify the enabled flag of a synthesized effect property."""
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
         layer = get_first_layer(project)
-        blur = self._find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = self._find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         assert blur.enabled is True
         blur.enabled = False
         out = tmp_path / "proxy_enabled.aep"
@@ -2433,9 +2501,7 @@ class TestRoundtripProxyBody:
         """Modify the name of a synthesized effect property."""
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
         layer = get_first_layer(project)
-        blur = self._find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = self._find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         blur.name = "Custom Blur Name"
         out = tmp_path / "proxy_name.aep"
         project.save(out)

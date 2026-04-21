@@ -10,11 +10,11 @@ The primary function you'll use is [`parse()`](parsers.md).
 
 ### [Application](application.md)
 
-The top-level `Application` dataclass representing the After Effects application.
+The top-level `Application` representing the After Effects application.
 
 ### [Project](project.md)
 
-The `Project` dataclass containing all project information.
+The `Project` containing all project information.
 
 ### Items
 

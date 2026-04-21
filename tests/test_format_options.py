@@ -30,9 +30,7 @@ from py_aep.models.renderqueue.format_options import (
     XmlFormatOptions,
 )
 
-FORMAT_DIR = (
-    Path(__file__).parent.parent / "samples" / "models" / "format_options"
-)
+FORMAT_DIR = Path(__file__).parent.parent / "samples" / "models" / "format_options"
 CINEON_DIR = FORMAT_DIR / "cineon"
 AVI_DIR = FORMAT_DIR / "avi"
 

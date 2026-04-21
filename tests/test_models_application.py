@@ -6,7 +6,13 @@ from pathlib import Path
 
 from py_aep import parse as parse_aep
 
-SAMPLE = Path(__file__).resolve().parent.parent / "samples" / "versions" / "ae2025" / "complete.aep"
+SAMPLE = (
+    Path(__file__).resolve().parent.parent
+    / "samples"
+    / "versions"
+    / "ae2025"
+    / "complete.aep"
+)
 
 
 class TestBuildName:
