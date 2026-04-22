@@ -1319,6 +1319,7 @@ types:
             'ldat_item_type::no_value': kf_no_value
             'ldat_item_type::one_d': kf_multi_dimensional(1)
             'ldat_item_type::marker': kf_unknown_data
+      - size-eos: true
   kf_unknown_data:
     seq:
       - id: contents

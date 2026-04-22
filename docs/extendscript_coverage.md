@@ -5,7 +5,7 @@ Implementation progress of ExtendScript API attributes in py_aep.
 Each row lists the attributes from the
 [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/)
 not yet implemented.
-Only attributes are counted - methods are excluded.
+Only attributes are counted for now - methods are excluded.
 
 - ✅ = all attributes implemented
 - 🚧 = partially implemented
@@ -16,12 +16,12 @@ Only attributes are counted - methods are excluded.
 
 | Class | Status | Missing |
 |-------|--------|---------|
-| Application | 🚧 | `availableGPUAccelTypes`, `disableRendering`, `effects`, `exitAfterLaunchAndEval`, `exitCode`, `fonts`, `isoLanguage`, `isRenderEngine`, `isWatchFolder`, `memoryInUse`, `onError`, `preferences`, `saveProjectOnCrash`, `settings` |
-| System | ❌ | `machineName`, `osName`, `osVersion`, `userName` |
-| Project | 🚧 | `dirty`, `selection`, `toolType` |
+| Application | 🚧 | `availableGPUAccelTypes`, `effects`, `fonts`, `isoLanguage`, `preferences`, `settings` |
+| System | ❌ | |
+| Project | 🚧 | `selection`, `toolType` |
 
 Note:
-    Most missing `Application` and `System` attributes reflect runtime state
+    `Application` and `System` attributes reflect runtime state
     (memory usage, OS info, render engine mode) that is not stored in `.aep`
     files.
 
@@ -42,7 +42,7 @@ Note:
 | Class | Status | Missing |
 |-------|--------|---------|
 | Layer | 🚧 | `selectedProperties` |
-| AVLayer | 🚧 | `audioActive`, `hasAudio` |
+| AVLayer | ✅ | |
 | CameraLayer | ✅ | |
 | LightLayer | ✅ | |
 | TextLayer | ✅ | |
@@ -64,8 +64,8 @@ Note:
 
 | Class | Status | Missing |
 |-------|--------|---------|
-| RenderQueue | 🚧 | `canQueueInAME`, `queueNotify`, `rendering` |
-| RenderQueueItem | 🚧 | `onStatusChanged`, `templates` |
+| RenderQueue | 🚧 | `canQueueInAME`, `rendering` |
+| RenderQueueItem | 🚧 | `templates` |
 | OutputModule | 🚧 | `templates` |
 
 

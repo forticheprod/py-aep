@@ -190,7 +190,7 @@ class TestSkipFrames:
     """Tests for skip_frames calculation from frame rate ratio."""
 
     @pytest.mark.skip(
-        reason="FIXME: Could not find parameter in UI and jsx generate"
+        reason="FIXME: Could not find parameter in UI and jsx"
         " script does not set this properly"
     )
     @pytest.mark.parametrize("n", [0, 1, 2, 3])

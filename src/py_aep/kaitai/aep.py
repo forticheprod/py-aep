@@ -4459,6 +4459,7 @@ class Aep(ReadWriteKaitaiStruct):
                 pass
                 self.kf_data = Aep.KfUnknownData(self._io, self, self._root)
                 self.kf_data._read()
+            self._unnamed12 = self._io.read_bytes_full()
             self._dirty = False
 
 
@@ -4541,6 +4542,9 @@ class Aep(ReadWriteKaitaiStruct):
             elif _on == Aep.LdatItemType.unknown:
                 pass
                 self.kf_data._write__seq(self._io)
+            self._io.write_bytes(self._unnamed12)
+            if not self._io.is_eof():
+                raise kaitaistruct.ConsistencyError(u"_unnamed12", 0, self._io.size() - self._io.pos())
 
 
         def _check(self):
