@@ -193,14 +193,6 @@ comp.placeholder_layers  # list[AVLayer]
 comp.av_layers           # list[AVLayer] - all AV layers
 ```
 
-### Item type checks
-
-```python
-item.is_composition   # True if item is a CompItem
-item.is_footage       # True if item is a FootageItem
-item.is_folder        # True if item is a FolderItem
-```
-
 ## Extra Attributes
 
 py_aep exposes additional attributes parsed from the binary format that are
@@ -210,16 +202,10 @@ not available in ExtendScript:
 
 | Attribute | Description |
 |-----------|-------------|
-| `animated` | `True` if the property has keyframes |
-| `color` | `True` if the property value is a color |
 | `dimensions` | Number of dimensions (1, 2, or 3) |
-| `integer` | `True` if the value is an integer |
 | `locked_ratio` | `True` if X/Y ratio is locked |
-| `no_value` | `True` if the property stores no data |
-| `vector` | `True` if the value is a vector |
 | `default_value` | The default value of the property |
 | `last_value` | The last value before animation |
-| `property_control_type` | The effect control type (scalar, color, enum, etc.) |
 | `nb_options` | Number of options in a dropdown property |
 
 ### FootageItem
@@ -235,7 +221,6 @@ not available in ExtendScript:
 | Attribute | Description |
 |-----------|-------------|
 | `time_scale` | Internal time scale divisor for keyframe times |
-| `display_start_time` | Display start time in seconds |
 | `guides` | List of [Guide][py_aep.models.guide.Guide] objects (ruler guides for alignment) |
 
 ### Layer
@@ -250,7 +235,7 @@ not available in ExtendScript:
 |-----------|-------------|
 | `comment` | A comment describing the render queue item |
 | `name` | The render settings template name |
-| `settings` | Full render settings as a typed dict |
+| `settings` | Full render settings as a dict |
 
 ### OutputModule
 
@@ -258,12 +243,11 @@ not available in ExtendScript:
 |-----------|-------------|
 | `file_template` | Raw file path template with variables like `[compName]` |
 | `format_options` | Format-specific options (JPEG quality, EXR compression, etc.) |
-| `frame_rate` | Output frame rate |
-| `settings` | Full output module settings as a typed dict |
+| `settings` | Full output module settings as a dict |
 
 ## Enums
 
-py_aep provides **98 enum classes** across 8 modules, covering values that
+py_aep provides many enum classes across 8 modules, covering values that
 ExtendScript exposes as plain integers or doesn't expose at all:
 
 - Format options enums: `VideoCodec`, `AudioCodec`, `OpenExrCompression`, etc.
@@ -275,7 +259,7 @@ ExtendScript exposes as plain integers or doesn't expose at all:
 ## Output Module Format Options
 
 ExtendScript provides no access to format-specific render settings. py_aep
-parses these from the binary and exposes them as typed classes:
+parses these from the binary and exposes them:
 
 - `CineonFormatOptions` - black/white points, gamma, bit depth
 - `JpegFormatOptions` - quality, format type, scans
