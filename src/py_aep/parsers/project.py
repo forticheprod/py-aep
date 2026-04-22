@@ -27,7 +27,7 @@ def parse_project(aep: Aep, file_path: str) -> Project:
         aep: The parsed Kaitai RIFX structure.
         file_path: Path to the `.aep` file (stored on the Project).
     """
-    root_chunks: list[Aep.Chunk] = aep.body.chunks
+    root_chunks: list[Aep.Chunk] = aep.root.body.chunks
 
     root_folder_chunk: Aep.Chunk = find_by_list_type(
         chunks=root_chunks, list_type="Fold"

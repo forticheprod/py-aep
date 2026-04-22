@@ -153,7 +153,7 @@ def parse_aep_chunks(file_path: Path) -> dict[str, bytes]:
     with Aep.from_file(str(file_path)) as aep:
         aep._read()
         result: dict[str, bytes] = {}
-        _extract_chunks_recursive(aep.body.chunks, "", result)
+        _extract_chunks_recursive(aep.root.body.chunks, "", result)
         return result
 
 
@@ -330,7 +330,7 @@ def list_aep_chunks(file_path: Path) -> None:
     aep._read()
     print(f"\nChunk tree: {file_path.name}\n")
 
-    for _path, identifier, size, depth, is_list in _walk_chunks_tree(aep.body.chunks):
+    for _path, identifier, size, depth, is_list in _walk_chunks_tree(aep.root.body.chunks):
         indent = "  " * depth
         if is_list:
             print(f"{indent}{identifier}/")

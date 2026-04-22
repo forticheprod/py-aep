@@ -268,7 +268,7 @@ class Project:
 
     @property
     def _root_chunks(self) -> list[Aep.Chunk]:
-        chunks: list[Aep.Chunk] = self._aep.body.chunks
+        chunks: list[Aep.Chunk] = self._aep.root.body.chunks
         return chunks
 
     @property
@@ -279,7 +279,7 @@ class Project:
 
     @linear_blending.setter
     def linear_blending(self, value: bool) -> None:
-        toggle_flag_chunk(self._aep.body, "lnrb", "LnrbBody", value)
+        toggle_flag_chunk(self._aep.root.body, "lnrb", "LnrbBody", value)
 
     @property
     def linearize_working_space(self) -> bool:
@@ -289,7 +289,7 @@ class Project:
 
     @linearize_working_space.setter
     def linearize_working_space(self, value: bool) -> None:
-        toggle_flag_chunk(self._aep.body, "lnrp", "LnrpBody", value)
+        toggle_flag_chunk(self._aep.root.body, "lnrp", "LnrpBody", value)
 
     @property
     def expression_engine(self) -> str:
@@ -311,7 +311,7 @@ class Project:
             propagate_check(self._exen_utf8)
         else:
             list_chunk = create_chunk(
-                self._aep.body,
+                self._aep.root.body,
                 "LIST",
                 "ListBody",
                 list_type="ExEn",
@@ -460,7 +460,7 @@ class Project:
         aep = self._aep
 
         xmp_bytes = aep.xmp_packet.encode("UTF-8")
-        output_size = 8 + aep.len_body + len(xmp_bytes)
+        output_size = 8 + aep.root.len_body + len(xmp_bytes)
         buf = BytesIO(bytearray(output_size))
 
         with KaitaiStream(buf) as io:
@@ -497,7 +497,7 @@ class Project:
             defaults = dict(self._CMS_DEFAULTS)
             defaults[key] = value
             chunk = create_chunk(
-                self._aep.body,
+                self._aep.root.body,
                 "Utf8",
                 "Utf8Body",
                 contents=json.dumps(defaults),

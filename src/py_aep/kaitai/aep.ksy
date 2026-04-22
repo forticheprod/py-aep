@@ -4,15 +4,8 @@ meta:
   file-extension: aep
 
 seq:
-  - id: header
-    contents: RIFX
-  - id: len_body
-    type: u4
-  - id: format
-    contents: "Egg!"
-  - id: body
-    type: chunks
-    size: len_body - format._sizeof
+  - id: root
+    type: chunk
   - id: xmp_packet
     type: str
     encoding: UTF-8
@@ -77,6 +70,7 @@ types:
             '"lnrb"': lnrb_body # Linear blending flag
             '"lnrp"': lnrp_body # Linearize working space flag
             '"LIST"': list_body # List of chunks
+            '"RIFX"': list_body # RIFF big-endian container (root)
             '"mkif"': mkif_body # Mask info
             '"NmHd"': nmhd_body # Marker data
             '"nnhd"': nnhd_body # Project data

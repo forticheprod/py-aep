@@ -105,60 +105,30 @@ class Aep(ReadWriteKaitaiStruct):
         self._root = _root or self
 
     def _read(self):
-        self.header = self._io.read_bytes(4)
-        if not self.header == b"\x52\x49\x46\x58":
-            raise kaitaistruct.ValidationNotEqualError(b"\x52\x49\x46\x58", self.header, self._io, u"/seq/0")
-        self.len_body = self._io.read_u4be()
-        self.format = self._io.read_bytes(4)
-        if not self.format == b"\x45\x67\x67\x21":
-            raise kaitaistruct.ValidationNotEqualError(b"\x45\x67\x67\x21", self.format, self._io, u"/seq/2")
-        self._raw_body = self._io.read_bytes(self.len_body - 4)
-        _io__raw_body = KaitaiStream(BytesIO(self._raw_body))
-        self.body = Aep.Chunks(_io__raw_body, self, self._root)
-        self.body._read()
+        self.root = Aep.Chunk(self._io, self, self._root)
+        self.root._read()
         self.xmp_packet = (self._io.read_bytes_full()).decode(u"UTF-8")
         self._dirty = False
 
 
     def _fetch_instances(self):
         pass
-        self.body._fetch_instances()
+        self.root._fetch_instances()
 
 
     def _write__seq(self, io=None):
         super(Aep, self)._write__seq(io)
-        self._io.write_bytes(self.header)
-        self._io.write_u4be(self.len_body)
-        self._io.write_bytes(self.format)
-        _io__raw_body = KaitaiStream(BytesIO(bytearray(self.len_body - 4)))
-        self._io.add_child_stream(_io__raw_body)
-        _pos2 = self._io.pos()
-        self._io.seek(self._io.pos() + (self.len_body - 4))
-        def handler(parent, _io__raw_body=_io__raw_body):
-            self._raw_body = _io__raw_body.to_byte_array()
-            if len(self._raw_body) != self.len_body - 4:
-                raise kaitaistruct.ConsistencyError(u"raw(body)", self.len_body - 4, len(self._raw_body))
-            parent.write_bytes(self._raw_body)
-        _io__raw_body.write_back_handler = KaitaiStream.WriteBackHandler(_pos2, handler)
-        self.body._write__seq(_io__raw_body)
+        self.root._write__seq(self._io)
         self._io.write_bytes((self.xmp_packet).encode(u"UTF-8"))
         if not self._io.is_eof():
             raise kaitaistruct.ConsistencyError(u"xmp_packet", 0, self._io.size() - self._io.pos())
 
 
     def _check(self):
-        if len(self.header) != 4:
-            raise kaitaistruct.ConsistencyError(u"header", 4, len(self.header))
-        if not self.header == b"\x52\x49\x46\x58":
-            raise kaitaistruct.ValidationNotEqualError(b"\x52\x49\x46\x58", self.header, None, u"/seq/0")
-        if len(self.format) != 4:
-            raise kaitaistruct.ConsistencyError(u"format", 4, len(self.format))
-        if not self.format == b"\x45\x67\x67\x21":
-            raise kaitaistruct.ValidationNotEqualError(b"\x45\x67\x67\x21", self.format, None, u"/seq/2")
-        if self.body._root != self._root:
-            raise kaitaistruct.ConsistencyError(u"body", self._root, self.body._root)
-        if self.body._parent != self:
-            raise kaitaistruct.ConsistencyError(u"body", self, self.body._parent)
+        if self.root._root != self._root:
+            raise kaitaistruct.ConsistencyError(u"root", self._root, self.root._root)
+        if self.root._parent != self:
+            raise kaitaistruct.ConsistencyError(u"root", self, self.root._parent)
         self._dirty = False
 
     class AcerBody(ReadWriteKaitaiStruct):
@@ -802,6 +772,12 @@ class Aep(ReadWriteKaitaiStruct):
                 _io__raw_body = KaitaiStream(BytesIO(self._raw_body))
                 self.body = Aep.Chunks(_io__raw_body, self, self._root)
                 self.body._read()
+            elif _on == u"RIFX":
+                pass
+                self._raw_body = self._io.read_bytes(self.len_body)
+                _io__raw_body = KaitaiStream(BytesIO(self._raw_body))
+                self.body = Aep.ListBody(_io__raw_body, self, self._root)
+                self.body._read()
             elif _on == u"Roou":
                 pass
                 self._raw_body = self._io.read_bytes(self.len_body)
@@ -1217,6 +1193,9 @@ class Aep(ReadWriteKaitaiStruct):
             elif _on == u"RCom":
                 pass
                 self.body._fetch_instances()
+            elif _on == u"RIFX":
+                pass
+                self.body._fetch_instances()
             elif _on == u"Roou":
                 pass
                 self.body._fetch_instances()
@@ -1544,6 +1523,19 @@ class Aep(ReadWriteKaitaiStruct):
                 _io__raw_body.write_back_handler = KaitaiStream.WriteBackHandler(_pos2, handler)
                 self.body._write__seq(_io__raw_body)
             elif _on == u"RCom":
+                pass
+                _io__raw_body = KaitaiStream(BytesIO(bytearray(self.len_body)))
+                self._io.add_child_stream(_io__raw_body)
+                _pos2 = self._io.pos()
+                self._io.seek(self._io.pos() + (self.len_body))
+                def handler(parent, _io__raw_body=_io__raw_body):
+                    self._raw_body = _io__raw_body.to_byte_array()
+                    if len(self._raw_body) != self.len_body:
+                        raise kaitaistruct.ConsistencyError(u"raw(body)", self.len_body, len(self._raw_body))
+                    parent.write_bytes(self._raw_body)
+                _io__raw_body.write_back_handler = KaitaiStream.WriteBackHandler(_pos2, handler)
+                self.body._write__seq(_io__raw_body)
+            elif _on == u"RIFX":
                 pass
                 _io__raw_body = KaitaiStream(BytesIO(bytearray(self.len_body)))
                 self._io.add_child_stream(_io__raw_body)
@@ -2433,6 +2425,12 @@ class Aep(ReadWriteKaitaiStruct):
                 if self.body._parent != self:
                     raise kaitaistruct.ConsistencyError(u"body", self, self.body._parent)
             elif _on == u"RCom":
+                pass
+                if self.body._root != self._root:
+                    raise kaitaistruct.ConsistencyError(u"body", self._root, self.body._root)
+                if self.body._parent != self:
+                    raise kaitaistruct.ConsistencyError(u"body", self, self.body._parent)
+            elif _on == u"RIFX":
                 pass
                 if self.body._root != self._root:
                     raise kaitaistruct.ConsistencyError(u"body", self._root, self.body._root)
