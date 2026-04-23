@@ -63,6 +63,7 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 - All functions require type hints (`disallow_untyped_defs = true`)
 - Use `from __future__ import annotations` and modern type hints (`list[int]` not `List[int]`)
 - Conditional imports for TYPE_CHECKING to avoid circular imports
+- Move imports used **only in annotations** (not at runtime) into `if TYPE_CHECKING:` blocks - with `from __future__ import annotations`, all annotations are strings at runtime so type-only imports (`IO`, `Any`, `Callable`, etc.) belong in TYPE_CHECKING
 - PEP8 naming: snake_case for functions/variables, PascalCase for classes
 - Use `pathlib` for file paths, f-strings for formatting
 - No spaces on empty lines
