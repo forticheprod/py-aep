@@ -25,6 +25,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "attrs>=20.1.0",
     "kaitaistruct>=0.9",
     "importlib_metadata; python_version < '3.8'",
     "typing_extensions>=3.7; python_version < '3.8'",
