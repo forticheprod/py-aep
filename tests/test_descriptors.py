@@ -27,7 +27,7 @@ class _FakeBody:
 class _FakeParent:
     """Minimal stub for a parent chunk with _check and len_body."""
 
-    _parent = None
+    _parent: _FakeParent | None = None
     len_body = 100
 
     def __init__(self, child: _FakeBody) -> None:
@@ -95,18 +95,18 @@ class TestChunkFieldMutualExclusion:
             )
 
     def test_reverse_seq_field_only_accepted(self) -> None:
-        cf = ChunkField("_body", "field", reverse_seq_field=int)
+        cf = ChunkField[int]("_body", "field", reverse_seq_field=int)
         assert cf.reverse_seq_field is int
         assert cf.reverse_instance_field is None
 
     def test_reverse_instance_field_only_accepted(self) -> None:
         fn = lambda v, b: {"field": v}  # noqa: E731
-        cf = ChunkField("_body", "field", reverse_instance_field=fn)
+        cf = ChunkField[int]("_body", "field", reverse_instance_field=fn)
         assert cf.reverse_seq_field is None
         assert cf.reverse_instance_field is fn
 
     def test_neither_accepted(self) -> None:
-        cf = ChunkField("_body", "field")
+        cf = ChunkField[int]("_body", "field")
         assert cf.reverse_seq_field is None
         assert cf.reverse_instance_field is None
 

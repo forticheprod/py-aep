@@ -1,14 +1,19 @@
 # py_aep - AI Coding Agent Instructions
 
 ## Project Overview
-A Python library for parsing Adobe After Effects project files (.aep). The binary RIFX format is decoded using [Kaitai Struct](https://kaitai.io/), then transformed into typed Python classes representing the AE object model (Application > Project > Items > Layers > Properties).
+A Python library for parsing Adobe After Effects project files (.aep). The binary RIFX format is decoded into typed Python classes representing the AE object model (Application > Project > Items > Layers > Properties). Two binary I/O layers coexist during migration:
+- **`kaitai/`** (legacy) - Kaitai Struct-based, auto-generated from `aep.ksy`
+- **`binary/`** (new) - attrs-based chunk classes with `fmt_field()` declarative fields
 
 ## Architecture
 
 ### Data Flow
 ```
-.aep file > Kaitai (kaitai/aep.ksy) > Raw chunks > Parsers > Model classes
+.aep file > Binary I/O (binary/ or kaitai/) > Raw chunks > Parsers > Model classes
 ```
+The `binary/` layer reads/writes typed `Chunk` subclasses directly.
+The `kaitai/` layer uses auto-generated `Aep` classes from `aep.ksy`.
+Parsers currently consume Kaitai chunks; migration to `binary/` chunks is in progress.
 
 ### Property Parsing Pipeline
 Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#property--effect-parsing-flow) for the full diagram.
@@ -18,7 +23,7 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
 3. **Post-processing**: `synthesize_layer_properties()` runs a single pass (in `parsers/synthesis.py`) handling transform defaults, top-level group ordering, recursive child synthesis via `_reorder_and_fill()`, and min/max bounds. Effect param synthesis remains a separate dynamic step inside `parse_effect()`. Synthesis uses `_PropSpec` (leaf Property) and `_GroupSpec` (empty PropertyGroup) with `ProxyBody` for chunk bodies.
 
 ### Key Directories
-- **`src/py_aep/kaitai/`** - Binary parsing layer
+- **`src/py_aep/kaitai/`** - Binary parsing layer (legacy, being replaced by `binary/`)
   - `aep.ksy` - Kaitai schema defining RIFX chunk structure (auto-generates `aep.py`)
   - `utils.py` - Chunk filtering helpers (`find_by_type`, `filter_by_list_type`)
   - `patches.py` - Monkey-patches on auto-generated Kaitai body classes (e.g. `_recompute_size` for variable-size bodies)
@@ -26,6 +31,14 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
   - `proxy.py` - `ProxyBody` for synthesized properties without backing chunks
   - `materializer.py` - Chunk builders for property materialization on first write
   - `transforms.py` / `reverses.py` - Transform and reverse functions for binary value conversion
+- **`src/py_aep/binary/`** - New binary I/O layer (attrs-based, replacing Kaitai)
+  - `chunk.py` - `Chunk` base, `ListChunk`, `ContainerChunk`, `read_aep()`/`write_aep()`
+  - `fmt_field.py` - `fmt_field()` declarative field-format binding + `_struct_info()` introspection
+  - `bitfield.py` - `BitField` descriptor for single-bit flag access
+  - `registry.py` - `@register` decorator + `CHUNK_TYPES` dispatch table
+  - `bin_utils.py` - `read_fmt()`, `write_fmt()`, `read_bytes()`, `write_bytes()`
+  - Chunk modules: `scalar_chunks.py`, `property_chunks.py`, `item_chunks.py`, `composition_chunks.py`, `layer_chunks.py`, `misc_chunks.py`, `footage_chunks.py`, `render_chunks.py`
+  - **Chunk subclass rules**: use `fmt_field()` for fixed-layout fields (generic `Chunk.read()`/`write()` handles I/O). Use `BitField` for single-bit flags. Chunks with no typed fields (raw bytes only) do NOT override `read()` - base `Chunk.read()` stores body as `data: bytes`. Only override `read()` when the chunk needs context parameters (e.g. `is_le`, `is_color`) or polymorphic dispatch.
 - **`src/py_aep/__init__.py`** - Public API entry point: `parse()`
 - **`src/py_aep/parsers/`** - Transform raw chunks into models
   - `application.py`, `project.py`, `layer.py`, `property.py`, `synthesis.py`, `effect.py`, ...
@@ -70,7 +83,7 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 - No em dashes (`—`) nor en-dashes (`–`); use regular dashes (`-`)
 - In docstrings, use single backticks (`` ` ``) not double (` `` `)
 - Use `>` or `->` instead of unicode arrow symbols (`→`)
-- **No `struct` module** - all binary decoding must be in `kaitai/aep.ksy`
+- **No `struct` module in `kaitai/`** - binary decoding in the legacy layer must be in `kaitai/aep.ksy`. The new `binary/` layer uses `struct` via `fmt_field()` and `bin_utils`.
 - **Constructor param ordering**: `__init__` parameters follow: private (`_`-prefixed chunk refs) -> back-references (`project`, `parent_folder`, `containing_comp`, `parent`, `comp`) -> public domain params. Call sites must match this order.
 - **No backward compatibility** - when refactoring internal APIs (renaming functions, replacing classes with factory methods, etc.), update all call sites directly. Do not add shims, aliases, or deprecation wrappers for internal code.
 - **Idempotent round-trip** - `parse()` then `save()` must produce byte-identical output. Parsers must not mutate Kaitai chunk data (use `__dict__["field"]` to modify without side effects when needed). Beware of `strz` for fixed-size string fields in `aep.ksy`.
@@ -85,6 +98,8 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 - **No docstrings that restate the function name or signature**. ExtendScript-sourced docstrings on model fields are fine.
 
 ### Adding New Parsed Data
+
+**Via Kaitai (legacy path):**
 1. Find/add chunk type in `kaitai/aep.ksy`
 2. Create/update model class in `models/` with docstrings referencing AE equivalents
 3. Add parser in `parsers/`:
@@ -95,6 +110,13 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
    ```
 4. Validate parsed values against ExtendScript using `aep-validate` (see [CLI Tools](#cli-tools))
 5. Add test case in `tests/test_models_*.py` using sample .aep files
+
+**Via binary/ (new path):**
+1. Add chunk class in the appropriate `binary/*_chunks.py` module
+2. Use `fmt_field()` for fixed-layout fields, `BitField` for flags, `optional=True` for version-dependent fields
+3. Register with `@register("xxxx")`
+4. Add round-trip test in `tests/test_binary_io.py`
+5. Update model and parser to consume the new chunk type
 
 ### Binary Format Debugging
 Use `aep-compare` to investigate unknown binary fields by diffing `.aep` files that differ in a single AE setting. For reverse-engineering bitflags in `aep.ksy`:
@@ -137,10 +159,18 @@ tdbs_chunk.body.tdb4          # chunks[2] - property metadata
 Each instance has an `if` guard on `list_type`, so accessing e.g. `.lhd3` on a non-`list` LIST returns `None`. Use `find_by_type` when the LIST type is unknown or when a function handles multiple LIST types (e.g. `parse_layer` handles both `Layr` and `SecL`).
 
 ### Chunk Data Access
-Chunk attributes live on `chunk.body`, not on the chunk itself. Always use explicit `chunk.body.X` access:
+
+**Kaitai (legacy):** Chunk attributes live on `chunk.body`, not on the chunk itself:
 ```python
 chunk.body.list_type     # the list_type of a LIST chunk
 cdta_chunk.body.time_scale  # a typed body field
+```
+
+**binary/ (new):** Chunk attributes live directly on the chunk (no `.body` indirection):
+```python
+chunk.list_type          # ListChunk attribute
+cdta_chunk.time_scale    # fmt_field attribute
+chunk.data               # raw bytes for untyped chunks
 ```
 
 ### Value Mapping Pattern

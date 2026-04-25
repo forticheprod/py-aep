@@ -36,7 +36,7 @@ def parse_item(
         project: The project.
         parent_folder: The parent folder.
         otln_entries: Otln entries for this composition (from the
-            associated LIST:FEE chunk). ``None`` for non-compositions.
+            associated LIST:FEE chunk). `None` for non-compositions.
     """
     child_chunks = item_chunk.body.chunks
 

@@ -1,10 +1,10 @@
 """Griffe extension that reclassifies @property functions as attributes.
 
-Griffe's static analysis classifies ``@property`` decorated methods as
-``Function`` objects. When a property has a setter, the setter overwrites
+Griffe's static analysis classifies `@property` decorated methods as
+`Function` objects. When a property has a setter, the setter overwrites
 the getter - losing the docstring and return annotation. This extension
 captures getter info during function processing, then converts property
-functions to ``Attribute`` objects in the class members phase.
+functions to `Attribute` objects in the class members phase.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from griffe import Attribute, Class, Extension, Function
 
 
 class PropertiesAsAttributes(Extension):
-    """Convert ``@property`` functions into ``Attribute`` objects."""
+    """Convert `@property` functions into `Attribute` objects."""
 
     def __init__(self) -> None:
         super().__init__()

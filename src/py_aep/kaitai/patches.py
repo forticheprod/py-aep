@@ -1,8 +1,8 @@
 """Monkey-patches for auto-generated Kaitai body classes.
 
 Variable-size body types gain a `_recompute_size` method so that
-`propagate_check` can use duck typing instead of ``isinstance`` checks.
-Import this module once at startup (done by ``kaitai/__init__.py``).
+`propagate_check` can use duck typing instead of `isinstance` checks.
+Import this module once at startup (done by `kaitai/__init__.py`).
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Generate roundtrip test files for manual verification in After Effects.
 
 Each output file starts from a base .aep and applies a group of related
-modifications, then saves to ``samples/roundtrip/``. The JSX companion
-script ``scripts/jsx/open_roundtrip_files.jsx`` can then open each file
+modifications, then saves to `samples/roundtrip/`. The JSX companion
+script `scripts/jsx/open_roundtrip_files.jsx` can then open each file
 in AE to confirm it loads without errors.
 
 Usage::

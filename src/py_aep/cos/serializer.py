@@ -1,9 +1,9 @@
 """Serialize Python objects back to COS (Carousel Object Syntax) binary.
 
 This is the inverse of `CosParser.parse`: it takes a nested Python
-structure (dicts, lists, strings, numbers, bools, ``None``,
+structure (dicts, lists, strings, numbers, bools, `None`,
 `IndirectObject`, `IndirectReference`, `Stream`) and emits COS-format
-bytes suitable for writing back into a btdk chunk's ``binary_data``.
+bytes suitable for writing back into a btdk chunk's `binary_data`.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def serialize(data: Any) -> bytes:
 
     Args:
         data: The Python object tree to serialize. May be a dict, list,
-            str, int, float, bool, ``None``, ``bytes``,
+            str, int, float, bool, `None`, `bytes`,
             `IndirectObject`, `IndirectReference`, or `Stream`.
 
     Returns:
@@ -106,8 +106,8 @@ def _write_value(buf: io.BytesIO, value: Any, *, top_level: bool = False) -> Non
 def _format_float(value: float) -> bytes:
     """Format a float matching the COS parser's conventions.
 
-    The parser produces Python ``float`` from strings like ``1.5`` or
-    ``0.123``. We output enough precision to round-trip but strip
+    The parser produces Python `float` from strings like `1.5` or
+    `0.123`. We output enough precision to round-trip but strip
     trailing zeros.
     """
     # Use repr-level precision and strip trailing zeros
@@ -116,14 +116,14 @@ def _format_float(value: float) -> bytes:
 
 
 def _write_dict(buf: io.BytesIO, d: dict[str, Any]) -> None:
-    """Write a COS dictionary: ``<< /key value /key value >>``."""
+    """Write a COS dictionary: `<< /key value /key value >>`."""
     buf.write(b"<<")
     _write_dict_content(buf, d)
     buf.write(b">>")
 
 
 def _write_dict_content(buf: io.BytesIO, d: dict[str, Any]) -> None:
-    """Write dict key/value pairs without the ``<<``/``>>`` delimiters.
+    """Write dict key/value pairs without the `<<`/`>>` delimiters.
 
     Used for top-level dicts (which the parser emits without delimiters)
     and for nested dicts.
@@ -134,20 +134,20 @@ def _write_dict_content(buf: io.BytesIO, d: dict[str, Any]) -> None:
 
 
 def _write_array(buf: io.BytesIO, lst: list[Any]) -> None:
-    """Write a COS array: ``[ val val val ]``."""
+    """Write a COS array: `[ val val val ]`."""
     buf.write(b"[")
     _write_array_content(buf, lst)
     buf.write(b"]")
 
 
 def _write_array_content(buf: io.BytesIO, lst: list[Any]) -> None:
-    """Write array elements without ``[``/``]`` delimiters."""
+    """Write array elements without `[`/`]` delimiters."""
     for item in lst:
         _write_value(buf, item)
 
 
 def _write_identifier(buf: io.BytesIO, name: str) -> None:
-    """Write a COS identifier (name object): ``/foo``."""
+    """Write a COS identifier (name object): `/foo`."""
     buf.write(b"/")
     escaped = ""
     for ch in name:
@@ -160,7 +160,7 @@ def _write_identifier(buf: io.BytesIO, name: str) -> None:
 
 
 def _write_string(buf: io.BytesIO, s: str) -> None:
-    """Write a COS string literal: ``(escaped content)``.
+    """Write a COS string literal: `(escaped content)`.
 
     Strings that contain non-ASCII characters are encoded as UTF-16 BE
     with a BOM prefix, matching the convention used by After Effects.
@@ -200,14 +200,14 @@ def _escape_string(raw: bytes) -> bytes:
 
 
 def _write_hex_string(buf: io.BytesIO, data: bytes) -> None:
-    """Write a COS hex string: ``<hexdata>``."""
+    """Write a COS hex string: `<hexdata>`."""
     buf.write(b"<")
     buf.write(data.hex().encode("ascii"))
     buf.write(b">")
 
 
 def _write_indirect_object(buf: io.BytesIO, obj: IndirectObject) -> None:
-    """Write ``N G obj <data> endobj``."""
+    """Write `N G obj <data> endobj`."""
     buf.write(str(obj.object_number).encode("ascii"))
     buf.write(b" ")
     buf.write(str(obj.generation_number).encode("ascii"))
@@ -217,7 +217,7 @@ def _write_indirect_object(buf: io.BytesIO, obj: IndirectObject) -> None:
 
 
 def _write_indirect_reference(buf: io.BytesIO, ref: IndirectReference) -> None:
-    """Write ``N G R``."""
+    """Write `N G R`."""
     buf.write(str(ref.object_number).encode("ascii"))
     buf.write(b" ")
     buf.write(str(ref.generation_number).encode("ascii"))
@@ -225,7 +225,7 @@ def _write_indirect_reference(buf: io.BytesIO, ref: IndirectReference) -> None:
 
 
 def _write_stream(buf: io.BytesIO, stream: Stream) -> None:
-    """Write ``<< dict >> stream\\n<bytes>endstream``."""
+    """Write `<< dict >> stream\\n<bytes>endstream`."""
     _write_dict(buf, stream.dictionary)
     buf.write(b"stream\n")
     buf.write(stream.data)

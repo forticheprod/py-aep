@@ -49,12 +49,12 @@ def _reorder_and_fill(
         skip: Match names to skip synthesis for.  Checked only when the
             match name is **not** already in the container - existing
             children are always preserved in canonical position.
-        value_overrides: ``{match_name: (value, default_value)}`` for
-            overriding synthesized property values.  When ``None``, uses
-            ``spec.value`` / ``spec.default_value``.
+        value_overrides: `{match_name: (value, default_value)}` for
+            overriding synthesized property values.  When `None`, uses
+            `spec.value` / `spec.default_value`.
         tail_mode: What non-spec children to append after the canonical
-            entries: ``"groups"`` (only `PropertyGroup`), ``"all"``
-            (everything), or ``"none"`` (nothing).
+            entries: `"groups"` (only `PropertyGroup`), `"all"`
+            (everything), or `"none"` (nothing).
     """
     existing: dict[str, Property | PropertyGroup] = {}
     for child in container.properties:
