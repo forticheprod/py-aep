@@ -26,13 +26,12 @@ from .specs import _USE_VALUE
 if typing.TYPE_CHECKING:
     from typing import Any
 
-    from py_aep.models.properties.marker import MarkerValue
-    from py_aep.models.properties.shape import Shape
-    from py_aep.models.text.text_document import TextDocument
-
     from ...kaitai import Aep
+    from ..text.text_document import TextDocument
     from .keyframe import Keyframe
+    from .marker import MarkerValue
     from .property_group import PropertyGroup
+    from .shape import Shape
     from .specs import _PropSpec
 
 logger = logging.getLogger(__name__)

@@ -172,9 +172,9 @@ def _get_markers(
 def _apply_otln_to_layers(entries: list[Aep.OtlnEntry], layers: list[Layer]) -> None:
     """Store otln root entries on matching layers.
 
-    Layer boundaries are found using ``is_layer_marker`` entries that appear
+    Layer boundaries are found using `is_layer_marker` entries that appear
     exactly once per layer. The first entry of each layer block is the
-    layer root (a GROUP entry with ``is_property=0``, ``is_sub_entry=0``).
+    layer root (a GROUP entry with `is_property=0`, `is_sub_entry=0`).
     """
     if not entries or not layers:
         return

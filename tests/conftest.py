@@ -12,8 +12,7 @@ from py_aep import Application, Project
 from py_aep import parse as _parse_aep
 
 if TYPE_CHECKING:
-    from py_aep.models.items.comp import CompItem
-
+    from py_aep.models.items.composition import CompItem
     from py_aep.models.items.folder import FolderItem
     from py_aep.models.items.footage import FootageItem
     from py_aep.models.layers.layer import Layer
@@ -28,6 +27,7 @@ def parse_project(aep_file_path: str | os.PathLike[str]) -> Project:
 
     Results are cached for the session so the same file is only parsed once.
     """
+    aep_file_path = os.fspath(aep_file_path)
     return parse_app(aep_file_path).project
 
 

@@ -25,8 +25,8 @@ from typing import TYPE_CHECKING, cast
 from py_aep.enums import KeyframeInterpolationType
 
 if TYPE_CHECKING:
-    from py_aep.models.properties.keyframe import Keyframe
-    from py_aep.models.properties.keyframe_ease import KeyframeEase
+    from ..models.properties.keyframe import Keyframe
+    from ..models.properties.keyframe_ease import KeyframeEase
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0  # 16.6667 %
 

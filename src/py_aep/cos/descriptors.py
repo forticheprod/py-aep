@@ -2,9 +2,9 @@
 
 Each descriptor reads from / writes to a COS dict stored on the model
 instance, so that accessing a model attribute lazily extracts the value
-from the underlying COS data.  After every ``__set__``, the model's
-``_propagate_cos()`` hook is called to re-serialize the COS dict back
-to the btdk chunk's ``binary_data``.
+from the underlying COS data.  After every `__set__`, the model's
+`_propagate_cos()` hook is called to re-serialize the COS dict back
+to the btdk chunk's `binary_data`.
 
 This module mirrors the role of
 `kaitai.descriptors.ChunkField` but operates on nested Python dicts
@@ -23,26 +23,26 @@ _SENTINEL = object()
 class CosField(Generic[T]):
     """Descriptor that proxies a single key on a COS dict.
 
-    The dict is retrieved from the model instance via ``getattr(obj,
-    dict_attr)``.  When the dict is ``None`` the descriptor returns
-    ``default`` (which defaults to ``None``).
+    The dict is retrieved from the model instance via `getattr(obj,
+    dict_attr)`.  When the dict is `None` the descriptor returns
+    `default` (which defaults to `None`).
 
-    Unlike `ChunkField`, this descriptor is scalar-only: ``reverse``
+    Unlike `ChunkField`, this descriptor is scalar-only: `reverse`
     always returns a single value written to one dict key.
 
     Args:
         dict_attr: Name of the model attribute holding the COS sub-dict
-            (e.g. ``"_char_style"``).
-        key: String key into that dict (e.g. ``"1"`` for font_size).
+            (e.g. `"_char_style"`).
+        key: String key into that dict (e.g. `"1"` for font_size).
         transform: Optional callable applied when *getting* (COS value
             -> user-facing value).
         reverse: 1-arg callable applied when *setting* (user-facing ->
             COS value). Always returns a scalar.
-        read_only: When ``True``, the field cannot be set.
+        read_only: When `True`, the field cannot be set.
         validate: Optional callable called with the user-facing value
-            before any ``reverse`` transform.
-        default: Value returned when the dict is ``None`` or the key is
-            absent. Defaults to ``None``.
+            before any `reverse` transform.
+        default: Value returned when the dict is `None` or the key is
+            absent. Defaults to `None`.
     """
 
     def __init__(
@@ -123,7 +123,7 @@ class CosField(Generic[T]):
     ) -> CosField[bool | None]:
         """Create a CosField for boolean flags.
 
-        Bakes in ``transform=bool`` and ``reverse=int`` so call
+        Bakes in `transform=bool` and `reverse=int` so call
         sites only need the dict attribute and key.
         """
         return cls(  # type: ignore[return-value]
@@ -148,9 +148,9 @@ class CosField(Generic[T]):
         """Create a CosField for enum-backed fields.
 
         When *map* is provided, it is used as the lookup table (COS int
-        value -> enum member).  Otherwise a direct ``enum_cls(value)``
+        value -> enum member).  Otherwise a direct `enum_cls(value)`
         call is attempted.  *reverse_map* inverts the mapping; if not
-        given, ``int(value)`` is used.
+        given, `int(value)` is used.
         """
         if map is not None:
             kwargs.setdefault("transform", lambda v: map.get(v))  # type: ignore[arg-type]

@@ -9,13 +9,12 @@ from ...kaitai.descriptors import ChunkField
 from ...kaitai.utils import propagate_check
 
 if typing.TYPE_CHECKING:
-    from py_aep.models.properties.keyframe_ease import KeyframeEase
-    from py_aep.models.properties.marker import MarkerValue
-    from py_aep.models.properties.property import Property
-    from py_aep.models.properties.shape import Shape
-    from py_aep.models.text.text_document import TextDocument
-
     from ...kaitai import Aep
+    from ..text.text_document import TextDocument
+    from .keyframe_ease import KeyframeEase
+    from .marker import MarkerValue
+    from .property import Property
+    from .shape import Shape
 
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0
@@ -319,7 +318,7 @@ class Keyframe:
         """Apply interpolation-type overrides to temporal ease.
 
         For BEZIER keyframes the binary-backed ease objects are returned
-        directly (with ``_speed_factor`` already set).  For LINEAR
+        directly (with `_speed_factor` already set).  For LINEAR
         keyframes the speed is computed from the segment between adjacent
         keyframes.  For HOLD keyframes the speed is always 0.
         """
