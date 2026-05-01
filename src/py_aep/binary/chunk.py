@@ -40,6 +40,7 @@ class Chunk:
 
     chunk_type: str = ""
     data: bytes = b""
+    synthetic: bool = field(default=False, repr=False)
 
     @classmethod
     def read(
@@ -262,6 +263,8 @@ class ListChunk(Chunk):
             written += write_bytes(fp, self.data)
         else:
             for chunk in self.chunks:
+                if chunk.synthetic:
+                    continue
                 written += write_chunk(fp, chunk)
         return written
 
@@ -297,6 +300,8 @@ class ContainerChunk(Chunk):
     def write(self, fp: IO[bytes]) -> int:
         written = 0
         for chunk in self.chunks:
+            if chunk.synthetic:
+                continue
             written += write_chunk(fp, chunk)
         return written
 

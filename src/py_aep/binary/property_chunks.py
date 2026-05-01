@@ -35,12 +35,14 @@ class TdsbChunk(Chunk):
     through the raw byte fields.
     """
 
+    chunk_type: str = "tdsb"
+
     roto_bezier: int = fmt_field("B")
     """RotoBezier flag for mask shapes (byte 0). 1 = enabled."""
 
     _pad1: int = fmt_field("B", repr=False)
     _lock_flags: int = fmt_field("B", repr=False)
-    _enable_flags: int = fmt_field("B", repr=False)
+    _enable_flags: int = fmt_field("B", default=1, repr=False)
     _trailing: bytes = field(default=b"", repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
@@ -80,11 +82,12 @@ class TdsbChunk(Chunk):
 @define
 class Tdb4Chunk(Chunk):
     """Property metadata chunk (124 bytes)."""
+    chunk_type: str = "tdb4"
 
     _magic: int = fmt_field("H", default=0xDB99, repr=False)
-    dimensions: int = fmt_field("H")
+    dimensions: int = fmt_field("H", default=1)
     _pad1: int = fmt_field("B", repr=False)
-    _spatial_static_flags: int = fmt_field("B", repr=False)
+    _spatial_static_flags: int = fmt_field("B", default=1, repr=False)
     _pad2: bytes = fmt_field("5s", default=b"\x00" * 5, repr=False)
     _cvot_flags: int = fmt_field("B", repr=False)
     _pad3: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
@@ -102,7 +105,7 @@ class Tdb4Chunk(Chunk):
     _pad7: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
     _pad8: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
     _pad9: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
-    _expr_flags: int = fmt_field("B", repr=False)
+    _expr_flags: int = fmt_field("B", default=1, repr=False)
     _pad10: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
     _trailing: bytes = field(default=b"", repr=False)
 
@@ -130,6 +133,8 @@ class CdatChunk(Chunk):
     Normally big-endian.  When `is_le` is true (inside an OTST
     orientation list), values are stored little-endian.
     """
+
+    chunk_type: str = "cdat"
 
     values: list[float] = Factory(list)
     is_le: bool = False

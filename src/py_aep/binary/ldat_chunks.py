@@ -78,6 +78,7 @@ _NUM_VALUE: dict[int, int] = {
 @define
 class Lhd3Chunk(Chunk):
     """Keyframe list header. Stores item count, size, and raw type."""
+    chunk_type: str = "lhd3"
 
     _prefix: bytes = fmt_field("10s")
     count: int = fmt_field("H")
@@ -390,6 +391,8 @@ def _read_item(data: bytes, item_type: LdatItemType) -> Any:
 @define
 class LdatChunk(Chunk):
     """Keyframe / shape / settings data items."""
+
+    chunk_type: str = "ldat"
 
     items: list[Any] = Factory(list)
     item_type: LdatItemType = LdatItemType.unknown

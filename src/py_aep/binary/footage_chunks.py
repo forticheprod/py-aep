@@ -36,6 +36,8 @@ class SspcChunk(Chunk):
     section is preserved for round-trip fidelity.
     """
 
+    chunk_type: str = "sspc"
+
     # -- Reserved (bytes 0-21) ---------------------------------------------
     _reserved_00: bytes = fmt_field("22s", default=b"\x00" * 22, repr=False)
 
@@ -202,6 +204,8 @@ class OptiChunk(Chunk):
     dispatches to variant subclasses; unknown asset types fall back
     to raw bytes.
     """
+
+    chunk_type: str = "opti"
 
     @classmethod
     def read(

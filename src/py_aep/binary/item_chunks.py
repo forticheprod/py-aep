@@ -27,6 +27,8 @@ class IdtaChunk(Chunk):
     reserved/unknown and preserved for round-trip fidelity.
     """
 
+    chunk_type: str = "idta"
+
     item_type: int = fmt_field("H")
     """Item type enum: 1=folder, 4=composition, 7=footage."""
 
@@ -67,6 +69,8 @@ class HeadChunk(Chunk):
     The version is packed into a single 32-bit word. Individual fields
     are exposed as @property accessors.
     """
+
+    chunk_type: str = "head"
 
     _reserved_00: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
     _version_word: int = fmt_field("I", repr=False)
@@ -128,6 +132,8 @@ class NnhdChunk(Chunk):
     Contains time display format, frame count settings, color depth,
     and various toggle flags.
     """
+
+    chunk_type: str = "nnhd"
 
     _reserved_00: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
     _display_byte: int = fmt_field("B", repr=False)

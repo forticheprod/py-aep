@@ -33,6 +33,8 @@ class RouuChunk(Chunk):
     and channel settings.
     """
 
+    chunk_type: str = "Roou"
+
     _magic: bytes = fmt_field("4s", default=b"FXTC", repr=False)
     video_codec: bytes = fmt_field("4s", default=b"\x00" * 4)
     """Video codec 4-char code."""
@@ -99,6 +101,8 @@ class RoptChunk(Chunk):
     dispatches to variant subclasses; unknown format codes fall back
     to raw bytes.
     """
+
+    chunk_type: str = "Ropt"
 
     @classmethod
     def read(
@@ -244,6 +248,8 @@ class RoutChunk(Chunk):
     4-byte header followed by 4 bytes per item, each with a render
     flag at bit 6 of the first byte.
     """
+
+    chunk_type: str = "Rout"
 
     header: bytes = fmt_field("4s", default=b"\x00" * 4)
     items: list[RoutItem] = items_field(RoutItem, 4)
