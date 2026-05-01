@@ -32,6 +32,8 @@ class PrinChunk(Chunk):
     Contains the match name and display name of the active 3D renderer.
     """
 
+    chunk_type: str = "prin"
+
     _reserved_00: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
     match_name: str = fmt_field("48s", default="", encoding="ascii")
     """Internal match name (e.g. 'ADBE Advanced 3d')."""
@@ -55,6 +57,8 @@ class MkifChunk(Chunk):
 
     Contains mask flags, mode, and color.
     """
+
+    chunk_type: str = "mkif"
 
     inverted: int = fmt_field("B")
     """1 = inverted, 0 = normal."""
@@ -93,6 +97,8 @@ class ShphChunk(Chunk):
     [0, 1] relative to this bounding box.
     """
 
+    chunk_type: str = "shph"
+
     _reserved_00: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
     _flags: int = fmt_field("B", repr=False)
     """Byte 3: bit 3 = open."""
@@ -127,6 +133,8 @@ class NmhdChunk(Chunk):
 
     Contains marker flags, duration, and label color.
     """
+
+    chunk_type: str = "NmHd"
 
     _reserved_00: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
     _marker_flags: int = fmt_field("B", repr=False)
@@ -166,6 +174,8 @@ class FipsChunk(Chunk):
     for guides, rulers, grid, etc. Bitfield flags are exposed via
     `BitField` descriptors.
     """
+
+    chunk_type: str = "fips"
 
     _pad_00: bytes = fmt_field("7s", default=b"\x00" * 7, repr=False)
     channels: int = fmt_field("B")
@@ -266,6 +276,8 @@ class PardChunk(Chunk):
     Common header (56 bytes): 15s pad, B property_control_type,
     32s name (windows-1252), 8s pad.
     """
+
+    chunk_type: str = "pard"
 
     @classmethod
     def read(
@@ -511,6 +523,7 @@ _FTH5_ITEM_SIZE = 32
 @define
 class Fth5Chunk(Chunk):
     """Variable-width mask feather points (32 bytes per point)."""
+    chunk_type: str = "fth5"
 
     points: list[FeatherPoint] = items_field(FeatherPoint, 32)
     _trailing: bytes = field(default=b"", repr=False)

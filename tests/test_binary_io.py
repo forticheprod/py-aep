@@ -1933,3 +1933,210 @@ class TestLdatContextResolver:
             [Chunk(chunk_type="lhd3", data=b"\x00" * 24)], ctx
         )
         assert result == {}
+
+
+# -----------------------------------------------------------------------
+# Group 9: Synthetic flag
+# -----------------------------------------------------------------------
+
+
+class TestSyntheticFlag:
+    def test_default_false(self) -> None:
+        c = Chunk(chunk_type="tdsb")
+        assert c.synthetic is False
+
+    def test_explicit_true(self) -> None:
+        c = Chunk(chunk_type="tdsb", synthetic=True)
+        assert c.synthetic is True
+
+    def test_list_chunk_skips_synthetic_children(self) -> None:
+        real = Chunk(chunk_type="aaaa", data=b"\x01")
+        synth = Chunk(chunk_type="bbbb", data=b"\x02", synthetic=True)
+        lst = ListChunk(list_type="test", chunks=[real, synth])
+        buf = BytesIO()
+        write_chunk(buf, lst)
+        raw = buf.getvalue()
+        # Body = list_type (4) + header+body of real child only
+        # Real child: header (8) + body (1) + pad (1)
+        assert b"\x01" in raw
+        assert b"\x02" not in raw
+
+    def test_container_chunk_skips_synthetic_children(self) -> None:
+        from py_aep.binary.chunk import ContainerChunk
+
+        real = Chunk(chunk_type="cccc", data=b"\x03")
+        synth = Chunk(chunk_type="dddd", data=b"\x04", synthetic=True)
+        cont = ContainerChunk(chunk_type="tdsn", chunks=[real, synth])
+        buf = BytesIO()
+        write_chunk(buf, cont)
+        raw = buf.getvalue()
+        assert b"\x03" in raw
+        assert b"\x04" not in raw
+
+    def test_synthetic_not_in_repr(self) -> None:
+        c = Chunk(chunk_type="test", synthetic=True)
+        assert "synthetic" not in repr(c)
+
+
+# -----------------------------------------------------------------------
+# Group 10: fmt_field defaults on property chunks
+# -----------------------------------------------------------------------
+
+
+class TestPropertyChunkDefaults:
+    def test_tdsb_enabled_by_default(self) -> None:
+        from py_aep.binary.property_chunks import TdsbChunk
+
+        tdsb = TdsbChunk()
+        assert tdsb.enabled == 1
+
+    def test_tdb4_dimensions_default_one(self) -> None:
+        from py_aep.binary.property_chunks import Tdb4Chunk
+
+        tdb4 = Tdb4Chunk()
+        assert tdb4.dimensions == 1
+
+    def test_tdb4_static_default_true(self) -> None:
+        from py_aep.binary.property_chunks import Tdb4Chunk
+
+        tdb4 = Tdb4Chunk()
+        assert tdb4.static == 1
+
+    def test_tdb4_expression_disabled_default_true(self) -> None:
+        from py_aep.binary.property_chunks import Tdb4Chunk
+
+        tdb4 = Tdb4Chunk()
+        assert tdb4.expression_disabled == 1
+
+    def test_tdb4_bare_constructor_roundtrips(self) -> None:
+        from py_aep.binary.property_chunks import Tdb4Chunk
+
+        tdb4 = Tdb4Chunk()
+        raw = tdb4.tobytes()
+        restored = Tdb4Chunk.frombytes(raw, chunk_type="tdb4")
+        assert restored.dimensions == tdb4.dimensions
+        assert restored.static == tdb4.static
+        assert restored.expression_disabled == tdb4.expression_disabled
+
+    def test_tdsb_bare_constructor_roundtrips(self) -> None:
+        from py_aep.binary.property_chunks import TdsbChunk
+
+        tdsb = TdsbChunk()
+        raw = tdsb.tobytes()
+        restored = TdsbChunk.frombytes(raw, chunk_type="tdsb")
+        assert restored.enabled == tdsb.enabled
+
+
+# -----------------------------------------------------------------------
+# Group 11: Mutation helpers
+# -----------------------------------------------------------------------
+
+
+class TestMutationHelpers:
+    def test_find_chunk_found(self) -> None:
+        from py_aep.binary.mutations import find_chunk
+
+        a = Chunk(chunk_type="aaaa")
+        b = Chunk(chunk_type="bbbb")
+        assert find_chunk([a, b], "bbbb") is b
+
+    def test_find_chunk_not_found(self) -> None:
+        from py_aep.binary.mutations import find_chunk
+
+        assert find_chunk([Chunk(chunk_type="aaaa")], "zzzz") is None
+
+    def test_find_chunk_empty(self) -> None:
+        from py_aep.binary.mutations import find_chunk
+
+        assert find_chunk([], "aaaa") is None
+
+    def test_remove_chunks_by_type(self) -> None:
+        from py_aep.binary.mutations import remove_chunks_by_type
+
+        chunks: list[Chunk] = [
+            Chunk(chunk_type="aaaa"),
+            Chunk(chunk_type="bbbb"),
+            Chunk(chunk_type="aaaa"),
+            Chunk(chunk_type="cccc"),
+        ]
+        remove_chunks_by_type(chunks, "aaaa")
+        assert len(chunks) == 2
+        assert all(c.chunk_type != "aaaa" for c in chunks)
+
+    def test_remove_chunks_by_type_none_found(self) -> None:
+        from py_aep.binary.mutations import remove_chunks_by_type
+
+        chunks: list[Chunk] = [Chunk(chunk_type="aaaa")]
+        remove_chunks_by_type(chunks, "zzzz")
+        assert len(chunks) == 1
+
+    def test_toggle_flag_chunk_enable(self) -> None:
+        from py_aep.binary.mutations import toggle_flag_chunk
+
+        chunks: list[Chunk] = []
+        toggle_flag_chunk(
+            chunks, "lnrb", True,
+            factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
+        )
+        assert len(chunks) == 1
+        assert chunks[0].chunk_type == "lnrb"
+
+    def test_toggle_flag_chunk_disable(self) -> None:
+        from py_aep.binary.mutations import toggle_flag_chunk
+
+        chunks: list[Chunk] = [Chunk(chunk_type="lnrb", data=b"\x01")]
+        toggle_flag_chunk(
+            chunks, "lnrb", False,
+            factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
+        )
+        assert len(chunks) == 0
+
+    def test_toggle_flag_chunk_enable_idempotent(self) -> None:
+        from py_aep.binary.mutations import toggle_flag_chunk
+
+        chunks: list[Chunk] = [Chunk(chunk_type="lnrb", data=b"\x01")]
+        toggle_flag_chunk(
+            chunks, "lnrb", True,
+            factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
+        )
+        assert len(chunks) == 1
+
+    def test_toggle_flag_chunk_disable_idempotent(self) -> None:
+        from py_aep.binary.mutations import toggle_flag_chunk
+
+        chunks: list[Chunk] = []
+        toggle_flag_chunk(
+            chunks, "lnrb", False,
+            factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
+        )
+        assert len(chunks) == 0
+
+    def test_unflag_markers_both_sides(self) -> None:
+        from py_aep.binary.mutations import _unflag_markers
+
+        pre = Chunk(chunk_type="tdmn", synthetic=True)
+        target = ListChunk(list_type="tdbs", synthetic=True)
+        post = Chunk(chunk_type="tdmn", synthetic=True)
+        parent_chunks: list[Chunk] = [pre, target, post]
+        _unflag_markers(parent_chunks, target)
+        assert pre.synthetic is False
+        assert post.synthetic is False
+
+    def test_unflag_markers_no_adjacent_tdmn(self) -> None:
+        from py_aep.binary.mutations import _unflag_markers
+
+        target = ListChunk(list_type="tdbs", synthetic=True)
+        other = Chunk(chunk_type="xxxx", synthetic=True)
+        parent_chunks: list[Chunk] = [other, target]
+        _unflag_markers(parent_chunks, target)
+        # other is not a tdmn, so its synthetic flag stays unchanged
+        assert other.synthetic is True
+
+    def test_unflag_markers_target_not_found(self) -> None:
+        from py_aep.binary.mutations import _unflag_markers
+
+        target = ListChunk(list_type="tdbs", synthetic=True)
+        other = Chunk(chunk_type="tdmn", synthetic=True)
+        _unflag_markers([other], target)
+        # target not in list, nothing should change
+        assert other.synthetic is True

@@ -23,6 +23,8 @@ class LdtaChunk(Chunk):
     `matte_layer_id` is present only in AE >= 23.
     """
 
+    chunk_type: str = "ldta"
+
     # -- Identity / timing (bytes 0-35) ------------------------------------
     layer_id: int = fmt_field("I")
     quality: int = fmt_field("H")

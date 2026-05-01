@@ -5,7 +5,7 @@ description = "A package for working with After Effects AEP files."
 readme = "readme.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Aurore Delaunay", email = "del-github@blurme.net"}
+    {name = "Aurore Delaunay", email = "github.15@audel.ovh"}
 ]
 requires-python = ">=3.7"
 classifiers = [

@@ -83,7 +83,7 @@ See the full [Contributing Guide](https://github.com/forticheprod/py-aep/blob/ma
 
 ## Contact
 
-Aurore Delaunay - del-github@blurme.net
+Aurore Delaunay - github.15@audel.ovh
 
 
 ## Acknowledgments

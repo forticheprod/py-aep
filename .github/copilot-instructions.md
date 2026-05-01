@@ -3,7 +3,7 @@
 ## Project Overview
 A Python library for parsing Adobe After Effects project files (.aep). The binary RIFX format is decoded into typed Python classes representing the AE object model (Application > Project > Items > Layers > Properties). Two binary I/O layers coexist during migration:
 - **`kaitai/`** (legacy) - Kaitai Struct-based, auto-generated from `aep.ksy`
-- **`binary/`** (new) - attrs-based chunk classes with `fmt_field()` declarative fields
+- **`binary/`** (new) - attrs-based chunk classes with `fmt_field()` declarative fields based on psd-tools (C:\Users\aurore.delaunay\git\psd-tools)
 
 ## Architecture
 

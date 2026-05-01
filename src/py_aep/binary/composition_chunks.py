@@ -24,6 +24,8 @@ class CdtaChunk(Chunk):
     from the raw dividend/divisor fields using true division.
     """
 
+    chunk_type: str = "cdta"
+
     # -- Resolution (bytes 0-3) --------------------------------------------
     resolution_factor_h: int = fmt_field("H", default=1)
     """Horizontal resolution factor."""
