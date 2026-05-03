@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING, Any
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyType
 
-from ...kaitai.materializer import materialize_group
-from ...kaitai.proxy import ProxyBody
+from ...binary.chunk import ContainerChunk, ListChunk
+from ...binary.property_chunks import TdsbChunk
+from ...binary.scalar_chunks import Utf8Chunk
 from .overrides import _PROPERTY_MIN_MAX
 from .property import Property
-from .property_base import PropertyBase
+from .property_base import _TDSN_SENTINEL, PropertyBase
 from .specs import (
     _GROUP_CHILD_SPECS,
     _LAYER_STYLE_CHILD_SPECS,
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from typing import Literal
 
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from .specs import _GroupSpec, _PropSpec
 
 
@@ -86,28 +87,23 @@ def _reorder_and_fill(
         elif mn in skip:
             continue
         elif isinstance(spec, _GroupSpec):
-            group = PropertyGroup(
-                _tdsb=ProxyBody(
-                    enabled=1,
-                    locked_ratio=0,
-                    roto_bezier=0,
-                    dimensions_separated=0,
-                ),
-                match_name=spec.match_name,
-                auto_name=spec.auto_name,
-                property_depth=child_depth,
-                properties=[],
+            group = PropertyGroup.new(
+                spec.match_name,
+                spec.auto_name,
+                child_depth,
                 parent_property=container,
+                synthetic=True,
             )
             ordered.append(group)
         else:
             v, d = (value_overrides or {}).get(mn, (_USE_VALUE, _USE_VALUE))
-            prop = Property.synthesized(
+            prop = Property.new(
                 spec,
                 child_depth,
                 parent_property=container,
                 value=v,
                 default_value=d,
+                synthetic=True,
             )
             ordered.append(prop)
 
@@ -166,13 +162,74 @@ class PropertyGroup(PropertyBase):
     properties: list[Property | PropertyGroup]
     """List of properties in this group. Read-only."""
 
+    @classmethod
+    def new(
+        cls,
+        match_name: str,
+        auto_name: str,
+        property_depth: int,
+        *,
+        parent_property: PropertyGroup | Any | None = None,
+        synthetic: bool = False,
+    ) -> PropertyGroup:
+        """Create a synthetic empty PropertyGroup with backing chunks.
+
+        Args:
+            match_name: The property's match name.
+            auto_name: The display name for the group.
+            property_depth: The depth of the group in the tree.
+            parent_property: The container that owns the synthesized group.
+            synthetic: If True, mark backing chunks as synthetic
+                (skipped during serialization).
+        """
+        _tdsb = TdsbChunk(synthetic=synthetic)
+        display = auto_name or _TDSN_SENTINEL
+        name_utf8 = Utf8Chunk(
+            chunk_type="Utf8", value=display + "\x00", synthetic=synthetic
+        )
+        tdsn = ContainerChunk(
+            chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
+        )
+        _tdgp = ListChunk(
+            chunk_type="LIST",
+            list_type="tdgp",
+            chunks=[_tdsb, tdsn],
+            synthetic=synthetic,
+        )
+
+        # Insert into parent's chunk tree.
+        _tdmn: Chunk | None = None
+        if parent_property is not None:
+            parent_tdgp = getattr(parent_property, "_tdgp", None)
+            if parent_tdgp is not None:
+                _tdmn = Utf8Chunk(
+                    chunk_type="tdmn",
+                    value=match_name + "\x00",
+                    synthetic=synthetic,
+                )
+                parent_tdgp.chunks.append(_tdmn)
+                parent_tdgp.chunks.append(_tdgp)
+
+        return cls(
+            _tdmn=_tdmn,
+            _tdsb=_tdsb,
+            _tdgp=_tdgp,
+            _name_utf8=name_utf8,
+            match_name=match_name,
+            auto_name=auto_name,
+            property_depth=property_depth,
+            properties=[],
+            parent_property=parent_property,
+        )
+
     def __init__(
         self,
         *,
-        _tdgp: Aep.ListBody | None = None,
-        _tdsb: Aep.TdsbBody | None,
-        _name_utf8: Aep.Utf8Body | None = None,
-        _fnam_utf8: Aep.Utf8Body | None = None,
+        _tdmn: Chunk | None = None,
+        _tdgp: ListChunk | None = None,
+        _tdsb: Chunk | None,
+        _name_utf8: Chunk | None = None,
+        _fnam_utf8: Chunk | None = None,
         parent_property: PropertyGroup | Any | None = None,
         match_name: str,
         property_depth: int,
@@ -188,6 +245,7 @@ class PropertyGroup(PropertyBase):
             auto_name=auto_name,
         )
 
+        self._tdmn = _tdmn
         self._tdgp = _tdgp
         self._fnam_utf8 = _fnam_utf8
 
@@ -210,37 +268,36 @@ class PropertyGroup(PropertyBase):
         if self._auto_name is not None:
             return self._auto_name
         if self._fnam_utf8 is not None:
-            name: str = self._fnam_utf8.contents.split("\0")[0]
+            name: str = self._fnam_utf8.value.split("\0")[0]
             return name
         return MATCH_NAME_TO_AUTO_NAME.get(self.match_name, self.match_name)
 
     def _ensure_materialized(self) -> None:
-        """Replace ProxyBody backing with real Kaitai chunks.
+        """Flip synthetic flags so backing chunks become visible to write_aep().
 
-        Called automatically by `__setattr__` on first end-user write
-        to a synthesized group. Creates a tdmn + LIST:tdgp in the
-        parent's _tdgp, with a group-level tdsb inside. After this,
-        child properties can materialize into this group's _tdgp.
+        Called automatically by `ChunkField.__set__` on first end-user write
+        to a synthesized group. After this method, the group is
+        indistinguishable from one that was parsed from binary.
         """
-        if not isinstance(self._tdsb, ProxyBody):
+        if self._tdsb is None or not self._tdsb.synthetic:
             return
 
         parent = self.parent_property
-        if parent is None:
-            return
+        if parent is not None:
+            parent._ensure_materialized()
 
-        parent._ensure_materialized()
-
-        parent_tdgp = parent._tdgp
-        if parent_tdgp is None:
-            return
-
-        result = materialize_group(
-            parent_tdgp, self.match_name, self._tdsb, display_name=self._name
-        )
-        object.__setattr__(self, "_tdsb", result.tdsb)
-        object.__setattr__(self, "_tdgp", result.tdgp)
-        object.__setattr__(self, "_name_utf8", result.name_utf8)
+        # Flip synthetic flags on tdmn + group-owned chunks (not children).
+        if self._tdmn is not None:
+            self._tdmn.synthetic = False
+        self._tdgp.synthetic = False
+        self._tdsb.synthetic = False
+        if self._name_utf8 is not None:
+            self._name_utf8.synthetic = False
+            # Also unflag tdsn container if present
+            for c in self._tdgp.chunks:
+                if getattr(c, "chunk_type", None) == "tdsn":
+                    c.synthetic = False
+                    break
 
     def __iter__(self) -> typing.Iterator[Property | PropertyGroup]:
         """Return an iterator over the properties in this group."""
@@ -321,7 +378,7 @@ class PropertyGroup(PropertyBase):
         For indexed groups (such as Effects or Masks parades), the group
         is considered modified when it has any children - adding items to
         an indexed group is itself a modification.  Shape vector groups
-        (Contents) follow the same rule.
+        (value) follow the same rule.
         """
         if self.property_type == PropertyType.INDEXED_GROUP and not self.is_effect:
             return len(self.properties) > 0

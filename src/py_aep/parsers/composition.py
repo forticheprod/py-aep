@@ -3,7 +3,7 @@ from __future__ import annotations
 import typing
 from typing import Any
 
-from ..kaitai.utils import (
+from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
     find_by_list_type,
@@ -14,7 +14,8 @@ from .essential_graphics import parse_essential_graphics
 from .layer import parse_layer
 
 if typing.TYPE_CHECKING:
-    from ..kaitai import Aep
+    from ..binary.chunk import Chunk, ListChunk
+    from ..binary.misc_chunks import EwotItem, OtlnItem
     from ..models.items.folder import FolderItem
     from ..models.layers.layer import Layer
     from ..models.project import Project
@@ -22,24 +23,24 @@ if typing.TYPE_CHECKING:
 
 
 def parse_composition(
-    child_chunks: list[Aep.Chunk],
-    _idta: Aep.IdtaBody,
-    _name_utf8: Aep.Utf8Body,
-    _cmta: Aep.Utf8Body | None,
-    _item_list: Aep.ListBody,
+    child_chunks: list[Chunk],
+    _idta: Chunk,
+    _name_utf8: Chunk,
+    _cmta: Chunk | None,
+    _item_list: ListChunk,
     project: Project,
     parent_folder: FolderItem,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
-    otln_entries: list[Aep.OtlnEntry] | None = None,
+    otln_entries: list[OtlnItem] | None = None,
 ) -> CompItem:
     """
     Parse a composition item.
 
     Args:
         child_chunks: child chunks of the composition LIST chunk.
-        _idta: The idta chunk body.
-        _name_utf8: The Utf8 chunk body containing the composition name.
-        _cmta: The cmta chunk body (None if no comment).
+        _idta: The idta chunk.
+        _name_utf8: The Utf8 chunk containing the composition name.
+        _cmta: The cmta chunk (None if no comment).
         project: The project.
         parent_folder: The composition's parent folder.
         effect_param_defs: Project-level effect parameter definitions, used as
@@ -47,21 +48,21 @@ def parse_composition(
     """
     cdta_chunk = find_by_type(chunks=child_chunks, chunk_type="cdta")
     try:
-        cdrp_body = find_by_type(chunks=child_chunks, chunk_type="cdrp").body
+        cdrp_chunk = find_by_type(chunks=child_chunks, chunk_type="cdrp")
     except ChunkNotFoundError:
-        cdrp_body = None
+        cdrp_chunk = None
 
     prin_list = find_by_list_type(chunks=child_chunks, list_type="PRin")
-    prin_chunk = find_by_type(chunks=prin_list.body.chunks, chunk_type="prin")
+    prin_chunk = find_by_type(chunks=prin_list.chunks, chunk_type="prin")
 
     composition = CompItem(
-        _cdrp=cdrp_body,
-        _cdta=cdta_chunk.body,
+        _cdrp=cdrp_chunk,
+        _cdta=cdta_chunk,
         _cmta=_cmta,
         _idta=_idta,
         _item_list=_item_list,
         _name_utf8=_name_utf8,
-        _prin=prin_chunk.body,
+        _prin=prin_chunk,
         project=project,
         parent_folder=parent_folder,
     )
@@ -84,8 +85,8 @@ def parse_composition(
     # layer IDs (ldta.layer_id).  Pre-scan all layer chunks so the mapping
     # is available when parsing effect properties.
     for idx, lc in enumerate(layer_sub_chunks, 1):
-        ldta = find_by_type(chunks=lc.body.chunks, chunk_type="ldta")
-        composition._layer_id_to_index[ldta.body.layer_id] = idx
+        ldta = find_by_type(chunks=lc.chunks, chunk_type="ldta")
+        composition._layer_id_to_index[ldta.layer_id] = idx
 
     for layer_chunk in layer_sub_chunks:
         layer = parse_layer(
@@ -113,7 +114,7 @@ def parse_composition(
     return composition
 
 
-def _collect_ewot_entries(child_chunks: list[Aep.Chunk]) -> list[Aep.EwotEntry]:
+def _collect_ewot_entries(child_chunks: list[Chunk]) -> list[EwotItem]:
     """Collect effect-group ewot entries from LIST:Ewst / ewot chunks.
 
     The `ewot` chunk inside `LIST:Ewst` stores per-property flags for
@@ -128,15 +129,15 @@ def _collect_ewot_entries(child_chunks: list[Aep.Chunk]) -> list[Aep.EwotEntry]:
     Returns:
         Ordered list of ewot entries, one per effect across all layers.
     """
-    entries: list[Aep.EwotEntry] = []
+    entries: list[EwotItem] = []
     ewst_chunks = filter_by_list_type(chunks=child_chunks, list_type="Ewst")
     for ewst_chunk in ewst_chunks:
         try:
-            ewot_chunk = find_by_type(chunks=ewst_chunk.body.chunks, chunk_type="ewot")
+            ewot_chunk = find_by_type(chunks=ewst_chunk.chunks, chunk_type="ewot")
         except ChunkNotFoundError:
             continue
 
-        for entry in ewot_chunk.body.entries:
+        for entry in ewot_chunk.items:
             # Entries without is_child_property are effect group nodes
             if not entry.is_child_property:
                 entries.append(entry)
@@ -145,7 +146,7 @@ def _collect_ewot_entries(child_chunks: list[Aep.Chunk]) -> list[Aep.EwotEntry]:
 
 
 def _get_markers(
-    child_chunks: list[Aep.Chunk], composition: CompItem
+    child_chunks: list[Chunk], composition: CompItem
 ) -> Property | None:
     """
     Get the composition markers.
@@ -169,7 +170,7 @@ def _get_markers(
     return markers_layer.marker
 
 
-def _apply_otln_to_layers(entries: list[Aep.OtlnEntry], layers: list[Layer]) -> None:
+def _apply_otln_to_layers(entries: list[OtlnItem], layers: list[Layer]) -> None:
     """Store otln root entries on matching layers.
 
     Layer boundaries are found using `is_layer_marker` entries that appear

@@ -5,12 +5,11 @@ import typing
 from typing import Any
 
 from ....enums import Hdr10ColorPrimaries, PngCompression
-from ....kaitai.descriptors import ChunkField
-from ....kaitai.utils import propagate_check
+from ...descriptors import ChunkField
 from ...validators import validate_one_of
 
 if typing.TYPE_CHECKING:
-    from ....kaitai import Aep
+    from ....binary.chunk import Chunk
 
 
 class PngFormatOptions:
@@ -37,14 +36,14 @@ class PngFormatOptions:
     def __init__(
         self,
         *,
-        _body: Aep.PngRoptData,
-        _hdr10_utf8: Aep.Utf8Body | None = None,
+        _body: Chunk,
+        _hdr10_utf8: Chunk | None = None,
     ) -> None:
         self._body = _body
         self._hdr10_utf8 = _hdr10_utf8
         self._hdr10_meta: dict[str, Any] = {}
         if _hdr10_utf8 is not None:
-            text = _hdr10_utf8.contents.split("\x00")[0]
+            text = _hdr10_utf8.value.split("\x00")[0]
             try:
                 parsed = json.loads(text)
                 if isinstance(parsed, dict):
@@ -70,7 +69,7 @@ class PngFormatOptions:
         "_body",
         "compression",
         transform=PngCompression,
-        reverse_seq_field=int,
+        reverse=int,
     )
     """
     The PNG compression / interlace mode. Corresponds to the
@@ -80,10 +79,9 @@ class PngFormatOptions:
     def _sync_hdr10(self) -> None:
         """Serialize `_hdr10_meta` back to the Utf8 chunk body."""
         if self._hdr10_utf8 is not None:
-            self._hdr10_utf8.contents = json.dumps(
+            self._hdr10_utf8.value = json.dumps(
                 self._hdr10_meta, separators=(",", ":")
             )
-            propagate_check(self._hdr10_utf8)
 
     @property
     def include_hdr10_metadata(self) -> bool:

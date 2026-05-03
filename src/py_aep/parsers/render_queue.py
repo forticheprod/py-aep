@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from ..kaitai import Aep
-from ..kaitai.utils import (
+from ..binary.utils import (
     find_by_list_type,
+    find_by_type,
     split_on_type,
 )
 from ..models.items.composition import CompItem
@@ -13,10 +13,12 @@ from ..models.renderqueue.render_queue_item import RenderQueueItem
 from .output_module import parse_output_module
 
 if TYPE_CHECKING:
+    from ..binary.chunk import Chunk
+    from ..binary.render_chunks import RenderSettingsItem
     from ..models.project import Project
 
 
-def parse_render_queue(root_chunks: list[Aep.Chunk], project: Project) -> RenderQueue:
+def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueue:
     """
     Parse the render queue from the top-level chunks.
 
@@ -26,7 +28,7 @@ def parse_render_queue(root_chunks: list[Aep.Chunk], project: Project) -> Render
             references in render queue items.
     """
     lrdr_chunk = find_by_list_type(chunks=root_chunks, list_type="LRdr")
-    lrdr_child_chunks = lrdr_chunk.body.chunks
+    lrdr_child_chunks = lrdr_chunk.chunks
     render_queue = RenderQueue(parent=project, items=[])
     items = parse_render_queue_items(lrdr_child_chunks, project, render_queue)
     render_queue._items = items
@@ -34,7 +36,7 @@ def parse_render_queue(root_chunks: list[Aep.Chunk], project: Project) -> Render
 
 
 def parse_render_queue_items(
-    lrdr_child_chunks: list[Aep.Chunk],
+    lrdr_child_chunks: list[Chunk],
     project: Project,
     render_queue: RenderQueue,
 ) -> list[RenderQueueItem]:
@@ -46,7 +48,7 @@ def parse_render_queue_items(
     - An optional RCom chunk with the item comment
     - A LIST 'list' chunk with item metadata and settings
     - A LIST 'LOm ' chunk with output module info
-    - A RenderSettingsLdatBody chunk with the render settings for the item
+    - A RenderSettingsItem with the render settings for the item
     - A Rout chunk with per-item render flags
 
     Args:
@@ -58,14 +60,13 @@ def parse_render_queue_items(
     # This ldat contains N × item_size bytes, one block per render queue item
     list_settings_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="list")
 
-    settings_lhd3 = list_settings_chunk.body.lhd3
-    num_items = settings_lhd3.body.count
+    settings_lhd3 = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3")
+    num_items = settings_lhd3.count
     if num_items == 0:
         return []
 
-    render_settings_chunks: list[Aep.RenderSettingsLdatBody] = (
-        list_settings_chunk.body.ldat.body.items
-    )
+    settings_ldat = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat")
+    render_settings_chunks: list[RenderSettingsItem] = settings_ldat.items
 
     # LItm chunk is probably the RQItemCollection.
     litm_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="LItm")
@@ -74,14 +75,15 @@ def parse_render_queue_items(
     # RCom is optional and contains the item comment
     items = []
     item_index = 0
-    rcom_body = None
+    rcom_chunk = None
     list_chunk = None
 
-    for chunk in litm_chunk.body.chunks:
+    for chunk in litm_chunk.chunks:
         if chunk.chunk_type == "RCom":
-            rcom_body = chunk.body.chunks[0].body
+            # RCom is a ContainerChunk with a Utf8 child
+            rcom_chunk = chunk.chunks[0] if chunk.chunks else None
         elif chunk.chunk_type == "LIST":
-            list_type = chunk.body.list_type
+            list_type = chunk.list_type
             if list_type == "list":
                 list_chunk = chunk
             elif list_type == "LOm " and list_chunk is not None:
@@ -90,25 +92,25 @@ def parse_render_queue_items(
                     list_chunk=list_chunk,
                     lom_chunk=chunk,
                     ldat_body=render_settings_chunks[item_index],
-                    rcom_body=rcom_body,
-                    litm_body=litm_chunk.body,
+                    rcom_utf8=rcom_chunk,
+                    litm_chunk=litm_chunk,
                     project=project,
                     render_queue=render_queue,
                 )
                 items.append(item)
                 item_index += 1
-                rcom_body = None
+                rcom_chunk = None
                 list_chunk = None
 
     return items
 
 
 def parse_render_queue_item(
-    list_chunk: Aep.Chunk,
-    lom_chunk: Aep.Chunk,
-    ldat_body: Aep.RenderSettingsLdatBody,
-    rcom_body: Aep.Utf8Body | None,
-    litm_body: Aep.ListBody,
+    list_chunk: Chunk,
+    lom_chunk: Chunk,
+    ldat_body: RenderSettingsItem,
+    rcom_utf8: Chunk | None,
+    litm_chunk: Chunk,
     project: Project,
     render_queue: RenderQueue,
 ) -> RenderQueueItem:
@@ -118,29 +120,29 @@ def parse_render_queue_item(
     Args:
         list_chunk: The LIST 'list' chunk containing item metadata.
         lom_chunk: The LIST 'LOm ' chunk containing output modules.
-        ldat_body: The RenderSettingsLdatBody chunk for this item.
-        rcom_body: The Utf8Body of the RCom chunk, or None if absent.
+        ldat_body: The RenderSettingsItem for this item.
+        rcom_utf8: The Utf8 chunk of the RCom, or None if absent.
+        litm_chunk: The LIST 'LItm' chunk.
         project: The Project object being constructed, used to link comp
             references in render queue items.
     """
-    om_ldat_items: list[Aep.OutputModuleSettingsLdatBody] = (
-        list_chunk.body.ldat.body.items
-    )
+    om_ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat")
+    om_ldat_items = om_ldat.items
 
     # comp_id is stored in the render settings ldat
     comp_id = ldat_body.comp_id
     comp = cast(CompItem, project.items[comp_id])
 
-    lom_child_chunks = lom_chunk.body.chunks
+    lom_child_chunks = lom_chunk.chunks
 
     # Group chunks by Roou - each Roou starts a new output module
     om_groups = split_on_type(lom_child_chunks, "Roou")
 
     render_queue_item = RenderQueueItem(
         _ldat=ldat_body,
-        _litm=litm_body,
+        _litm=litm_chunk,
         _list_chunk=list_chunk,
-        _rcom_utf8=rcom_body,
+        _rcom_utf8=rcom_utf8,
         parent=render_queue,
         comp=comp,
         output_modules=[],

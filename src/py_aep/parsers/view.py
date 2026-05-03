@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..kaitai.utils import (
+from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_type,
     find_by_type,
@@ -14,12 +14,12 @@ from ..models.viewer.view_options import ViewOptions
 from ..models.viewer.viewer import Viewer
 
 if TYPE_CHECKING:
-    from ..kaitai import Aep
+    from ..binary.chunk import Chunk
     from ..models.items.item import Item
 
 
 def parse_viewers(
-    folder_chunks: list[Aep.Chunk],
+    folder_chunks: list[Chunk],
     items: list[Item] | None = None,
 ) -> list[Viewer]:
     """Parse viewer panels from folder-level chunks.
@@ -54,7 +54,7 @@ def parse_viewers(
 
 
 def _parse_views(
-    block: list[Aep.Chunk],
+    block: list[Chunk],
     item: Item | None,
     viewer: Viewer,
 ) -> list[View]:
@@ -82,14 +82,14 @@ def _parse_views(
         views.append(
             View(
                 _viewer=viewer,
-                options=ViewOptions(_fips=fips.body, _item=av_item),
+                options=ViewOptions(_fips=fips, _item=av_item),
             )
         )
     return views
 
 
 def _build_viewer(
-    block: list[Aep.Chunk],
+    block: list[Chunk],
 ) -> Viewer | None:
     """Build a Viewer from a block of folder-level chunks.
 
@@ -112,7 +112,7 @@ def _build_viewer(
     fiac = find_by_type(block, "fiac")
 
     return Viewer(
-        _fitt=fitt.body,
-        _foac=foac.body,
-        _fiac=fiac.body,
+        _fitt=fitt,
+        _foac=foac,
+        _fiac=fiac,
     )

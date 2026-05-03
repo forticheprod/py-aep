@@ -103,7 +103,6 @@ from .enums import (
     TrackMatteType,
     ViewerType,
 )
-from .kaitai import Aep
 from .models import (
     Application,
     AVItem,
@@ -315,12 +314,14 @@ def parse(aep_file_path: str | os.PathLike[str]) -> Application:
         print(app.version)
         ```
     """
-    from .kaitai.proxy import _suppress_materialization
+    from .binary.chunk import read_aep
+    from .models.descriptors import _suppress_materialization
     from .parsers.application import parse_app
     from .parsers.project import parse_project
 
     file_path = os.fspath(aep_file_path)
-    with _suppress_materialization(), Aep.from_file(file_path) as aep:
-        aep._read()
-        project = parse_project(aep, file_path)
-        return parse_app(aep, project)
+    with _suppress_materialization():
+        with open(file_path, "rb") as f:
+            rifx, xmp = read_aep(f)
+        project = parse_project(rifx, xmp, file_path)
+        return parse_app(rifx, project)

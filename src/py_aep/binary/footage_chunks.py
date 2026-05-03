@@ -15,7 +15,18 @@ from attrs import define, field
 from .bin_utils import read_bytes
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import fmt_field
+from .fmt_field import (
+    ascii_field,
+    bool_field,
+    bytes_field,
+    f4_field,
+    f8_field,
+    s4_field,
+    str_field,
+    u1_field,
+    u2_field,
+    u4_field,
+)
 from .registry import register
 
 if TYPE_CHECKING:
@@ -39,81 +50,81 @@ class SspcChunk(Chunk):
     chunk_type: str = "sspc"
 
     # -- Reserved (bytes 0-21) ---------------------------------------------
-    _reserved_00: bytes = fmt_field("22s", default=b"\x00" * 22, repr=False)
+    _reserved_00: bytes = bytes_field(22, repr=False)
 
     # -- Source format (bytes 22-31) ---------------------------------------
-    source_format_type: bytes = fmt_field("4s", default=b"\x00" * 4)
+    source_format_type: str = ascii_field(4)
     """4-char code: 'png!', '8BPS', 'MOoV', 'Soli', etc."""
 
-    _reserved_1a: bytes = fmt_field("6s", default=b"\x00" * 6, repr=False)
+    _reserved_1a: bytes = bytes_field(6, repr=False)
 
     # -- Dimensions / duration (bytes 32-45) -------------------------------
-    width: int = fmt_field("H")
-    _reserved_22: bytes = fmt_field("2s", default=b"\x00" * 2, repr=False)
-    height: int = fmt_field("H")
-    duration_dividend: int = fmt_field("I")
-    duration_divisor: int = fmt_field("I")
+    width: int = u2_field()
+    _reserved_22: bytes = bytes_field(2, repr=False)
+    height: int = u2_field()
+    duration_dividend: int = u4_field()
+    duration_divisor: int = u4_field(default=1)
 
     # -- Frame rate (bytes 46-68) ------------------------------------------
-    _reserved_2e: bytes = fmt_field("10s", default=b"\x00" * 10, repr=False)
-    native_frame_rate_integer: int = fmt_field("I")
-    native_frame_rate_fractional: int = fmt_field("H")
-    _reserved_3e: bytes = fmt_field("7s", default=b"\x00" * 7, repr=False)
+    _reserved_2e: bytes = bytes_field(10, repr=False)
+    native_frame_rate_integer: int = u4_field()
+    native_frame_rate_fractional: int = u2_field()
+    _reserved_3e: bytes = bytes_field(7, repr=False)
 
     # -- Alpha flags (byte 69) ---------------------------------------------
-    _alpha_flags: int = fmt_field("B", repr=False)
+    _alpha_flags: int = u1_field(repr=False)
     """Byte 69: bit 1 = invert_alpha, bit 0 = premultiplied."""
 
     # -- Premul color / alpha mode (bytes 70-73) ---------------------------
-    premul_color_r: int = fmt_field("B")
-    premul_color_g: int = fmt_field("B")
-    premul_color_b: int = fmt_field("B")
-    alpha_mode_raw: int = fmt_field("B")
+    premul_color_r: int = u1_field()
+    premul_color_g: int = u1_field()
+    premul_color_b: int = u1_field()
+    alpha_mode_raw: int = u1_field()
     """Alpha interpretation mode. 3 = no alpha channel."""
 
     # -- Field separation (bytes 74-87) ------------------------------------
-    _reserved_4a: bytes = fmt_field("9s", default=b"\x00" * 9, repr=False)
-    field_separation_type_raw: int = fmt_field("B")
+    _reserved_4a: bytes = bytes_field(9, repr=False)
+    field_separation_type_raw: int = u1_field()
     """0 = OFF, 1 = enabled (check field_order for upper/lower)."""
 
-    _reserved_54: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
-    field_order: int = fmt_field("B")
+    _reserved_54: bytes = bytes_field(3, repr=False)
+    field_order: int = u1_field()
 
     # -- Reserved / footage state (bytes 88-128) ---------------------------
-    _reserved_58: bytes = fmt_field("27s", default=b"\x00" * 27, repr=False)
-    footage_missing_at_save: int = fmt_field("B")
+    _reserved_58: bytes = bytes_field(27, repr=False)
+    footage_missing_at_save: bool = bool_field()
     """0 = found, 1 = missing or placeholder."""
 
-    _reserved_74: bytes = fmt_field("13s", default=b"\x00" * 13, repr=False)
+    _reserved_74: bytes = bytes_field(13, repr=False)
 
     # -- Loop / pixel ratio (bytes 129-146) --------------------------------
-    loop: int = fmt_field("B")
+    loop: int = u1_field(default=1)
     """Loop count (1 = no loop, 2+ = loop count)."""
 
-    _reserved_82: bytes = fmt_field("6s", default=b"\x00" * 6, repr=False)
-    pixel_ratio_dividend: int = fmt_field("I")
-    pixel_ratio_divisor: int = fmt_field("I")
-    _reserved_90: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
+    _reserved_82: bytes = bytes_field(6, repr=False)
+    pixel_ratio_dividend: int = u4_field(default=1)
+    pixel_ratio_divisor: int = u4_field(default=1)
+    _reserved_90: bytes = bytes_field(3, repr=False)
 
     # -- Pulldown / conform (bytes 147-158) --------------------------------
-    remove_pulldown: int = fmt_field("B")
+    remove_pulldown: int = u1_field()
     """0 = OFF, 1-10 = pulldown phase."""
 
-    conform_frame_rate_integer: int = fmt_field("H")
+    conform_frame_rate_integer: int = u2_field()
     """0 = no conforming."""
 
-    conform_frame_rate_fractional: int = fmt_field("H")
-    _reserved_98: bytes = fmt_field("7s", default=b"\x00" * 7, repr=False)
-    high_quality_field_separation: int = fmt_field("B")
+    conform_frame_rate_fractional: int = u2_field()
+    _reserved_98: bytes = bytes_field(7, repr=False)
+    high_quality_field_separation: int = u1_field()
 
     # -- Audio / sequence (bytes 160-183) ----------------------------------
-    audio_sample_rate: float = fmt_field("d")
+    audio_sample_rate: float = f8_field()
     """Sample rate in Hz (0.0 = no audio)."""
 
-    _reserved_a8: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    start_frame: int = fmt_field("I")
-    end_frame: int = fmt_field("I")
-    frame_padding: int = fmt_field("I")
+    _reserved_a8: bytes = bytes_field(4, repr=False)
+    start_frame: int = u4_field()
+    end_frame: int = u4_field()
+    frame_padding: int = u4_field()
     """Zero-padded digit count for image sequences (0 for non-sequences)."""
 
     # -- Trailing (bytes 184+) ---------------------------------------------
@@ -124,6 +135,17 @@ class SspcChunk(Chunk):
     premultiplied = BitField("_alpha_flags", 0)
 
     # -- Computed properties -----------------------------------------------
+
+    @property
+    def premul_color(self) -> list[int]:
+        """Premultiply color as [R, G, B]."""
+        return [self.premul_color_r, self.premul_color_g, self.premul_color_b]
+
+    @premul_color.setter
+    def premul_color(self, value: list[int]) -> None:
+        self.premul_color_r, self.premul_color_g, self.premul_color_b = (
+            value[0], value[1], value[2]
+        )
 
     @property
     def native_frame_rate(self) -> float:
@@ -245,19 +267,19 @@ class SoliOptiChunk(OptiChunk):
     All fields are big-endian and fixed-layout -> fmt_field.
     """
 
-    asset_type: bytes = fmt_field("4s", default=b"Soli")
-    asset_type_int: int = fmt_field("H", default=9)
-    _pad: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    color_r: float = fmt_field("f")
+    asset_type: str = ascii_field(4, default="Soli")
+    asset_type_int: int = u2_field(default=9)
+    _pad: bytes = bytes_field(8, default=b"\x00\x00\x01\x1a\x3f\x80\x00\x00", repr=False)
+    color_r: float = f4_field()
     """Solid color red component (0.0-1.0)."""
 
-    color_g: float = fmt_field("f")
+    color_g: float = f4_field()
     """Solid color green component (0.0-1.0)."""
 
-    color_b: float = fmt_field("f")
+    color_b: float = f4_field()
     """Solid color blue component (0.0-1.0)."""
 
-    solid_name: str = fmt_field("256s", default="", encoding="windows-1252")
+    solid_name: str = str_field(256, default="", encoding="windows-1252")
     """Solid item name."""
 
     _trailing: bytes = field(default=b"", repr=False)
@@ -267,51 +289,55 @@ class SoliOptiChunk(OptiChunk):
         """RGB color as a 3-element list."""
         return [self.color_r, self.color_g, self.color_b]
 
+    @color.setter
+    def color(self, value: list[float]) -> None:
+        self.color_r, self.color_g, self.color_b = value[0], value[1], value[2]
+
 
 @define
 class PsdOptiChunk(OptiChunk):
     """PSD footage asset (asset_type='8BPS')."""
 
-    asset_type: str = fmt_field("4s", default="", encoding="ascii")
-    asset_type_int: int = fmt_field("H")
-    _pad_06: bytes = fmt_field("10s", default=b"\x00" * 10, repr=False)
-    psd_layer_index: int = fmt_field("H")
+    asset_type: str = ascii_field(4, default="8BPS")
+    asset_type_int: int = u2_field(default=264)
+    _pad_06: bytes = bytes_field(10, repr=False)
+    psd_layer_index: int = u2_field()
     """0-based layer index. 0xFFFF = merged/flattened."""
 
-    _pad_12: bytes = fmt_field("12s", default=b"\x00" * 12, repr=False)
-    psd_channels: int = fmt_field("B")
+    _pad_12: bytes = bytes_field(12, default=b"\x53\x50\x42\x38\x01\x00\x00\x00\x00\x00\x00\x00", repr=False)
+    psd_channels: int = u1_field()
     """Number of color channels (3=RGB, 4=RGBA/CMYK)."""
 
-    _pad_1f: bytes = fmt_field("1s", default=b"\x00", repr=False)
-    psd_canvas_height: int = fmt_field("H", endian="<")
+    _pad_1f: bytes = bytes_field(1, repr=False)
+    psd_canvas_height: int = u2_field(endian="<")
     """Full PSD canvas height in pixels (LE u2)."""
 
-    _pad_22: bytes = fmt_field("2s", default=b"\x00" * 2, repr=False)
-    psd_canvas_width: int = fmt_field("H", endian="<")
+    _pad_22: bytes = bytes_field(2, repr=False)
+    psd_canvas_width: int = u2_field(endian="<")
     """Full PSD canvas width in pixels (LE u2)."""
 
-    _pad_26: bytes = fmt_field("2s", default=b"\x00" * 2, repr=False)
-    psd_bit_depth: int = fmt_field("B")
+    _pad_26: bytes = bytes_field(2, repr=False)
+    psd_bit_depth: int = u1_field()
     """Bit depth per channel (8 or 16)."""
 
-    _pad_29: bytes = fmt_field("7s", default=b"\x00" * 7, repr=False)
-    psd_layer_count: int = fmt_field("B")
+    _pad_29: bytes = bytes_field(7, default=b"\x00\x03\x00\x00\x00\x00\x00", repr=False)
+    psd_layer_count: int = u1_field()
     """Total number of layers in the PSD."""
 
-    _pad_31: bytes = fmt_field("29s", default=b"\x00" * 29, repr=False)
-    psd_layer_top: int = fmt_field("i", endian="<")
+    _pad_31: bytes = bytes_field(29, repr=False)
+    psd_layer_top: int = s4_field(endian="<")
     """Layer bounding box top (LE s4, can be negative)."""
 
-    psd_layer_left: int = fmt_field("i", endian="<")
+    psd_layer_left: int = s4_field(endian="<")
     """Layer bounding box left (LE s4, can be negative)."""
 
-    psd_layer_bottom: int = fmt_field("i", endian="<")
+    psd_layer_bottom: int = s4_field(endian="<")
     """Layer bounding box bottom (LE s4)."""
 
-    psd_layer_right: int = fmt_field("i", endian="<")
+    psd_layer_right: int = s4_field(endian="<")
     """Layer bounding box right (LE s4)."""
 
-    _pad_5e: bytes = fmt_field("250s", default=b"\x00" * 250, repr=False)
+    _pad_5e: bytes = bytes_field(250, repr=False)
     _trailing: bytes = field(default=b"", repr=False)
 
     @property
@@ -328,9 +354,9 @@ class PsdOptiChunk(OptiChunk):
 class PlaceholderOptiChunk(OptiChunk):
     """Placeholder footage asset (asset_type_int=2)."""
 
-    asset_type: str = fmt_field("4s", default="", encoding="ascii")
-    asset_type_int: int = fmt_field("H", default=2)
-    _pad: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
+    asset_type: str = ascii_field(4, default="")
+    asset_type_int: int = u2_field(default=2)
+    _pad: bytes = bytes_field(4, default=b"\x00\x00\x01\x0a", repr=False)
     _trailing: bytes = field(default=b"", repr=False)
 
     @property

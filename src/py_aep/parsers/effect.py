@@ -7,29 +7,29 @@ import typing
 from contextlib import suppress
 from typing import Any
 
+from ..binary.utils import (
+    ChunkNotFoundError,
+    filter_by_list_type,
+    find_by_list_type,
+    find_by_type,
+    str_value,
+)
 from ..data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..enums import (
     PropertyControlType,
     PropertyType,
     PropertyValueType,
 )
-from ..kaitai import Aep
-from ..kaitai.proxy import ProxyBody
-from ..kaitai.utils import (
-    ChunkNotFoundError,
-    filter_by_list_type,
-    find_by_list_type,
-    find_by_type,
-    str_contents,
-)
 from ..models.properties.overrides import _PROPERTY_DEFAULTS
 from ..models.properties.property import Property
 from ..models.properties.property_group import PropertyGroup
+from ..models.properties.specs import _PropSpec
 from .utils import (
     get_chunks_by_match_name,
 )
 
 if typing.TYPE_CHECKING:
+    from ..binary.chunk import Chunk, ListChunk
     from ..models.items.composition import CompItem
 
 
@@ -40,6 +40,42 @@ _PVT_DIMENSIONS: dict[PropertyValueType, int] = {
     PropertyValueType.ThreeD_SPATIAL: 3,
     PropertyValueType.TwoD_SPATIAL: 2,
 }
+
+
+def _param_def_to_spec(
+    match_name: str,
+    param_def: dict[str, Any],
+) -> _PropSpec:
+    """Convert an effect parameter definition dict into a `_PropSpec`.
+
+    Args:
+        match_name: The property's match name.
+        param_def: The parameter definition dict from parT parsing.
+
+    Returns:
+        A `_PropSpec` suitable for `Property.new()`.
+    """
+    pvt = param_def.get("property_value_type", PropertyValueType.OneD)
+    control_type = param_def["property_control_type"]
+    is_color = control_type == PropertyControlType.COLOR
+    dims = _PVT_DIMENSIONS.get(pvt, 1)
+    is_spatial = (
+        pvt in (PropertyValueType.TwoD_SPATIAL, PropertyValueType.ThreeD_SPATIAL)
+        or is_color
+    )
+    value, default_value = _resolve_effect_value(match_name, param_def, control_type)
+    return _PropSpec(
+        match_name=match_name,
+        auto_name=param_def.get("name") or match_name,
+        value=value,
+        pvt=pvt,
+        dimensions=dims,
+        is_spatial=is_spatial,
+        color=is_color,
+        integer=control_type == PropertyControlType.INTEGER,
+        default_value=default_value,
+        can_vary_over_time=control_type != PropertyControlType.MASK,
+    )
 
 
 def _resolve_effect_value(
@@ -134,7 +170,7 @@ def _scale_2d_point(prop: Property, width: int, height: int) -> None:
 
 
 def parse_effect_param_defs(
-    sspc_child_chunks: list[Aep.Chunk],
+    sspc_child_chunks: list[Chunk],
 ) -> dict[str, dict[str, Any]]:
     """Parse effect parameter definitions from parT chunk.
 
@@ -214,67 +250,32 @@ def _synthesize_effect_property(
     pvt = param_def.get("property_value_type", PropertyValueType.OneD)
 
     if pvt == PropertyValueType.NO_VALUE:
-        return PropertyGroup(
-            _tdsb=ProxyBody(
-                enabled=1,
-                locked_ratio=0,
-                roto_bezier=0,
-                dimensions_separated=0,
-            ),
-            match_name=match_name,
-            auto_name=param_def.get("name")
-            or MATCH_NAME_TO_AUTO_NAME.get(match_name, ""),
-            property_depth=property_depth,
+        display = (
+            param_def.get("name")
+            or MATCH_NAME_TO_AUTO_NAME.get(match_name, "")
+        )
+        return PropertyGroup.new(
+            match_name,
+            display,
+            property_depth,
             parent_property=parent_property,
-            properties=[],
+            synthetic=True,
         )
 
-    value, default_value = _resolve_effect_value(match_name, param_def, control_type)
-
-    is_color = control_type == PropertyControlType.COLOR
-    is_spatial = (
-        pvt in (PropertyValueType.TwoD_SPATIAL, PropertyValueType.ThreeD_SPATIAL)
-        or is_color
-    )
-    dims = _PVT_DIMENSIONS.get(pvt, 1)
-    is_integer = control_type == PropertyControlType.INTEGER
-    can_vary = control_type != PropertyControlType.MASK
-
-    prop = Property(
-        _tdsb=ProxyBody(
-            enabled=1,
-            locked_ratio=0,
-            roto_bezier=0,
-            dimensions_separated=0,
-        ),
-        _tdb4=ProxyBody(
-            dimensions=dims,
-            is_spatial=int(is_spatial),
-            animated=0,
-            color=int(is_color),
-            integer=int(is_integer),
-            no_value=0,
-            vector=int(dims > 1),
-            can_vary_over_time=int(can_vary),
-            expression_enabled=0,
-        ),
-        keyframes=[],
-        match_name=match_name,
-        auto_name=param_def.get("name") or match_name,
+    spec = _param_def_to_spec(match_name, param_def)
+    prop = Property.new(
+        spec,
+        property_depth,
         parent_property=parent_property,
-        property_control_type=control_type,
-        property_depth=property_depth,
-        property_value_type=pvt,
-        units_text=("degrees" if control_type == PropertyControlType.ANGLE else None),
-        value=value,
+        control_type=control_type,
+        synthetic=True,
     )
-    prop.default_value = default_value
     _apply_param_def_metadata(prop, param_def)
     return prop
 
 
 def _parse_effect_properties(
-    tdgp_chunk: Aep.Chunk,
+    tdgp_chunk: ListChunk,
     param_defs: dict[str, dict[str, Any]],
     child_depth: int,
     composition: CompItem,
@@ -353,18 +354,12 @@ def _parse_effect_properties(
     # synthesize_children() will fill it from _COMPOSITING_OPTIONS_SPECS.
     if not any(c.match_name == "ADBE Effect Built In Params" for c in ordered):
         ordered.append(
-            PropertyGroup(
-                _tdsb=ProxyBody(
-                    enabled=1,
-                    locked_ratio=0,
-                    roto_bezier=0,
-                    dimensions_separated=0,
-                ),
-                match_name="ADBE Effect Built In Params",
-                auto_name="Compositing Options",
-                property_depth=child_depth,
-                properties=[],
+            PropertyGroup.new(
+                "ADBE Effect Built In Params",
+                "Compositing Options",
+                child_depth,
                 parent_property=parent_property,
+                synthetic=True,
             )
         )
 
@@ -372,7 +367,7 @@ def _parse_effect_properties(
 
 
 def parse_effect(
-    sspc_chunk: Aep.Chunk,
+    sspc_chunk: ListChunk,
     group_match_name: str,
     property_depth: int,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
@@ -397,10 +392,11 @@ def parse_effect(
             fallback when layer-level parT chunks are missing.
         composition: The parent composition.
     """
-    sspc_child_chunks = sspc_chunk.body.chunks
+    sspc_child_chunks = sspc_chunk.chunks
     fnam_chunk = find_by_type(chunks=sspc_child_chunks, chunk_type="fnam")
 
-    fnam_utf8_body = fnam_chunk.body.chunks[0].body
+    # fnam is a ContainerChunk with a Utf8 child
+    fnam_utf8 = fnam_chunk.chunks[0]
     tdgp_chunk = find_by_list_type(chunks=sspc_child_chunks, list_type="tdgp")
 
     try:
@@ -419,24 +415,21 @@ def parse_effect(
     if param_defs and group_match_name not in effect_param_defs:
         effect_param_defs[group_match_name] = param_defs
     # Resolve _name_utf8 from the effect tdgp's tdsn child
-    effect_name_utf8 = (
-        find_by_type(chunks=tdgp_chunk.body.chunks, chunk_type="tdsn")
-        .body.chunks[0]
-        .body
-    )
+    tdsn = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn")
+    effect_name_utf8 = tdsn.chunks[0]
 
     try:
-        effect_tdsb_body = find_by_type(
-            chunks=tdgp_chunk.body.chunks, chunk_type="tdsb"
-        ).body
+        effect_tdsb = find_by_type(
+            chunks=tdgp_chunk.chunks, chunk_type="tdsb"
+        )
     except ChunkNotFoundError:
-        effect_tdsb_body = None
+        effect_tdsb = None
 
     effect_group = PropertyGroup(
-        _tdgp=tdgp_chunk.body,
-        _tdsb=effect_tdsb_body,
+        _tdgp=tdgp_chunk,
+        _tdsb=effect_tdsb,
         _name_utf8=effect_name_utf8,
-        _fnam_utf8=fnam_utf8_body,
+        _fnam_utf8=fnam_utf8,
         match_name=group_match_name,
         property_depth=property_depth,
         properties=[],
@@ -572,25 +565,26 @@ def _extract_no_value(body: Any, result: dict[str, Any]) -> None:
     result["property_value_type"] = PropertyValueType.NO_VALUE
 
 
-def _parse_effect_parameter_def(parameter_chunks: list[Aep.Chunk]) -> dict[str, Any]:
+def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]:
     """Parse effect parameter definition from pard chunk, returning a dict of values."""
     pard_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pard")
 
-    control_type = PropertyControlType(int(pard_chunk.body.property_control_type))
+    control_type = PropertyControlType(pard_chunk.property_control_type)
 
     result: dict[str, Any] = {
-        "name": pard_chunk.body.__dict__["name"].split("\x00", 1)[0],
+        "name": pard_chunk.name,
         "property_control_type": control_type,
     }
 
     extractor = _PARD_EXTRACTORS.get(control_type)
     if extractor is not None:
-        extractor(pard_chunk.body, result)
+        extractor(pard_chunk, result)
 
     with suppress(ChunkNotFoundError):
         pdnm_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pdnm")
-        utf8_chunk = pdnm_chunk.body.chunks[0]
-        pdnm_data = str_contents(utf8_chunk)
+        # pdnm is a ContainerChunk with a Utf8 child
+        utf8_chunk = pdnm_chunk.chunks[0]
+        pdnm_data = str_value(utf8_chunk)
         if control_type == PropertyControlType.ENUM:
             result["property_parameters"] = pdnm_data.split("|")
         elif pdnm_data:
@@ -600,7 +594,7 @@ def _parse_effect_parameter_def(parameter_chunks: list[Aep.Chunk]) -> dict[str, 
 
 
 def parse_effect_definitions(
-    root_chunks: list[Aep.Chunk],
+    root_chunks: list[Chunk],
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Parse project-level effect definitions from LIST:EfdG.
 
@@ -621,17 +615,17 @@ def parse_effect_definitions(
         return {}
 
     effect_defs: dict[str, dict[str, dict[str, Any]]] = {}
-    efdf_chunks = filter_by_list_type(chunks=efdg_chunk.body.chunks, list_type="EfDf")
+    efdf_chunks = filter_by_list_type(chunks=efdg_chunk.chunks, list_type="EfDf")
 
     for efdf_chunk in efdf_chunks:
-        efdf_child_chunks = efdf_chunk.body.chunks
+        efdf_child_chunks = efdf_chunk.chunks
         # First tdmn in EfDf contains the effect match name
         tdmn_chunk = find_by_type(chunks=efdf_child_chunks, chunk_type="tdmn")
-        effect_match_name = str_contents(tdmn_chunk)
+        effect_match_name = str_value(tdmn_chunk)
 
         # Parse param defs from the sspc chunk
         sspc_chunk = find_by_list_type(chunks=efdf_child_chunks, list_type="sspc")
-        param_defs = parse_effect_param_defs(sspc_chunk.body.chunks)
+        param_defs = parse_effect_param_defs(sspc_chunk.chunks)
         effect_defs[effect_match_name] = param_defs
 
     return effect_defs

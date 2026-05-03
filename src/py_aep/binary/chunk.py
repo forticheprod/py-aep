@@ -20,11 +20,11 @@ from .bin_utils import (
     write_fmt,
     write_pad,
 )
-from .fmt_field import _init_name, _struct_info
+from .fmt_field import _decode_fields, _encode_value, _init_name, _struct_info
 from .registry import CHUNK_TYPES, register
 
 if TYPE_CHECKING:
-    from typing import IO, Any, Callable
+    from typing import IO, Any, Callable, Iterator
 
 # ---------------------------------------------------------------------------
 # Chunk base (also serves as fallback for unregistered types)
@@ -56,7 +56,7 @@ class Chunk:
         if info is None:
             data = read_bytes(fp, size)
             return cls(chunk_type=chunk_type, data=data)
-        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info = info
+        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces = info
         mixed_endian = bool(endians)
         expected = struct.calcsize(">" + fmt) if fmt else 0
 
@@ -111,12 +111,7 @@ class Chunk:
             items_start = size  # no trailing/items in the optional-fields slow path
 
         kw: dict[str, Any] = {"chunk_type": chunk_type}
-        for i, (fld, value) in enumerate(zip(data_fields, values)):
-            enc = encodings.get(i)
-            if enc is not None and value is not None:
-                nul = value.find(b"\x00")
-                value = value[:nul].decode(enc) if nul >= 0 else value.decode(enc)
-            kw[_init_name(fld.name)] = value
+        kw.update(_decode_fields(data_fields, values, encodings, coerces))
         if items_info is not None:
             items_name, item_cls, item_size = items_info
             items_bytes = size - items_start
@@ -138,7 +133,7 @@ class Chunk:
         info = _struct_info(type(self))  # type: ignore[arg-type]
         if info is None:
             return write_bytes(fp, self.data)
-        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info = info
+        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces = info
         mixed_endian = bool(endians)
 
         # Find last non-None optional field to determine write boundary
@@ -158,11 +153,7 @@ class Chunk:
                 f = data_fields[i]
                 fe = endians.get(i, ">")
                 value = getattr(self, f.name)
-                enc = encodings.get(i)
-                if enc is not None:
-                    field_size = struct.calcsize(fe + f.metadata["fmt"])
-                    encoded = value.encode(enc)[:field_size]
-                    value = encoded + b"\x00" * (field_size - len(encoded))
+                value = _encode_value(value, i, encodings, coerces, fe, f.metadata["fmt"])
                 written += write_bytes(fp, struct.pack(fe + f.metadata["fmt"], value))
         else:
             # Build format for fields we're writing
@@ -173,12 +164,7 @@ class Chunk:
             for i in range(last_idx):
                 f = data_fields[i]
                 value = getattr(self, f.name)
-                enc = encodings.get(i)
-                if enc is not None:
-                    # Encode str to null-padded bytes of the fixed field size.
-                    field_size = struct.calcsize(">" + f.metadata["fmt"])
-                    encoded = value.encode(enc)[:field_size]
-                    value = encoded + b"\x00" * (field_size - len(encoded))
+                value = _encode_value(value, i, encodings, coerces, ">", f.metadata["fmt"])
                 write_values.append(value)
             written = write_fmt(fp, w_fmt, *write_values) if write_parts else 0
 
@@ -257,6 +243,12 @@ class ListChunk(Chunk):
             chunk_type=chunk_type,
         )
 
+    def __iter__(self) -> Iterator[Chunk]:
+        return iter(self.chunks)
+
+    def __len__(self) -> int:
+        return len(self.chunks)
+
     def write(self, fp: IO[bytes]) -> int:
         written = write_bytes(fp, self.list_type.encode("ASCII"))
         if self.list_type == "btdk":
@@ -296,6 +288,12 @@ class ContainerChunk(Chunk):
         # Pass-through context (no list_type level change)
         chunks = read_chunks(fp, size, ctx=ctx)
         return cls(chunk_type=chunk_type, chunks=chunks)
+
+    def __iter__(self) -> Iterator[Chunk]:
+        return iter(self.chunks)
+
+    def __len__(self) -> int:
+        return len(self.chunks)
 
     def write(self, fp: IO[bytes]) -> int:
         written = 0

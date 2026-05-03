@@ -1,4 +1,4 @@
-"""Miscellaneous chunk types: prin, mkif, shph, NmHd, fips, pard, fth5.
+"""Miscellaneous chunk types: prin, mkif, shph, NmHd, fips, pard, fth5, dwga.
 
 Fixed-layout chunks use `fmt_field()` and `BitField`.
 Fth5Chunk uses `items_field()` for repeating feather points.
@@ -13,7 +13,20 @@ from attrs import define, field
 from .bin_utils import read_bytes
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import FmtItem, fmt_field, items_field
+from .fmt_field import (
+    FmtItem,
+    ascii_field,
+    bool_field,
+    bytes_field,
+    f4_field,
+    f8_field,
+    items_field,
+    s2_field,
+    s4_field,
+    u1_field,
+    u2_field,
+    u4_field,
+)
 from .registry import register
 
 if TYPE_CHECKING:
@@ -34,15 +47,15 @@ class PrinChunk(Chunk):
 
     chunk_type: str = "prin"
 
-    _reserved_00: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    match_name: str = fmt_field("48s", default="", encoding="ascii")
+    _reserved_00: bytes = bytes_field(4, repr=False)
+    match_name: str = ascii_field(48, default="ADBE Escher")
     """Internal match name (e.g. 'ADBE Advanced 3d')."""
 
-    display_name: str = fmt_field("48s", default="", encoding="ascii")
+    display_name: str = ascii_field(48, default="Classic 3D")
     """Human-readable name (e.g. 'Classic 3D')."""
 
-    _reserved_68: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
-    _end_marker: bytes = fmt_field("1s", default=b"\x01", repr=False)
+    _reserved_68: bytes = bytes_field(3, repr=False)
+    _end_marker: bytes = bytes_field(1, default=b"\x01", repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -60,26 +73,35 @@ class MkifChunk(Chunk):
 
     chunk_type: str = "mkif"
 
-    inverted: int = fmt_field("B")
+    inverted: bool = bool_field()
     """1 = inverted, 0 = normal."""
 
-    locked: int = fmt_field("B")
+    locked: bool = bool_field()
     """1 = locked, 0 = unlocked."""
 
-    mask_motion_blur: int = fmt_field("B")
+    mask_motion_blur: int = u1_field()
     """0 = Same as Layer, 1 = Off, 2 = On."""
 
-    mask_feather_falloff: int = fmt_field("B")
+    mask_feather_falloff: int = u1_field()
     """0 = Smooth, 1 = Linear."""
 
-    _reserved_04: bytes = fmt_field("2s", default=b"\x00" * 2, repr=False)
-    mode: int = fmt_field("H")
+    _reserved_04: bytes = bytes_field(2, repr=False)
+    mode: int = u2_field()
     """0=None, 1=Add, 2=Subtract, 3=Intersect, 4=Darken, 5=Lighten, 6=Difference."""
 
-    _reserved_08: bytes = fmt_field("37s", default=b"\x00" * 37, repr=False)
-    color_r: int = fmt_field("B")
-    color_g: int = fmt_field("B")
-    color_b: int = fmt_field("B")
+    _reserved_08: bytes = bytes_field(37, repr=False)
+    color_r: int = u1_field()
+    color_g: int = u1_field()
+    color_b: int = u1_field()
+
+    @property
+    def color(self) -> list[int]:
+        """Mask color as [R, G, B] (0-255)."""
+        return [self.color_r, self.color_g, self.color_b]
+
+    @color.setter
+    def color(self, value: list[int]) -> None:
+        self.color_r, self.color_g, self.color_b = value[0], value[1], value[2]
 
 
 # ---------------------------------------------------------------------------
@@ -99,23 +121,23 @@ class ShphChunk(Chunk):
 
     chunk_type: str = "shph"
 
-    _reserved_00: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
-    _flags: int = fmt_field("B", repr=False)
+    _reserved_00: bytes = bytes_field(3, default=b"\xb3\xde\x02", repr=False)
+    _flags: int = u1_field(repr=False)
     """Byte 3: bit 3 = open."""
 
-    top_left_x: float = fmt_field("f")
+    top_left_x: float = f4_field()
     """Bounding-box left edge (x minimum)."""
 
-    top_left_y: float = fmt_field("f")
+    top_left_y: float = f4_field()
     """Bounding-box top edge (y minimum)."""
 
-    bottom_right_x: float = fmt_field("f")
+    bottom_right_x: float = f4_field()
     """Bounding-box right edge (x maximum)."""
 
-    bottom_right_y: float = fmt_field("f")
+    bottom_right_y: float = f4_field()
     """Bounding-box bottom edge (y maximum)."""
 
-    _reserved_14: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
+    _reserved_14: bytes = bytes_field(4, default=b"\x01\x00\x00\x00", repr=False)
 
     open = BitField("_flags", 3)
     """True when the path is open (not closed)."""
@@ -136,16 +158,16 @@ class NmhdChunk(Chunk):
 
     chunk_type: str = "NmHd"
 
-    _reserved_00: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
-    _marker_flags: int = fmt_field("B", repr=False)
+    _reserved_00: bytes = bytes_field(3, repr=False)
+    _marker_flags: int = u1_field(repr=False)
     """Byte 3: bit 2=unknown, bit 1=protected_region, bit 0=navigation."""
 
-    _reserved_04: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    frame_duration: int = fmt_field("I")
+    _reserved_04: bytes = bytes_field(4, repr=False)
+    frame_duration: int = u4_field()
     """Duration in 600ths of a second."""
 
-    _reserved_0c: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    label: int = fmt_field("B")
+    _reserved_0c: bytes = bytes_field(4, repr=False)
+    label: int = u1_field()
     """Label color index."""
 
     _trailing: bytes = field(default=b"", repr=False)
@@ -177,51 +199,51 @@ class FipsChunk(Chunk):
 
     chunk_type: str = "fips"
 
-    _pad_00: bytes = fmt_field("7s", default=b"\x00" * 7, repr=False)
-    channels: int = fmt_field("B")
+    _pad_00: bytes = bytes_field(7, repr=False)
+    channels: int = u1_field()
     """Channel display mode (0=RGB, 1=Red, 2=Green, 3=Blue, 4=Alpha, 8=RGB Straight)."""
 
-    _pad_08: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
-    _grid_safe_flags: int = fmt_field("B", repr=False)
+    _pad_08: bytes = bytes_field(3, repr=False)
+    _grid_safe_flags: int = u1_field(repr=False)
     """Byte 11: bit 1=proportional_grid, bit 0=title_action_safe."""
 
-    _draft_flags: int = fmt_field("B", repr=False)
+    _draft_flags: int = u1_field(repr=False)
     """Byte 12: bit 2=draft3d."""
 
-    _preview_flags: int = fmt_field("B", repr=False)
+    _preview_flags: int = u1_field(repr=False)
     """Byte 13: bit 4=draft, bit 2=fast_draft, bit 0=adaptive."""
 
-    _view_flags: int = fmt_field("B", repr=False)
+    _view_flags: int = u1_field(repr=False)
     """Byte 14: bit 7=region_of_interest, bit 6=rulers, bit 4=wireframe."""
 
-    _display_flags: int = fmt_field("B", repr=False)
+    _display_flags: int = u1_field(repr=False)
     """Byte 15: bit 7=checkerboards, bit 4=mask_and_shape_path."""
 
-    _pad_10: bytes = fmt_field("7s", default=b"\x00" * 7, repr=False)
-    _guide_flags: int = fmt_field("B", repr=False)
+    _pad_10: bytes = bytes_field(7, repr=False)
+    _guide_flags: int = u1_field(repr=False)
     """Byte 23: bit 3=grid, bit 2=guides_snap, bit 1=guides_locked, bit 0=guides_visibility."""
 
-    _pad_18: bytes = fmt_field("16s", default=b"\x00" * 16, repr=False)
-    roi_top: int = fmt_field("H")
-    roi_left: int = fmt_field("H")
-    roi_bottom: int = fmt_field("H")
-    roi_right: int = fmt_field("H")
-    _pad_30: bytes = fmt_field("21s", default=b"\x00" * 21, repr=False)
-    zoom_type: int = fmt_field("B")
+    _pad_18: bytes = bytes_field(16, repr=False)
+    roi_top: int = u2_field()
+    roi_left: int = u2_field()
+    roi_bottom: int = u2_field()
+    roi_right: int = u2_field()
+    _pad_30: bytes = bytes_field(21, repr=False)
+    zoom_type: int = u1_field()
     """Zoom mode (0=custom, 1=fit, 2=fit up to 100%)."""
 
-    _pad_46: bytes = fmt_field("2s", default=b"\x00" * 2, repr=False)
-    zoom: float = fmt_field("d")
+    _pad_46: bytes = bytes_field(2, repr=False)
+    zoom: float = f8_field()
     """Zoom factor (1.0 = 100%)."""
 
-    exposure: float = fmt_field("f")
+    exposure: float = f4_field()
     """Exposure value in stops (-40.0 to 40.0)."""
 
-    _pad_54: int = fmt_field("B", repr=False)
-    _color_mgmt_flags: int = fmt_field("B", repr=False)
+    _pad_54: int = u1_field(repr=False)
+    _color_mgmt_flags: int = u1_field(default=1, repr=False)
     """Byte 85: bit 0=use_display_color_management."""
 
-    _resolution_flags: int = fmt_field("B", repr=False)
+    _resolution_flags: int = u1_field(repr=False)
     """Byte 86: bit 0=auto_resolution."""
 
     _trailing: bytes = field(default=b"", repr=False)
@@ -279,6 +301,14 @@ class PardChunk(Chunk):
 
     chunk_type: str = "pard"
 
+    @property
+    def property_control_type(self) -> int:
+        """Control type discriminator at byte 15 of the raw data."""
+        data = getattr(self, "data", b"")
+        if len(data) > 15:
+            return data[15]
+        return 0
+
     @classmethod
     def read(
         cls,
@@ -319,17 +349,34 @@ class PardChunk(Chunk):
 
 
 @define
+class GenericPardChunk(PardChunk):
+    """Generic pard for control types without specialized body parsing.
+
+    Covers types 0 (LAYER), 1 (CUSTOM), 9 (NONE), 11 (ARBITRARY_DATA),
+    12 (PATH), 13 (BUTTON), 14 (NO_DATA), 15 (GROUP_START).
+    All are 148 bytes: 56-byte header + 92-byte body.
+    """
+
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field()
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    _body: bytes = bytes_field(92, repr=False)
+    _trailing: bytes = field(default=b"", repr=False)
+
+
+@define
 class ColorPardChunk(PardChunk):
     """Color control (type 5): 4xB last/default/max color."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=5)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    _last_color: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    _default_color: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    _pad_body: bytes = fmt_field("64s", default=b"\x00" * 64, repr=False)
-    _max_color: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=5)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    _last_color: bytes = bytes_field(4, repr=False)
+    _default_color: bytes = bytes_field(4, repr=False)
+    _pad_body: bytes = bytes_field(64, repr=False)
+    _max_color: bytes = bytes_field(4, repr=False)
     _trailing: bytes = field(default=b"", repr=False)
 
     @property
@@ -361,15 +408,15 @@ class ColorPardChunk(PardChunk):
 class ScalarPardChunk(PardChunk):
     """Scalar control (type 2): s4 last_value, 72s pad, s2 min, 2s pad, s2 max."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=2)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    last_value: int = fmt_field("i")
-    _pad_body: bytes = fmt_field("72s", default=b"\x00" * 72, repr=False)
-    min_value: int = fmt_field("h")
-    _pad_mid: bytes = fmt_field("2s", default=b"\x00" * 2, repr=False)
-    max_value: int = fmt_field("h")
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=2)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value: int = s4_field()
+    _pad_body: bytes = bytes_field(72, repr=False)
+    min_value: int = s2_field()
+    _pad_mid: bytes = bytes_field(2, repr=False)
+    max_value: int = s2_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -377,11 +424,11 @@ class ScalarPardChunk(PardChunk):
 class AnglePardChunk(PardChunk):
     """Angle control (type 3): s4 last_value."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=3)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    last_value: int = fmt_field("i")
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=3)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value: int = s4_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -389,12 +436,12 @@ class AnglePardChunk(PardChunk):
 class BooleanPardChunk(PardChunk):
     """Boolean control (type 4): u4 last_value, u1 default."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=4)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    last_value: int = fmt_field("I")
-    default: int = fmt_field("B")
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=4)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value: int = u4_field()
+    default: int = u1_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -402,12 +449,12 @@ class BooleanPardChunk(PardChunk):
 class TwoDPardChunk(PardChunk):
     """2D point control (type 6): s4 last_value_x_raw, s4 last_value_y_raw."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=6)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    last_value_x_raw: int = fmt_field("i")
-    last_value_y_raw: int = fmt_field("i")
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=6)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value_x_raw: int = s4_field()
+    last_value_y_raw: int = s4_field()
     _trailing: bytes = field(default=b"", repr=False)
 
     @property
@@ -423,13 +470,13 @@ class TwoDPardChunk(PardChunk):
 class EnumPardChunk(PardChunk):
     """Enum/popup control (type 7): u4 last_value, s4 nb_options, s4 default."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=7)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    last_value: int = fmt_field("I")
-    nb_options: int = fmt_field("i")
-    default: int = fmt_field("i")
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=7)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value: int = u4_field()
+    nb_options: int = s4_field()
+    default: int = s4_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -437,13 +484,13 @@ class EnumPardChunk(PardChunk):
 class SliderPardChunk(PardChunk):
     """Slider control (type 10): f8 last_value, 52s pad, f4 max_value."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=10)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    last_value: float = fmt_field("d")
-    _pad_body: bytes = fmt_field("52s", default=b"\x00" * 52, repr=False)
-    max_value: float = fmt_field("f")
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=10)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value: float = f8_field()
+    _pad_body: bytes = bytes_field(52, repr=False)
+    max_value: float = f4_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -451,13 +498,13 @@ class SliderPardChunk(PardChunk):
 class ThreeDPardChunk(PardChunk):
     """3D point control (type 18): 3x f8 for x/y/z raw values."""
 
-    _pad_pre: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    property_control_type: int = fmt_field("B", default=18)
-    _raw_name: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad_post: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    last_value_x_raw: float = fmt_field("d")
-    last_value_y_raw: float = fmt_field("d")
-    last_value_z_raw: float = fmt_field("d")
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=18)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value_x_raw: float = f8_field()
+    last_value_y_raw: float = f8_field()
+    last_value_z_raw: float = f8_field()
     _trailing: bytes = field(default=b"", repr=False)
 
     @property
@@ -473,14 +520,122 @@ class ThreeDPardChunk(PardChunk):
         return self.last_value_z_raw * 512
 
 
+# ---------------------------------------------------------------------------
+# dwga - working gamma selector (1 byte)
+# ---------------------------------------------------------------------------
+
+
+@register("dwga")
+@define
+class DwgaChunk(Chunk):
+    """Working gamma selector chunk (1 byte).
+
+    Stores a single byte: 0 = gamma 2.2, non-zero = gamma 2.4.
+    The computed `working_gamma` property returns the float value.
+    """
+
+    chunk_type: str = "dwga"
+
+    working_gamma_selector: int = u1_field()
+    _trailing: bytes = field(default=b"", repr=False)
+
+    @property
+    def working_gamma(self) -> float:
+        """Working gamma value: 2.2 (selector=0) or 2.4 (selector!=0)."""
+        return 2.2 if self.working_gamma_selector == 0 else 2.4
+
+
+# ---------------------------------------------------------------------------
+# ewot - effect workspace outline entries
+# ---------------------------------------------------------------------------
+
+
+@define
+class EwotItem(FmtItem):
+    """Single effect workspace outline entry (4 bytes).
+
+    Bit 7 of byte 0 marks child-property entries; bit 6 marks selected.
+    """
+
+    _flags: int = u1_field()
+    _data: bytes = bytes_field(3)
+
+    is_child_property = BitField("_flags", 7)
+    selected = BitField("_flags", 6)
+
+
+@register("ewot")
+@define
+class EwotChunk(Chunk):
+    """Effect workspace outline entries.
+
+    4-byte count header followed by `count` × 4-byte entries.
+    """
+
+    chunk_type: str = "ewot"
+    num_entries: int = u4_field()
+    items: list[EwotItem] = items_field(EwotItem, 4)
+    _trailing: bytes = field(default=b"", repr=False)
+
+
+# ---------------------------------------------------------------------------
+# otln - composition panel outline entries
+# ---------------------------------------------------------------------------
+
+
+@define
+class OtlnItem(FmtItem):
+    """Single comp panel outline entry (4 bytes).
+
+    Bit 7 = collapsed, bit 6 = selected, bit 5 = is_property,
+    bit 3 = is_sub_entry.  `entry_type == 68` marks layer boundaries.
+    """
+
+    _flags: int = u1_field()
+    _unnamed6: bytes = bytes_field(2)
+    entry_type: int = u1_field()
+
+    collapsed = BitField("_flags", 7)
+    selected = BitField("_flags", 6)
+    is_property = BitField("_flags", 5)
+    is_sub_entry = BitField("_flags", 3)
+
+    @property
+    def is_layer_marker(self) -> bool:
+        """True when this entry is a per-layer boundary marker."""
+        return self.entry_type == 68
+
+
+@register("otln")
+@define
+class OtlnChunk(Chunk):
+    """Comp panel outline entries.
+
+    4-byte count header followed by `count` × 4-byte entries.
+    """
+
+    chunk_type: str = "otln"
+    num_entries: int = u4_field()
+    items: list[OtlnItem] = items_field(OtlnItem, 4)
+    _trailing: bytes = field(default=b"", repr=False)
+
+
 _PARD_VARIANTS: dict[int, type] = {
+    0: GenericPardChunk,
+    1: GenericPardChunk,
     2: ScalarPardChunk,
     3: AnglePardChunk,
     4: BooleanPardChunk,
     5: ColorPardChunk,
     6: TwoDPardChunk,
     7: EnumPardChunk,
+    9: GenericPardChunk,
     10: SliderPardChunk,
+    11: GenericPardChunk,
+    12: GenericPardChunk,
+    13: GenericPardChunk,
+    14: GenericPardChunk,
+    15: GenericPardChunk,
     18: ThreeDPardChunk,
 }
 
@@ -497,22 +652,22 @@ class FeatherPoint(FmtItem):
     Integer fields are little-endian; float fields are big-endian.
     """
 
-    seg_loc: int = fmt_field("I", endian="<")
+    seg_loc: int = u4_field(endian="<")
     """Segment index (0-based, LE u4)."""
 
-    interp_raw: int = fmt_field("I", endian="<")
+    interp_raw: int = u4_field(endian="<")
     """Interpolation type raw value (LE u4). 0=non-Hold, 2=Hold."""
 
-    rel_seg_loc: float = fmt_field("d", default=0.0)
+    rel_seg_loc: float = f8_field(default=0.0)
     """Relative position on the segment (0.0 to 1.0, BE f8)."""
 
-    radius: float = fmt_field("d", default=0.0)
+    radius: float = f8_field(default=0.0)
     """Feather radius. Negative=inner, positive=outer (BE f8)."""
 
-    corner_angle: float = fmt_field("f", default=0.0)
+    corner_angle: float = f4_field(default=0.0)
     """Corner angle percentage 0-100 (BE f4)."""
 
-    tension: float = fmt_field("f", default=0.0)
+    tension: float = f4_field(default=0.0)
     """Feather tension 0.0-1.0 (BE f4)."""
 
 

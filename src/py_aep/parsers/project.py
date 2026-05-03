@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+from typing import TYPE_CHECKING
 
-from ..kaitai import Aep
-from ..kaitai.utils import (
+from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_type,
     find_by_list_type,
     find_by_type,
-    str_contents,
+    str_value,
 )
 from ..models.layers.av_layer import AVLayer
 from ..models.layers.shape_layer import ShapeLayer
@@ -19,48 +19,48 @@ from .effect import parse_effect_definitions
 from .item import parse_folder
 from .render_queue import parse_render_queue
 
+if TYPE_CHECKING:
+    from ..binary.chunk import ListChunk
 
-def parse_project(aep: Aep, file_path: str) -> Project:
+
+def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
     """Parse an After Effects (.aep) project file into a Project.
 
     Args:
-        aep: The parsed Kaitai RIFX structure.
+        rifx: The parsed binary RIFX root chunk.
+        xmp: The XMP metadata string from the file trailer.
         file_path: Path to the `.aep` file (stored on the Project).
     """
-    root_chunks: list[Aep.Chunk] = aep.root.body.chunks
+    root_chunks = rifx.chunks
 
-    root_folder_chunk: Aep.Chunk = find_by_list_type(
-        chunks=root_chunks, list_type="Fold"
-    )
-    head_chunk: Aep.HeadBody = find_by_type(chunks=root_chunks, chunk_type="head").body
-    nnhd_chunk: Aep.NnhdBody = find_by_type(chunks=root_chunks, chunk_type="nnhd").body
-    acer_chunk: Aep.AcerBody = find_by_type(chunks=root_chunks, chunk_type="acer").body
-    adfr_chunk: Aep.AdfrBody = find_by_type(chunks=root_chunks, chunk_type="adfr").body
-    dwga_chunk: Aep.DwgaBody = find_by_type(chunks=root_chunks, chunk_type="dwga").body
-    gpug_chunk: Aep.Chunk = find_by_list_type(chunks=root_chunks, list_type="gpuG")
-    gpug_utf8: Aep.Utf8Body = find_by_type(
-        chunks=gpug_chunk.body.chunks, chunk_type="Utf8"
-    ).body
+    root_folder_chunk = find_by_list_type(chunks=root_chunks, list_type="Fold")
+    head_chunk = find_by_type(chunks=root_chunks, chunk_type="head")
+    nnhd_chunk = find_by_type(chunks=root_chunks, chunk_type="nnhd")
+    acer_chunk = find_by_type(chunks=root_chunks, chunk_type="acer")
+    adfr_chunk = find_by_type(chunks=root_chunks, chunk_type="adfr")
+    dwga_chunk = find_by_type(chunks=root_chunks, chunk_type="dwga")
+    gpug_chunk = find_by_list_type(chunks=root_chunks, list_type="gpuG")
+    gpug_utf8 = find_by_type(chunks=gpug_chunk.chunks, chunk_type="Utf8")
 
     # Expression engine: LIST:ExEn > Utf8
-    exen_utf8: Aep.Utf8Body | None = None
+    exen_utf8 = None
     with contextlib.suppress(ChunkNotFoundError):
         exen_chunk = find_by_list_type(chunks=root_chunks, list_type="ExEn")
-        exen_utf8 = find_by_type(chunks=exen_chunk.body.chunks, chunk_type="Utf8").body
+        exen_utf8 = find_by_type(chunks=exen_chunk.chunks, chunk_type="Utf8")
 
     # CMS settings JSON and baseColorProfile Utf8 chunks
-    cms_utf8: Aep.Utf8Body | None = None
-    ws_utf8: Aep.Utf8Body | None = None
-    dcs_utf8: Aep.Utf8Body | None = None
+    cms_utf8 = None
+    ws_utf8 = None
+    dcs_utf8 = None
     for c in filter_by_type(chunks=root_chunks, chunk_type="Utf8"):
-        content = str_contents(c)
+        content = str_value(c)
         if cms_utf8 is None and "lutInterpolationMethod" in content:
-            cms_utf8 = c.body
+            cms_utf8 = c
         if "baseColorProfile" in content:
             if ws_utf8 is None:
-                ws_utf8 = c.body
+                ws_utf8 = c
             elif dcs_utf8 is None:
-                dcs_utf8 = c.body
+                dcs_utf8 = c
 
     project = Project(
         _nnhd=nnhd_chunk,
@@ -73,7 +73,8 @@ def parse_project(aep: Aep, file_path: str) -> Project:
         _cms_utf8=cms_utf8,
         _ws_utf8=ws_utf8,
         _dcs_utf8=dcs_utf8,
-        _aep=aep,
+        _rifx=rifx,
+        _xmp=xmp,
         file=file_path,
         items={},
         render_queue=None,
@@ -83,12 +84,12 @@ def parse_project(aep: Aep, file_path: str) -> Project:
 
     root_folder = parse_folder(
         is_root=True,
-        child_chunks=root_folder_chunk.body.chunks,
+        child_chunks=root_folder_chunk.chunks,
         project=project,
         _idta=None,
         _name_utf8=None,
         _cmta=None,
-        _item_list=root_folder_chunk.body,
+        _item_list=root_folder_chunk,
         parent_folder=None,
     )
     project.items[0] = root_folder
@@ -99,7 +100,7 @@ def parse_project(aep: Aep, file_path: str) -> Project:
 
     with contextlib.suppress(ChunkNotFoundError):
         fcid_chunk = find_by_type(chunks=root_chunks, chunk_type="fcid")
-        project._active_item = project.items[fcid_chunk.body.active_item_id]
+        project._active_item = project.items[fcid_chunk.value]
 
     return project
 

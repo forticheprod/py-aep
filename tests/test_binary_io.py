@@ -453,7 +453,7 @@ class TestFmtField:
 
         info = _struct_info(U4Chunk)
         assert info is not None
-        fmt, data_fields, trailing, encodings, optional_start, endians, items_info = info
+        fmt, data_fields, trailing, encodings, optional_start, endians, items_info, coerces = info
         assert fmt == "I"
         assert len(data_fields) == 1
         assert data_fields[0].name == "value"
@@ -467,19 +467,19 @@ class TestFmtField:
     def test_struct_info_field_count_validation(self) -> None:
         from attrs import define
 
-        from py_aep.binary.fmt_field import _struct_info, fmt_field
+        from py_aep.binary.fmt_field import _struct_info, u1_field, u2_field, u4_field
 
         @define
         class BadChunk(Chunk):
-            a: int = fmt_field("I")
-            b: int = fmt_field("H")
-            c: int = fmt_field("B")
+            a: int = u4_field()
+            b: int = u2_field()
+            c: int = u1_field()
             # "IHB" yields 3 values, 3 fields - OK for now.
             # To test mismatch, we'd need a multi-value format with wrong count.
 
         info = _struct_info(BadChunk)
         assert info is not None
-        fmt, data_fields, _, encodings, optional_start, endians, items_info = info
+        fmt, data_fields, _, encodings, optional_start, endians, items_info, coerces = info
         assert fmt == "IHB"
         assert len(data_fields) == 3
         assert encodings == {}
@@ -493,7 +493,7 @@ class TestFmtField:
 
         info = _struct_info(PrinChunk)
         assert info is not None
-        _, _, _, encodings, _, _, _ = info
+        _, _, _, encodings, _, _, _, _ = info
         # PrinChunk has match_name (field index 1) and display_name (index 2)
         assert 1 in encodings
         assert encodings[1] == "ascii"
@@ -612,6 +612,65 @@ class TestFmtField:
         buf2 = BytesIO()
         chunk2.write(buf2)
         assert buf2.getvalue() == raw_164
+
+    def test_fmt_field_auto_bytes_default(self) -> None:
+        """bytes_field(4) auto-defaults to b"\\x00" * 4, not 0."""
+        from attrs import define
+
+        from py_aep.binary.fmt_field import bytes_field
+
+        @define
+        class AutoChunk(Chunk):
+            chunk_type: str = "test"
+            pad: bytes = bytes_field(4)
+
+        c = AutoChunk()
+        assert c.pad == b"\x00" * 4
+        buf = BytesIO()
+        c.write(buf)
+        assert buf.getvalue() == b"\x00" * 4
+
+    def test_fmt_field_explicit_bytes_default_preserved(self) -> None:
+        """Non-zero explicit defaults survive the auto-default logic."""
+        from attrs import define
+
+        from py_aep.binary.fmt_field import bytes_field
+
+        @define
+        class ExplicitChunk(Chunk):
+            chunk_type: str = "test"
+            magic: bytes = bytes_field(4, default=b"FXTC")
+
+        c = ExplicitChunk()
+        assert c.magic == b"FXTC"
+
+    def test_fmt_field_non_bytes_default_unchanged(self) -> None:
+        """u1_field() still defaults to 0."""
+        from attrs import define
+
+        from py_aep.binary.fmt_field import u1_field
+
+        @define
+        class IntChunk(Chunk):
+            chunk_type: str = "test"
+            val: int = u1_field()
+
+        c = IntChunk()
+        assert c.val == 0
+
+    def test_fmt_field_encoding_default_empty_string(self) -> None:
+        """ascii_field with encoding defaults to empty string, not bytes."""
+        from attrs import define
+
+        from py_aep.binary.fmt_field import ascii_field
+
+        @define
+        class EncChunk(Chunk):
+            chunk_type: str = "test"
+            name: str = ascii_field(32)
+
+        c = EncChunk()
+        assert c.name == ""
 
 
 # -----------------------------------------------------------------------
@@ -1023,7 +1082,7 @@ class TestOptiChunk:
         size = buf.getbuffer().nbytes
         chunk2 = OptiChunk.read(buf, size, chunk_type="opti")
         assert isinstance(chunk2, SoliOptiChunk)
-        assert chunk2.asset_type == b"Soli"
+        assert chunk2.asset_type == "Soli"
         assert chunk2.color_r == 1.0
         assert chunk2.color_g == 0.5
         assert chunk2.color_b == 0.0
@@ -1401,6 +1460,37 @@ class TestPardChunk:
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert type(chunk) is PardChunk
         assert chunk.data == data
+
+    def test_generic_pard_roundtrip(self) -> None:
+        """All 8 generic control types dispatch to GenericPardChunk and round-trip."""
+        from py_aep.binary.misc_chunks import GenericPardChunk, PardChunk
+
+        for ct in (0, 1, 9, 11, 12, 13, 14, 15):
+            body = bytes(range(92))  # non-trivial 92-byte body
+            data = self._build_pard(ct, body)
+            assert len(data) == 148, f"type {ct}: expected 148, got {len(data)}"
+
+            buf = BytesIO(data)
+            chunk = PardChunk.read(buf, len(data), chunk_type="pard")
+            assert isinstance(chunk, GenericPardChunk), (
+                f"type {ct}: expected GenericPardChunk, got {type(chunk).__name__}"
+            )
+            assert chunk.property_control_type == ct
+
+            out = BytesIO()
+            chunk.write(out)
+            assert out.getvalue() == data, f"type {ct}: round-trip mismatch"
+
+    def test_generic_pard_name_access(self) -> None:
+        """GenericPardChunk exposes the name from the raw header."""
+        from py_aep.binary.misc_chunks import GenericPardChunk, PardChunk
+
+        body = b"\x00" * 92
+        data = self._build_pard(13, body, name="Master")
+        buf = BytesIO(data)
+        chunk = PardChunk.read(buf, len(data), chunk_type="pard")
+        assert isinstance(chunk, GenericPardChunk)
+        assert chunk.name == "Master"
 
 
 # -----------------------------------------------------------------------
@@ -2002,11 +2092,11 @@ class TestPropertyChunkDefaults:
         tdb4 = Tdb4Chunk()
         assert tdb4.static == 1
 
-    def test_tdb4_expression_disabled_default_true(self) -> None:
+    def test_tdb4_expression_disabled_default_false(self) -> None:
         from py_aep.binary.property_chunks import Tdb4Chunk
 
         tdb4 = Tdb4Chunk()
-        assert tdb4.expression_disabled == 1
+        assert tdb4.expression_disabled == 0
 
     def test_tdb4_bare_constructor_roundtrips(self) -> None:
         from py_aep.binary.property_chunks import Tdb4Chunk
@@ -2033,22 +2123,24 @@ class TestPropertyChunkDefaults:
 
 
 class TestMutationHelpers:
-    def test_find_chunk_found(self) -> None:
-        from py_aep.binary.mutations import find_chunk
+    def test_find_by_type_found(self) -> None:
+        from py_aep.binary.utils import find_by_type
 
         a = Chunk(chunk_type="aaaa")
         b = Chunk(chunk_type="bbbb")
-        assert find_chunk([a, b], "bbbb") is b
+        assert find_by_type([a, b], "bbbb") is b
 
-    def test_find_chunk_not_found(self) -> None:
-        from py_aep.binary.mutations import find_chunk
+    def test_find_by_type_not_found(self) -> None:
+        from py_aep.binary.utils import ChunkNotFoundError, find_by_type
 
-        assert find_chunk([Chunk(chunk_type="aaaa")], "zzzz") is None
+        with pytest.raises(ChunkNotFoundError):
+            find_by_type([Chunk(chunk_type="aaaa")], "zzzz")
 
-    def test_find_chunk_empty(self) -> None:
-        from py_aep.binary.mutations import find_chunk
+    def test_find_by_type_empty(self) -> None:
+        from py_aep.binary.utils import ChunkNotFoundError, find_by_type
 
-        assert find_chunk([], "aaaa") is None
+        with pytest.raises(ChunkNotFoundError):
+            find_by_type([], "aaaa")
 
     def test_remove_chunks_by_type(self) -> None:
         from py_aep.binary.mutations import remove_chunks_by_type

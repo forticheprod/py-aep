@@ -3,11 +3,11 @@ from __future__ import annotations
 import typing
 
 from ..enums import GuideOrientationType
-from ..kaitai.descriptors import ChunkField
+from .descriptors import ChunkField
 from .validators import validate_number
 
 if typing.TYPE_CHECKING:
-    from ..kaitai import Aep
+    from ..binary.chunk import Chunk
 
 
 class Guide:
@@ -46,7 +46,7 @@ class Guide:
     position_type = ChunkField[int]("_guide_item", "position_type")
     """The position type of the guide. Always 0 (pixels). Read / Write."""
 
-    def __init__(self, _guide_item: Aep.GuideItem) -> None:
+    def __init__(self, _guide_item: Chunk) -> None:
         self._guide_item = _guide_item
 
     def __repr__(self) -> str:

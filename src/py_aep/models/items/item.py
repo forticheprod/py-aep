@@ -4,12 +4,12 @@ import typing
 
 from py_aep.enums import Label
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.transforms import strip_null
-from ...kaitai.utils import create_chunk, propagate_check
+from ...binary.scalar_chunks import Utf8Chunk
+from ..descriptors import ChunkField
+from ..transforms import strip_null
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
     from ..guide import Guide
     from ..project import Project
     from .folder import FolderItem
@@ -43,7 +43,7 @@ class Item:
 
     name = ChunkField[str](
         "_name_utf8",
-        "contents",
+        "value",
         transform=strip_null,
     )
     """The name of the item, as shown in the Project panel.
@@ -52,10 +52,10 @@ class Item:
     def __init__(
         self,
         *,
-        _idta: Aep.IdtaBody | None,
-        _name_utf8: Aep.Utf8Body | None,
-        _cmta: Aep.Utf8Body | None,
-        _item_list: Aep.ListBody | None,
+        _idta: Chunk | None,
+        _name_utf8: Chunk | None,
+        _cmta: Chunk | None,
+        _item_list: ListChunk | None,
         project: Project,
         parent_folder: FolderItem | None,
         type_name: str,
@@ -75,16 +75,16 @@ class Item:
         """The item comment. Read / Write."""
         if self._cmta is None:
             return ""
-        return strip_null(self._cmta.contents)
+        return strip_null(self._cmta.value)
 
     @comment.setter
     def comment(self, value: str) -> None:
         if self._cmta is not None:
-            self._cmta.contents = value
-            propagate_check(self._cmta)
+            self._cmta.value = value
         elif self._item_list is not None:
-            chunk = create_chunk(self._item_list, "cmta", "Utf8Body", contents=value)
-            self._cmta = chunk.body
+            chunk = Utf8Chunk(chunk_type="cmta", value=value)
+            self._item_list.chunks.append(chunk)
+            self._cmta = chunk
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Item):

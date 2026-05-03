@@ -15,7 +15,7 @@ from attrs import define, field
 
 from .bin_utils import read_bytes, write_bytes
 from .chunk import Chunk
-from .fmt_field import fmt_field
+from .fmt_field import f8_field, s4_field, u1_field, u2_field, u4_field
 from .registry import register
 
 if TYPE_CHECKING:
@@ -33,17 +33,17 @@ class _StringChunkBase(Chunk):
 
     _ENCODING = ""
 
-    contents: str = ""
+    value: str = ""
 
     @classmethod
     def read(
         cls, fp: IO[bytes], size: int, *, chunk_type: str = "", **kwargs: Any
     ) -> _StringChunkBase:
         raw = read_bytes(fp, size)
-        return cls(chunk_type=chunk_type, contents=raw.decode(cls._ENCODING))
+        return cls(chunk_type=chunk_type, value=raw.decode(cls._ENCODING))
 
     def write(self, fp: IO[bytes]) -> int:
-        return write_bytes(fp, self.contents.encode(self._ENCODING))
+        return write_bytes(fp, self.value.encode(self._ENCODING))
 
 
 # ---------------------------------------------------------------------------
@@ -53,13 +53,13 @@ class _StringChunkBase(Chunk):
 
 @register(
     "efdc", "acer", "cdrp", "foac", "fiac", "fiop", "ipws",
-    "lnrb", "lnrp", "prgb",
+    "linl", "lnrb", "lnrp", "prgb",
 )
 @define
 class U1Chunk(Chunk):
     """Unsigned 1-byte integer chunk."""
 
-    value: int = fmt_field("B")
+    value: int = u1_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -68,19 +68,29 @@ class U1Chunk(Chunk):
 class U2Chunk(Chunk):
     """Unsigned 2-byte integer chunk."""
 
-    value: int = fmt_field("H")
+    value: int = u2_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
 @register(
-    "CapL", "CcCt", "CCId", "CLId", "CprC", "CsCt", "CTyp", "StVS",
+    "CapL", "CcCt", "CCId", "CLId", "CprC", "CTyp", "StVS",
     "parn", "fovi", "fivi", "fcid",
 )
 @define
 class U4Chunk(Chunk):
     """Unsigned 4-byte integer chunk."""
 
-    value: int = fmt_field("I")
+    value: int = u4_field()
+    _trailing: bytes = field(default=b"", repr=False)
+
+
+@register("CsCt")
+@define
+class CsctChunk(Chunk):
+    """CpS2 entry count chunk."""
+
+    chunk_type: str = "CsCt"
+    value: int = u4_field(default=0x01000000)
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -89,7 +99,7 @@ class U4Chunk(Chunk):
 class S4Chunk(Chunk):
     """Signed 4-byte integer chunk."""
 
-    value: int = fmt_field("i")
+    value: int = s4_field()
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -103,7 +113,7 @@ class S4Chunk(Chunk):
 class F8Chunk(Chunk):
     """8-byte double-precision float chunk."""
 
-    value: float = fmt_field("d", default=0.0)
+    value: float = f8_field(default=0.0)
     _trailing: bytes = field(default=b"", repr=False)
 
 

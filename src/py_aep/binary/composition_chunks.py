@@ -10,7 +10,7 @@ from attrs import define
 
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import fmt_field
+from .fmt_field import bytes_field, s4_field, u1_field, u2_field, u4_field
 from .registry import register
 
 
@@ -27,89 +27,89 @@ class CdtaChunk(Chunk):
     chunk_type: str = "cdta"
 
     # -- Resolution (bytes 0-3) --------------------------------------------
-    resolution_factor_h: int = fmt_field("H", default=1)
+    resolution_factor_h: int = u2_field(default=1)
     """Horizontal resolution factor."""
 
-    resolution_factor_v: int = fmt_field("H", default=1)
+    resolution_factor_v: int = u2_field(default=1)
     """Vertical resolution factor."""
 
     # -- Time scale (bytes 4-7) --------------------------------------------
-    _reserved_04: bytes = fmt_field("1s", default=b"\x00", repr=False)
-    time_scale_integer: int = fmt_field("H", default=4)
+    _reserved_04: bytes = bytes_field(1, repr=False)
+    time_scale_integer: int = u2_field(default=4)
     """Integer part of time scale."""
 
-    time_scale_fractional: int = fmt_field("B")
+    time_scale_fractional: int = u1_field()
     """Fractional part (1/256th units). Non-zero for NTSC-style rates."""
 
     # -- Timebase (bytes 8-19) ---------------------------------------------
-    internal_timebase: int = fmt_field("I")
+    internal_timebase: int = u4_field()
     """frame_rate * 256 * time_scale. E.g. 24576 for 24fps/ts=4."""
 
-    _reserved_0c: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    standard_timebase: int = fmt_field("I", default=600)
+    _reserved_0c: bytes = bytes_field(4, repr=False)
+    standard_timebase: int = u4_field(default=600)
     """Always 600."""
 
     # -- Time / work area / duration (bytes 20-51) -------------------------
-    time_dividend: int = fmt_field("i")
-    time_divisor: int = fmt_field("I")
-    work_area_start_dividend: int = fmt_field("I")
-    work_area_start_divisor: int = fmt_field("I")
-    work_area_end_dividend: int = fmt_field("I")
-    work_area_end_divisor: int = fmt_field("I")
-    duration_dividend: int = fmt_field("I")
-    duration_divisor: int = fmt_field("I")
+    time_dividend: int = s4_field()
+    time_divisor: int = u4_field()
+    work_area_start_dividend: int = u4_field()
+    work_area_start_divisor: int = u4_field()
+    work_area_end_dividend: int = u4_field()
+    work_area_end_divisor: int = u4_field()
+    duration_dividend: int = u4_field()
+    duration_divisor: int = u4_field()
 
     # -- Background color (bytes 52-54) ------------------------------------
-    bg_color_r: int = fmt_field("B")
-    bg_color_g: int = fmt_field("B")
-    bg_color_b: int = fmt_field("B")
+    bg_color_r: int = u1_field()
+    bg_color_g: int = u1_field()
+    bg_color_b: int = u1_field()
 
     # -- Reserved (bytes 55-137, 83 bytes) ---------------------------------
-    _reserved_37: bytes = fmt_field("83s", default=b"\x00" * 83, repr=False)
+    _reserved_37: bytes = bytes_field(83, repr=False)
 
     # -- Comp flags (bytes 138-139, 2 flag bytes) --------------------------
-    _comp_flags_0: int = fmt_field("B", repr=False)
+    _comp_flags_0: int = u1_field(repr=False)
     """Byte 138: bit 7 = draft3d."""
 
-    _comp_flags_1: int = fmt_field("B", repr=False)
+    _comp_flags_1: int = u1_field(repr=False)
     """Byte 139: composition toggle flags."""
 
     # -- Dimensions (bytes 140-143) ----------------------------------------
-    width: int = fmt_field("H")
-    height: int = fmt_field("H")
+    width: int = u2_field()
+    height: int = u2_field()
 
     # -- Pixel ratio (bytes 144-155) ---------------------------------------
-    pixel_ratio_dividend: int = fmt_field("I")
-    pixel_ratio_divisor: int = fmt_field("I")
-    _reserved_98: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
+    pixel_ratio_dividend: int = u4_field(default=1)
+    pixel_ratio_divisor: int = u4_field(default=1)
+    _reserved_98: bytes = bytes_field(4, repr=False)
 
     # -- Frame rate (bytes 156-163) ----------------------------------------
-    frame_rate_integer: int = fmt_field("H")
-    frame_rate_fractional: int = fmt_field("H")
+    frame_rate_integer: int = u2_field()
+    frame_rate_fractional: int = u2_field()
     """Fractional part (1/65536th units)."""
 
-    _reserved_a0: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
+    _reserved_a0: bytes = bytes_field(4, repr=False)
 
     # -- Display start time (bytes 164-171) --------------------------------
-    display_start_time_dividend: int = fmt_field("i")
+    display_start_time_dividend: int = s4_field()
     """Signed. Negative = timeline starts before frame 0."""
 
-    display_start_time_divisor: int = fmt_field("I")
+    display_start_time_divisor: int = u4_field()
 
     # -- Shutter (bytes 172-187) -------------------------------------------
-    _reserved_ac: bytes = fmt_field("2s", default=b"\x00" * 2, repr=False)
-    shutter_angle: int = fmt_field("H")
-    _reserved_b0: bytes = fmt_field("4s", default=b"\x00\x00\x01\x68", repr=False)
+    _reserved_ac: bytes = bytes_field(2, repr=False)
+    shutter_angle: int = u2_field(default=180)
+    _reserved_b0: bytes = bytes_field(4, default=b"\x00\x00\x01\x68", repr=False)
     """Always 360 (0x0168) big-endian."""
 
-    shutter_phase: int = fmt_field("i")
-    _reserved_b8: bytes = fmt_field("4s", default=b"\x00\x00\x01\x68", repr=False)
+    shutter_phase: int = s4_field()
+    _reserved_b8: bytes = bytes_field(4, default=b"\x00\x00\x01\x68", repr=False)
     """Always 360 (0x0168) big-endian."""
 
     # -- Trailing reserved (bytes 188-203) ---------------------------------
-    _reserved_bc: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    motion_blur_adaptive_sample_limit: int = fmt_field("i")
-    motion_blur_samples_per_frame: int = fmt_field("i")
+    _reserved_bc: bytes = bytes_field(8, repr=False)
+    motion_blur_adaptive_sample_limit: int = s4_field(default=128)
+    motion_blur_samples_per_frame: int = s4_field(default=16)
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     draft3d = BitField("_comp_flags_0", 7)
@@ -120,6 +120,26 @@ class CdtaChunk(Chunk):
     hide_shy_layers = BitField("_comp_flags_1", 0)
 
     # -- Computed properties -----------------------------------------------
+
+    @property
+    def bg_color(self) -> list[int]:
+        """Background color as [R, G, B]."""
+        return [self.bg_color_r, self.bg_color_g, self.bg_color_b]
+
+    @bg_color.setter
+    def bg_color(self, value: list[int]) -> None:
+        self.bg_color_r, self.bg_color_g, self.bg_color_b = (
+            value[0], value[1], value[2]
+        )
+
+    @property
+    def resolution_factor(self) -> list[int]:
+        """Resolution factor as [horizontal, vertical]."""
+        return [self.resolution_factor_h, self.resolution_factor_v]
+
+    @resolution_factor.setter
+    def resolution_factor(self, value: list[int]) -> None:
+        self.resolution_factor_h, self.resolution_factor_v = value[0], value[1]
 
     @property
     def time_scale(self) -> float:

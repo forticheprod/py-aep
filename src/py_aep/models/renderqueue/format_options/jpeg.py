@@ -3,11 +3,11 @@ from __future__ import annotations
 import typing
 
 from ....enums import JpegFormatType
-from ....kaitai.descriptors import ChunkField
+from ...descriptors import ChunkField
 from ...validators import validate_number, validate_one_of
 
 if typing.TYPE_CHECKING:
-    from ....kaitai import Aep
+    from ....binary.chunk import Chunk
 
 
 class JpegFormatOptions:
@@ -27,7 +27,7 @@ class JpegFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Aep.JpegRoptData) -> None:
+    def __init__(self, *, _body: Chunk) -> None:
         self._body = _body
 
     quality = ChunkField[int](
@@ -43,7 +43,7 @@ class JpegFormatOptions:
         "_body",
         "format_type",
         transform=JpegFormatType,
-        reverse_seq_field=int,
+        reverse=int,
     )
     """
     JPEG format option type: Baseline (Standard), Baseline Optimized,
@@ -54,7 +54,7 @@ class JpegFormatOptions:
         "_body",
         "scans",
         transform=lambda x: x + 2,
-        reverse_seq_field=lambda x: x - 2,
+        reverse=lambda x: x - 2,
         validate=validate_one_of([3, 4, 5]),
     )
     """

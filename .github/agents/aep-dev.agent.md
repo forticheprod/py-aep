@@ -27,7 +27,8 @@ uv run aep-compare samples/models/<category>/file1.aep samples/models/<category>
 - Identify the chunk type, byte offset, and bit position of the difference
 - Use `--list` to list chunks, `--dump "LIST:Fold/xxxx"` to inspect raw bytes
 
-### 2. Update Kaitai Schema and Regenerate
+### 2. Update Binary Chunk Class (if needed)
+Use semantic field aliases (`u1_field`, `u4_field`, `f8_field`, etc.) for fixed-layout fields, `BitField` for flags, `coerce=bool` for boolean fields. Use `ascii_field(n)` for 4-char format codes.
 
 ### 3. Update Parser and Model
 - Add/update the model class with docstrings copied from AE equivalents

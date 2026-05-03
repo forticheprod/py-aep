@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 
 from py_aep.cos.descriptors import CosField
-from py_aep.kaitai.descriptors import ChunkField
-from py_aep.kaitai.proxy import _materialization_allowed
+from py_aep.models.descriptors import ChunkField, _materialization_allowed
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -20,23 +19,15 @@ class _FakeBody:
         for k, v in kwargs.items():
             object.__setattr__(self, k, v)
 
-    def _check(self) -> None:
-        pass
-
 
 class _FakeParent:
-    """Minimal stub for a parent chunk with _check and len_body."""
+    """Minimal stub for a parent chunk with len_body."""
 
     _parent: _FakeParent | None = None
-    len_body = 100
 
     def __init__(self, child: _FakeBody) -> None:
         self.body = child
         child._parent = self  # type: ignore[attr-defined]
-
-    def _check(self) -> None:
-        pass
-
 
 # ---------------------------------------------------------------------------
 # ChunkField contract tests
@@ -48,25 +39,24 @@ class _ScalarModel:
 
     _body: _FakeBody | None
 
-    quality = ChunkField[int]("_body", "quality", reverse_seq_field=int)
+    quality = ChunkField[int]("_body", "quality", reverse=int)
 
     def __init__(self, body: _FakeBody | None) -> None:
         self._body = body
 
 
 class _MultiModel:
-    """Model using reverse_instance_field."""
+    """Model using reverse_multi."""
 
     _body: _FakeBody | None
 
     frame_rate = ChunkField[float](
         "_body",
         "frame_rate",
-        reverse_instance_field=lambda v, body: {
+        reverse_multi=lambda v, body: {
             "frame_rate_dividend": int(v * 1000),
             "frame_rate_divisor": 1000,
         },
-        invalidates=["frame_rate"],
     )
 
     def __init__(self, body: _FakeBody | None) -> None:
@@ -90,25 +80,25 @@ class TestChunkFieldMutualExclusion:
             ChunkField(
                 "_body",
                 "field",
-                reverse_seq_field=int,
-                reverse_instance_field=lambda v, b: {"field": v},
+                reverse=int,
+                reverse_multi=lambda v, b: {"field": v},
             )
 
-    def test_reverse_seq_field_only_accepted(self) -> None:
-        cf = ChunkField[int]("_body", "field", reverse_seq_field=int)
-        assert cf.reverse_seq_field is int
-        assert cf.reverse_instance_field is None
+    def test_reverse_only_accepted(self) -> None:
+        cf = ChunkField[int]("_body", "field", reverse=int)
+        assert cf.reverse is int
+        assert cf.reverse_multi is None
 
-    def test_reverse_instance_field_only_accepted(self) -> None:
+    def test_reverse_multi_only_accepted(self) -> None:
         fn = lambda v, b: {"field": v}  # noqa: E731
-        cf = ChunkField[int]("_body", "field", reverse_instance_field=fn)
-        assert cf.reverse_seq_field is None
-        assert cf.reverse_instance_field is fn
+        cf = ChunkField[int]("_body", "field", reverse_multi=fn)
+        assert cf.reverse is None
+        assert cf.reverse_multi is fn
 
     def test_neither_accepted(self) -> None:
         cf = ChunkField[int]("_body", "field")
-        assert cf.reverse_seq_field is None
-        assert cf.reverse_instance_field is None
+        assert cf.reverse is None
+        assert cf.reverse_multi is None
 
 
 class TestChunkFieldScalarReverse:
@@ -136,7 +126,7 @@ class TestChunkFieldScalarReverse:
 
 
 class TestChunkFieldReverseInstanceField:
-    def test_reverse_instance_field_writes_multiple_fields(self) -> None:
+    def test_reverse_multi_writes_multiple_fields(self) -> None:
         body = _FakeBody(
             frame_rate=0,
             frame_rate_dividend=0,
@@ -152,27 +142,7 @@ class TestChunkFieldReverseInstanceField:
         assert body.frame_rate_dividend == 24000
         assert body.frame_rate_divisor == 1000
 
-    def test_reverse_instance_field_invalidates_field_name(self) -> None:
-        """The descriptor's own field is auto-invalidated for instance writes."""
-        invalidated: list[str] = []
-        body = _FakeBody(
-            frame_rate=0,
-            frame_rate_dividend=0,
-            frame_rate_divisor=1,
-        )
-        _FakeParent(body)
 
-        def fake_invalidate() -> None:
-            invalidated.append("frame_rate")
-
-        body._invalidate_frame_rate = fake_invalidate  # type: ignore[attr-defined]
-        model = _MultiModel(body)
-        token = _materialization_allowed.set(True)
-        try:
-            model.frame_rate = 30.0
-        finally:
-            _materialization_allowed.reset(token)
-        assert "frame_rate" in invalidated
 
 
 class TestChunkFieldDirectWrite:

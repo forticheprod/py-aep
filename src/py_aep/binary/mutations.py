@@ -9,17 +9,6 @@ if TYPE_CHECKING:
     from .chunk import Chunk
 
 
-def find_chunk(
-    chunks: list[Chunk],
-    chunk_type: str,
-) -> Chunk | None:
-    """Return first chunk matching `chunk_type`, or ``None``."""
-    for c in chunks:
-        if c.chunk_type == chunk_type:
-            return c
-    return None
-
-
 def remove_chunks_by_type(
     chunks: list[Chunk],
     chunk_type: str,

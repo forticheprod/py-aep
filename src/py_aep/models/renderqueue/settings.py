@@ -19,9 +19,8 @@ class SettingsView(MutableMapping):  # type: ignore[type-arg]
     """Dict-like view mapping ExtendScript setting keys to model attributes.
 
     Every read delegates to `getattr(owner, attr_name)` and every write
-    delegates to `setattr(owner, attr_name, value)`. Propagation and
-    validation are handled by the underlying ChunkField descriptors or
-    `@property` setters.
+    delegates to `setattr(owner, attr_name, value)`. Validation is handled by
+    the underlying ChunkField descriptors or `@property` setters.
 
     When `enum_class` is provided for a key, `__setitem__` coerces
     the value (int, string label, or enum member) before passing it

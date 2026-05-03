@@ -3,10 +3,10 @@ from __future__ import annotations
 import typing
 
 from ...enums import ViewerType
-from ...kaitai.descriptors import ChunkField
+from ..descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from .view import View
 
 
@@ -28,7 +28,7 @@ class Viewer:
 
     type = ChunkField[ViewerType](
         "_fitt",
-        "label",
+        "value",
         transform=ViewerType.from_string,
         read_only=True,
     )
@@ -39,9 +39,9 @@ class Viewer:
     def __init__(
         self,
         *,
-        _fitt: Aep.FittBody,
-        _foac: Aep.FoacBody,
-        _fiac: Aep.FiacBody,
+        _fitt: Chunk,
+        _foac: Chunk,
+        _fiac: Chunk,
     ) -> None:
         self._fitt = _fitt
         self._foac = _foac
@@ -80,5 +80,5 @@ class Viewer:
         """When `True`, indicates if the viewer panel is active.
         Read-only."""
         return bool(
-            self._foac and self._foac.active and self._fiac and self._fiac.active
+            self._foac and self._foac.value and self._fiac and self._fiac.value
         )

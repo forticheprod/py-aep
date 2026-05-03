@@ -4,10 +4,10 @@ import re
 import typing
 from typing import Any
 
-from ..kaitai.descriptors import ChunkField
+from .descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ..kaitai import Aep
+    from ..binary.chunk import Chunk
     from .project import Project
     from .viewer.viewer import Viewer
 
@@ -15,7 +15,7 @@ _VERSION_RE = re.compile(r"^(\d+)\.(\d+)x(\d+)$")
 
 
 def _reverse_version(value: str, body: Any) -> dict[str, Any]:
-    """Parse `"major.minorxbuild"` back into seq fields."""
+    """Parse `"major.minorxbuild"` back into Chunk fields."""
     m = _VERSION_RE.match(value)
     if not m:
         msg = (
@@ -52,8 +52,7 @@ class Application:
     build_number = ChunkField[str](
         "_head",
         "ae_build_number",
-        reverse_seq_field=int,
-        invalidates=["version"],
+        reverse=int,
     )
     """The build number of After Effects that last saved the project.
     Read / Write.
@@ -66,8 +65,7 @@ class Application:
     version = ChunkField[str](
         "_head",
         "version",
-        reverse_instance_field=_reverse_version,
-        invalidates=["ae_version_major"],
+        reverse_multi=_reverse_version,
     )
     """The version of After Effects that last saved the project, formatted as
     "{major}.{minor}x{build}" (e.g., "25.6x101"). Read / Write.
@@ -77,7 +75,7 @@ class Application:
         cause issues when opening the file in After Effects.
     """
 
-    is_beta = ChunkField.bool("_head", "ae_version_beta_flag")
+    is_beta = ChunkField[bool]("_head", "ae_version_beta_flag")
     """Indicates whether the After Effects version is a beta version. Read / Write.
 
     Warning:
@@ -91,7 +89,7 @@ class Application:
     def __init__(
         self,
         *,
-        _head: Aep.HeadBody,
+        _head: Chunk,
         project: Project,
         active_viewer: Viewer | None = None,
     ) -> None:

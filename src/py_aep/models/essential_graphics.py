@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import typing
 
-from ..kaitai.descriptors import ChunkField
+from .descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ..kaitai import Aep
+    from ..binary.chunk import Chunk
 
 
 class EssentialGraphicsController:
@@ -23,7 +23,7 @@ class EssentialGraphicsController:
     chunk and can be renamed via the `name` attribute.
     """
 
-    name = ChunkField[str]("_name_utf8", "contents")
+    name = ChunkField[str]("_name_utf8", "value")
     """The display name of the controller. Read / Write."""
 
     controller_type = ChunkField[int]("_ctyp", "value", read_only=True)
@@ -36,8 +36,8 @@ class EssentialGraphicsController:
     def __init__(
         self,
         *,
-        _name_utf8: Aep.Utf8Body,
-        _ctyp: Aep.U4Body,
+        _name_utf8: Chunk,
+        _ctyp: Chunk,
     ) -> None:
         self._name_utf8 = _name_utf8
         self._ctyp = _ctyp

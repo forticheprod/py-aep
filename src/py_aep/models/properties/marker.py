@@ -4,15 +4,15 @@ import typing
 
 from py_aep.enums import Label
 
-from ...kaitai.descriptors import ChunkField
+from ..descriptors import ChunkField
 from ..validators import validate_number
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from .keyframe import Keyframe
 
 
-def _reverse_duration(value: float, body: Aep.NmhdBody) -> dict[str, int]:
+def _reverse_duration(value: float, body: Chunk) -> dict[str, int]:
     """Convert duration in seconds to frame_duration in 600ths."""
     return {"frame_duration": round(value * 600)}
 
@@ -46,7 +46,7 @@ class MarkerValue:
     duration = ChunkField[float](
         "_nmhd",
         "duration",
-        reverse_instance_field=_reverse_duration,
+        reverse_multi=_reverse_duration,
     )
     """The marker's duration, in seconds. Read / Write."""
 
@@ -57,10 +57,10 @@ class MarkerValue:
     Read / Write.
     """
 
-    navigation = ChunkField.bool("_nmhd", "navigation")
+    navigation = ChunkField[bool]("_nmhd", "navigation")
     """Whether the marker is a navigation marker. Read / Write."""
 
-    protected_region = ChunkField.bool("_nmhd", "protected_region")
+    protected_region = ChunkField[bool]("_nmhd", "protected_region")
     """
     State of the Protected Region option in the Composition Marker dialog box.
     When `True`, the composition marker behaves as a protected region. Will
@@ -68,43 +68,43 @@ class MarkerValue:
     layers, but is otherwise not applicable to layer markers. Read / Write.
     """
 
-    comment = ChunkField[str]("_comment_utf8", "contents")
+    comment = ChunkField[str]("_comment_utf8", "value")
     """
     A text comment for this marker. This comment appears in the Timeline panel
     next to the layer marker. Read / Write.
     """
 
-    chapter = ChunkField[str]("_chapter_utf8", "contents")
+    chapter = ChunkField[str]("_chapter_utf8", "value")
     """
     A text chapter link for this marker. Chapter links initiate a jump to a
     chapter in a QuickTime movie or in other formats that support chapter
     marks. Read / Write.
     """
 
-    url = ChunkField[str]("_url_utf8", "contents")
+    url = ChunkField[str]("_url_utf8", "value")
     """A URL for this marker. This URL is an automatic link to a Web page. Read / Write."""
 
-    frame_target = ChunkField[str]("_frame_target_utf8", "contents")
+    frame_target = ChunkField[str]("_frame_target_utf8", "value")
     """
     A text frame target for this marker. Together with the URL value, this
     targets a specific frame within a Web page. Read / Write.
     """
 
-    cue_point_name = ChunkField[str]("_cue_point_name_utf8", "contents")
+    cue_point_name = ChunkField[str]("_cue_point_name_utf8", "value")
     """The Flash Video cue point name, as shown in the Marker dialog box. Read / Write."""
 
     def __init__(
         self,
         *,
-        _nmhd: Aep.NmhdBody,
-        _comment_utf8: Aep.Utf8Body,
-        _chapter_utf8: Aep.Utf8Body,
-        _url_utf8: Aep.Utf8Body,
-        _frame_target_utf8: Aep.Utf8Body,
-        _cue_point_name_utf8: Aep.Utf8Body,
+        _nmhd: Chunk,
+        _comment_utf8: Chunk,
+        _chapter_utf8: Chunk,
+        _url_utf8: Chunk,
+        _frame_target_utf8: Chunk,
+        _cue_point_name_utf8: Chunk,
         _keyframe: Keyframe | None = None,
         frame_time: int = 0,
-        _param_utf8s: list[Aep.Utf8Body] | None = None,
+        _param_utf8s: list[Chunk] | None = None,
     ) -> None:
         self._nmhd = _nmhd
         self._comment_utf8 = _comment_utf8
@@ -123,8 +123,8 @@ class MarkerValue:
         """Key-value pairs for Flash Video cue-point parameters."""
         result: dict[str, str] = {}
         for i in range(0, len(self._param_utf8s) - 1, 2):
-            key = self._param_utf8s[i].contents.split("\x00")[0]
-            val = self._param_utf8s[i + 1].contents.split("\x00")[0]
+            key = self._param_utf8s[i].value.split("\x00")[0]
+            val = self._param_utf8s[i + 1].value.split("\x00")[0]
             result[key] = val
         return result
 
@@ -134,8 +134,8 @@ class MarkerValue:
         idx = 0
         for key, val in value.items():
             if idx + 1 < len(bodies):
-                bodies[idx].contents = key
-                bodies[idx + 1].contents = val
+                bodies[idx].value = key
+                bodies[idx + 1].value = val
             idx += 2
 
     @property

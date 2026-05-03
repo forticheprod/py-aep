@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
-from ..kaitai import Aep
-from ..kaitai.utils import ChunkNotFoundError, find_by_type
+from ..binary.utils import ChunkNotFoundError, find_by_type
 from ..models.renderqueue.format_options import (
     CineonFormatOptions,
     JpegFormatOptions,
@@ -15,6 +14,9 @@ from ..models.renderqueue.format_options import (
     TiffFormatOptions,
     XmlFormatOptions,
 )
+
+if TYPE_CHECKING:
+    from ..binary.chunk import Chunk
 
 FormatOptions = Union[
     CineonFormatOptions,
@@ -31,7 +33,7 @@ _XML_FORMAT_CODES = {".AVI", "H264", "Mp3 ", "MooV", "wao_"}
 
 
 def parse_format_options(
-    chunks: list[Aep.Chunk],
+    chunks: list[Chunk],
 ) -> FormatOptions | None:
     """Parse format-specific options from the Ropt chunk, if present.
 
@@ -47,30 +49,25 @@ def parse_format_options(
     except ChunkNotFoundError:
         return None
 
-    ropt_body: Aep.RoptBody = ropt_chunk.body
-    ropt_sub_body = ropt_body.body
-    format_code = ropt_body.format_code
+    format_code = ropt_chunk.format_code
 
     if format_code == "sDPX":
-        return CineonFormatOptions(_body=ropt_sub_body)
+        return CineonFormatOptions(_body=ropt_chunk)
     if format_code == "JPEG":
-        return JpegFormatOptions(_body=ropt_sub_body)
+        return JpegFormatOptions(_body=ropt_chunk)
     if format_code == "TPIC":
-        return TargaFormatOptions(_body=ropt_sub_body)
+        return TargaFormatOptions(_body=ropt_chunk)
     if format_code == "TIF ":
-        return TiffFormatOptions(_body=ropt_sub_body)
+        return TiffFormatOptions(_body=ropt_chunk)
     if format_code == "oEXR":
-        return OpenExrFormatOptions(_body=ropt_sub_body)
+        return OpenExrFormatOptions(_body=ropt_chunk)
     if format_code == "png!":
         try:
-            hdr10_utf8 = find_by_type(chunks=chunks, chunk_type="Utf8").body
+            hdr10_utf8 = find_by_type(chunks=chunks, chunk_type="Utf8")
         except ChunkNotFoundError:
             hdr10_utf8 = None
-        return PngFormatOptions(_body=ropt_sub_body, _hdr10_utf8=hdr10_utf8)
+        return PngFormatOptions(_body=ropt_chunk, _hdr10_utf8=hdr10_utf8)
     if format_code in _XML_FORMAT_CODES:
-        return XmlFormatOptions(
-            _ropt_body=ropt_body,
-            _generic_body=ropt_sub_body,
-        )
+        return XmlFormatOptions(_body=ropt_chunk)
 
     return None

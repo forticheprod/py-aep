@@ -4,7 +4,7 @@ Usage::
 
     @define
     class MyChunk(Chunk):
-        _flags: int = fmt_field("B", repr=False)
+        _flags: int = u1_field(repr=False)
 
         my_flag = BitField("_flags", 3)  # bit 3 (no annotation)
 """

@@ -3,11 +3,10 @@ from __future__ import annotations
 import typing
 
 from ....enums import OpenExrCompression
-from ....kaitai.descriptors import ChunkField
-from ....kaitai.utils import propagate_check
+from ...descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ....kaitai import Aep
+    from ....binary.chunk import Chunk
 
 
 class OpenExrFormatOptions:
@@ -27,7 +26,7 @@ class OpenExrFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Aep.OpenexrRoptData) -> None:
+    def __init__(self, *, _body: Chunk) -> None:
         self._body = _body
 
     compression = ChunkField.enum(
@@ -40,7 +39,7 @@ class OpenExrFormatOptions:
     in the OpenEXR Options dialog. Read / Write.
     """
 
-    luminance_chroma = ChunkField.bool(
+    luminance_chroma = ChunkField[bool](
         "_body",
         "luminance_chroma",
     )
@@ -50,7 +49,7 @@ class OpenExrFormatOptions:
     Not applicable when compression is DWAA or DWAB. Read / Write.
     """
 
-    thirty_two_bit_float = ChunkField.bool(
+    thirty_two_bit_float = ChunkField[bool](
         "_body",
         "thirty_two_bit_float",
     )
@@ -76,5 +75,3 @@ class OpenExrFormatOptions:
     def dwa_compression_level(self, value: float | None) -> None:
         if value is not None:
             self._body.dwa_compression_level = value
-
-            propagate_check(self._body)

@@ -5,16 +5,16 @@ from typing import Any, List, cast
 
 from py_aep.enums import AutoOrientType, Label
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.reverses import reverse_ratio
-from ...kaitai.transforms import strip_null
-from ...kaitai.utils import create_chunk, propagate_check
+from ...binary.scalar_chunks import Utf8Chunk
+from ..descriptors import ChunkField
 from ..properties.marker import MarkerValue
 from ..properties.property import Property
 from ..properties.property_group import PropertyGroup
+from ..reverses import reverse_ratio
+from ..transforms import strip_null
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
     from ..items.composition import CompItem
 
 
@@ -66,27 +66,27 @@ class Layer(PropertyGroup):
     See: https://ae-scripting.docsforadobe.dev/layer/layer/
     """
 
-    # Maps ldta layer_type.name to ExtendScript match name.
-    _LAYER_MATCH_NAMES: dict[str, str] = {
-        "avlayer": "ADBE AV Layer",
-        "shape": "ADBE Vector Layer",
-        "text": "ADBE Text Layer",
-        "camera": "ADBE Camera Layer",
-        "light": "ADBE Light Layer",
-        "three_d_model": "ADBE 3D Model Layer",
+    # Maps ldta layer_type (int) to ExtendScript match name.
+    _LAYER_MATCH_NAMES: dict[int, str] = {
+        0: "ADBE AV Layer",
+        1: "ADBE Light Layer",
+        2: "ADBE Camera Layer",
+        3: "ADBE Text Layer",
+        4: "ADBE Vector Layer",
+        5: "ADBE 3D Model Layer",
     }
 
-    # Maps ldta layer_type.name to ExtendScript layerType string.
-    _LAYER_TYPE_NAMES: dict[str, str] = {
-        "avlayer": "AVLayer",
-        "shape": "Layer",
-        "text": "Layer",
-        "camera": "CameraLayer",
-        "light": "LightLayer",
-        "three_d_model": "Layer",
+    # Maps ldta layer_type (int) to ExtendScript layerType string.
+    _LAYER_TYPE_NAMES: dict[int, str] = {
+        0: "AVLayer",
+        1: "LightLayer",
+        2: "CameraLayer",
+        3: "Layer",
+        4: "Layer",
+        5: "Layer",
     }
 
-    enabled = ChunkField.bool("_ldta", "enabled")
+    enabled = ChunkField[bool]("_ldta", "enabled")
     """When `True`, the layer is enabled. Overrides `PropertyBase.enabled`
     to read from the ldta chunk. Read / Write."""
 
@@ -99,28 +99,28 @@ class Layer(PropertyGroup):
     or 1 to 16 for one of the preset colors in the Labels preferences).
     Read / Write."""
 
-    locked = ChunkField.bool("_ldta", "locked")
+    locked = ChunkField[bool]("_ldta", "locked")
     """When `True`, the layer is locked. This corresponds to the lock toggle
     in the Layer panel. Read / Write."""
 
-    null_layer = ChunkField.bool("_ldta", "null_layer", read_only=True)
+    null_layer = ChunkField[bool]("_ldta", "null_layer", read_only=True)
     """When `True`, the layer was created as a null object. Read-only."""
 
     _parent_id = ChunkField[int]("_ldta", "parent_id")
     """The ID of the layer's parent layer. `0` if the layer has no parent."""
 
-    shy = ChunkField.bool("_ldta", "shy")
+    shy = ChunkField[bool]("_ldta", "shy")
     """When `True`, the layer is "shy", meaning that it is hidden in the
     Layer panel if the composition's "Hide all shy layers" option is
     toggled on. Read / Write."""
 
-    solo = ChunkField.bool("_ldta", "solo")
+    solo = ChunkField[bool]("_ldta", "solo")
     """When `True`, the layer is soloed. Read / Write."""
 
     start_time = ChunkField[float](
         "_ldta",
         "start_time",
-        reverse_instance_field=_reverse_start_time,
+        reverse_multi=_reverse_start_time,
     )
     """The start time of the layer, expressed in composition time (seconds).
     Read / Write."""
@@ -128,7 +128,7 @@ class Layer(PropertyGroup):
     stretch = ChunkField[float](
         "_ldta",
         "stretch",
-        reverse_instance_field=_reverse_stretch,
+        reverse_multi=_reverse_stretch,
     )
     """The layer's time stretch, expressed as a percentage. A value of 100
     means no stretch. Values between 0 and 1 are set to 1, and values
@@ -138,7 +138,7 @@ class Layer(PropertyGroup):
         AutoOrientType,
         "_ldta",
         "auto_orient_type",
-        reverse_instance_field=_reverse_auto_orient,
+        reverse_multi=_reverse_auto_orient,
     )
     """The type of automatic orientation to perform for the layer.
     Read / Write."""
@@ -151,18 +151,20 @@ class Layer(PropertyGroup):
     def __init__(
         self,
         *,
-        _ldta: Aep.LdtaBody,
-        _cmta: Aep.Utf8Body | None,
-        _name_utf8: Aep.Utf8Body,
+        _ldta: Chunk,
+        _cmta: Chunk | None,
+        _name_utf8: Chunk,
+        _layer_list: ListChunk,
         containing_comp: CompItem,
         properties: list[Property | PropertyGroup],
     ) -> None:
         self._ldta = _ldta
         self._cmta = _cmta
-        self._otln_entry: Aep.OtlnEntry | None = None
+        self._layer_list = _layer_list
+        self._otln_entry: Chunk | None = None
 
-        layer_type_name = _ldta.layer_type.name
-        match_name = self._LAYER_MATCH_NAMES.get(layer_type_name, "ADBE AV Layer")
+        layer_type_val = _ldta.layer_type
+        match_name = self._LAYER_MATCH_NAMES.get(layer_type_val, "ADBE AV Layer")
 
         super().__init__(
             _tdsb=None,
@@ -194,7 +196,6 @@ class Layer(PropertyGroup):
     def selected(self, value: bool) -> None:
         if self._otln_entry is not None:
             self._otln_entry.selected = int(value)
-            propagate_check(self._otln_entry)
         else:
             self._selected = value
 
@@ -203,17 +204,16 @@ class Layer(PropertyGroup):
         """A descriptive comment for the layer. Read / Write."""
         if self._cmta is None:
             return ""
-        return strip_null(self._cmta.contents)
+        return strip_null(self._cmta.value)
 
     @comment.setter
     def comment(self, value: str) -> None:
         if self._cmta is None:
-            container = self._ldta._parent._parent
-            chunk = create_chunk(container, "cmta", "Utf8Body", contents=value)
-            self._cmta = chunk.body
+            chunk = Utf8Chunk(chunk_type="cmta", value=value)
+            self._layer_list.chunks.append(chunk)
+            self._cmta = chunk
         else:
-            self._cmta.contents = value
-            propagate_check(self._cmta)
+            self._cmta.value = value
 
     @property
     def containing_comp(self) -> CompItem:
@@ -225,7 +225,7 @@ class Layer(PropertyGroup):
         """The type of layer. Matches ExtendScript `layerType` values:
         `"AVLayer"`, `"LightLayer"`, `"CameraLayer"`, or `"Layer"`.
         Read-only."""
-        return self._LAYER_TYPE_NAMES.get(self._ldta.layer_type.name, "AVLayer")
+        return self._LAYER_TYPE_NAMES.get(self._ldta.layer_type, "AVLayer")
 
     @property
     def time(self) -> float:
@@ -477,19 +477,9 @@ class Layer(PropertyGroup):
         layer_relative = (value - self.start_time) / self._stretch_factor
         for field, v in _reverse_in_point(layer_relative, self._ldta).items():
             setattr(self._ldta, field, v)
-        try:
-            self._ldta._invalidate_in_point()
-        except AttributeError:
-            pass
-        propagate_check(self._ldta)
 
     def _set_raw_out_point(self, value: float) -> None:
         """Write a new out_point (comp time) to the binary chunk."""
         layer_relative = (value - self.start_time) / self._stretch_factor
         for field, v in _reverse_out_point(layer_relative, self._ldta).items():
             setattr(self._ldta, field, v)
-        try:
-            self._ldta._invalidate_out_point()
-        except AttributeError:
-            pass
-        propagate_check(self._ldta)

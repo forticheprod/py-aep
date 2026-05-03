@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from ..kaitai import Aep
-from ..kaitai.utils import (
+from typing import TYPE_CHECKING
+
+from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
     find_by_type,
@@ -11,10 +12,14 @@ from ..models.renderqueue.output_module import OutputModule
 from ..models.renderqueue.render_queue_item import RenderQueueItem
 from .format_options import parse_format_options
 
+if TYPE_CHECKING:
+    from ..binary.chunk import Chunk
+    from ..binary.render_chunks import OutputModuleSettingsItem
+
 
 def parse_output_module(
-    chunks: list[Aep.Chunk],
-    om_ldat_data: Aep.OutputModuleSettingsLdatBody,
+    chunks: list[Chunk],
+    om_ldat_data: OutputModuleSettingsItem,
     render_queue_item: RenderQueueItem,
 ) -> OutputModule:
     """
@@ -35,7 +40,7 @@ def parse_output_module(
 
     Args:
         chunks: List of chunks belonging to this output module.
-        om_ldat_data: Parsed OutputModuleSettingsLdatBody from LdatItem.
+        om_ldat_data: Parsed OutputModuleSettingsItem from LdatItem.
         render_queue_item: The parent render queue item.
 
     Returns:
@@ -43,15 +48,15 @@ def parse_output_module(
     """
     roou_chunk = find_by_type(chunks=chunks, chunk_type="Roou")
 
-    # Get the alas chunk body for write-through
+    # Get the alas chunk for write-through
     # Utf8 chunks after the Als2 LIST: [0] = format/template name, [1] = file
     # name template. Files without hdrm (pre-2024) have no Utf8 before Als2.
     try:
         als2_chunk = find_by_list_type(chunks=chunks, list_type="Als2")
-        alas_utf8 = find_by_type(chunks=als2_chunk.body.chunks, chunk_type="alas").body
+        alas_utf8 = find_by_type(chunks=als2_chunk.chunks, chunk_type="alas")
         post_als2_utf8 = find_chunks_after(chunks, "Utf8", "LIST:Als2")
-        name_utf8 = post_als2_utf8[0].body
-        file_name_utf8 = post_als2_utf8[1].body
+        name_utf8 = post_als2_utf8[0]
+        file_name_utf8 = post_als2_utf8[1]
     except ChunkNotFoundError:
         alas_utf8 = None
         name_utf8 = None
@@ -61,7 +66,7 @@ def parse_output_module(
 
     return OutputModule(
         _om_ldat=om_ldat_data,
-        _roou=roou_chunk.body,
+        _roou=roou_chunk,
         _alas_utf8=alas_utf8,
         _file_name_utf8=file_name_utf8,
         _name_utf8=name_utf8,

@@ -153,7 +153,7 @@ class OutputFormat(IntEnum):
         return _OUTPUT_FORMAT_LABELS[self.value]
 
     @classmethod
-    def from_format_id(cls, format_id: str) -> OutputFormat:
+    def from_format_id(cls, format_id: str | bytes) -> OutputFormat:
         """Convert a Roou 4-char format identifier to OutputFormat.
 
         Args:
@@ -163,6 +163,8 @@ class OutputFormat(IntEnum):
         Raises:
             ValueError: If the format identifier is not recognised.
         """
+        if isinstance(format_id, bytes):
+            format_id = format_id.decode("ascii")
         try:
             return _FORMAT_ID_TO_OUTPUT_FORMAT[format_id]
         except KeyError:

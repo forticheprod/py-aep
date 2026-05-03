@@ -6,12 +6,15 @@ from typing import Any, cast
 from py_aep.enums import PropertyType
 
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.materializer import _TDSN_SENTINEL
-from ...kaitai.utils import propagate_check
+from ..descriptors import ChunkField
+
+# Sentinel value used as the tdsn display name for synthesized properties.
+# When this exact string appears as the tdsn value, the property has no
+# user-visible name and falls back to auto_name.
+_TDSN_SENTINEL = "-_0_/-"
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from .property_group import PropertyGroup
 
 
@@ -26,22 +29,14 @@ class PropertyBase:
     See: https://ae-scripting.docsforadobe.dev/property/propertybase/
     """
 
-    enabled = ChunkField.bool("_tdsb", "enabled", default=True)
+    enabled = ChunkField[bool]("_tdsb", "enabled", default=True)
     """Corresponds to the setting of the eyeball icon. Read / Write."""
-
-    _match_name: str
-    _property_depth: int
-    _elided: bool
-    _is_effect: bool
-    _is_mask: bool
-    _parent_property: PropertyGroup | None
-    _property_type: PropertyType
 
     def __init__(
         self,
         *,
-        _tdsb: Aep.TdsbBody | None,
-        _name_utf8: Aep.Utf8Body | None = None,
+        _tdsb: Chunk | None,
+        _name_utf8: Chunk | None = None,
         parent_property: PropertyGroup | None = None,
         match_name: str,
         property_depth: int,
@@ -53,7 +48,7 @@ class PropertyBase:
         self._auto_name = auto_name
         self._property_depth = property_depth
 
-        self._ewot_entry: Aep.EwotEntry | None = None
+        self._ewot_entry: Chunk | None = None
 
         self._name: str | None = None
         self._selected = False
@@ -65,10 +60,10 @@ class PropertyBase:
         self._property_type = PropertyType.NAMED_GROUP
 
     def _ensure_materialized(self) -> None:
-        """Ensure this property has real Kaitai chunk backing.
+        """Flip synthetic flags so backing chunks become visible to write_aep().
 
         No-op on `PropertyBase`. Overridden by `Property` and
-        `PropertyGroup` to replace `ProxyBody` with real chunks on
+        `PropertyGroup` to flip synthetic flags on backing chunks on
         first user write.
         """
 
@@ -83,7 +78,6 @@ class PropertyBase:
     def selected(self, value: bool) -> None:
         if self._ewot_entry is not None:
             self._ewot_entry.selected = int(value)
-            propagate_check(self._ewot_entry)
         else:
             self._selected = value
 
@@ -147,7 +141,7 @@ class PropertyBase:
         if self._name is not None:
             return self._name
         if self._name_utf8 is not None:
-            text: str = self._name_utf8.contents.split("\0")[0]
+            text: str = self._name_utf8.value.split("\0")[0]
             if text and text != _TDSN_SENTINEL:
                 return text
         return self.auto_name
@@ -157,8 +151,7 @@ class PropertyBase:
         self._ensure_materialized()
         self._name = value
         assert self._name_utf8 is not None
-        self._name_utf8.contents = value + "\0"
-        propagate_check(self._name_utf8)
+        self._name_utf8.value = value + "\0"
 
     @property
     def is_name_set(self) -> bool:
@@ -166,7 +159,7 @@ class PropertyBase:
         if self._name is not None:
             return True
         if self._name_utf8 is not None:
-            text: str = self._name_utf8.contents.split("\0")[0]
+            text: str = self._name_utf8.value.split("\0")[0]
             return bool(text) and text != _TDSN_SENTINEL
         return False
 

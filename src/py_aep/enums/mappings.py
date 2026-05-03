@@ -1,7 +1,7 @@
 """Mappings from binary values to ExtendScript enum values.
 
 Binary values in AEP files often differ from ExtendScript API values.
-This module provides the translation layer between Kaitai-parsed raw values
+This module provides the translation layer between binary-parsed raw values
 and the Python enum types that match ExtendScript.
 """
 

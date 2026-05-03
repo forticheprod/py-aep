@@ -4,22 +4,22 @@ import re
 import typing
 from pathlib import PurePosixPath
 
-from ...kaitai.transforms import strip_null
-from ...kaitai.utils import (
+from ...binary.utils import (
     UNDEFINED_FRAME,
     ChunkNotFoundError,
     filter_by_type,
     find_by_list_type,
     find_chunks_before,
     parse_alas_data,
-    str_contents,
+    str_value,
 )
+from ..transforms import strip_null
 from .footage import FootageSource
 
 if typing.TYPE_CHECKING:
     from typing import Any
 
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
 
 
 class FileSource(FootageSource):
@@ -99,11 +99,11 @@ class FileSource(FootageSource):
     def __init__(
         self,
         *,
-        _pin: Aep.ListBody,
-        _sspc: Aep.SspcBody,
-        _opti: Aep.OptiBody | None = None,
-        _linl: Aep.LinlBody | None = None,
-        _clrs: Aep.ListBody | None = None,
+        _pin: ListChunk,
+        _sspc: Chunk,
+        _opti: Chunk | None = None,
+        _linl: Chunk | None = None,
+        _clrs: ListChunk | None = None,
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)
         self._pin = _pin
@@ -116,9 +116,9 @@ class FileSource(FootageSource):
         try:
             stvc_chunk = find_by_list_type(chunks=pin_chunks, list_type="StVc")
             utf8_chunks = filter_by_type(
-                chunks=stvc_chunk.body.chunks, chunk_type="Utf8"
+                chunks=stvc_chunk.chunks, chunk_type="Utf8"
             )
-            self._file_names = [str_contents(chunk) for chunk in utf8_chunks]
+            self._file_names = [str_value(chunk) for chunk in utf8_chunks]
         except ChunkNotFoundError:
             self._file_names = []
 
@@ -161,8 +161,8 @@ class FileSource(FootageSource):
             except ChunkNotFoundError:
                 utf8_before_opti = []
             if len(utf8_before_opti) >= 2:
-                prefix = str_contents(utf8_before_opti[-2])
-                extension = str_contents(utf8_before_opti[-1])
+                prefix = str_value(utf8_before_opti[-2])
+                extension = str_value(utf8_before_opti[-1])
                 if prefix or extension:
                     first_frame = (
                         f"{prefix}{_sspc.start_frame:0{_sspc.frame_padding}d}"

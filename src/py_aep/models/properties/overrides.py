@@ -1621,10 +1621,12 @@ _ALWAYS_MODIFIED: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 # Match names where the binary stores an incorrect is_spatial value.
-# "ADBE Shadow Color" is NOT listed here - handled by _MATERIAL_SPECS in
-# specs.py (is_spatial=True).
 _ISSPATIAL_OVERRIDES: dict[str, bool] = {
     "ADBE Orientation": True,
+    "ADBE Fill-0002": True,  # Fill > Color
+    "ADBE Mask Shape": True,
+    "ADBE Shadow Color": True,
+    "ADBE Vector Fill Color": True,
     "ADBE HUE SATURATION-0003": True,  # Channel Range
     "ADBE 3D Tracker-0305": True,
     "ADBE CurvesCustom-0001": True,

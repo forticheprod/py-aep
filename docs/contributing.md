@@ -26,7 +26,7 @@ See the full [Contributing Guide](https://github.com/forticheprod/py-aep/blob/ma
 
 The contributing guide covers:
 
-- **Architecture** - Three-stage pipeline: Kaitai > Parsers > Models
+- **Architecture** - Three-stage pipeline: Binary > Parsers > Models
 - **ChunkField descriptors** - Write-through to binary, serialization roundtrips
 - **CLI tools** - `aep-validate`, `aep-compare`, `aep-visualize`
 - **Adding features** - New attributes, layer types, boolean flags, enum mappings
@@ -38,4 +38,3 @@ The contributing guide covers:
 - [GitHub Repository](https://github.com/forticheprod/py-aep)
 - [Issue Tracker](https://github.com/forticheprod/py-aep/issues)
 - [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/)
-- [Kaitai Struct Documentation](https://doc.kaitai.io/)

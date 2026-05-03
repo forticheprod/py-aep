@@ -3,12 +3,12 @@ from __future__ import annotations
 import typing
 from typing import List
 
-from ...kaitai.descriptors import ChunkField
+from ..descriptors import ChunkField
 from ..validators import validate_sequence
 from .footage import FootageSource
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
 
 
 class SolidSource(FootageSource):
@@ -44,10 +44,10 @@ class SolidSource(FootageSource):
     def __init__(
         self,
         *,
-        _sspc: Aep.SspcBody,
-        _opti: Aep.OptiBody,
-        _linl: Aep.LinlBody | None = None,
-        _clrs: Aep.ListBody | None = None,
+        _sspc: Chunk,
+        _opti: Chunk,
+        _linl: Chunk | None = None,
+        _clrs: ListChunk | None = None,
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)
         self._opti = _opti

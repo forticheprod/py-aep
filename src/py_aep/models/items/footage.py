@@ -3,20 +3,20 @@ from __future__ import annotations
 import typing
 from pathlib import PureWindowsPath
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.transforms import strip_null
-from ...kaitai.utils import (
+from ...binary.utils import (
     UNDEFINED_FRAME,
     ChunkNotFoundError,
     find_chunks_before,
-    str_contents,
+    str_value,
 )
+from ..descriptors import ChunkField
 from ..sources.file import FileSource
 from ..sources.solid import SolidSource
+from ..transforms import strip_null
 from .av_item import AVItem
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
     from ..project import Project
     from ..sources.placeholder import PlaceholderSource
     from .folder import FolderItem
@@ -69,7 +69,7 @@ class FootageItem(AVItem):
     pixel_aspect = ChunkField[float]("_sspc", "pixel_aspect", read_only=True)
     """The pixel aspect ratio of the item (1.0 is square). Read-only."""
 
-    footage_missing = ChunkField.bool(
+    footage_missing = ChunkField[bool](
         "_sspc",
         "footage_missing_at_save",
         read_only=True,
@@ -83,7 +83,7 @@ class FootageItem(AVItem):
     [FileSource.missing_footage_path][py_aep.models.sources.file.FileSource.missing_footage_path].
     Read-only."""
 
-    has_audio: bool = ChunkField.bool("_sspc", "has_audio", read_only=True)  # type: ignore[assignment]
+    has_audio: bool = ChunkField[bool]("_sspc", "has_audio", read_only=True)  # type: ignore[assignment]
     """When `True`, the footage has an audio component. Read-only."""
 
     start_frame = ChunkField[int]("_sspc", "start_frame", read_only=True)
@@ -95,12 +95,12 @@ class FootageItem(AVItem):
     def __init__(
         self,
         *,
-        _idta: Aep.IdtaBody | None,
-        _name_utf8: Aep.Utf8Body,
-        _cmta: Aep.Utf8Body | None,
-        _item_list: Aep.ListBody | None = None,
-        _sspc: Aep.SspcBody,
-        _opti: Aep.OptiBody,
+        _idta: Chunk | None,
+        _name_utf8: Chunk,
+        _cmta: Chunk | None,
+        _item_list: ListChunk | None = None,
+        _sspc: Chunk,
+        _opti: Chunk,
         project: Project,
         parent_folder: FolderItem | None,
         main_source: FileSource | SolidSource | PlaceholderSource,
@@ -119,7 +119,7 @@ class FootageItem(AVItem):
         self._main_source = main_source
         # Store resolved display name in __dict__ so the ChunkField
         # getter returns it without mutating the binary Utf8 chunk.
-        self.__dict__["name"] = self._resolve_name(_name_utf8.contents)
+        self.__dict__["name"] = self._resolve_name(_name_utf8.value)
 
     @property
     def main_source(self) -> FileSource | SolidSource | PlaceholderSource:
@@ -211,8 +211,8 @@ class FootageItem(AVItem):
         if len(utf8_before_opti) < 2:
             return ""
 
-        prefix = str_contents(utf8_before_opti[-2])
-        extension = str_contents(utf8_before_opti[-1])
+        prefix = str_value(utf8_before_opti[-2])
+        extension = str_value(utf8_before_opti[-1])
 
         if not prefix and not extension:
             return ""

@@ -3,15 +3,9 @@ from __future__ import annotations
 import typing
 from typing import Any, List, cast
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.reverses import (
-    denormalize_values,
-    reverse_fractional,
-    reverse_frame_ticks,
-    reverse_ratio,
-)
-from ...kaitai.transforms import normalize_values
-from ...kaitai.utils import create_chunk, propagate_check
+from ...binary.chunk import ListChunk
+from ...binary.scalar_chunks import CsctChunk, U4Chunk, Utf8Chunk
+from ..descriptors import ChunkField
 from ..layers.av_layer import AVLayer
 from ..layers.camera_layer import CameraLayer
 from ..layers.light_layer import LightLayer
@@ -19,9 +13,16 @@ from ..layers.shape_layer import ShapeLayer
 from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
 from ..properties.marker import MarkerValue
+from ..reverses import (
+    denormalize_values,
+    reverse_fractional,
+    reverse_frame_ticks,
+    reverse_ratio,
+)
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
+from ..transforms import normalize_values
 from ..validators import (
     validate_number,
     validate_sequence,
@@ -30,7 +31,7 @@ from .av_item import AVItem
 from .footage import FootageItem
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
     from ..project import Project
@@ -110,42 +111,42 @@ class CompItem(AVItem):
         "_cdta",
         "bg_color",
         transform=normalize_values,
-        reverse_seq_field=denormalize_values,
+        reverse=denormalize_values,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The background color of the composition. The three array values specify
     the red, green, and blue components of the color. Read / Write."""
 
-    draft3d = ChunkField.bool("_cdta", "draft3d")
+    draft3d = ChunkField[bool]("_cdta", "draft3d")
     """When `True`, Draft 3D mode is enabled for the composition.
     Read / Write.
 
     Warning:
         Deprecated in After Effects 2024 in favor of the new Draft 3D mode."""
 
-    frame_blending = ChunkField.bool("_cdta", "frame_blending")
+    frame_blending = ChunkField[bool]("_cdta", "frame_blending")
     """When `True`, frame blending is enabled for this Composition. Corresponds
     to the value of the Frame Blending button in the Composition panel.
     Read / Write."""
 
-    hide_shy_layers = ChunkField.bool("_cdta", "hide_shy_layers")
+    hide_shy_layers = ChunkField[bool]("_cdta", "hide_shy_layers")
     """When `True`, only layers with `shy` set to `False` are shown in the
     Timeline panel. When `False`, all layers are visible, including those
     whose `shy` value is `True`. Corresponds to the value of the Hide All
     Shy Layers button in the Composition panel. Read / Write."""
 
-    motion_blur = ChunkField.bool("_cdta", "motion_blur")
+    motion_blur = ChunkField[bool]("_cdta", "motion_blur")
     """When `True`, motion blur is enabled for the composition. Corresponds
     to the value of the Motion Blur button in the Composition panel.
     Read / Write."""
 
-    preserve_nested_frame_rate = ChunkField.bool("_cdta", "preserve_nested_frame_rate")
+    preserve_nested_frame_rate = ChunkField[bool]("_cdta", "preserve_nested_frame_rate")
     """When `True`, the frame rate of nested compositions is preserved in
     the current composition. Corresponds to the value of the "Preserve frame
     rate when nested or in render queue" option in the Advanced tab of the
     Composition Settings dialog box. Read / Write."""
 
-    preserve_nested_resolution = ChunkField.bool("_cdta", "preserve_nested_resolution")
+    preserve_nested_resolution = ChunkField[bool]("_cdta", "preserve_nested_resolution")
     """When `True`, the resolution of nested compositions is preserved in
     the current composition. Corresponds to the value of the "Preserve
     Resolution When Nested" option in the Advanced tab of the Composition
@@ -223,24 +224,16 @@ class CompItem(AVItem):
     frame_rate = ChunkField[float](
         "_cdta",
         "frame_rate",
-        reverse_instance_field=_reverse_frame_rate,
+        reverse_multi=_reverse_frame_rate,
         validate=validate_number(min=1.0, max=999.0),
-        invalidates=[
-            "display_start_frame",
-            "frame_duration",
-            "frame_time",
-            "frame_work_area_end_absolute",
-            "frame_work_area_start_absolute",
-        ],
     )
     """The frame rate of the item in frames-per-second. Read / Write."""
 
     duration = ChunkField[float](
         "_cdta",
         "duration",
-        reverse_instance_field=_reverse_duration,
+        reverse_multi=_reverse_duration,
         validate=validate_number(min=0.0, max=10800.0),
-        invalidates=["frame_duration"],
     )
     """The duration of the item in seconds. Read / Write."""
 
@@ -248,20 +241,19 @@ class CompItem(AVItem):
         "_cdta",
         "frame_duration",
         transform=int,
-        reverse_instance_field=_reverse_frame_duration,
+        reverse_multi=_reverse_frame_duration,
         validate=validate_number(
             min=1,
             max=lambda self: int(self.duration * self.frame_rate),
             integer=True,
         ),
-        invalidates=["duration"],
     )
     """The duration of the item in frames. Read / Write."""
 
     pixel_aspect = ChunkField[float](
         "_cdta",
         "pixel_aspect",
-        reverse_instance_field=_reverse_pixel_aspect,
+        reverse_multi=_reverse_pixel_aspect,
         validate=validate_number(min=0.01, max=100.0),
     )
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
@@ -272,19 +264,8 @@ class CompItem(AVItem):
     display_start_time = ChunkField[float](
         "_cdta",
         "display_start_time",
-        reverse_instance_field=_reverse_display_start_time,
+        reverse_multi=_reverse_display_start_time,
         validate=validate_number(min=-10800.0, max=86340.0),
-        invalidates=[
-            "display_start_frame",
-            "frame_work_area_duration",
-            "frame_work_area_end_absolute",
-            "frame_work_area_start_absolute",
-            "frame_work_area_start_relative",
-            "work_area_duration",
-            "work_area_end_absolute",
-            "work_area_start_absolute",
-            "work_area_start_relative",
-        ],
     )
     """The time set as the beginning of the composition, in seconds. This
     is the equivalent of the Start Timecode or Start Frame setting in the
@@ -294,41 +275,23 @@ class CompItem(AVItem):
         "_cdta",
         "display_start_frame",
         transform=int,
-        reverse_instance_field=_reverse_display_start_frame,
+        reverse_multi=_reverse_display_start_frame,
         validate=validate_number(
             min=lambda self: int(-10800.0 * self.frame_rate),
             max=lambda self: int(86340.0 * self.frame_rate),
             integer=True,
         ),
-        invalidates=[
-            "display_start_time",
-            "frame_work_area_duration",
-            "frame_work_area_end_absolute",
-            "frame_work_area_start_absolute",
-            "frame_work_area_start_relative",
-            "work_area_duration",
-            "work_area_end_absolute",
-            "work_area_start_absolute",
-            "work_area_start_relative",
-        ],
     )
     """The frame value of the beginning of the composition. Read / Write."""
 
     work_area_start = ChunkField[float](
         "_cdta",
         "work_area_start_relative",
-        reverse_instance_field=_reverse_work_area_start,
+        reverse_multi=_reverse_work_area_start,
         validate=validate_number(
             min=0.0,
             max=lambda self: self.duration - 1 / self.frame_rate,
         ),
-        invalidates=[
-            "frame_work_area_duration",
-            "frame_work_area_start_absolute",
-            "frame_work_area_start_relative",
-            "work_area_duration",
-            "work_area_start_absolute",
-        ],
     )
     """The work area start time relative to composition start.
     Read / Write."""
@@ -337,19 +300,12 @@ class CompItem(AVItem):
         "_cdta",
         "frame_work_area_start_relative",
         transform=int,
-        reverse_instance_field=_reverse_work_area_start_frame,
+        reverse_multi=_reverse_work_area_start_frame,
         validate=validate_number(
             min=0,
             max=lambda self: self.frame_duration - 1,
             integer=True,
         ),
-        invalidates=[
-            "frame_work_area_duration",
-            "frame_work_area_start_absolute",
-            "work_area_duration",
-            "work_area_start_absolute",
-            "work_area_start_relative",
-        ],
     )
     """The work area start frame relative to composition start.
     Read / Write."""
@@ -357,18 +313,11 @@ class CompItem(AVItem):
     work_area_duration = ChunkField[float](
         "_cdta",
         "work_area_duration",
-        reverse_instance_field=_reverse_work_area_duration,
+        reverse_multi=_reverse_work_area_duration,
         validate=validate_number(
             min=lambda self: 1 / self.frame_rate,
             max=lambda self: self.duration - self.work_area_start,
         ),
-        invalidates=[
-            "frame_work_area_duration",
-            "frame_work_area_end_absolute",
-            "frame_work_area_start_relative",
-            "work_area_end_absolute",
-            "work_area_start_relative",
-        ],
     )
     """The work area duration in seconds. Read / Write."""
 
@@ -376,33 +325,25 @@ class CompItem(AVItem):
         "_cdta",
         "frame_work_area_duration",
         transform=int,
-        reverse_instance_field=_reverse_work_area_duration_frame,
+        reverse_multi=_reverse_work_area_duration_frame,
         validate=validate_number(
             min=1,
             max=lambda self: self.frame_duration - self.work_area_start_frame,
             integer=True,
         ),
-        invalidates=[
-            "frame_work_area_end_absolute",
-            "frame_work_area_start_relative",
-            "work_area_duration",
-            "work_area_end_absolute",
-            "work_area_start_relative",
-        ],
     )
     """The work area duration in frames. Read / Write."""
 
     time: float = ChunkField[float](  # type: ignore[assignment]
         "_cdta",
         "time",
-        reverse_instance_field=reverse_ratio("time"),
+        reverse_multi=reverse_ratio("time"),
         validate=validate_number(
             min=lambda self: self.display_start_time,
             max=lambda self: (
                 self.display_start_time + self.duration - 1 / self.frame_rate
             ),
         ),
-        invalidates=["time", "frame_time"],
     )
     """The current time of the item when it is being previewed directly from
     the Project panel. This value is a number of seconds. It is an error to set
@@ -413,31 +354,32 @@ class CompItem(AVItem):
         "_cdta",
         "frame_time",
         transform=int,
-        reverse_instance_field=reverse_frame_ticks("time"),
+        reverse_multi=reverse_frame_ticks("time"),
         validate=validate_number(
             min=lambda self: self.display_start_frame,
             max=lambda self: self.display_start_frame + self.frame_duration - 1,
             integer=True,
         ),
-        invalidates=["time", "frame_time"],
     )
     """The current time of the item when it is being previewed directly from
     the Project panel. This value is a number of frames. Read / Write."""
 
-    drop_frame = ChunkField.bool("_cdrp", "drop_frame", default=False)
+    drop_frame = ChunkField[bool](
+        "_cdrp", "value", transform=bool, reverse=int, default=False
+    )
     """When `True`, timecode is displayed in drop-frame format. Only
     applicable when `frameRate` is 29.97 or 59.94. Read / Write."""
 
     def __init__(
         self,
         *,
-        _cdrp: Aep.CdrpBody | None,
-        _cdta: Aep.CdtaBody,
-        _cmta: Aep.Utf8Body | None,
-        _idta: Aep.IdtaBody | None,
-        _item_list: Aep.ListBody | None = None,
-        _name_utf8: Aep.Utf8Body,
-        _prin: Aep.PrinBody,
+        _cdrp: Chunk | None,
+        _cdta: Chunk,
+        _cmta: Chunk | None,
+        _idta: Chunk | None,
+        _item_list: ListChunk | None = None,
+        _name_utf8: Chunk,
+        _prin: Chunk,
         project: Project,
         parent_folder: FolderItem | None,
         marker_property: Property | None = None,
@@ -462,7 +404,7 @@ class CompItem(AVItem):
         self._layers_by_id: dict[int, Layer] | None = None
         self._layer_id_to_index: dict[int, int] = {}
         self._marker_property = marker_property
-        self._eg_template_name_utf8: Aep.Utf8Body | None = None
+        self._eg_template_name_utf8: Chunk | None = None
         self._eg_controllers: list[EssentialGraphicsController] = []
 
     def __iter__(self) -> typing.Iterator[Layer]:
@@ -495,33 +437,34 @@ class CompItem(AVItem):
         Read / Write."""
         if self._eg_template_name_utf8 is None:
             return None
-        return self._eg_template_name_utf8.contents  # type: ignore[no-any-return]
+        return self._eg_template_name_utf8.value  # type: ignore[no-any-return]
 
     @motion_graphics_template_name.setter
     def motion_graphics_template_name(self, value: str) -> None:
         if self._eg_template_name_utf8 is not None:
-            self._eg_template_name_utf8.contents = value
-            propagate_check(self._eg_template_name_utf8)
+            self._eg_template_name_utf8.value = value
         elif self._item_list is not None:
-            cif3 = create_chunk(
-                self._item_list,
-                "LIST",
-                "ListBody",
-                list_type="CIF3",
-                chunks=[],
-            )
-            cps2 = create_chunk(
-                cif3.body,
-                "LIST",
-                "ListBody",
+
+            utf8_chunk = Utf8Chunk(chunk_type="Utf8", value=value)
+            cps2 = ListChunk(
+                chunk_type="LIST",
                 list_type="CpS2",
-                chunks=[],
+                chunks=[
+                    CsctChunk(),
+                    utf8_chunk,
+                    Utf8Chunk(chunk_type="Utf8", value="en_US"),
+                ],
             )
-            create_chunk(cps2.body, "CsCt", "U4Body", value=0x01000000)
-            utf8_chunk = create_chunk(cps2.body, "Utf8", "Utf8Body", contents=value)
-            create_chunk(cps2.body, "Utf8", "Utf8Body", contents="en_US")
-            create_chunk(cif3.body, "CcCt", "U4Body", value=0)
-            self._eg_template_name_utf8 = utf8_chunk.body
+            cif3 = ListChunk(
+                chunk_type="LIST",
+                list_type="CIF3",
+                chunks=[
+                    cps2,
+                    U4Chunk(chunk_type="CcCt"),
+                ],
+            )
+            self._item_list.chunks.append(cif3)
+            self._eg_template_name_utf8 = utf8_chunk
 
     @property
     def motion_graphics_template_controller_count(self) -> int:
@@ -574,7 +517,6 @@ class CompItem(AVItem):
             valid = ", ".join(_RENDERER_EXTENDSCRIPT_TO_BINARY)
             raise ValueError(f"Invalid renderer {value!r}. Valid values: {valid}")
         self._prin.match_name = _RENDERER_EXTENDSCRIPT_TO_BINARY[value]
-        propagate_check(self._prin)
 
     @property
     def has_audio(self) -> bool:

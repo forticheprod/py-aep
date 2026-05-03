@@ -4,14 +4,14 @@ import typing
 from typing import List
 
 from ...enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.reverses import denormalize_values
-from ...kaitai.transforms import normalize_values
+from ..descriptors import ChunkField
+from ..reverses import denormalize_values
+from ..transforms import normalize_values
 from ..validators import validate_sequence
 from .property_group import PropertyGroup
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
     from .property import Property
 
 
@@ -44,7 +44,7 @@ class MaskPropertyGroup(PropertyGroup):
         "_mkif",
         "color",
         transform=normalize_values,
-        reverse_seq_field=denormalize_values,
+        reverse=denormalize_values,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The color used to draw the mask outline as it appears in the user
@@ -52,10 +52,10 @@ class MaskPropertyGroup(PropertyGroup):
     The three array values specify the red, green, and blue components
     of the color. Read / Write."""
 
-    inverted = ChunkField.bool("_mkif", "inverted")
+    inverted = ChunkField[bool]("_mkif", "inverted")
     """When `True`, the mask is inverted. Read / Write."""
 
-    locked = ChunkField.bool("_mkif", "locked")
+    locked = ChunkField[bool]("_mkif", "locked")
     """When `True`, the mask is locked and cannot be edited in the user
     interface. Read / Write."""
 
@@ -72,7 +72,7 @@ class MaskPropertyGroup(PropertyGroup):
     mask_motion_blur = ChunkField.enum(MaskMotionBlur, "_mkif", "mask_motion_blur")
     """How motion blur is applied to this mask. Read / Write."""
 
-    roto_bezier = ChunkField.bool(
+    roto_bezier = ChunkField[bool](
         "_mask_shape_tdsb",
         "roto_bezier",
         default=False,
@@ -83,11 +83,11 @@ class MaskPropertyGroup(PropertyGroup):
     def __init__(
         self,
         *,
-        _tdgp: Aep.ListBody | None = None,
-        _tdsb: Aep.TdsbBody | None,
-        _mkif: Aep.MkifBody,
-        _mask_shape_tdsb: Aep.TdsbBody | None,
-        _name_utf8: Aep.Utf8Body | None = None,
+        _tdgp: ListChunk,
+        _tdsb: Chunk | None,
+        _mkif: Chunk,
+        _mask_shape_tdsb: Chunk | None,
+        _name_utf8: Chunk | None = None,
         match_name: str,
         property_depth: int,
         auto_name: str | None = None,

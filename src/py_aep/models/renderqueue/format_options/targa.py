@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import typing
 
-from ....kaitai.descriptors import ChunkField
+from ...descriptors import ChunkField
 from ...validators import validate_one_of
 
 if typing.TYPE_CHECKING:
-    from ....kaitai import Aep
+    from ....binary.chunk import Chunk
 
 
 class TargaFormatOptions:
@@ -26,7 +26,7 @@ class TargaFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Aep.TargaRoptData) -> None:
+    def __init__(self, *, _body: Chunk) -> None:
         self._body = _body
 
     bits_per_pixel = ChunkField[int](
@@ -36,7 +36,7 @@ class TargaFormatOptions:
     )
     """Color depth in bits per pixel (24 or 32). Read / Write."""
 
-    rle_compression = ChunkField.bool(
+    rle_compression = ChunkField[bool](
         "_body",
         "rle_compression",
     )

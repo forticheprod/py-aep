@@ -5,7 +5,7 @@ import typing
 from .footage import FootageSource
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
 
 
 class PlaceholderSource(FootageSource):
@@ -35,8 +35,8 @@ class PlaceholderSource(FootageSource):
     def __init__(
         self,
         *,
-        _sspc: Aep.SspcBody,
-        _linl: Aep.LinlBody | None = None,
-        _clrs: Aep.ListBody | None = None,
+        _sspc: Chunk,
+        _linl: Chunk | None = None,
+        _clrs: ListChunk | None = None,
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)

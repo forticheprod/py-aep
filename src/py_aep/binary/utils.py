@@ -1,0 +1,289 @@
+"""Chunk tree navigation helpers for the binary I/O layer."""
+from __future__ import annotations
+
+import json
+import typing
+
+if typing.TYPE_CHECKING:
+    from typing import Any
+
+    from .chunk import Chunk, ListChunk
+
+
+class ChunkNotFoundError(Exception):
+    """Raised when a required chunk is not found in the AEP chunk tree."""
+
+
+#: Sentinel value indicating an undefined frame number in the binary format.
+UNDEFINED_FRAME = 0xFFFFFFFF
+
+
+def find_by_type(chunks: list[Chunk], chunk_type: str) -> Chunk:
+    """Return first chunk matching `chunk_type`.
+
+    Raises:
+        ChunkNotFoundError: If no matching chunk is found.
+    """
+    for c in chunks:
+        if c.chunk_type == chunk_type:
+            return c
+    raise ChunkNotFoundError(f"Missing {chunk_type} chunk")
+
+
+def find_by_list_type(chunks: list[Chunk], list_type: str) -> ListChunk:
+    """Return first ListChunk with matching `list_type`.
+
+    Raises:
+        ChunkNotFoundError: If no matching LIST chunk is found.
+    """
+    for c in chunks:
+        if getattr(c, "list_type", None) == list_type:
+            return c  # type: ignore[return-value]
+    raise ChunkNotFoundError(f"Missing LIST/{list_type} chunk")
+
+
+def filter_by_type(chunks: list[Chunk], chunk_type: str) -> list[Chunk]:
+    """Return all chunks matching `chunk_type`."""
+    return [c for c in chunks if c.chunk_type == chunk_type]
+
+
+def filter_by_list_type(chunks: list[Chunk], list_type: str) -> list[ListChunk]:
+    """Return all ListChunks with matching `list_type`."""
+    return [
+        c  # type: ignore[misc]
+        for c in chunks
+        if getattr(c, "list_type", None) == list_type
+    ]
+
+
+def _find_anchor_index(chunks: list[Chunk], anchor_type: str) -> int:
+    """Return the index of the first chunk matching *anchor_type*.
+
+    *anchor_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
+
+    Raises:
+        ChunkNotFoundError: If no matching chunk is found.
+    """
+    if anchor_type.startswith("LIST:"):
+        lt = anchor_type[5:]
+        for i, c in enumerate(chunks):
+            if getattr(c, "list_type", None) == lt:
+                return i
+        raise ChunkNotFoundError(f"Missing LIST/{lt} chunk")
+
+    for i, c in enumerate(chunks):
+        if c.chunk_type == anchor_type:
+            return i
+    raise ChunkNotFoundError(f"Missing {anchor_type} chunk")
+
+
+def find_chunks_before(
+    chunks: list[Chunk],
+    chunk_type: str,
+    before_type: str,
+) -> list[Chunk]:
+    """Return consecutive chunks of `chunk_type` immediately before `before_type`.
+
+    Scans *chunks* for the first occurrence of *before_type*, then collects the
+    uninterrupted run of *chunk_type* chunks that directly precede it.
+
+    *before_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
+
+    Raises:
+        ChunkNotFoundError: If no chunk with *before_type* is found.
+    """
+    anchor = _find_anchor_index(chunks, before_type)
+    result: list[Chunk] = []
+    for i in range(anchor - 1, -1, -1):
+        if chunks[i].chunk_type == chunk_type:
+            result.insert(0, chunks[i])
+        else:
+            break
+    return result
+
+
+def find_chunks_after(
+    chunks: list[Chunk],
+    chunk_type: str,
+    after_type: str,
+) -> list[Chunk]:
+    """Return consecutive chunks of `chunk_type` immediately after `after_type`.
+
+    Scans *chunks* for the first occurrence of *after_type*, then collects the
+    uninterrupted run of *chunk_type* chunks that directly follow it.
+
+    *after_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
+
+    Raises:
+        ChunkNotFoundError: If no chunk with *after_type* is found.
+    """
+    anchor = _find_anchor_index(chunks, after_type)
+    result: list[Chunk] = []
+    for i in range(anchor + 1, len(chunks)):
+        if chunks[i].chunk_type == chunk_type:
+            result.append(chunks[i])
+        else:
+            break
+    return result
+
+
+def group_chunks(
+    chunks: list[Chunk],
+    start_type: str,
+    end_type: str,
+) -> list[list[Chunk]]:
+    """Split *chunks* into groups bounded by *start_type* ... *end_type* (inclusive).
+
+    Chunks that fall outside any group are ignored.
+    """
+    groups: list[list[Chunk]] = []
+    current: list[Chunk] | None = None
+    for chunk in chunks:
+        if chunk.chunk_type == start_type and current is None:
+            current = [chunk]
+        elif current is not None:
+            current.append(chunk)
+            if chunk.chunk_type == end_type:
+                groups.append(current)
+                current = None
+    return groups
+
+
+def split_on_type(
+    chunks: list[Chunk],
+    chunk_type: str,
+) -> list[list[Chunk]]:
+    """Split *chunks* into groups starting at each occurrence of *chunk_type*.
+
+    Every time a chunk with *chunk_type* is encountered a new group begins.
+    Chunks that appear before the first occurrence are discarded.
+    """
+    groups: list[list[Chunk]] = []
+    current: list[Chunk] | None = None
+    for chunk in chunks:
+        if chunk.chunk_type == chunk_type:
+            if current is not None:
+                groups.append(current)
+            current = [chunk]
+        elif current is not None:
+            current.append(chunk)
+    if current is not None:
+        groups.append(current)
+    return groups
+
+
+def str_value(chunk: Chunk) -> str:
+    """Return the string contents of a chunk.
+
+    Works with typed chunks (`Utf8Chunk`, scalar chunks)
+    and raw chunks whose `data` is null-terminated bytes.
+    """
+    value = getattr(chunk, "value", None)
+    if isinstance(value, str):
+        return value.split("\x00")[0]
+    if value is not None:
+        return str(value)
+    data: bytes | None = getattr(chunk, "data", None)
+    if data is not None:
+        return data.rstrip(b"\x00").decode("utf-8", errors="replace")
+    return ""
+
+
+def parse_alas_data(parent_chunks: list[Chunk]) -> dict[str, Any]:
+    """Parse path information from an Als2/alas chunk structure.
+
+    Returns:
+        Dictionary with alas data (fullpath, target_is_folder, etc.),
+        or empty dict if not found or invalid.
+    """
+    try:
+        als2_chunk = find_by_list_type(chunks=parent_chunks, list_type="Als2")
+    except ChunkNotFoundError:
+        return {}
+    try:
+        alas_chunk = find_by_type(chunks=als2_chunk.chunks, chunk_type="alas")
+    except ChunkNotFoundError:
+        return {}
+    alas_text = str_value(alas_chunk)
+    if not alas_text:
+        return {}
+    result = json.loads(alas_text)
+    return result if isinstance(result, dict) else {}
+
+
+def chunk_tree(
+    chunks: list[Chunk],
+    depth: int = -1,
+    indent: int = 0,
+) -> str:
+    """Return a text tree representation of chunks for debugging.
+
+    Args:
+        chunks: List of chunks to visualize.
+        depth: Max depth to recurse (-1 for unlimited).
+        indent: Current indentation level (used internally).
+    """
+    lines: list[str] = []
+    prefix = "  " * indent
+    for chunk in chunks:
+        lt = getattr(chunk, "list_type", None)
+        children = getattr(chunk, "chunks", None)
+        size = len(getattr(chunk, "data", b""))
+        if lt is not None:
+            label = f"LIST:{lt}"
+            lines.append(f"{prefix}{label}")
+            if depth != 0 and children is not None:
+                lines.append(chunk_tree(children, depth - 1, indent + 1))
+        else:
+            lines.append(f"{prefix}{chunk.chunk_type} ({size} B)")
+    return "\n".join(lines)
+
+
+def toggle_flag_chunk(
+    container: ListChunk,
+    chunk_type: str,
+    enable: bool,
+) -> None:
+    """Add or remove a flag chunk from a ListChunk container.
+
+    Flag chunks are tiny (1-byte body `b"\\x01"`) presence/absence
+    markers.
+    """
+    from .chunk import Chunk
+
+    existing = [i for i, c in enumerate(container.chunks) if c.chunk_type == chunk_type]
+    if enable and not existing:
+        container.chunks.append(Chunk(chunk_type=chunk_type, data=b"\x01"))
+    elif not enable and existing:
+        for i in reversed(existing):
+            container.chunks.pop(i)
+
+
+def recursive_find(
+    chunks: list[Chunk],
+    chunk_type: str | None = None,
+    list_type: str | None = None,
+) -> list[Chunk]:
+    """Recursively search the chunk tree for matching chunks.
+
+    At least one of *chunk_type* or *list_type* must be given.
+
+    Returns:
+        All matching chunks across the entire tree, in DFS order.
+    """
+    if chunk_type is None and list_type is None:
+        raise ValueError("At least one of chunk_type or list_type is required")
+    results: list[Chunk] = []
+    for chunk in chunks:
+        if list_type is not None:
+            if getattr(chunk, "list_type", None) == list_type:
+                results.append(chunk)
+        elif chunk.chunk_type == chunk_type:
+            results.append(chunk)
+        children = getattr(chunk, "chunks", None)
+        if children is not None:
+            results.extend(recursive_find(children, chunk_type, list_type))
+    return results
