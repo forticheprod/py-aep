@@ -7,18 +7,17 @@ import logging
 import typing
 from contextlib import suppress
 
-from ..cos import CosParser
-from ..enums import (
-    PropertyControlType,
-    PropertyValueType,
-)
-from ..kaitai import Aep
-from ..kaitai.utils import (
+from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
     filter_by_type,
     find_by_list_type,
     find_by_type,
+)
+from ..cos import CosParser
+from ..enums import (
+    PropertyControlType,
+    PropertyValueType,
 )
 from ..models.properties.property import Property
 from ..models.properties.shape import FeatherPoint, Shape
@@ -28,6 +27,7 @@ from .property_value import (
 from .text import parse_btdk_cos
 
 if typing.TYPE_CHECKING:
+    from ..binary.chunk import Chunk, ListChunk
     from ..models.items.composition import CompItem
 
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_orientation(
-    otst_chunk: Aep.Chunk,
+    otst_chunk: Chunk,
     match_name: str,
     property_depth: int,
     composition: CompItem,
@@ -55,7 +55,7 @@ def parse_orientation(
         property_depth: The nesting depth of this property (0 = layer level).
         composition: The parent composition.
     """
-    tdbs_chunk = find_by_list_type(chunks=otst_chunk.body.chunks, list_type="tdbs")
+    tdbs_chunk = find_by_list_type(chunks=otst_chunk.chunks, list_type="tdbs")
     prop = parse_property(
         tdbs_chunk=tdbs_chunk,
         match_name=match_name,
@@ -70,12 +70,11 @@ def parse_orientation(
     prop.__dict__["dimensions"] = 3
     prop.__dict__["_vector"] = True
 
-    # cdat_body is parameterized with is_le; .value instance returns
-    # the correctly-endian doubles regardless of context.
+    # cdat is parameterized with is_le; .value returns the correctly-
+    # endian doubles regardless of context.
     try:
-        values = list(
-            find_by_type(chunks=tdbs_chunk.body.chunks, chunk_type="cdat").body.value
-        )
+        cdat = find_by_type(chunks=tdbs_chunk.chunks, chunk_type="cdat")
+        values = list(cdat.values)
         while len(values) < 3:
             values.append(0.0)
         prop.value = values[:3]
@@ -88,17 +87,17 @@ def parse_orientation(
     # orientation data, so we override each keyframe's value with the full 3D
     # otda data.
     with suppress(ChunkNotFoundError):
-        otky_chunk = find_by_list_type(chunks=otst_chunk.body.chunks, list_type="otky")
-        otda_chunks = filter_by_type(chunks=otky_chunk.body.chunks, chunk_type="otda")
+        otky_chunk = find_by_list_type(chunks=otst_chunk.chunks, list_type="otky")
+        otda_chunks = filter_by_type(chunks=otky_chunk.chunks, chunk_type="otda")
         for idx, kf in enumerate(prop.keyframes):
             if idx < len(otda_chunks):
-                kf.value = list(otda_chunks[idx].body.value)
+                kf.value = list(otda_chunks[idx].values)
 
     return prop
 
 
 def _parse_shape_shap(
-    shap_chunk: Aep.Chunk,
+    shap_chunk: ListChunk,
     composition: CompItem,
     is_mask_shape: bool,
 ) -> Shape:
@@ -127,21 +126,21 @@ def _parse_shape_shap(
     Returns:
         A [Shape][] with absolute coordinates and tangent offsets.
     """
-    shph_chunk = find_by_type(chunks=shap_chunk.body.chunks, chunk_type="shph")
-    list_chunk = find_by_list_type(chunks=shap_chunk.body.chunks, list_type="list")
+    shph_chunk = find_by_type(chunks=shap_chunk.chunks, chunk_type="shph")
+    list_chunk = find_by_list_type(chunks=shap_chunk.chunks, list_type="list")
 
-    shph = shph_chunk.body
-    points: list[Aep.ShapePoint] = list_chunk.body.ldat.body.items
+    ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat")
+    points = ldat.items
 
     # Extract variable-width mask feather data from fth5 chunk (if present).
     try:
-        fth5 = find_by_type(chunks=shap_chunk.body.chunks, chunk_type="fth5")
-        feather_points = [FeatherPoint(_fp=pt) for pt in fth5.body.points]
+        fth5 = find_by_type(chunks=shap_chunk.chunks, chunk_type="fth5")
+        feather_points = [FeatherPoint(_fp=pt) for pt in fth5.points]
     except ChunkNotFoundError:
         feather_points = []
 
     return Shape(
-        _shph=shph,
+        _shph=shph_chunk,
         _points=points,
         _is_mask=is_mask_shape,
         _composition=composition if is_mask_shape else None,
@@ -150,7 +149,7 @@ def _parse_shape_shap(
 
 
 def parse_shape(
-    oms_chunk: Aep.Chunk,
+    oms_chunk: Chunk,
     match_name: str,
     property_depth: int,
     composition: CompItem,
@@ -173,7 +172,7 @@ def parse_shape(
         [SHAPE][py_aep.enums.PropertyValueType.SHAPE] and `value`
         set to a [Shape][].
     """
-    tdbs_chunk = find_by_list_type(chunks=oms_chunk.body.chunks, list_type="tdbs")
+    tdbs_chunk = find_by_list_type(chunks=oms_chunk.chunks, list_type="tdbs")
     prop = parse_property(
         tdbs_chunk=tdbs_chunk,
         match_name=match_name,
@@ -188,11 +187,11 @@ def parse_shape(
 
     # Collect shape values from omks > shap LISTs
     try:
-        omks_chunk = find_by_list_type(chunks=oms_chunk.body.chunks, list_type="omks")
+        omks_chunk = find_by_list_type(chunks=oms_chunk.chunks, list_type="omks")
         shape_values: list[Shape] = []
         is_mask = match_name == "ADBE Mask Shape"
         for shap_chunk in filter_by_list_type(
-            chunks=omks_chunk.body.chunks, list_type="shap"
+            chunks=omks_chunk.chunks, list_type="shap"
         ):
             shape_values.append(_parse_shape_shap(shap_chunk, composition, is_mask))
     except ChunkNotFoundError:
@@ -214,7 +213,7 @@ def parse_shape(
 
 
 def parse_text_document(
-    btds_chunk: Aep.Chunk,
+    btds_chunk: Chunk,
     match_name: str,
     property_depth: int,
     composition: CompItem,
@@ -234,7 +233,7 @@ def parse_text_document(
         property_depth: The nesting depth of this property (0 = layer level).
         composition: The parent composition.
     """
-    tdbs_chunk = find_by_list_type(chunks=btds_chunk.body.chunks, list_type="tdbs")
+    tdbs_chunk = find_by_list_type(chunks=btds_chunk.chunks, list_type="tdbs")
     prop = parse_property(
         tdbs_chunk=tdbs_chunk,
         match_name=match_name,
@@ -245,12 +244,13 @@ def parse_text_document(
 
     try:
         btdk_chunk = find_by_list_type(
-            chunks=btds_chunk.body.chunks,
+            chunks=btds_chunk.chunks,
             list_type="btdk",
         )
+        # btdk is a ListChunk with list_type="btdk"; raw data stored in .data
         parser = CosParser(
-            io.BytesIO(btdk_chunk.body.binary_data),
-            len(btdk_chunk.body.binary_data),
+            io.BytesIO(btdk_chunk.data),
+            len(btdk_chunk.data),
         )
         cos_data = parser.parse()
     except (ChunkNotFoundError, OverflowError, SyntaxError, ValueError):
@@ -261,7 +261,7 @@ def parse_text_document(
         logger.debug("Unexpected btdk COS structure for %s", match_name)
         return prop
 
-    text_documents, _fonts = parse_btdk_cos(cos_data, btdk_chunk.body)
+    text_documents, _fonts = parse_btdk_cos(cos_data, btdk_chunk)
     if text_documents:
         if prop.keyframes:
             for kf, doc in zip(prop.keyframes, text_documents):

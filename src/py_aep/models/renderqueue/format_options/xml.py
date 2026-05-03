@@ -10,15 +10,33 @@ from ....enums import (
     MPEGMuxStreamCompatibility,
     VideoCodec,
 )
-from ....kaitai.descriptors import ChunkField
-from ....kaitai.transforms import strip_null
-from ....kaitai.utils import propagate_check
+from ...descriptors import ChunkField
+from ...transforms import strip_null
 
 if TYPE_CHECKING:
-    from ....kaitai import Aep
+    from ....binary.chunk import Chunk
 
 # Adobe stores FPS as ticks-per-frame with a 254016000000 tick base.
 _ADOBE_TICKS_PER_SECOND = 254016000000
+
+
+class _EnumParam:
+    """Descriptor for XML enum parameters (read/write)."""
+
+    def __init__(self, key: str, enum_cls: type) -> None:
+        self._key = key
+        self._enum_cls = enum_cls
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._name = name
+
+    def __get__(self, obj: XmlFormatOptions | None, objtype: type | None = None) -> object:
+        if obj is None:
+            return self
+        return obj._enum_param(self._key, self._enum_cls)
+
+    def __set__(self, obj: XmlFormatOptions, value: object) -> None:
+        obj._set_enum_param(self._key, value, self._enum_cls)  # type: ignore[arg-type]
 
 
 def _extract_params(
@@ -110,13 +128,11 @@ class XmlFormatOptions:
     def __init__(
         self,
         *,
-        _ropt_body: Aep.RoptBody,
-        _generic_body: Aep.RoptGenericData,
+        _body: Chunk,
     ) -> None:
-        self._ropt_body = _ropt_body
-        self._generic_body = _generic_body
+        self._body = _body
 
-        raw = bytes(_generic_body.raw)
+        raw = bytes(getattr(_body, "data", b"") or b"")
         self._xml_root: ET.Element | None = None
         self._xml_header: bytes | None = None
         self._val_elements: dict[str, ET.Element] = {}
@@ -131,7 +147,11 @@ class XmlFormatOptions:
             self.params.update(data)
         self.params._owner = self
 
-    format_code = ChunkField[str]("_ropt_body", "format_code", read_only=True)
+    format_code = ChunkField[str](
+        "_body",
+        "format_code",
+        read_only=True,
+    )
     """
     The 4-character format identifier from the Ropt chunk header
     (e.g. `".AVI"`, `"H264"`, `"Mp3 "`, `"MooV"`, `"wao_"`).
@@ -181,8 +201,7 @@ class XmlFormatOptions:
         xml_bytes = b"<?xml version='1.0' encoding='UTF-8'?>\n" + ET.tostring(
             self._xml_root, encoding="unicode"
         ).encode("utf-8")  # NOTE Use xml_declaration when 3.7 is dropped
-        self._generic_body.raw = self._xml_header + xml_bytes
-        propagate_check(self._generic_body)
+        self._body.data = self._xml_header + xml_bytes
 
     # -- read helpers ------------------------------------------------------
 
@@ -196,35 +215,19 @@ class XmlFormatOptions:
             return None
         return _try_enum_or_int(enum_cls, raw)
 
-    @property
-    def video_codec(self) -> VideoCodec | int | None:
-        """
-        The video codec as a [VideoCodec][] FourCC integer value extracted
-        from the `ADBEVideoCodec` parameter, or `None` for audio-only
-        formats (MP3, WAV). Falls back to a plain `int` when the codec is
-        not in the [VideoCodec][] enum.
-        Read / Write.
-        """
-        return self._enum_param("ADBEVideoCodec", VideoCodec)  # type: ignore[return-value]
+    video_codec = _EnumParam("ADBEVideoCodec", VideoCodec)
+    """The video codec as a [VideoCodec][] FourCC integer value extracted
+    from the `ADBEVideoCodec` parameter, or `None` for audio-only
+    formats (MP3, WAV). Falls back to a plain `int` when the codec is
+    not in the [VideoCodec][] enum.
+    Read / Write."""
 
-    @video_codec.setter
-    def video_codec(self, value: VideoCodec | int | None) -> None:
-        self._set_enum_param("ADBEVideoCodec", value, VideoCodec)
-
-    @property
-    def audio_codec(self) -> AudioCodec | int | None:
-        """
-        The audio codec as an [AudioCodec][] integer value extracted from
-        the `ADBEAudioCodec` parameter, or `None` when the parameter is
-        absent. Falls back to a plain `int` when the codec is not in the
-        [AudioCodec][] enum.
-        Read / Write.
-        """
-        return self._enum_param("ADBEAudioCodec", AudioCodec)  # type: ignore[return-value]
-
-    @audio_codec.setter
-    def audio_codec(self, value: AudioCodec | int | None) -> None:
-        self._set_enum_param("ADBEAudioCodec", value, AudioCodec)
+    audio_codec = _EnumParam("ADBEAudioCodec", AudioCodec)
+    """The audio codec as an [AudioCodec][] integer value extracted from
+    the `ADBEAudioCodec` parameter, or `None` when the parameter is
+    absent. Falls back to a plain `int` when the codec is not in the
+    [AudioCodec][] enum.
+    Read / Write."""
 
     @property
     def frame_rate(self) -> float | None:
@@ -254,54 +257,26 @@ class XmlFormatOptions:
         ticks = round(_ADOBE_TICKS_PER_SECOND / value)
         self._set_param("ADBEVideoFPS", str(ticks))
 
-    @property
-    def mpeg_audio_format(self) -> MPEGAudioFormat | int | None:
-        """
-        The MPEG audio format as an [MPEGAudioFormat][] FourCC integer
-        value extracted from the `ADBEMPEGAudioFormat` parameter, or
-        `None` when the parameter is absent. Falls back to a plain `int`
-        when the value is not in the [MPEGAudioFormat][] enum.
-        Read / Write.
-        """
-        return self._enum_param("ADBEMPEGAudioFormat", MPEGAudioFormat)  # type: ignore[return-value]
+    mpeg_audio_format = _EnumParam("ADBEMPEGAudioFormat", MPEGAudioFormat)
+    """The MPEG audio format as an [MPEGAudioFormat][] FourCC integer
+    value extracted from the `ADBEMPEGAudioFormat` parameter, or
+    `None` when the parameter is absent. Falls back to a plain `int`
+    when the value is not in the [MPEGAudioFormat][] enum.
+    Read / Write."""
 
-    @mpeg_audio_format.setter
-    def mpeg_audio_format(self, value: MPEGAudioFormat | int | None) -> None:
-        self._set_enum_param("ADBEMPEGAudioFormat", value, MPEGAudioFormat)
+    mpeg_multiplexer = _EnumParam("ADBEMPEGMultiplexer", MPEGMultiplexer)
+    """The MPEG multiplexer as an [MPEGMultiplexer][] FourCC integer
+    value extracted from the `ADBEMPEGMultiplexer` parameter, or
+    `None` when the parameter is absent. Falls back to a plain `int`
+    when the value is not in the [MPEGMultiplexer][] enum.
+    Read / Write."""
 
-    @property
-    def mpeg_multiplexer(self) -> MPEGMultiplexer | int | None:
-        """
-        The MPEG multiplexer as an [MPEGMultiplexer][] FourCC integer
-        value extracted from the `ADBEMPEGMultiplexer` parameter, or
-        `None` when the parameter is absent. Falls back to a plain `int`
-        when the value is not in the [MPEGMultiplexer][] enum.
-        Read / Write.
-        """
-        return self._enum_param("ADBEMPEGMultiplexer", MPEGMultiplexer)  # type: ignore[return-value]
-
-    @mpeg_multiplexer.setter
-    def mpeg_multiplexer(self, value: MPEGMultiplexer | int | None) -> None:
-        self._set_enum_param("ADBEMPEGMultiplexer", value, MPEGMultiplexer)
-
-    @property
-    def mpeg_mux_stream_compatibility(self) -> MPEGMuxStreamCompatibility | int | None:
-        """
-        The MPEG mux stream compatibility as an
-        [MPEGMuxStreamCompatibility][] FourCC integer value extracted from
-        the `ADBEMPEGMuxStreamCompatibility` parameter, or `None` when the
-        parameter is absent. Falls back to a plain `int` when the value
-        is not in the [MPEGMuxStreamCompatibility][] enum.
-        Read / Write.
-        """
-        return self._enum_param(
-            "ADBEMPEGMuxStreamCompatibility", MPEGMuxStreamCompatibility
-        )  # type: ignore[return-value]
-
-    @mpeg_mux_stream_compatibility.setter
-    def mpeg_mux_stream_compatibility(
-        self, value: MPEGMuxStreamCompatibility | int | None
-    ) -> None:
-        self._set_enum_param(
-            "ADBEMPEGMuxStreamCompatibility", value, MPEGMuxStreamCompatibility
-        )
+    mpeg_mux_stream_compatibility = _EnumParam(
+        "ADBEMPEGMuxStreamCompatibility", MPEGMuxStreamCompatibility
+    )
+    """The MPEG mux stream compatibility as an
+    [MPEGMuxStreamCompatibility][] FourCC integer value extracted from
+    the `ADBEMPEGMuxStreamCompatibility` parameter, or `None` when the
+    parameter is absent. Falls back to a plain `int` when the value
+    is not in the [MPEGMuxStreamCompatibility][] enum.
+    Read / Write."""

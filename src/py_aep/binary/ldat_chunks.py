@@ -10,8 +10,18 @@ from attrs import Factory, define, field
 from .bin_utils import read_bytes, write_bytes
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import FmtItem, fmt_field
+from .fmt_field import (
+    FmtItem,
+    bytes_field,
+    f4_field,
+    f8_field,
+    u1_field,
+    u2_field,
+    u4_field,
+    u8_field,
+)
 from .registry import register
+from .render_chunks import OutputModuleSettingsItem, RenderSettingsItem
 
 if TYPE_CHECKING:
     from typing import IO, Any
@@ -80,12 +90,12 @@ class Lhd3Chunk(Chunk):
     """Keyframe list header. Stores item count, size, and raw type."""
     chunk_type: str = "lhd3"
 
-    _prefix: bytes = fmt_field("10s")
-    count: int = fmt_field("H")
-    _gap: bytes = fmt_field("6s")
-    item_size: int = fmt_field("H")
-    _gap2: bytes = fmt_field("3s")
-    item_type_raw: int = fmt_field("B")
+    _prefix: bytes = bytes_field(10, default=b"\x00\xd0\x0b\xee\x00\x00\x00\x00\x00\x00", repr=False)
+    count: int = u2_field()
+    _gap: bytes = bytes_field(6, repr=False)
+    item_size: int = u2_field()
+    _gap2: bytes = bytes_field(3, repr=False)
+    item_type_raw: int = u1_field()
     _trailing: bytes = field(default=b"", repr=False)
 
     @property
@@ -105,17 +115,17 @@ class Lhd3Chunk(Chunk):
 class ShapePoint(FmtItem):
     """A single shape vertex (x, y) in big-endian float32."""
 
-    x: float = fmt_field("f")
-    y: float = fmt_field("f")
+    x: float = f4_field()
+    y: float = f4_field()
 
 
 @define
 class GuideItem(FmtItem):
     """A single composition guide (ruler line)."""
 
-    orientation_type: int = fmt_field("I")
-    position_type: int = fmt_field("I")
-    position: float = fmt_field("d")
+    orientation_type: int = u4_field()
+    position_type: int = u4_field()
+    position: float = f8_field()
 
 
 
@@ -130,36 +140,36 @@ class GuideItem(FmtItem):
 class KfNoValue(FmtItem):
     """Keyframe data for valueless properties (e.g. paint stroke)."""
 
-    _unknown1: int = fmt_field("Q")
-    _unknown2: float = fmt_field("d")
-    in_speed: float = fmt_field("d")
-    in_influence: float = fmt_field("d")
-    out_speed: float = fmt_field("d")
-    out_influence: float = fmt_field("d")
+    _unknown1: int = u8_field()
+    _unknown2: float = f8_field()
+    in_speed: float = f8_field()
+    in_influence: float = f8_field()
+    out_speed: float = f8_field()
+    out_influence: float = f8_field()
 
 
 @define
 class KfColor(FmtItem):
     """Keyframe data for color properties (RGBA)."""
 
-    _unknown1: int = fmt_field("Q")
-    _unknown2: float = fmt_field("d")
-    in_speed: float = fmt_field("d")
-    in_influence: float = fmt_field("d")
-    out_speed: float = fmt_field("d")
-    out_influence: float = fmt_field("d")
-    r: float = fmt_field("d")
-    g: float = fmt_field("d")
-    b: float = fmt_field("d")
-    a: float = fmt_field("d")
-    _uf0: float = fmt_field("d")
-    _uf1: float = fmt_field("d")
-    _uf2: float = fmt_field("d")
-    _uf3: float = fmt_field("d")
-    _uf4: float = fmt_field("d")
-    _uf5: float = fmt_field("d")
-    _uf6: float = fmt_field("d")
-    _uf7: float = fmt_field("d")
+    _unknown1: int = u8_field()
+    _unknown2: float = f8_field()
+    in_speed: float = f8_field()
+    in_influence: float = f8_field()
+    out_speed: float = f8_field()
+    out_influence: float = f8_field()
+    r: float = f8_field()
+    g: float = f8_field()
+    b: float = f8_field()
+    a: float = f8_field()
+    _uf0: float = f8_field()
+    _uf1: float = f8_field()
+    _uf2: float = f8_field()
+    _uf3: float = f8_field()
+    _uf4: float = f8_field()
+    _uf5: float = f8_field()
+    _uf6: float = f8_field()
+    _uf7: float = f8_field()
 
     @property
     def value(self) -> list[float]:
@@ -377,9 +387,9 @@ class LdatItem:
 def _read_item(data: bytes, item_type: LdatItemType) -> Any:
     """Dispatch item reading by type."""
     if item_type == LdatItemType.lrdr:
-        return data
+        return RenderSettingsItem.frombytes(data)
     if item_type == LdatItemType.litm:
-        return data
+        return OutputModuleSettingsItem.frombytes(data)
     if item_type == LdatItemType.shape:
         return ShapePoint.frombytes(data)
     if item_type == LdatItemType.gide:

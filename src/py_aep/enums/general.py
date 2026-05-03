@@ -42,6 +42,31 @@ class Label(IntEnum):
         return cls(int(value))
 
 
+class ItemType(IntEnum):
+    """Type of project item, as stored in the idta chunk.
+
+    Does not exist in ExtendScript.
+    """
+
+    FOLDER = 1
+    COMPOSITION = 4
+    FOOTAGE = 7
+
+
+class LayerType(IntEnum):
+    """Type of composition layer, as stored in the ldta chunk.
+
+    Does not exist in ExtendScript.
+    """
+
+    AV = 0
+    LIGHT = 1
+    CAMERA = 2
+    TEXT = 3
+    SHAPE = 4
+    THREE_D_MODEL = 5
+
+
 class AlphaMode(IntEnum):
     """Defines how alpha information in footage is interpreted.
 
@@ -963,13 +988,15 @@ class ViewerType(IntEnum):
 
         The `fitt` chunk stores the inner tab type as an ASCII string
         (e.g. `"AE Composition"`). This converts that string to the
-        corresponding ViewerType value.
+        corresponding ViewerType value. Handles null-terminated strings
+        and empty input.
 
         Raises:
             ValueError: If the label is not recognized.
         """
+        clean = label.split("\x00")[0] if label else ""
         try:
-            return _VIEWER_STRING_MAP[label]
+            return _VIEWER_STRING_MAP[clean]
         except KeyError:
             raise ValueError(f"Unknown viewer type label: {label!r}") from None
 

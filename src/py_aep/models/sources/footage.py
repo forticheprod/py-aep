@@ -3,6 +3,7 @@ from __future__ import annotations
 import typing
 from typing import List
 
+from ...binary.utils import find_by_type, toggle_flag_chunk
 from ...enums import (
     AlphaMode,
     FieldSeparationType,
@@ -10,21 +11,20 @@ from ...enums import (
     PulldownPhase,
 )
 from ...enums.mappings import map_media_color_space
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.reverses import denormalize_values, reverse_fractional
-from ...kaitai.transforms import normalize_values
-from ...kaitai.utils import find_by_type, toggle_flag_chunk
+from ..descriptors import ChunkField
+from ..reverses import denormalize_values, reverse_fractional
+from ..transforms import normalize_values
 from ..validators import validate_number, validate_sequence
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
 
 
 def _reverse_field_separation_type(
     value: FieldSeparationType,
     body: object,
 ) -> dict[str, int]:
-    """Decompose a combined field-separation value back into seq fields."""
+    """Decompose a combined field-separation value back into Chunk fields."""
     if value == FieldSeparationType.OFF:
         return {"field_separation_type_raw": 0, "field_order": 0}
     return {
@@ -55,12 +55,12 @@ class FootageSource:
         FieldSeparationType,
         "_sspc",
         "field_separation_type",
-        reverse_instance_field=_reverse_field_separation_type,
+        reverse_multi=_reverse_field_separation_type,
     )
     """How the fields are to be separated in non-still footage.
     Read / Write."""
 
-    has_alpha = ChunkField.bool("_sspc", "has_alpha", read_only=True)
+    has_alpha = ChunkField[bool]("_sspc", "has_alpha", read_only=True)
     """When `True`, the footage has an alpha component. In this case, the
     attributes `alpha_mode`, `invert_alpha`, and `premultiplied` have valid
     values. When `False`, those attributes have no relevant meaning for the
@@ -70,12 +70,12 @@ class FootageSource:
         "_sspc",
         "high_quality_field_separation",
         transform=lambda v: v % 2 != 0,
-        reverse_seq_field=int,
+        reverse=int,
     )
     """When `True`, After Effects uses special algorithms to determine how to
     perform high-quality field separation. Read / Write."""
 
-    invert_alpha = ChunkField.bool("_sspc", "invert_alpha")
+    invert_alpha = ChunkField[bool]("_sspc", "invert_alpha")
     """When `True`, an alpha channel in a footage clip or proxy should be
     inverted. This attribute is valid only if an alpha is present. If
     `has_alpha` is `False`, or if `alpha_mode` is
@@ -94,7 +94,7 @@ class FootageSource:
         "_sspc",
         "premul_color",
         transform=normalize_values,
-        reverse_seq_field=denormalize_values,
+        reverse=denormalize_values,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The color to be premultiplied. This attribute is valid only if
@@ -117,7 +117,7 @@ class FootageSource:
     conform_frame_rate = ChunkField[float](
         "_sspc",
         "conform_frame_rate",
-        reverse_instance_field=reverse_fractional(
+        reverse_multi=reverse_fractional(
             "conform_frame_rate_integer", "conform_frame_rate_fractional"
         ),
         validate=validate_number(min=0.0, max=999.0),
@@ -136,7 +136,6 @@ class FootageSource:
         PulldownPhase,
         "_sspc",
         "remove_pulldown",
-        invalidates=["display_frame_rate"],
     )
     """Controls which pulldown phase to remove from the source footage.
     [PulldownPhase.OFF][py_aep.enums.PulldownPhase] by default.
@@ -148,9 +147,9 @@ class FootageSource:
     def __init__(
         self,
         *,
-        _sspc: Aep.SspcBody,
-        _linl: Aep.LinlBody | None = None,
-        _clrs: Aep.ListBody | None = None,
+        _sspc: Chunk,
+        _linl: Chunk | None = None,
+        _clrs: ListChunk | None = None,
     ) -> None:
         self._sspc = _sspc
         self._linl = _linl
@@ -171,7 +170,7 @@ class FootageSource:
     def preserve_rgb(self, value: bool) -> None:
         if self._clrs is None:
             raise AttributeError("Cannot set preserve_rgb: no CLRS container")
-        toggle_flag_chunk(self._clrs, "prgb", "PrgbBody", bool(value))
+        toggle_flag_chunk(self._clrs, "prgb", bool(value))
 
     @property
     def media_color_space(self) -> str:
@@ -189,8 +188,8 @@ class FootageSource:
         ipws_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="ipws")
         apid_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="apid")
         return map_media_color_space(
-            bool(ipws_chunk.body.enabled),
-            bytes(apid_chunk.body.profile_id),
+            bool(ipws_chunk.value),
+            apid_chunk.data,
         )
 
     @property

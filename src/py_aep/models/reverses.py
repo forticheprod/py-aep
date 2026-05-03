@@ -1,8 +1,8 @@
 """Generic reverse functions for chunk-backed descriptors.
 
 Reverse functions decompose user-facing values back into the binary fields
-stored in the Kaitai chunk body. Each factory returns a callable matching
-the `ChunkField` `reverse_instance_field` signature: `(value, body) -> dict`.
+stored in the binary chunk. Each factory returns a callable matching
+the `ChunkField` `reverse_multi` signature: `(value, body) -> dict`.
 """
 
 from __future__ import annotations

@@ -23,11 +23,11 @@ from py_aep.enums import (
     TimeSpanSource,
 )
 
-from ...kaitai.descriptors import (
+from ...binary.chunk import ContainerChunk
+from ...binary.scalar_chunks import Utf8Chunk
+from ..descriptors import (
     ChunkField,
-    _invalidate,
 )
-from ...kaitai.utils import create_chunk, propagate_check
 from .settings import (
     SettingsView,
     settings_to_number,
@@ -37,7 +37,7 @@ from .settings import (
 if typing.TYPE_CHECKING:
     from typing import Iterator
 
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
     from ..items.composition import CompItem
     from ..project import Project
     from .output_module import OutputModule
@@ -120,7 +120,7 @@ class RenderQueueItem:
     """The name of the render settings template used for this item.
     Read / Write."""
 
-    queue_item_notify = ChunkField.bool("_ldat", "queue_item_notify")
+    queue_item_notify = ChunkField[bool]("_ldat", "queue_item_notify")
     """When `True`, a user notification is enabled for this render queue
     item, signaling the user upon render completion. Read / Write."""
 
@@ -146,7 +146,6 @@ class RenderQueueItem:
         if self.status in self._RESET_STATUSES:
             self._ldat.start_time = 0
             self._ldat.elapsed_seconds = 0
-            propagate_check(self._ldat)
 
     _color_depth = ChunkField.enum(
         ColorDepthSetting,
@@ -214,7 +213,7 @@ class RenderQueueItem:
         "quality",
     )
 
-    _skip_existing_files = ChunkField.bool(
+    _skip_existing_files = ChunkField[bool](
         "_ldat",
         "skip_existing_files",
     )
@@ -234,10 +233,10 @@ class RenderQueueItem:
     def __init__(
         self,
         *,
-        _ldat: Aep.RenderSettingsLdatBody,
-        _litm: Aep.ListBody,
-        _list_chunk: Aep.Chunk,
-        _rcom_utf8: Aep.Utf8Body | None = None,
+        _ldat: Chunk,
+        _litm: ListChunk,
+        _list_chunk: Chunk,
+        _rcom_utf8: Chunk | None = None,
         parent: RenderQueue,
         comp: CompItem,
         output_modules: list[OutputModule],
@@ -306,25 +305,26 @@ class RenderQueueItem:
         Render Queue panel. Read / Write."""
         if self._rcom_utf8 is None:
             return ""
-        return str(self._rcom_utf8.contents)
+        return str(self._rcom_utf8.value)
 
     @comment.setter
     def comment(self, value: str) -> None:
         if not isinstance(value, str):
             raise ValueError("Comment must be a string")
         if self._rcom_utf8 is not None:
-            self._rcom_utf8.contents = value
-            propagate_check(self._rcom_utf8)
+            self._rcom_utf8.value = value
         else:
-            idx = self._litm.chunks.index(self._list_chunk)
-            rcom_chunk = create_chunk(
-                self._litm, "RCom", "Chunks", index=idx, chunks=[]
+            utf8_chunk = Utf8Chunk(chunk_type="Utf8", value=value)
+            rcom_chunk = ContainerChunk(
+                chunk_type="RCom",
+                chunks=[utf8_chunk],
             )
-            utf8_chunk = create_chunk(
-                rcom_chunk.body, "Utf8", "Utf8Body", contents=value
+            idx = next(
+                i for i, c in enumerate(self._litm.chunks)
+                if c is self._list_chunk
             )
-
-            self._rcom_utf8 = utf8_chunk.body
+            self._litm.chunks.insert(idx, rcom_chunk)
+            self._rcom_utf8 = utf8_chunk
 
     @property
     def skip_frames(self) -> int:
@@ -354,7 +354,6 @@ class RenderQueueItem:
         new_frame_rate = round(self.comp.frame_rate / (value + 1))
         for om in self.output_modules:
             om._roou.frame_rate = new_frame_rate
-            propagate_check(om._roou)
 
     @property
     def num_output_modules(self) -> int:
@@ -380,7 +379,6 @@ class RenderQueueItem:
             raise ValueError(f"Resolution divisors must be positive, got [{x}, {y}]")
         self._ldat.resolution_x = x
         self._ldat.resolution_y = y
-        propagate_check(self._ldat)
         for om in self.output_modules:
             om._update_output_dimensions()
 
@@ -402,8 +400,6 @@ class RenderQueueItem:
             )
         self._ldat.frame_rate_integer = int(fval)
         self._ldat.frame_rate_fractional = round((fval - int(fval)) * 65536)
-        _invalidate(self._ldat, ["frame_rate"])
-        propagate_check(self._ldat)
 
     @property
     def _comp_frame_rate(self) -> float:
@@ -491,11 +487,6 @@ class RenderQueueItem:
         if is_frames:
             value = value / self.comp.frame_rate
         setattr(self._ldat, dividend_field, round(value * divisor))
-        _invalidate(
-            self._ldat,
-            ["time_span_start", "time_span_duration"],
-        )
-        propagate_check(self._ldat)
 
     @property
     def time_span_start(self) -> float:

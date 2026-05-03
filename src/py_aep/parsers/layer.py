@@ -4,11 +4,12 @@ import typing
 import warnings
 from typing import Any
 
-from ..kaitai.utils import (
+from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
     find_by_type,
 )
+from ..enums import LayerType
 from ..models.layers.av_layer import AVLayer
 from ..models.layers.camera_layer import CameraLayer
 from ..models.layers.light_layer import LightLayer
@@ -22,13 +23,22 @@ from .utils import (
 )
 
 if typing.TYPE_CHECKING:
-    from ..kaitai import Aep
+    from ..binary.chunk import ListChunk
     from ..models.items.composition import CompItem
     from ..models.layers.layer import Layer
 
+_LAYER_CLASSES: dict[int, type[Layer]] = {
+    LayerType.AV: AVLayer,
+    LayerType.LIGHT: LightLayer,
+    LayerType.CAMERA: CameraLayer,
+    LayerType.TEXT: TextLayer,
+    LayerType.SHAPE: ShapeLayer,
+    LayerType.THREE_D_MODEL: ThreeDModelLayer,
+}
+
 
 def parse_layer(
-    layer_chunk: Aep.Chunk,
+    layer_chunk: ListChunk,
     composition: CompItem,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
 ) -> Layer:
@@ -47,39 +57,32 @@ def parse_layer(
     Returns:
         An [AVLayer][] for most layers, or a [LightLayer][] for light layers.
     """
-    child_chunks = layer_chunk.body.chunks
+    child_chunks = layer_chunk.chunks
 
     try:
-        cmta_body = find_by_type(chunks=child_chunks, chunk_type="cmta").body
+        cmta = find_by_type(chunks=child_chunks, chunk_type="cmta")
     except ChunkNotFoundError:
-        cmta_body = None
+        cmta = None
 
-    ldta_body = find_by_type(chunks=child_chunks, chunk_type="ldta").body
-    name_body = find_by_type(chunks=child_chunks, chunk_type="Utf8").body
+    ldta = find_by_type(chunks=child_chunks, chunk_type="ldta")
+    name_utf8 = find_by_type(chunks=child_chunks, chunk_type="Utf8")
 
-    layer_type_name = ldta_body.layer_type.name
+    layer_type = ldta.layer_type
 
-    _LAYER_CLASSES: dict[str, type[Layer]] = {
-        "avlayer": AVLayer,
-        "light": LightLayer,
-        "camera": CameraLayer,
-        "shape": ShapeLayer,
-        "text": TextLayer,
-        "three_d_model": ThreeDModelLayer,
-    }
     try:
-        layer_cls = _LAYER_CLASSES[layer_type_name]
+        layer_cls = _LAYER_CLASSES[layer_type]
     except KeyError:
         warnings.warn(
-            f"Failed to create {layer_type_name}, falling back to AVLayer",
+            f"Failed to create layer type {layer_type}, falling back to AVLayer",
             stacklevel=2,
         )
         layer_cls = AVLayer
 
     layer = layer_cls(
-        _ldta=ldta_body,
-        _cmta=cmta_body,
-        _name_utf8=name_body,
+        _ldta=ldta,
+        _cmta=cmta,
+        _name_utf8=name_utf8,
+        _layer_list=layer_chunk,
         containing_comp=composition,
         properties=[],
     )

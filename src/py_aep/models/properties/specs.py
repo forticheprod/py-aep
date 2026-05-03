@@ -27,6 +27,7 @@ class _PropSpec(NamedTuple):
     dimensions: int = 1
     is_spatial: bool = False
     color: bool = False
+    integer: bool = False
     min_value: float | None = None
     max_value: float | None = None
     default_value: Any = _USE_VALUE
@@ -2218,7 +2219,7 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _PropSpec("ADBE Marker", "Marker", None, PropertyValueType.MARKER, dimensions=0),
     _GroupSpec("ADBE Text Properties", "Text"),
     _GroupSpec("ADBE Root Vectors Group", "Contents"),
-    _PropSpec("ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD),
+    _PropSpec("ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD, min_value=0),
     _GroupSpec("ADBE MTrackers", "Motion Trackers"),
     _GroupSpec("ADBE Mask Parade", "Masks"),
     _GroupSpec("ADBE Effect Parade", "Effects"),

@@ -7,8 +7,8 @@ from the underlying COS data.  After every `__set__`, the model's
 to the btdk chunk's `binary_data`.
 
 This module mirrors the role of
-`kaitai.descriptors.ChunkField` but operates on nested Python dicts
-(COS parsed data) instead of Kaitai chunk bodies.
+`models.descriptors.ChunkField` but operates on nested Python dicts
+(COS parsed data) instead of binary chunk fields.
 """
 
 from __future__ import annotations

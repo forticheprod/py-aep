@@ -11,8 +11,7 @@ from py_aep.enums import (
     TrackMatteType,
 )
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.utils import propagate_check
+from ..descriptors import ChunkField
 from .layer import Layer
 
 if typing.TYPE_CHECKING:
@@ -57,25 +56,25 @@ class AVLayer(Layer):
     See: https://ae-scripting.docsforadobe.dev/layer/avlayer/
     """
 
-    adjustment_layer: bool = ChunkField.bool("_ldta", "adjustment_layer")  # type: ignore[assignment]
+    adjustment_layer: bool = ChunkField[bool]("_ldta", "adjustment_layer")  # type: ignore[assignment]
     """When `True`, the layer is an adjustment layer. Read / Write."""
 
-    audio_enabled = ChunkField.bool("_ldta", "audio_enabled")
+    audio_enabled = ChunkField[bool]("_ldta", "audio_enabled")
     """When `True`, the layer's audio is enabled. This value corresponds
     to the audio toggle switch in the Timeline panel. Read / Write."""
 
     blending_mode = ChunkField.enum(BlendingMode, "_ldta", "blending_mode")
     """The blending mode of the layer. Read / Write."""
 
-    collapse_transformation = ChunkField.bool("_ldta", "collapse_transformation")
+    collapse_transformation = ChunkField[bool]("_ldta", "collapse_transformation")
     """`True` if collapse transformation is on for this layer.
     Read / Write."""
 
-    effects_active = ChunkField.bool("_ldta", "effects_active")
+    effects_active = ChunkField[bool]("_ldta", "effects_active")
     """`True` if the layer's effects are active, as indicated by the
     <f> icon next to it in the user interface. Read / Write."""
 
-    environment_layer: bool = ChunkField.bool(  # type: ignore[assignment]
+    environment_layer: bool = ChunkField[bool](  # type: ignore[assignment]
         "_ldta", "environment_layer", post_set="_on_environment_layer_set"
     )
     """`True` if this is an environment layer in a Ray-traced 3D
@@ -86,17 +85,17 @@ class AVLayer(Layer):
         FrameBlendingType,
         "_ldta",
         "frame_blending_type",
-        reverse_instance_field=_reverse_frame_blending,
+        reverse_multi=_reverse_frame_blending,
     )
     """The type of frame blending for the layer. Read / Write."""
 
-    guide_layer = ChunkField.bool("_ldta", "guide_layer")
+    guide_layer = ChunkField[bool]("_ldta", "guide_layer")
     """`True` if the layer is a guide layer. Read / Write."""
 
-    motion_blur = ChunkField.bool("_ldta", "motion_blur")
+    motion_blur = ChunkField[bool]("_ldta", "motion_blur_flag")
     """`True` if motion blur is enabled for the layer. Read / Write."""
 
-    preserve_transparency = ChunkField.bool("_ldta", "preserve_transparency")
+    preserve_transparency = ChunkField[bool]("_ldta", "preserve_transparency")
     """`True` if preserve transparency is enabled for the layer.
     Read / Write."""
 
@@ -108,14 +107,14 @@ class AVLayer(Layer):
     )
     """The layer's sampling method. Read / Write."""
 
-    three_d_layer = ChunkField.bool(
+    three_d_layer = ChunkField[bool](
         "_ldta", "three_d_layer", post_set="_on_three_d_layer_set"
     )
     """`True` if this layer is a 3D layer. Setting this to `True`
     automatically sets [environment_layer][] to `False`.
     Read / Write."""
 
-    three_d_per_char = ChunkField.bool("_ldta", "three_d_per_char")
+    three_d_per_char = ChunkField[bool]("_ldta", "three_d_per_char")
     """`True` if this layer has the Enable Per-character 3D switch set,
     allowing its characters to be animated off the plane of the text
     layer. Applies only to text layers. Read / Write."""
@@ -129,12 +128,10 @@ class AVLayer(Layer):
     def _on_environment_layer_set(self) -> None:
         if self._ldta.environment_layer:
             self._ldta.three_d_layer = 1
-            propagate_check(self._ldta)
 
     def _on_three_d_layer_set(self) -> None:
         if self._ldta.three_d_layer:
             self._ldta.environment_layer = 0
-            propagate_check(self._ldta)
 
     @property
     def _matte_layer_id(self) -> int:
@@ -143,7 +140,7 @@ class AVLayer(Layer):
         `0` when no track matte is applied.
         Conditional in the binary (AE >= 23 only).
         """
-        # matte_layer_id is conditional in aep.ksy (only in AE >= 23)
+        # matte_layer_id is conditional (only in AE >= 23)
         return getattr(self._ldta, "matte_layer_id", 0) or 0
 
     def _should_clamp_times(self) -> bool:

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import typing
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.utils import propagate_check
+from ..descriptors import ChunkField
 from ..validators import validate_number
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from ..items.composition import CompItem
 
 
@@ -57,7 +56,7 @@ class FeatherPoint:
         "_fp",
         "interp_raw",
         transform=_interp_transform,
-        reverse_seq_field=_interp_reverse,
+        reverse=_interp_reverse,
     )
     """Radius interpolation type: 0 for non-Hold feather points,
     1 for Hold feather points. Read / Write."""
@@ -73,7 +72,7 @@ class FeatherPoint:
     The angle value is 0% for feather points not at corners.
     Read / Write."""
 
-    def __init__(self, *, _fp: Aep.FeatherPoint) -> None:
+    def __init__(self, *, _fp: Chunk) -> None:
         self._fp = _fp
 
     @property
@@ -138,8 +137,8 @@ class Shape:
     def __init__(
         self,
         *,
-        _shph: Aep.ShphBody | None = None,
-        _points: list[Aep.ShapePoint] | None = None,
+        _shph: Chunk | None = None,
+        _points: list[Chunk] | None = None,
         _is_mask: bool = False,
         _composition: CompItem | None = None,
         closed: bool | None = None,
@@ -161,7 +160,7 @@ class Shape:
             return (float(self._composition.width), float(self._composition.height))
         return None
 
-    def _denormalize_point(self, pt: Aep.ShapePoint) -> list[float]:
+    def _denormalize_point(self, pt: Chunk) -> list[float]:
         """Convert a normalized [0,1] shape point to absolute coordinates."""
         shph = self._shph
         assert shph is not None
@@ -209,7 +208,6 @@ class Shape:
             nx, ny = self._normalize_point(x, y)
             self._points[i].x = nx
             self._points[i].y = ny
-        propagate_check(self._shph)
 
     @property
     def in_tangents(self) -> list[list[float]]:
@@ -253,7 +251,6 @@ class Shape:
             in_idx = (i - 1) % len(self._points)
             self._points[in_idx].x = nx
             self._points[in_idx].y = ny
-        propagate_check(self._shph)
 
     @property
     def out_tangents(self) -> list[list[float]]:
@@ -295,7 +292,6 @@ class Shape:
             nx, ny = self._normalize_point(abs_x, abs_y)
             self._points[i + 1].x = nx
             self._points[i + 1].y = ny
-        propagate_check(self._shph)
 
     @property
     def closed(self) -> bool:
@@ -309,6 +305,5 @@ class Shape:
     def closed(self, value: bool) -> None:
         if self._shph is not None:
             self._shph.open = not value
-            propagate_check(self._shph)
         else:
             self._closed_fallback = value

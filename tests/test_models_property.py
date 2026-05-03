@@ -2465,7 +2465,6 @@ class TestRoundtripProxyBody:
         """Modify the value of a synthesized (default) effect property."""
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
         layer = get_first_layer(project)
-        # Blurriness is the main slider - find it
         blur = self._find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         original = blur.value
         blur.value = 42.0

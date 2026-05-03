@@ -3,13 +3,13 @@ from __future__ import annotations
 import typing
 
 from ...enums import ChannelType, FastPreviewType
-from ...kaitai.descriptors import ChunkField
+from ..descriptors import ChunkField
 from ..validators import validate_number
 
 if typing.TYPE_CHECKING:
     from typing import Any
 
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from ..items.av_item import AVItem
 
 
@@ -48,7 +48,7 @@ class ViewOptions:
     The state of the Channels menu. Read / Write.
     """
 
-    checkerboards = ChunkField.bool(
+    checkerboards = ChunkField[bool](
         "_fips",
         "checkerboards",
     )
@@ -57,7 +57,7 @@ class ViewOptions:
     Read / Write.
     """
 
-    draft3d = ChunkField.bool(
+    draft3d = ChunkField[bool](
         "_fips",
         "draft3d",
     )
@@ -76,26 +76,26 @@ class ViewOptions:
     The exposure value for the current view. Read / Write.
     """
 
-    grid = ChunkField.bool(
+    grid = ChunkField[bool](
         "_fips",
         "grid",
     )
     """When `True`, the grid overlay is visible in the view. Read / Write."""
 
-    guides_locked = ChunkField.bool(
+    guides_locked = ChunkField[bool](
         "_fips",
         "guides_locked",
     )
     """When `True`, indicates guides are locked in the view. Read / Write."""
 
-    guides_snap = ChunkField.bool(
+    guides_snap = ChunkField[bool](
         "_fips",
         "guides_snap",
     )
     """When `True`, indicates layers snap to guides when dragged in the view.
     Read / Write."""
 
-    guides_visibility = ChunkField.bool(
+    guides_visibility = ChunkField[bool](
         "_fips",
         "guides_visibility",
     )
@@ -103,21 +103,21 @@ class ViewOptions:
     When `True`, indicates guides are visible in the view. Read / Write.
     """
 
-    mask_and_shape_path = ChunkField.bool(
+    mask_and_shape_path = ChunkField[bool](
         "_fips",
         "mask_and_shape_path",
     )
     """When `True`, indicates mask and shape paths are visible in the view.
     Read / Write."""
 
-    proportional_grid = ChunkField.bool(
+    proportional_grid = ChunkField[bool](
         "_fips",
         "proportional_grid",
     )
     """When `True`, indicates the proportional grid overlay is visible in the
     view. Read / Write."""
 
-    region_of_interest = ChunkField.bool(
+    region_of_interest = ChunkField[bool](
         "_fips",
         "region_of_interest",
     )
@@ -170,13 +170,13 @@ class ViewOptions:
     )
     """Right coordinate of the region of interest in pixels. Read / Write."""
 
-    rulers = ChunkField.bool(
+    rulers = ChunkField[bool](
         "_fips",
         "rulers",
     )
     """When `True`, indicates rulers are shown in the view. Read / Write."""
 
-    title_action_safe = ChunkField.bool(
+    title_action_safe = ChunkField[bool](
         "_fips",
         "title_action_safe",
     )
@@ -185,7 +185,7 @@ class ViewOptions:
     view. Read / Write.
     """
 
-    use_display_color_management = ChunkField.bool(
+    use_display_color_management = ChunkField[bool](
         "_fips",
         "use_display_color_management",
     )
@@ -208,14 +208,14 @@ class ViewOptions:
         FastPreviewType,
         "_fips",
         "fast_preview_type",
-        reverse_instance_field=_reverse_fast_preview,
+        reverse_multi=_reverse_fast_preview,
     )
     """The state of the Fast Previews menu. Read / Write."""
 
     def __init__(
         self,
         *,
-        _fips: Aep.FipsBody,
+        _fips: Chunk,
         _item: AVItem | None = None,
     ) -> None:
         self._fips = _fips

@@ -8,11 +8,11 @@ from typing import cast
 from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
+from ...binary.chunk import ContainerChunk, ListChunk
+from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk
+from ...binary.scalar_chunks import Utf8Chunk
 from ...data.units import UNITS_TEXT_MAP
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.materializer import materialize_property
-from ...kaitai.proxy import ProxyBody
-from ...kaitai.utils import create_chunk, propagate_check
+from ..descriptors import ChunkField
 from ..validators import validate_number, validate_sequence
 from .overrides import (
     _ALWAYS_MODIFIED,
@@ -20,13 +20,13 @@ from .overrides import (
     _ISSPATIAL_OVERRIDES,
     _NAME_OVERRIDES,
 )
-from .property_base import PropertyBase
+from .property_base import _TDSN_SENTINEL, PropertyBase
 from .specs import _USE_VALUE
 
 if typing.TYPE_CHECKING:
     from typing import Any
 
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from ..text.text_document import TextDocument
     from .keyframe import Keyframe
     from .marker import MarkerValue
@@ -180,22 +180,20 @@ class Property(PropertyBase):
     including custom strings in the Menu property of the Dropdown Menu
     Control. Read-only."""
 
-    _animated = ChunkField.bool("_tdb4", "animated", default=False)
+    _animated = ChunkField[bool]("_tdb4", "animated")
 
-    _color = ChunkField.bool("_tdb4", "color", default=False)
+    _color = ChunkField[bool]("_tdb4", "color")
 
-    _integer = ChunkField.bool("_tdb4", "integer", default=False)
+    _integer = ChunkField[bool]("_tdb4", "integer")
 
-    _no_value = ChunkField.bool("_tdb4", "no_value", default=False)
+    _no_value = ChunkField[bool]("_tdb4", "no_value")
 
-    _vector = ChunkField.bool("_tdb4", "vector", default=False)
+    _vector = ChunkField[bool]("_tdb4", "vector")
 
-    locked_ratio = ChunkField.bool(
-        "_tdsb", "locked_ratio", read_only=True, default=False
-    )
+    locked_ratio = ChunkField[bool]("_tdsb", "locked_ratio", read_only=True)
     """When `True`, the property's X/Y ratio is locked. Read-only."""
 
-    _is_spatial_raw = ChunkField.bool("_tdb4", "is_spatial", default=False)
+    _is_spatial_raw = ChunkField[bool]("_tdb4", "is_spatial")
 
     @property
     def is_spatial(self) -> bool:
@@ -230,7 +228,7 @@ class Property(PropertyBase):
         PropertyBase.name.fset(self, value)  # type: ignore[attr-defined]
 
     @classmethod
-    def synthesized(
+    def new(
         cls,
         spec: _PropSpec,
         property_depth: int,
@@ -238,8 +236,10 @@ class Property(PropertyBase):
         parent_property: PropertyGroup,
         value: Any = _USE_VALUE,
         default_value: Any = _USE_VALUE,
+        synthetic: bool = False,
+        control_type: PropertyControlType | None = None,
     ) -> Property:
-        """Create a synthesized Property from a `_PropSpec`.
+        """Create a Property from a `_PropSpec`.
 
         Used to synthesize properties expected by ExtendScript but absent
         from the binary.
@@ -252,6 +252,10 @@ class Property(PropertyBase):
                 `spec.value`.
             default_value: Override for the default value. When omitted,
                 uses the spec's `default_value` logic.
+            synthetic: If True, mark backing chunks as synthetic
+                (skipped during serialization).
+            control_type: Override for the property control type. When
+                omitted, defaults to `PropertyControlType.UNKNOWN`.
         """
         final_value = spec.value if value is _USE_VALUE else value
         no_value = spec.pvt == PropertyValueType.NO_VALUE
@@ -259,29 +263,65 @@ class Property(PropertyBase):
             can_vary = spec.can_vary_over_time
         else:
             can_vary = not no_value
+
+        _tdsb = TdsbChunk(synthetic=synthetic)
+        _tdb4 = Tdb4Chunk(synthetic=synthetic, dimensions=spec.dimensions)
+        _tdb4.is_spatial = int(spec.is_spatial)
+        _tdb4.can_vary_over_time = int(can_vary)
+        _tdb4.color = int(spec.color)
+        _tdb4.no_value = int(no_value)
+        _tdb4.vector = int(spec.dimensions > 1)
+        _tdb4.integer = int(spec.integer)
+
+        display = spec.auto_name or _TDSN_SENTINEL
+        name_utf8 = Utf8Chunk(
+            chunk_type="Utf8", value=display + "\x00", synthetic=synthetic
+        )
+        tdsn = ContainerChunk(
+            chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
+        )
+        _tdbs = ListChunk(
+            chunk_type="LIST",
+            list_type="tdbs",
+            chunks=[_tdsb, tdsn, _tdb4],
+            synthetic=synthetic,
+        )
+
+        # Pre-create cdat for numeric values so _ensure_materialized
+        # only needs to flip synthetic flags.
+        _cdat: CdatChunk | None = None
+        if final_value is not None and isinstance(final_value, (int, float, list)):
+            if isinstance(final_value, list):
+                raw_vals = [float(v) for v in final_value]
+            else:
+                raw_vals = [float(final_value)]
+            _cdat = CdatChunk(chunk_type="cdat", values=raw_vals, synthetic=synthetic)
+            _tdbs.chunks.append(_cdat)
+
+        # Insert into parent's chunk tree.
+        _tdmn: Chunk | None = None
+        tdgp = parent_property._tdgp
+        if tdgp is not None:
+            _tdmn = Utf8Chunk(
+                chunk_type="tdmn",
+                value=spec.match_name + "\x00",
+                synthetic=synthetic,
+            )
+            tdgp.chunks.append(_tdmn)
+            tdgp.chunks.append(_tdbs)
+
         prop = cls(
-            _tdsb=ProxyBody(
-                enabled=1,
-                locked_ratio=0,
-                roto_bezier=0,
-                dimensions_separated=0,
-            ),
-            _tdb4=ProxyBody(
-                dimensions=spec.dimensions,
-                is_spatial=int(spec.is_spatial),
-                animated=0,
-                color=int(spec.color),
-                integer=0,
-                no_value=int(no_value),
-                vector=int(spec.dimensions > 1),
-                can_vary_over_time=int(can_vary),
-                expression_disabled=1,
-            ),
+            _tdmn=_tdmn,
+            _tdsb=_tdsb,
+            _tdb4=_tdb4,
+            _tdbs=_tdbs,
+            _name_utf8=name_utf8,
+            _cdat=_cdat,
             keyframes=[],
             match_name=spec.match_name,
             auto_name=spec.auto_name,
             parent_property=parent_property,
-            property_control_type=PropertyControlType.UNKNOWN,
+            property_control_type=control_type or PropertyControlType.UNKNOWN,
             property_depth=property_depth,
             property_value_type=spec.pvt,
             value=final_value,
@@ -296,19 +336,21 @@ class Property(PropertyBase):
             prop._min_value_fallback = spec.min_value
         if spec.max_value is not None:
             prop._max_value_fallback = spec.max_value
+
         return prop
 
     def __init__(
         self,
         *,
-        _tdsb: Aep.TdsbBody | None = None,
-        _tdb4: Aep.Tdb4Body | None = None,
-        _expression_utf8: Aep.Utf8Body | None = None,
-        _name_utf8: Aep.Utf8Body | None = None,
-        _tdbs: Aep.ListBody | None = None,
-        _tdum: Aep.TdumBody | None = None,
-        _tduM: Aep.TdumBody | None = None,
-        _cdat: Aep.CdatBody | None = None,
+        _tdmn: Chunk | None = None,
+        _tdsb: Chunk,
+        _tdb4: Chunk,
+        _expression_utf8: Chunk | None = None,
+        _name_utf8: Chunk,
+        _tdbs: ListChunk,
+        _tdum: Chunk | None = None,
+        _tduM: Chunk | None = None,
+        _cdat: Chunk | None = None,
         parent_property: PropertyGroup | None = None,
         match_name: str,
         property_depth: int,
@@ -331,6 +373,7 @@ class Property(PropertyBase):
             auto_name=auto_name,
             property_depth=property_depth,
         )
+        self._tdmn = _tdmn
         self._tdb4 = _tdb4
         self._expression_utf8 = _expression_utf8
         self._tdbs = _tdbs
@@ -393,54 +436,39 @@ class Property(PropertyBase):
                 kf._next = self.keyframes[i + 1]
 
     def _ensure_materialized(self) -> None:
-        """Replace ProxyBody backing with real Kaitai chunks.
+        """Flip synthetic flags so backing chunks become visible to write_aep().
 
-        Called automatically by `__setattr__` on first end-user write
+        Called automatically by `ChunkField.__set__` on first end-user write
         to a synthesized property. After this method, the property is
         indistinguishable from one that was parsed from binary.
         """
-        if not isinstance(self._tdsb, ProxyBody):
+        if not self._tdsb.synthetic:
             return
 
         parent = self.parent_property
-        if parent is None:
-            return
+        if parent is not None:
+            parent._ensure_materialized()
 
-        # Ensure the parent group is materialized first.
-        parent._ensure_materialized()
-
-        tdgp = parent._tdgp
-        if tdgp is None:
-            return
-
-        result = materialize_property(
-            tdgp,
-            self.match_name,
-            self._tdsb,
-            self._tdb4,
-            self._value,
-            display_name=self._name,
-        )
-
-        # Use object.__setattr__ to bypass __setattr__ materialization guard.
-        object.__setattr__(self, "_tdsb", result.tdsb)
-        object.__setattr__(self, "_tdb4", result.tdb4)
-        object.__setattr__(self, "_tdbs", result.tdbs)
-        object.__setattr__(self, "_name_utf8", result.name_utf8)
-        if result.cdat is not None:
-            object.__setattr__(self, "_cdat", result.cdat)
+        # Flip synthetic flags on tdmn + entire subtree.
+        if self._tdmn is not None:
+            self._tdmn.synthetic = False
+        self._tdbs.synthetic = False
+        for c in self._tdbs.chunks:
+            c.synthetic = False
+            if hasattr(c, "chunks"):
+                for cc in c.chunks:
+                    cc.synthetic = False
 
     @staticmethod
-    def _read_tdum(body: Aep.TdumBody) -> Any:
+    def _read_tdum(body: Chunk) -> Any:
         """Extract value from a tdum/tduM chunk body."""
         if body.is_color:
-            return list(body.value_color)
+            return list(body.values)
         if body.is_integer:
-            return body.value_integer  # type: ignore[return-value]
-        value = list(body.value_doubles)
-        if len(value) == 1:
-            return value[0]
-        return value
+            return int(body.values[0])
+        if len(body.values) == 1:
+            return body.values[0]
+        return list(body.values)
 
     def _read_cdat_raw(self) -> Any:
         """Read the raw value from the cdat chunk body.
@@ -451,7 +479,7 @@ class Property(PropertyBase):
         """
         if self._cdat is None:
             return None
-        values = self._cdat.value[: self.dimensions]
+        values = self._cdat.values[: self.dimensions]
         if not values:
             return None
         if self.dimensions == 1 and not self._color:
@@ -533,17 +561,12 @@ class Property(PropertyBase):
         if isinstance(value, list) and value and not isinstance(value[0], (int, float)):
             return
         raw_value = self._unresolve_value(value)
-        raw = list(self._cdat.value)
+        raw = list(self._cdat.values)
         if isinstance(raw_value, list):
             raw[: len(raw_value)] = raw_value
         else:
             raw[0] = raw_value
-        if self._cdat.is_le:
-            self._cdat.value_le = raw
-        else:
-            self._cdat.value_be = raw
-        self._cdat._invalidate_value()
-        propagate_check(self._cdat)
+        self._cdat.values = raw
 
     @property
     def value(self) -> Any:
@@ -555,10 +578,10 @@ class Property(PropertyBase):
         """
         if self._value is not None:
             return self._value
+        if self.keyframes:
+            return self.value_at_time(0)
         if self._cdat is not None:
             return self._resolve_value(self._read_cdat_raw())
-        if self.keyframes:
-            return self.keyframes[0].value
         return None
 
     @value.setter
@@ -603,6 +626,8 @@ class Property(PropertyBase):
         """
         if self._units_text is not None:
             return self._units_text
+        if self._property_control_type == PropertyControlType.ANGLE:
+            return "degrees"
         return UNITS_TEXT_MAP.get(self.match_name, "")
 
     @property
@@ -621,11 +646,9 @@ class Property(PropertyBase):
             return self._can_vary_over_time
         if self.match_name in _CANVARY_OVERRIDES:
             return _CANVARY_OVERRIDES[self.match_name]
-        if self._tdb4 is not None:
-            # NO_VALUE properties always report canVaryOverTime=True in AE,
-            # even though the binary byte says otherwise.
-            return bool(self._tdb4.can_vary_over_time or self._no_value)
-        return False
+        # NO_VALUE properties always report canVaryOverTime=True in AE,
+        # even though the binary byte says otherwise.
+        return bool(self._tdb4.can_vary_over_time or self._no_value)
 
     @property
     def dimensions_separated(self) -> bool:
@@ -639,13 +662,13 @@ class Property(PropertyBase):
         """
         if self._dimensions_separated is not None:
             return self._dimensions_separated
-        if self.match_name == "ADBE Position" and self._tdsb is not None:
+        if self.match_name == "ADBE Position":
             # Light and Camera layers always have 3D position but do not
             # expose dimensionsSeparated in ExtendScript.
             layer = self._containing_layer
-            if layer is not None and layer._ldta.layer_type.name in (
-                "light",
-                "camera",
+            if layer is not None and layer._ldta.layer_type in (
+                1,  # light
+                2,  # camera
             ):
                 return False
             return bool(self._tdsb.dimensions_separated)
@@ -655,10 +678,8 @@ class Property(PropertyBase):
     def dimensions_separated(self, value: bool) -> None:
         self._ensure_materialized()
         self._dimensions_separated = value
-        if self.match_name == _SEPARATION_LEADER and self._tdsb is not None:
+        if self.match_name == _SEPARATION_LEADER:
             self._tdsb.dimensions_separated = int(value)
-            if not isinstance(self._tdsb, ProxyBody):
-                propagate_check(self._tdsb)
 
     @property
     def expression(self) -> str:
@@ -670,7 +691,7 @@ class Property(PropertyBase):
         if self._expression is not None:
             return self._expression
         if self._expression_utf8 is not None:
-            text: str = self._expression_utf8.contents
+            text: str = self._expression_utf8.value
             return text.split("\x00")[0]
         return ""
 
@@ -678,12 +699,12 @@ class Property(PropertyBase):
     def expression(self, value: str) -> None:
         self._ensure_materialized()
         self._expression = value
-        if self._expression_utf8 is None and self._tdbs is not None:
-            chunk = create_chunk(self._tdbs, "Utf8", "Utf8Body", contents=value)
-            self._expression_utf8 = chunk.body
-        elif self._expression_utf8 is not None:
-            self._expression_utf8.contents = value
-            propagate_check(self._expression_utf8)
+        if self._expression_utf8 is None:
+            chunk = Utf8Chunk(chunk_type="Utf8", value=value)
+            self._tdbs.chunks.append(chunk)
+            self._expression_utf8 = chunk
+        else:
+            self._expression_utf8.value = value
 
     @property
     def expression_enabled(self) -> bool:
@@ -694,18 +715,15 @@ class Property(PropertyBase):
         """
         if self._expression_enabled is not None:
             return self._expression_enabled
-        if self._tdb4 is not None:
-            disabled = getattr(self._tdb4, "expression_disabled", True)
-            return not disabled and bool(self.expression)
-        return False
+        disabled = getattr(self._tdb4, "expression_disabled", True)
+        return not disabled and bool(self.expression)
 
     @expression_enabled.setter
     def expression_enabled(self, value: bool) -> None:
         self._ensure_materialized()
         self._expression_enabled = value
-        if self._tdb4 is not None and not isinstance(self._tdb4, ProxyBody):
+        if not self._tdb4.synthetic:
             self._tdb4.expression_disabled = not value
-            propagate_check(self._tdb4)
 
     @property
     def property_control_type(self) -> PropertyControlType:
@@ -893,12 +911,12 @@ class Property(PropertyBase):
             return self._is_in_effect()
         # Mask reference properties that exist in the binary are always
         # modified - their presence indicates user interaction even when
-        # the value is 0 (no mask).  Synthesized default slots (ProxyBody)
+        # the value is 0 (no mask).  Synthesized default slots (synthetic)
         # remain unmodified.
         if (
             self.property_value_type == PropertyValueType.MASK_INDEX
             and self._is_in_effect()
-            and not isinstance(self._tdsb, ProxyBody)
+            and not self._tdsb.synthetic
         ):
             return True
         if self.match_name in _ALWAYS_MODIFIED:

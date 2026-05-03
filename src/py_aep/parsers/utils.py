@@ -1,24 +1,28 @@
 from __future__ import annotations
 
-from ..kaitai import Aep
-from ..kaitai.utils import str_contents
+from typing import TYPE_CHECKING
+
+from ..binary.utils import str_value
+
+if TYPE_CHECKING:
+    from ..binary.chunk import Chunk, ListChunk
 
 
 def get_chunks_by_match_name(
-    root_chunk: Aep.Chunk,
-) -> dict[str, list[Aep.Chunk]]:
+    root_chunk: ListChunk,
+) -> dict[str, list[Chunk]]:
     """Get chunks grouped by their match name."""
     SKIP_CHUNK_TYPES = (
         "engv",
         "aRbs",
     )
-    chunks_by_match_name: dict[str, list[Aep.Chunk]] = {}
+    chunks_by_match_name: dict[str, list[Chunk]] = {}
     if root_chunk:
         skip_to_next_tdmn_flag = True
         match_name = ""
-        for chunk in root_chunk.body.chunks:
+        for chunk in root_chunk.chunks:
             if chunk.chunk_type == "tdmn":
-                match_name = str_contents(chunk)
+                match_name = str_value(chunk)
                 if match_name == "ADBE Group End":
                     skip_to_next_tdmn_flag = True
                 else:

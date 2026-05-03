@@ -251,7 +251,7 @@ class TestParseTimeWriteGuard:
 
     def test_write_blocked_during_suppress(self) -> None:
         """ChunkField raises RuntimeError when materialization is suppressed."""
-        from py_aep.kaitai.proxy import _suppress_materialization
+        from py_aep.models.descriptors import _suppress_materialization
 
         app = parse_aep(PROPERTY_DIR / "keyframe_1D.aep")
         layer = get_first_layer(app.project)
@@ -264,7 +264,7 @@ class TestParseTimeWriteGuard:
 
     def test_dict_bypass_allowed_during_suppress(self) -> None:
         """__dict__ writes bypass ChunkField guard during suppression."""
-        from py_aep.kaitai.proxy import _suppress_materialization
+        from py_aep.models.descriptors import _suppress_materialization
 
         app = parse_aep(PROPERTY_DIR / "keyframe_1D.aep")
         layer = get_first_layer(app.project)

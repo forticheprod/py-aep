@@ -4,7 +4,7 @@ Welcome to the py_aep documentation! This library provides a Python interface fo
 
 ## About
 
-py_aep is a Python library that parses Adobe After Effects project files (.aep), which are binary files encoded in RIFX format. The library uses [Kaitai Struct](https://kaitai.io/) to parse the binary format and provides a clean, typed Python API to access project data.
+py_aep is a Python library that parses Adobe After Effects project files (.aep), which are binary files encoded in RIFX format. The library uses [struct](https://docs.python.org/3/library/struct.html) to parse the binary format and provides a clean, typed Python API to access project data.
 
 ## Installation
 

@@ -7,10 +7,10 @@ import typing
 from contextlib import suppress
 
 if typing.TYPE_CHECKING:
+    from ..binary.chunk import Chunk
     from ..models.items.composition import CompItem
 
-from ..kaitai import Aep
-from ..kaitai.utils import (
+from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
     find_by_type,
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_property(
-    tdbs_chunk: Aep.Chunk,
+    tdbs_chunk: Chunk,
     match_name: str,
     composition: CompItem,
     property_depth: int,
@@ -42,16 +42,16 @@ def parse_property(
         composition: The parent composition.
         property_depth: The nesting depth of this property (0 = layer level).
     """
-    tdbs_child_chunks = tdbs_chunk.body.chunks
+    tdbs_child_chunks = tdbs_chunk.chunks
 
-    tdsb_chunk = tdbs_chunk.body.tdsb
+    tdsb_chunk = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsb")
 
-    tdb4_chunk = tdbs_chunk.body.tdb4
+    tdb4_chunk = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdb4")
 
     try:
-        cdat_body = find_by_type(chunks=tdbs_child_chunks, chunk_type="cdat").body
+        cdat = find_by_type(chunks=tdbs_child_chunks, chunk_type="cdat")
     except ChunkNotFoundError:
-        cdat_body = None
+        cdat = None
 
     # Static value is read lazily by Property.value from _cdat via
     # _resolve_value.  Only extract here for non-cdat overrides.
@@ -62,27 +62,27 @@ def parse_property(
     # to a 1-based layer index using the composition's mapping.
     # tdli stores the 1-based mask index directly.
     with suppress(ChunkNotFoundError):
-        layer_id = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi").body.value
+        layer_id = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi").value
         if layer_id == 0 or composition._layer_id_to_index is None:
             value = 0
         else:
             value = composition._layer_id_to_index.get(layer_id, 0)
     with suppress(ChunkNotFoundError):
-        value = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli").body.value
+        value = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli").value
 
     try:
-        expression_utf8 = find_by_type(chunks=tdbs_child_chunks, chunk_type="Utf8").body
+        expression_utf8 = find_by_type(chunks=tdbs_child_chunks, chunk_type="Utf8")
     except ChunkNotFoundError:
         expression_utf8 = None
 
     try:
-        tdum_body = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdum").body
+        tdum = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdum")
     except ChunkNotFoundError:
-        tdum_body = None
+        tdum = None
     try:
-        tduM_body = find_by_type(chunks=tdbs_child_chunks, chunk_type="tduM").body
+        tduM = find_by_type(chunks=tdbs_child_chunks, chunk_type="tduM")
     except ChunkNotFoundError:
-        tduM_body = None
+        tduM = None
 
     keyframes = _parse_keyframes(
         tdbs_child_chunks,
@@ -90,24 +90,20 @@ def parse_property(
         frame_rate=composition.frame_rate,
     )
 
-    # Keyframe value/ease transforms are now lazy: Keyframe.value uses
-    # Property._resolve_value, and Keyframe._resolve_ease handles
-    # interpolation-type overrides.  Percent/color/effect scaling of both
-    # values and ease speeds is applied at access time.
-
-    # Resolve _name_utf8 from the LIST:tdbs tdsn child (always at index 1).
-    tdsn = tdbs_chunk.body.tdsn
-    name_utf8 = tdsn.body.chunks[0].body
+    # Resolve _name_utf8 from the LIST:tdbs tdsn child.
+    # tdsn is a ContainerChunk with a Utf8 child.
+    tdsn = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsn")
+    name_utf8 = tdsn.chunks[0]
 
     prop = Property(
-        _tdsb=tdsb_chunk.body,
-        _tdb4=tdb4_chunk.body,
+        _tdsb=tdsb_chunk,
+        _tdb4=tdb4_chunk,
         _expression_utf8=expression_utf8,
         _name_utf8=name_utf8,
-        _tdbs=tdbs_chunk.body,
-        _tdum=tdum_body,
-        _tduM=tduM_body,
-        _cdat=cdat_body,
+        _tdbs=tdbs_chunk,
+        _tdum=tdum,
+        _tduM=tduM,
+        _cdat=cdat,
         match_name=match_name,
         property_depth=property_depth,
         keyframes=keyframes,
@@ -118,7 +114,7 @@ def parse_property(
 
 
 def _parse_keyframes(
-    tdbs_child_chunks: list[Aep.Chunk],
+    tdbs_child_chunks: list[Chunk],
     time_scale: float,
     frame_rate: float,
 ) -> list[Keyframe]:
@@ -134,12 +130,12 @@ def _parse_keyframes(
     except ChunkNotFoundError:
         return []
 
-    ldat = list_chunk.body.ldat
-    if ldat is None:
+    try:
+        ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat")
+    except ChunkNotFoundError:
         return []
 
-    ldat_body = ldat.body
-    kf_items = ldat_body.items
+    kf_items = ldat.items
 
     return [
         Keyframe(

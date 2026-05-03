@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..kaitai import Aep
+from ..binary.chunk import read_aep
 
 #: Sentinel used in [ByteDifference][] when one chunk is shorter
 #: than the other and a byte position doesn't exist.
@@ -145,16 +145,16 @@ def compare_binary_data(
 
 def parse_aep_chunks(file_path: Path) -> dict[str, bytes]:
     """
-    Parse an AEP file using Kaitai and extract leaf chunk data with paths.
+    Parse an AEP file and extract leaf chunk data with paths.
 
     Returns a dict mapping chunk paths to their raw binary data.
     Only leaf chunks (non-LIST) are included.
     """
-    with Aep.from_file(str(file_path)) as aep:
-        aep._read()
-        result: dict[str, bytes] = {}
-        _extract_chunks_recursive(aep.root.body.chunks, "", result)
-        return result
+    with open(file_path, "rb") as f:
+        rifx, _xmp = read_aep(f)
+    result: dict[str, bytes] = {}
+    _extract_chunks_recursive(rifx.chunks, "", result)
+    return result
 
 
 def _get_chunk_identifier(chunk: Any) -> str:
@@ -162,8 +162,8 @@ def _get_chunk_identifier(chunk: Any) -> str:
     chunk_type = str(chunk.chunk_type)
 
     # For LIST chunks, include the list_type
-    if chunk_type == "LIST" and hasattr(chunk.body, "list_type"):
-        return f"LIST:{chunk.body.list_type}"
+    if chunk_type == "LIST" and hasattr(chunk, "list_type"):
+        return f"LIST:{chunk.list_type}"
 
     return chunk_type
 
@@ -220,20 +220,17 @@ def _extract_chunks_recursive(
 
         # Recurse into LIST chunks without storing their raw data
         if chunk.chunk_type == "LIST":
-            if hasattr(chunk.body, "chunks") and chunk.body.chunks:
+            if hasattr(chunk, "chunks") and chunk.chunks:
                 child_counters: dict[str, int] = {}
                 _extract_chunks_recursive(
-                    chunk.body.chunks, current_path, result, child_counters
+                    chunk.chunks, current_path, result, child_counters
                 )
             # Skip LIST chunks entirely (even empty ones)
         else:
             # Only store raw data for leaf chunks
-            try:
-                raw_data = chunk._raw_body
-                if raw_data:
-                    result[current_path] = raw_data
-            except (AttributeError, TypeError):
-                pass
+            raw_data = chunk.tobytes()
+            if raw_data:
+                result[current_path] = raw_data
 
 
 # ── Comparison helpers ──────────────────────────────────────────────────────
@@ -288,7 +285,7 @@ def _walk_chunks_tree(
     """Walk chunk tree yielding metadata for each node.
 
     Args:
-        chunks: List of Kaitai chunk objects.
+        chunks: List of chunk objects.
         parent_path: Parent chunk path prefix.
         depth: Current nesting depth.
 
@@ -301,23 +298,17 @@ def _walk_chunks_tree(
         identifier = _get_chunk_identifier(chunk)
         current_path = _build_chunk_path(parent_path, identifier, counters)
 
-        size = 0
-        try:
-            raw = chunk._raw_body
-            if raw:
-                size = len(raw)
-        except (AttributeError, TypeError):
-            pass
+        size = len(chunk.tobytes()) if chunk.chunk_type != "LIST" else 0
 
         is_list = (
             chunk.chunk_type == "LIST"
-            and hasattr(chunk.body, "chunks")
-            and chunk.body.chunks is not None
+            and hasattr(chunk, "chunks")
+            and chunk.chunks is not None
         )
         yield current_path, identifier, size, depth, is_list
 
         if is_list:
-            yield from _walk_chunks_tree(chunk.body.chunks, current_path, depth + 1)
+            yield from _walk_chunks_tree(chunk.chunks, current_path, depth + 1)
 
 
 def list_aep_chunks(file_path: Path) -> None:
@@ -326,11 +317,11 @@ def list_aep_chunks(file_path: Path) -> None:
     Args:
         file_path: Path to the AEP file.
     """
-    aep = Aep.from_file(str(file_path))
-    aep._read()
+    with open(file_path, "rb") as f:
+        rifx, _xmp = read_aep(f)
     print(f"\nChunk tree: {file_path.name}\n")
 
-    for _path, identifier, size, depth, is_list in _walk_chunks_tree(aep.root.body.chunks):
+    for _path, identifier, size, depth, is_list in _walk_chunks_tree(rifx.chunks):
         indent = "  " * depth
         if is_list:
             print(f"{indent}{identifier}/")

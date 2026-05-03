@@ -18,7 +18,6 @@ from ...enums import (
     ParagraphDirection,
     ParagraphJustification,
 )
-from ...kaitai.utils import propagate_check
 
 if typing.TYPE_CHECKING:
     from typing import Any
@@ -535,5 +534,4 @@ class TextDocument:
     def _propagate_cos(self) -> None:
         """Serialize COS data back to the btdk chunk's binary_data."""
         if self._cos_data is not None and self._btdk_body is not None:
-            self._btdk_body.binary_data = serialize(self._cos_data)
-            propagate_check(self._btdk_body)
+            self._btdk_body.data = serialize(self._cos_data)

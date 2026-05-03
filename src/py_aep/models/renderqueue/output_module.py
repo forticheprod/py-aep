@@ -23,16 +23,15 @@ from py_aep.enums import (
 )
 from py_aep.enums.mappings import map_output_audio, map_output_color_space
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.transforms import strip_null
-from ...kaitai.utils import propagate_check
 from ...resolvers.output import (
     FORMAT_ID_EXTENSIONS,
     VIDEO_CODEC_NAMES,
     resolve_output_filename,
     resolve_time_span,
 )
+from ..descriptors import ChunkField
 from ..items.composition import CompItem
+from ..transforms import strip_null
 from ..validators import validate_number
 from .format_options import (
     CineonFormatOptions,
@@ -50,7 +49,7 @@ from .settings import (
 )
 
 if TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from ..project import Project
     from .render_queue_item import RenderQueueItem
 
@@ -134,7 +133,7 @@ class OutputModule:
     See: https://ae-scripting.docsforadobe.dev/renderqueue/outputmodule/
     """
 
-    include_source_xmp = ChunkField.bool("_om_ldat", "include_source_xmp")
+    include_source_xmp = ChunkField[bool]("_om_ldat", "include_source_xmp")
     """When `True`, writes all source footage XMP metadata to the output file.
     Read / Write."""
 
@@ -185,7 +184,7 @@ class OutputModule:
         "convert_to_linear_light",
     )
 
-    _crop = ChunkField.bool(
+    _crop = ChunkField[bool](
         "_om_ldat",
         "crop",
         post_set="_update_output_dimensions",
@@ -228,18 +227,18 @@ class OutputModule:
     _format = ChunkField[OutputFormat](
         "_roou",
         "format_id",
-        reverse_seq_field=OutputFormat.to_format_id,
+        reverse=OutputFormat.to_format_id,
         transform=OutputFormat.from_format_id,
         read_only=True,
     )
     """Read-only for now as a lot of things must be updated when changing format"""
 
-    _include_project_link = ChunkField.bool(
+    _include_project_link = ChunkField[bool](
         "_om_ldat",
         "include_project_link",
     )
 
-    _lock_aspect_ratio = ChunkField.bool(
+    _lock_aspect_ratio = ChunkField[bool](
         "_om_ldat",
         "lock_aspect_ratio",
     )
@@ -250,12 +249,12 @@ class OutputModule:
         "post_render_action",
     )
 
-    _preserve_rgb = ChunkField.bool(
+    _preserve_rgb = ChunkField[bool](
         "_om_ldat",
         "preserve_rgb",
     )
 
-    _resize = ChunkField.bool(
+    _resize = ChunkField[bool](
         "_om_ldat",
         "resize",
         post_set="_update_output_dimensions",
@@ -267,12 +266,12 @@ class OutputModule:
         "resize_quality",
     )
 
-    _use_comp_frame_number = ChunkField.bool(
+    _use_comp_frame_number = ChunkField[bool](
         "_om_ldat",
         "use_comp_frame_number",
     )
 
-    _use_region_of_interest = ChunkField.bool(
+    _use_region_of_interest = ChunkField[bool](
         "_om_ldat",
         "use_region_of_interest",
         post_set="_update_output_dimensions",
@@ -281,12 +280,12 @@ class OutputModule:
     def __init__(
         self,
         *,
-        _om_ldat: Aep.OutputModuleSettingsLdatBody,
-        _roou: Aep.RoouBody,
-        _alas_utf8: Aep.Utf8Body | None,
-        _file_name_utf8: Aep.Utf8Body | None,
-        _name_utf8: Aep.Utf8Body | None,
-        _render_settings_ldat: Aep.RenderSettingsLdatBody,
+        _om_ldat: Chunk,
+        _roou: Chunk,
+        _alas_utf8: Chunk | None,
+        _file_name_utf8: Chunk | None,
+        _name_utf8: Chunk | None,
+        _render_settings_ldat: Chunk,
         parent: RenderQueueItem,
         format_options: (
             CineonFormatOptions
@@ -345,7 +344,7 @@ class OutputModule:
         Read-only."""
         if self._name_utf8 is None:
             return ""
-        return strip_null(str(self._name_utf8.contents))
+        return strip_null(self._name_utf8.value)
 
     @property
     def parent(self) -> RenderQueueItem:
@@ -393,7 +392,6 @@ class OutputModule:
         else:
             self._roou.width = 0
             self._roou.height = 0
-        propagate_check(self._roou)
 
     @property
     def _output_audio(self) -> OutputAudio:
@@ -417,8 +415,6 @@ class OutputModule:
                 f"Unsupported OutputAudio value: {value}. Expected "
                 "OutputAudio.OFF, OutputAudio.AUTO, or OutputAudio.ON."
             )
-        propagate_check(self._roou)
-        propagate_check(self._om_ldat)
 
     def _sync_depth_to_channels(self) -> None:
         """Sync depth to match channel alpha setting after _channels changes."""
@@ -427,7 +423,6 @@ class OutputModule:
         target = _DEPTH_PLUS if is_rgba else _DEPTH_MINUS
         if depth_val in target:
             self._roou.depth = target[depth_val]
-            propagate_check(self._roou)
 
     @property
     def _effective_dimensions(self) -> tuple[int, int]:
@@ -474,7 +469,6 @@ class OutputModule:
             return
 
         self._roou.width, self._roou.height = self._effective_dimensions
-        propagate_check(self._roou)
 
     @property
     def _output_color_space(self) -> str | None:
@@ -516,7 +510,7 @@ class OutputModule:
     def _starting_number(self) -> int:
         """Starting frame number."""
         if not self._om_ldat.use_comp_frame_number:
-            return int(self._roou.starting_number)
+            return self._roou.starting_number
         rqi = self._parent_rqi
         start_seconds = rqi.time_span_start
         frame_rate = rqi.comp.frame_rate
@@ -528,7 +522,6 @@ class OutputModule:
         if v < 0 or v > 9999999:
             raise ValueError(f"Starting number must be between 0 and 9999999, got {v}")
         self._roou.starting_number = v
-        propagate_check(self._roou)
 
     @property
     def _resize_to(self) -> list[int]:
@@ -548,7 +541,6 @@ class OutputModule:
             )
         self._roou.width = w
         self._roou.height = h
-        propagate_check(self._roou)
 
     @staticmethod
     def _build_file_template(
@@ -588,7 +580,7 @@ class OutputModule:
         """Parsed JSON from the alas chunk."""
         if self._alas_utf8 is None:
             return {}
-        text = strip_null(str(self._alas_utf8.contents))
+        text = strip_null(self._alas_utf8.value)
         if not text:
             return {}
         data = json.loads(text)
@@ -625,7 +617,7 @@ class OutputModule:
         """The file name template from the Utf8 chunk."""
         if self._file_name_utf8 is None:
             return ""
-        return strip_null(str(self._file_name_utf8.contents))
+        return strip_null(self._file_name_utf8.value)
 
     @property
     def file_template(self) -> str:
@@ -651,17 +643,15 @@ class OutputModule:
             file_name = ""
 
         if self._alas_utf8 is not None:
-            text = strip_null(str(self._alas_utf8.contents))
+            text = strip_null(self._alas_utf8.value)
             data = json.loads(text) if text else {}
             if not isinstance(data, dict):
                 data = {}
             data["fullpath"] = folder_path
-            self._alas_utf8.contents = json.dumps(data)
-            propagate_check(self._alas_utf8)
+            self._alas_utf8.value = json.dumps(data)
 
         if self._file_name_utf8 is not None:
-            self._file_name_utf8.contents = file_name
-            propagate_check(self._file_name_utf8)
+            self._file_name_utf8.value = file_name
 
     @property
     def _project(self) -> Project:

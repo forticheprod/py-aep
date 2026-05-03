@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import typing
 import xml.etree.ElementTree as ET
-from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
-from kaitaistruct import KaitaiStream
-
+from ..binary.chunk import ListChunk, write_aep
+from ..binary.scalar_chunks import Utf8Chunk
+from ..binary.utils import (
+    filter_by_type,
+    find_by_list_type,
+    str_value,
+    toggle_flag_chunk,
+)
 from ..enums import (
     BitsPerChannel,
     ColorManagementSystem,
@@ -19,23 +24,15 @@ from ..enums import (
     LutInterpolationMethod,
     TimeDisplayType,
 )
-from ..kaitai.descriptors import ChunkField
-from ..kaitai.transforms import strip_null
-from ..kaitai.utils import (
-    create_chunk,
-    filter_by_type,
-    find_by_list_type,
-    propagate_check,
-    str_contents,
-    toggle_flag_chunk,
-)
+from .descriptors import ChunkField
 from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
+from .transforms import strip_null
 from .validators import validate_number, validate_one_of
 
 if typing.TYPE_CHECKING:
-    from ..kaitai import Aep
+    from ..binary.chunk import Chunk
     from .items.item import Item
     from .layers.layer import Layer
     from .renderqueue.render_queue import RenderQueue
@@ -107,7 +104,6 @@ class Project:
         FramesCountType,
         "_nnhd",
         "frames_count_type",
-        invalidates=["display_start_frame"],
     )
     """The Frame Count menu setting in the Project Settings dialog box.
     Read / Write."""
@@ -115,13 +111,13 @@ class Project:
     display_start_frame = ChunkField[int](
         "_nnhd",
         "display_start_frame",
-        reverse_instance_field=lambda value, _body: {"frames_count_type": value},
+        reverse_multi=lambda value, _body: {"frames_count_type": value},
         validate=validate_one_of((0, 1)),
     )
     """The start frame number for the project display (0 or 1). An alternate
     way of setting the Frame Count menu setting. Read / Write."""
 
-    frames_use_feet_frames = ChunkField.bool("_nnhd", "frames_use_feet_frames")
+    frames_use_feet_frames = ChunkField[bool]("_nnhd", "frames_use_feet_frames")
     """When `True`, the Frames field in the UI is displayed as
     feet+frames. Read / Write."""
 
@@ -133,7 +129,7 @@ class Project:
     """The time display style, corresponding to the Time Display Style
     section in the Project Settings dialog box. Read / Write."""
 
-    transparency_grid_thumbnails = ChunkField.bool(
+    transparency_grid_thumbnails = ChunkField[bool](
         "_nnhd", "transparency_grid_thumbnails"
     )
     """When `True`, thumbnail views use the transparency checkerboard
@@ -147,15 +143,15 @@ class Project:
         This attribute is read-only in ExtendScript.
     """
 
-    compensate_for_scene_referred_profiles = ChunkField.bool(
-        "_acer", "compensate_for_scene_referred_profiles"
+    compensate_for_scene_referred_profiles = ChunkField[bool](
+        "_acer", "value", transform=bool, reverse=int
     )
     """When True, After Effects compensates for scene-referred profiles when
     rendering."""
 
     audio_sample_rate = ChunkField[float](
         "_adfr",
-        "audio_sample_rate",
+        "value",
         validate=validate_one_of((22050, 32000, 44100, 48000, 96000)),
     )
     """The project audio sample rate in Hz.
@@ -168,26 +164,17 @@ class Project:
     working_gamma = ChunkField[float](
         "_dwga",
         "working_gamma",
-        reverse_instance_field=_reverse_working_gamma,
+        reverse_multi=_reverse_working_gamma,
         validate=validate_one_of((2.2, 2.4)),
     )
     """The gamma value used for the working color space, either 2.2 or 2.4.
     Read / Write."""
 
-    xmp_packet = ChunkField[ET.Element](
-        "_aep",
-        "xmp_packet",
-        transform=ET.fromstring,
-        reverse_seq_field=lambda el: ET.tostring(el, encoding="unicode"),
-    )
-    """The XMP packet for the project, containing metadata.
-    Read / Write."""
-
     gpu_accel_type = ChunkField[Any](
         "_gpug_utf8",
-        "contents",
-        transform=lambda contents: GpuAccelType.from_binary(strip_null(contents)),
-        reverse_seq_field=GpuAccelType.to_binary,
+        "value",
+        transform=lambda value: GpuAccelType.from_binary(strip_null(value)),
+        reverse=GpuAccelType.to_binary,
     )
     """The GPU acceleration type for the project. None if not
     recognised. Read / Write."""
@@ -195,17 +182,18 @@ class Project:
     def __init__(
         self,
         *,
-        _nnhd: Aep.NnhdBody,
-        _head: Aep.HeadBody,
-        _acer: Aep.AcerBody,
-        _adfr: Aep.AdfrBody,
-        _dwga: Aep.DwgaBody,
-        _gpug_utf8: Aep.Utf8Body,
-        _exen_utf8: Aep.Utf8Body | None,
-        _cms_utf8: Aep.Utf8Body | None,
-        _ws_utf8: Aep.Utf8Body | None,
-        _dcs_utf8: Aep.Utf8Body | None,
-        _aep: Aep,
+        _nnhd: Chunk,
+        _head: Chunk,
+        _acer: Chunk,
+        _adfr: Chunk,
+        _dwga: Chunk,
+        _gpug_utf8: Chunk,
+        _exen_utf8: Chunk | None,
+        _cms_utf8: Chunk | None,
+        _ws_utf8: Chunk | None,
+        _dcs_utf8: Chunk | None,
+        _rifx: ListChunk,
+        _xmp: str,
         file: str,
         items: dict[int, Item],
         render_queue: RenderQueue | None,
@@ -221,7 +209,8 @@ class Project:
         self._cms_utf8 = _cms_utf8
         self._ws_utf8 = _ws_utf8
         self._dcs_utf8 = _dcs_utf8
-        self._aep = _aep
+        self._rifx = _rifx
+        self._xmp = _xmp
 
         # Read-only attributes
         self._file = file
@@ -267,9 +256,14 @@ class Project:
         return cast(FolderItem, self._items[0])
 
     @property
-    def _root_chunks(self) -> list[Aep.Chunk]:
-        chunks: list[Aep.Chunk] = self._aep.root.body.chunks
-        return chunks
+    def _root_chunks(self) -> list[Chunk]:
+        return self._rifx.chunks
+
+    @property
+    def xmp_packet(self) -> ET.Element:
+        """The XMP packet for the project, containing metadata.
+        Read-only."""
+        return ET.fromstring(self._xmp)
 
     @property
     def linear_blending(self) -> bool:
@@ -279,7 +273,7 @@ class Project:
 
     @linear_blending.setter
     def linear_blending(self, value: bool) -> None:
-        toggle_flag_chunk(self._aep.root.body, "lnrb", "LnrbBody", value)
+        toggle_flag_chunk(self._rifx, "lnrb", value)
 
     @property
     def linearize_working_space(self) -> bool:
@@ -289,14 +283,14 @@ class Project:
 
     @linearize_working_space.setter
     def linearize_working_space(self, value: bool) -> None:
-        toggle_flag_chunk(self._aep.root.body, "lnrp", "LnrpBody", value)
+        toggle_flag_chunk(self._rifx, "lnrp", value)
 
     @property
     def expression_engine(self) -> str:
         """The Expressions Engine setting in the Project Settings dialog box
         ("extendscript" or "javascript-1.0"). Read / Write."""
         if self._exen_utf8 is not None:
-            return strip_null(self._exen_utf8.contents)
+            return strip_null(self._exen_utf8.value)
         return "extendscript"
 
     @expression_engine.setter
@@ -307,23 +301,12 @@ class Project:
                 f"got {value!r}"
             )
         if self._exen_utf8 is not None:
-            self._exen_utf8.contents = value
-            propagate_check(self._exen_utf8)
+            self._exen_utf8.value = value
         else:
-            list_chunk = create_chunk(
-                self._aep.root.body,
-                "LIST",
-                "ListBody",
-                list_type="ExEn",
-                chunks=[],
-            )
-            utf8_child = create_chunk(
-                list_chunk.body,
-                "Utf8",
-                "Utf8Body",
-                contents=value,
-            )
-            self._exen_utf8 = utf8_child.body
+            utf8 = Utf8Chunk(chunk_type="Utf8", value=value)
+            exen = ListChunk(chunk_type="LIST", list_type="ExEn", chunks=[utf8])
+            self._rifx.chunks.append(exen)
+            self._exen_utf8 = utf8
 
     @property
     def effect_names(self) -> list[str]:
@@ -343,7 +326,7 @@ class Project:
         cannot be assumed.
         """
         if self._ws_utf8 is not None:
-            data = json.loads(self._ws_utf8.contents)
+            data = json.loads(self._ws_utf8.value)
             return str(data.get("baseColorProfile", {}).get("colorProfileName", "None"))
         if not any(c.chunk_type == "pcms" for c in self._root_chunks):
             return "sRGB IEC61966-2.1"
@@ -364,7 +347,7 @@ class Project:
             Not exposed in ExtendScript
         """
         if self._dcs_utf8 is not None:
-            data = json.loads(self._dcs_utf8.contents)
+            data = json.loads(self._dcs_utf8.value)
             return str(data.get("baseColorProfile", {}).get("colorProfileName", "None"))
         return "None"
 
@@ -444,8 +427,7 @@ class Project:
 
     def save(self, path: Path) -> None:
         """
-        Save the project to a new .aep file at the given path. As writing is
-        still experimental, overwriting is not allowed for now.
+        Save the project to a new .aep file at the given path.
 
         Warning:
             This is highly experimental for now.
@@ -457,20 +439,9 @@ class Project:
                 "delete the existing file."
             )
 
-        aep = self._aep
-
-        xmp_bytes = aep.xmp_packet.encode("UTF-8")
-        output_size = 8 + aep.root.len_body + len(xmp_bytes)
-        buf = BytesIO(bytearray(output_size))
-
-        with KaitaiStream(buf) as io:
-            aep._write(io)
-            result = buf.getvalue()
-
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "wb") as f:
-            f.write(result)
-
+            write_aep(f, self._rifx, self._xmp)
         self._file = str(path)
 
     _CMS_DEFAULTS: typing.ClassVar[dict[str, int | str]] = {
@@ -482,31 +453,26 @@ class Project:
     def _get_cms_settings(self) -> dict[str, int | str]:
         """Return the color profile settings dict."""
         if self._cms_utf8 is not None:
-            cms_data: dict[str, int | str] = json.loads(self._cms_utf8.contents)
+            cms_data: dict[str, int | str] = json.loads(self._cms_utf8.value)
             return {**self._CMS_DEFAULTS, **cms_data}
         return dict(self._CMS_DEFAULTS)
 
     def _update_cms_setting(self, key: str, value: int | str) -> None:
         """Update a single key in the CMS settings JSON chunk."""
         if self._cms_utf8 is not None:
-            data = json.loads(self._cms_utf8.contents)
+            data = json.loads(self._cms_utf8.value)
             data[key] = value
-            self._cms_utf8.contents = json.dumps(data)
-            propagate_check(self._cms_utf8)
+            self._cms_utf8.value = json.dumps(data)
         else:
-            defaults = dict(self._CMS_DEFAULTS)
-            defaults[key] = value
-            chunk = create_chunk(
-                self._aep.root.body,
-                "Utf8",
-                "Utf8Body",
-                contents=json.dumps(defaults),
-            )
-            self._cms_utf8 = chunk.body
+            data = dict(self._CMS_DEFAULTS)
+            data[key] = value
+            chunk = Utf8Chunk(chunk_type="Utf8", value=json.dumps(data))
+            self._rifx.chunks.append(chunk)
+            self._cms_utf8 = chunk
 
 
 def _get_effect_names(root_chunks: list[Any]) -> list[str]:
     """Get the list of effect names used in the project."""
     pefl_chunk = find_by_list_type(chunks=root_chunks, list_type="Pefl")
-    pjef_chunks = filter_by_type(chunks=pefl_chunk.body.chunks, chunk_type="pjef")
-    return [str_contents(chunk) for chunk in pjef_chunks]
+    pjef_chunks = filter_by_type(chunks=pefl_chunk.chunks, chunk_type="pjef")
+    return [str_value(chunk) for chunk in pjef_chunks]

@@ -14,7 +14,7 @@ from attrs import Factory, define, field
 from .bin_utils import read_bytes, write_bytes
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import fmt_field
+from .fmt_field import bool_field, bytes_field, f8_field, u1_field, u2_field
 from .registry import register
 
 if TYPE_CHECKING:
@@ -37,12 +37,12 @@ class TdsbChunk(Chunk):
 
     chunk_type: str = "tdsb"
 
-    roto_bezier: int = fmt_field("B")
+    roto_bezier: bool = bool_field()
     """RotoBezier flag for mask shapes (byte 0). 1 = enabled."""
 
-    _pad1: int = fmt_field("B", repr=False)
-    _lock_flags: int = fmt_field("B", repr=False)
-    _enable_flags: int = fmt_field("B", default=1, repr=False)
+    _pad1: int = u1_field(repr=False)
+    _lock_flags: int = u1_field(repr=False)
+    _enable_flags: int = u1_field(default=1, repr=False)
     _trailing: bytes = field(default=b"", repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
@@ -84,29 +84,29 @@ class Tdb4Chunk(Chunk):
     """Property metadata chunk (124 bytes)."""
     chunk_type: str = "tdb4"
 
-    _magic: int = fmt_field("H", default=0xDB99, repr=False)
-    dimensions: int = fmt_field("H", default=1)
-    _pad1: int = fmt_field("B", repr=False)
-    _spatial_static_flags: int = fmt_field("B", default=1, repr=False)
-    _pad2: bytes = fmt_field("5s", default=b"\x00" * 5, repr=False)
-    _cvot_flags: int = fmt_field("B", repr=False)
-    _pad3: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
-    _unknown_float_0: float = fmt_field("d", default=0.0001, repr=False)
-    _unknown_float_1: float = fmt_field("d", default=1.0, repr=False)
-    _unknown_float_2: float = fmt_field("d", default=1.0, repr=False)
-    _unknown_float_3: float = fmt_field("d", default=1.0, repr=False)
-    _unknown_float_4: float = fmt_field("d", default=1.0, repr=False)
-    _pad4: int = fmt_field("B", repr=False)
-    _no_value_flags: int = fmt_field("B", repr=False)
-    _pad5: int = fmt_field("B", repr=False)
-    _type_flags: int = fmt_field("B", repr=False)
-    _pad6: bytes = fmt_field("8s", default=b"\x00" * 8, repr=False)
-    animated: int = fmt_field("B")
-    _pad7: bytes = fmt_field("15s", default=b"\x00" * 15, repr=False)
-    _pad8: bytes = fmt_field("32s", default=b"\x00" * 32, repr=False)
-    _pad9: bytes = fmt_field("3s", default=b"\x00" * 3, repr=False)
-    _expr_flags: int = fmt_field("B", default=1, repr=False)
-    _pad10: bytes = fmt_field("4s", default=b"\x00" * 4, repr=False)
+    _magic: int = u2_field(default=0xDB99, repr=False)
+    dimensions: int = u2_field(default=1)
+    _pad1: int = u1_field(repr=False)
+    _spatial_static_flags: int = u1_field(default=1, repr=False)
+    _pad2: bytes = bytes_field(5, repr=False)
+    _cvot_flags: int = u1_field(repr=False)
+    _pad3: bytes = bytes_field(4, repr=False)
+    _unknown_float_0: float = f8_field(default=0.0001, repr=False)
+    _unknown_float_1: float = f8_field(default=1.0, repr=False)
+    _unknown_float_2: float = f8_field(default=1.0, repr=False)
+    _unknown_float_3: float = f8_field(default=1.0, repr=False)
+    _unknown_float_4: float = f8_field(default=1.0, repr=False)
+    _pad4: int = u1_field(repr=False)
+    _no_value_flags: int = u1_field(repr=False)
+    _pad5: int = u1_field(repr=False)
+    _type_flags: int = u1_field(repr=False)
+    _pad6: bytes = bytes_field(8, repr=False)
+    animated: bool = bool_field()
+    _pad7: bytes = bytes_field(15, repr=False)
+    _pad8: bytes = bytes_field(32, repr=False)
+    _pad9: bytes = bytes_field(3, repr=False)
+    _expr_flags: int = u1_field(repr=False)
+    _pad10: bytes = bytes_field(4, repr=False)
     _trailing: bytes = field(default=b"", repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
@@ -241,6 +241,43 @@ class TdumChunk(Chunk):
             raw = struct.pack(">I", int(self.values[0]))
         else:
             raw = struct.pack(f">{len(self.values)}d", *self.values)
+        written = write_bytes(fp, raw)
+        if self._trailing:
+            written += write_bytes(fp, self._trailing)
+        return written
+
+
+# ---------------------------------------------------------------------------
+# otda - orientation keyframe data (N big-endian doubles)
+# ---------------------------------------------------------------------------
+
+
+@register("otda")
+@define
+class OtdaChunk(Chunk):
+    """Orientation keyframe data: N big-endian doubles (typically 3 for XYZ)."""
+
+    chunk_type: str = "otda"
+    values: list[float] = Factory(list)
+    _trailing: bytes = field(default=b"", repr=False)
+
+    @classmethod
+    def read(
+        cls,
+        fp: IO[bytes],
+        size: int,
+        *,
+        chunk_type: str = "",
+        **kwargs: Any,
+    ) -> OtdaChunk:
+        raw = read_bytes(fp, size)
+        n = size // 8
+        vals = list(struct.unpack(f">{n}d", raw[: n * 8]))
+        trailing = raw[n * 8 :]
+        return cls(chunk_type=chunk_type, values=vals, trailing=trailing)
+
+    def write(self, fp: IO[bytes]) -> int:
+        raw = struct.pack(f">{len(self.values)}d", *self.values)
         written = write_bytes(fp, raw)
         if self._trailing:
             written += write_bytes(fp, self._trailing)

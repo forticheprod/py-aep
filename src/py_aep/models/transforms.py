@@ -18,6 +18,8 @@ def normalize_values(raw: list[int], *, scale: int = 255) -> list[float]:
     return [normalize_value(v, scale=scale) for v in raw]
 
 
-def strip_null(s: str) -> str:
+def strip_null(s: str | bytes) -> str:
     """Strip null-padding from a fixed-size string."""
+    if isinstance(s, bytes):
+        s = s.decode("ascii", errors="replace")
     return s.split("\x00")[0]

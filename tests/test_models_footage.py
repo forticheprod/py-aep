@@ -676,7 +676,7 @@ class TestRemovePulldown:
         source2 = parse_aep(out).project.footages[0].main_source
         assert source2.remove_pulldown == PulldownPhase.WSSWW
 
-    def test_modify_pulldown_invalidates_display_frame_rate(self) -> None:
+    def test_modify_pulldown_updates_display_frame_rate(self) -> None:
         source = get_first_footage(
             parse_project(SAMPLES_DIR / "conform_frame_rate_2.5_uff_off.aep")
         ).main_source

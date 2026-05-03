@@ -3,11 +3,11 @@ from __future__ import annotations
 import typing
 
 from ....enums import CineonFileFormat
-from ....kaitai.descriptors import ChunkField
+from ...descriptors import ChunkField
 from ...validators import validate_number, validate_one_of
 
 if typing.TYPE_CHECKING:
-    from ....kaitai import Aep
+    from ....binary.chunk import Chunk
 
 
 class CineonFormatOptions:
@@ -28,7 +28,7 @@ class CineonFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Aep.CineonRoptData) -> None:
+    def __init__(self, *, _body: Chunk) -> None:
         self._body = _body
 
     ten_bit_black_point = ChunkField[int](
@@ -81,7 +81,7 @@ class CineonFormatOptions:
     )
     """The highlight expansion value. Read / Write."""
 
-    logarithmic_conversion = ChunkField.bool(
+    logarithmic_conversion = ChunkField[bool](
         "_body",
         "logarithmic_conversion",
     )

@@ -5,7 +5,7 @@ import typing
 from .item import Item
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk, ListChunk
     from ..project import Project
     from ..viewer.viewer import Viewer
 
@@ -39,10 +39,10 @@ class FolderItem(Item):
     def __init__(
         self,
         *,
-        _idta: Aep.IdtaBody | None,
-        _name_utf8: Aep.Utf8Body | None,
-        _cmta: Aep.Utf8Body | None,
-        _item_list: Aep.ListBody | None = None,
+        _idta: Chunk | None,
+        _name_utf8: Chunk | None,
+        _cmta: Chunk | None,
+        _item_list: ListChunk | None = None,
         project: Project,
         parent_folder: FolderItem | None,
     ) -> None:

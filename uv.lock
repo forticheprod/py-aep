@@ -587,15 +587,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kaitaistruct"
-version = "0.11"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/27/b8/ca7319556912f68832daa4b81425314857ec08dfccd8dbc8c0f65c992108/kaitaistruct-0.11.tar.gz", hash = "sha256:053ee764288e78b8e53acf748e9733268acbd579b8d82a427b1805453625d74b", size = 11519, upload-time = "2025-09-08T15:46:25.037Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/4a/cf14bf3b1f5ffb13c69cf5f0ea78031247790558ee88984a8bdd22fae60d/kaitaistruct-0.11-py2.py3-none-any.whl", hash = "sha256:5c6ce79177b4e193a577ecd359e26516d1d6d000a0bffd6e1010f2a46a62a561", size = 11372, upload-time = "2025-09-08T15:46:23.635Z" },
-]
-
-[[package]]
 name = "librt"
 version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1164,7 +1155,6 @@ dependencies = [
     { name = "attrs", version = "25.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.8.*'" },
     { name = "attrs", version = "26.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "importlib-metadata", marker = "python_full_version < '3.8'" },
-    { name = "kaitaistruct" },
     { name = "typing-extensions", version = "4.7.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.8'" },
 ]
 
@@ -1195,7 +1185,6 @@ docs = [
 requires-dist = [
     { name = "attrs", specifier = ">=20.1.0" },
     { name = "importlib-metadata", marker = "python_full_version < '3.8'" },
-    { name = "kaitaistruct", specifier = ">=0.9" },
     { name = "mkdocstrings", extras = ["python"], marker = "python_full_version >= '3.10' and extra == 'docs'", specifier = ">=0.24.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "pymdown-extensions", marker = "python_full_version >= '3.10' and extra == 'docs'", specifier = ">=10.0" },

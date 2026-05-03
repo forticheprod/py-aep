@@ -252,9 +252,9 @@ class TestParseTextDocument:
             value=None,
             _property_value_type=None,
         )
-        tdbs_chunk = SimpleNamespace(body=SimpleNamespace(chunks=[]))
-        btdk_chunk = SimpleNamespace(body=SimpleNamespace(binary_data=b"bad"))
-        root_chunk = SimpleNamespace(body=SimpleNamespace(chunks=[]))
+        tdbs_chunk = SimpleNamespace(chunks=[])
+        btdk_chunk = SimpleNamespace(data=b"bad")
+        root_chunk = SimpleNamespace(chunks=[])
 
         def fake_find_by_list_type(*, chunks: object, list_type: str):
             if list_type == "tdbs":
@@ -307,9 +307,9 @@ class TestParseTextDocument:
             value=None,
             _property_value_type=None,
         )
-        tdbs_chunk = SimpleNamespace(body=SimpleNamespace(chunks=[]))
-        btdk_chunk = SimpleNamespace(body=SimpleNamespace(binary_data=b"ok"))
-        root_chunk = SimpleNamespace(body=SimpleNamespace(chunks=[]))
+        tdbs_chunk = SimpleNamespace(chunks=[])
+        btdk_chunk = SimpleNamespace(data=b"ok")
+        root_chunk = SimpleNamespace(chunks=[])
 
         def fake_find_by_list_type(*, chunks: object, list_type: str):
             if list_type == "tdbs":

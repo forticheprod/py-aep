@@ -5,11 +5,10 @@ import typing
 
 from py_aep.enums import KeyframeInterpolationType, Label
 
-from ...kaitai.descriptors import ChunkField
-from ...kaitai.utils import propagate_check
+from ..descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ...kaitai import Aep
+    from ...binary.chunk import Chunk
     from ..text.text_document import TextDocument
     from .keyframe_ease import KeyframeEase
     from .marker import MarkerValue
@@ -59,13 +58,13 @@ class Keyframe:
     )
     """The "out" interpolation type for the keyframe. Read / Write."""
 
-    roving = ChunkField.bool("_ldat_item", "roving")
+    roving = ChunkField[bool]("_ldat_item", "roving")
     """
     `True` if the keyframe is roving. The first and last keyframe in
     a property cannot rove. Read / Write.
     """
 
-    temporal_auto_bezier = ChunkField.bool("_ldat_item", "temporal_auto_bezier")
+    temporal_auto_bezier = ChunkField[bool]("_ldat_item", "temporal_auto_bezier")
     """
     `True` if the keyframe has temporal auto-Bezier interpolation. Temporal
     auto-Bezier interpolation affects this keyframe only if the keyframe
@@ -73,7 +72,7 @@ class Keyframe:
     `in_interpolation_type` and `out_interpolation_type`. Read / Write.
     """
 
-    temporal_continuous = ChunkField.bool("_ldat_item", "temporal_continuous")
+    temporal_continuous = ChunkField[bool]("_ldat_item", "temporal_continuous")
     """
     `True` if the keyframe has temporal continuity. Temporal continuity affects
     this keyframe only if the keyframe interpolation type is
@@ -84,7 +83,7 @@ class Keyframe:
     def __init__(
         self,
         *,
-        _ldat_item: Aep.LdatItem,
+        _ldat_item: Chunk,
         _time_scale: float,
         _frame_rate: float,
     ) -> None:
@@ -217,7 +216,6 @@ class Keyframe:
         kf_data = self._ldat_item.kf_data
         if value is not None and hasattr(kf_data, "in_spatial_tangents"):
             kf_data.in_spatial_tangents = value
-            propagate_check(self._ldat_item)
 
     @property
     def out_spatial_tangent(self) -> list[float] | None:
@@ -242,7 +240,6 @@ class Keyframe:
         kf_data = self._ldat_item.kf_data
         if value is not None and hasattr(kf_data, "out_spatial_tangents"):
             kf_data.out_spatial_tangents = value
-            propagate_check(self._ldat_item)
 
     @property
     def value(
@@ -389,7 +386,6 @@ class Keyframe:
     @spatial_auto_bezier.setter
     def spatial_auto_bezier(self, value: bool) -> None:
         self._ldat_item.kf_data.spatial_auto_bezier = int(value)
-        propagate_check(self._ldat_item)
 
     @property
     def spatial_continuous(self) -> bool:
@@ -403,7 +399,6 @@ class Keyframe:
     @spatial_continuous.setter
     def spatial_continuous(self, value: bool) -> None:
         self._ldat_item.kf_data.spatial_continuous = int(value)
-        propagate_check(self._ldat_item)
 
     @property
     def frame_time(self) -> int:
@@ -422,7 +417,6 @@ class Keyframe:
     def frame_time(self, value: int) -> None:
         offset = self._property._frame_offset if self._property is not None else 0
         self._ldat_item.time_raw = round((value - offset) * self._time_scale)
-        propagate_check(self._ldat_item)
 
     @property
     def time(self) -> float:

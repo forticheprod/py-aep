@@ -19,20 +19,20 @@ This guide helps you understand the py_aep codebase and contribute new features,
 py_aep transforms binary .aep files into typed Python objects through a three-stage pipeline:
 
 ```
-.aep file > Kaitai Parser > Raw Chunks > Parsers > Model Classes
+.aep file > Binary I/O (binary/) > Raw Chunks > Parsers > Model Classes
 ```
 
-**Stage 1: Binary Parsing (Kaitai)**
-- `src/py_aep/kaitai/aep.ksy` - Schema defining RIFX chunk structure
-- `src/py_aep/kaitai/aep.py` - Auto-generated Python parser (don't edit manually)
-- `src/py_aep/kaitai/utils.py` - Helper functions for navigating chunks
-- `src/py_aep/kaitai/descriptors.py` - ChunkField descriptor for write-through to binary
-- `src/py_aep/kaitai/patches.py` - Monkey-patches on auto-generated Kaitai body classes (e.g. `_recompute_size` for variable-size bodies used by `propagate_check`)
+**Stage 1: Binary Parsing**
+- `src/py_aep/binary/chunk.py` - Chunk base classes, `read_aep()`/`write_aep()`
+- `src/py_aep/binary/fmt_field.py` - `fmt_field()` declarative field-format binding
+- `src/py_aep/binary/bitfield.py` - `BitField` descriptor for single-bit flag access
+- `src/py_aep/binary/utils.py` - Chunk navigation helpers (`find_by_type`, `find_by_list_type`, `filter_by_type`)
+- Chunk modules: `scalar_chunks.py`, `property_chunks.py`, `item_chunks.py`, `composition_chunks.py`, `layer_chunks.py`, `misc_chunks.py`, `footage_chunks.py`, `render_chunks.py`
 
 **Stage 2: Data Transformation (Parsers)**
-- `src/py_aep/parsers/` - Locate chunks and pass chunk bodies to model constructors
+- `src/py_aep/parsers/` - Locate chunks and pass chunk references to model constructors
 - Entry point: `parse()` in `__init__.py`
-- Pattern: Each parser receives chunks + context, passes `chunk.body` to the model
+- Pattern: Each parser receives chunks + context, passes chunks to the model
 
 **Stage 3: Data Models**
 - `src/py_aep/models/` - Classes using ChunkField descriptors, mirroring AE's object model
@@ -63,38 +63,28 @@ chunk.body.list_type     # the list_type of a LIST chunk
 cdta_chunk.body.time_scale  # a typed body field
 ```
 
-**Chunk navigation**: Use helper functions from `kaitai/utils.py`:
+**Chunk navigation**: Use helper functions from `binary/utils.py`:
 ```python
-from py_aep.kaitai.utils import find_by_type, find_by_list_type, filter_by_type
+from py_aep.binary.utils import find_by_type, find_by_list_type, filter_by_type
 
 data_chunk = find_by_type(chunks=child_chunks, chunk_type="cdta")
 comp_chunk = find_by_list_type(chunks=root_chunks, list_type="Comp")
 layer_chunks = filter_by_list_type(chunks=comp_chunks, list_type="Layr")
 ```
 
-**Typed LIST instances**: Some LIST types have children at fixed positions. `list_body` in `aep.ksy` defines instances for direct access:
-```python
-# LIST:tdbs - leaf property container
-tdbs_chunk.body.tdsb   # chunks[0] - property flags
-tdbs_chunk.body.tdsn   # chunks[1] - property name
-tdbs_chunk.body.tdb4   # chunks[2] - property metadata
-```
-
-Each instance has an `if` guard on `list_type`, so accessing e.g. `.tdsb` on a non-`tdbs` LIST returns `None`. Use `find_by_type` when the LIST type is unknown or when a function handles multiple LIST types.
-
-**ChunkField descriptors**: Model attributes backed by Kaitai chunk bodies. Reads and writes pass through to the binary:
+**ChunkField descriptors**: Model attributes backed by binary chunk fields. Reads and writes pass through to the binary:
 ```python
 class CompItem(AVItem):
     frame_rate = ChunkField[float](
         "_cdta", "frame_rate",
-        transform=..., reverse_instance_field=...,
+        transform=..., reverse_multi=...,
     )
     """The frame rate of the composition. Read / Write."""
 ```
 
-When a user writes `comp.frame_rate = 30.0`, the descriptor converts the value back to binary representation and writes it to the underlying chunk body.
+When a user writes `comp.frame_rate = 30.0`, the descriptor converts the value back to binary representation and writes it to the underlying chunk.
 
-**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate Kaitai chunk data. ChunkField descriptors use `reverse_seq_field` (scalar) or `reverse_instance_field` (multi-field) functions to convert user-facing values back to binary format, and `propagate_check` to update parent chunk sizes.
+**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate chunk data. ChunkField descriptors use `reverse` (scalar) or `reverse_multi` (multi-field) functions to convert user-facing values back to binary format. The binary writer (`write_aep()`) backpatches parent chunk sizes automatically.
 
 ### Property & Effect Parsing Flow
 
@@ -104,8 +94,8 @@ Properties go through three pipeline stages: binary parsing, type dispatch, and 
 
 ```mermaid
 flowchart TD
-    AEP[".aep file"] --> Kaitai["Kaitai (aep.ksy)"]
-    Kaitai --> Chunks["Raw RIFX chunks"]
+    AEP[".aep file"] --> Binary["Binary I/O (binary/)"]
+    Binary --> Chunks["Raw RIFX chunks"]
     Chunks --> PL["parse_layer()"]
 
     subgraph Phase1["Phase 1 - Effect Definitions (project-level)"]
@@ -184,10 +174,10 @@ stateDiagram-v2
         direction LR
         state "Read\n(works on real & synthesized)" as Read
         state "Write" as Write
-        state "_ensure_materialized()\nProxyBody -> real Kaitai chunks" as Mat
+        state "_ensure_materialized()\nflip synthetic flags" as Mat
 
         Read --> Read
-        Write --> Mat : if ProxyBody
+        Write --> Mat : if synthetic
         Write --> Read : if already real
         Mat --> Read : materialized
     }
@@ -203,16 +193,16 @@ Each property in the tree is in one of two states:
 
 | State | Backing | Created by | Value source | Writable? |
 |---|---|---|---|---|
-| **Real** | Kaitai `TdsbBody` + `Tdb4Body` + `CdatBody` | `parse_property()`, `parse_property_group()`, `parse_effect()` (existing params) | `cdat` chunk or keyframes | Yes, directly |
-| **Synthesized** | `ProxyBody` (lightweight attribute bag) | `Property.synthesized()`, `_synthesize_effect_property()`, `_reorder_and_fill()` (in `models/properties/property_group.py`) | `_PropSpec.value` / `_PropSpec.default_value` / effect param def | Yes, triggers materialization on first write |
+| **Real** | `TdsbChunk` + `Tdb4Chunk` + `CdatChunk` (synthetic=False) | `parse_property()`, `parse_property_group()`, `parse_effect()` (existing params) | `cdat` chunk or keyframes | Yes, directly |
+| **Synthesized** | `TdsbChunk` + `Tdb4Chunk` (synthetic=True) | `Property.new()`, `_synthesize_effect_property()`, `_reorder_and_fill()` (in `models/properties/property_group.py`) | `_PropSpec.value` / `_PropSpec.default_value` / effect param def | Yes, triggers materialization on first write |
 
 ##### Lifecycle Phases in Detail
 
-**Phase 1 - Binary parsing**: Dispatch by `list_type` is shown in the overview flowchart above. Most dispatch targets produce properties with real Kaitai chunk backing. The exception is `parse_effect()` (sspc), which produces a mix: existing params get real backing, missing params are synthesized with `ProxyBody` via `_synthesize_effect_property()`.
+**Phase 1 - Binary parsing**: Dispatch by `list_type` is shown in the overview flowchart above. Most dispatch targets produce properties with real chunk backing. The exception is `parse_effect()` (sspc), which produces a mix: existing params get real backing, missing params are synthesized with `synthetic=True` chunks via `_synthesize_effect_property()`.
 
 **Phase 2 - Post-processing** (single pass in `parsers/synthesis.py`):
 
-After `parse_properties` returns, `parse_layer` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use `ProxyBody` and bypass materialization (the `_suppress_materialization` context is active).
+After `parse_properties` returns, `parse_layer` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use synthetic chunks and bypass materialization (the `_suppress_materialization` context is active).
 
 ```
 parse_layer()
@@ -248,7 +238,7 @@ Effect parameter synthesis (Site 4) remains a separate dynamic step inside `pars
 
 **Phase 3 - User API** (materialization on write):
 
-After `parse()` returns, `_suppress_materialization` is released and the property tree is ready for use. Properties with real Kaitai backing are directly readable and writable. Synthesized properties (`ProxyBody` backing) are readable immediately - writes trigger materialization:
+After `parse()` returns, `_suppress_materialization` is released and the property tree is ready for use. Properties with real chunk backing are directly readable and writable. Synthesized properties (synthetic=True) are readable immediately - writes trigger materialization:
 
 ```
 user writes comp.layers[0].transform.opacity.value = 50
@@ -257,17 +247,15 @@ user writes comp.layers[0].transform.opacity.value = 50
   |     calls obj._ensure_materialized()
   |
   +-- Property._ensure_materialized()
-  |     if _tdsb is ProxyBody:
+  |     if _tdsb.synthetic:
   |       parent._ensure_materialized()     # recursive: ensure parent group exists
-  |       materialize_property(parent._tdgp, ...)
-  |       replace _tdsb, _tdb4, _tdbs, _name_utf8, _cdat with real chunks
+  |       flip synthetic=False on entire subtree
   |     else: no-op (already real)
   |
-  +-- ChunkField writes value to real chunk body
-  +-- propagate_check() updates parent chunk sizes
+  +-- ChunkField writes value to chunk
 ```
 
-After materialization the property is indistinguishable from one parsed from binary. The `ProxyBody` instances are discarded and all subsequent reads and writes go through real Kaitai chunk bodies.
+After materialization the property is indistinguishable from one parsed from binary. The synthetic flags are cleared and all subsequent reads and writes go through real chunk fields.
 
 ##### Materialization Trigger Convention
 
@@ -283,7 +271,7 @@ When adding a new writable `@property` on `PropertyBase`, `Property`, or `Proper
 All static synthesis sites delegate to `_reorder_and_fill()` (in `models/properties/property_group.py`). This function takes a container (layer or group), a list of canonical specs, and:
 
 1. **Preserves** existing children: moves them to canonical position, updates metadata (`_auto_name`, `color`, `min_value`, `max_value`, `default_value`, `can_vary_over_time`)
-2. **Synthesizes** missing children: creates `Property.synthesized()` (for `_PropSpec`) or empty `PropertyGroup` (for `_GroupSpec`) with `ProxyBody` backing
+2. **Synthesizes** missing children: creates `Property.new()` (for `_PropSpec`) or empty `PropertyGroup` (for `_GroupSpec`) with `synthetic=True` backing
 3. **Skips** match names in the `skip` set (layer-type filtering)
 4. **Appends** non-spec children at the end, controlled by `tail_mode`:
    - `"none"` - drop non-spec children (transform)
@@ -307,7 +295,7 @@ Effects use a two-level param def system:
 2. **Layer-level** (`LIST:parT` inside `LIST:sspc`): Parsed per effect instance. Overrides project-level if present.
 
 During `_parse_effect_properties()`:
-- A single ordered walk over `param_defs` handles both cases: existing binary properties are enriched via `_merge_param_def()`, while missing parameters are synthesized via `_synthesize_effect_property()` (creates `Property` with `ProxyBody`). Children come out in canonical `parT` order without a separate sort.
+- A single ordered walk over `param_defs` handles both cases: existing binary properties are enriched via `_merge_param_def()`, while missing parameters are synthesized via `_synthesize_effect_property()` (creates `Property` with `synthetic=True` chunks). Children come out in canonical `parT` order without a separate sort.
 - Tail children not in `param_defs` (e.g. `ADBE Effect Built In Params`) are appended in their original parsed order.
 - If `ADBE Effect Built In Params` (Compositing Options) is absent from the binary, it is synthesized as an empty `PropertyGroup` so that `synthesize_children()` can fill it from `_COMPOSITING_OPTIONS_SPECS` during post-processing.
 
@@ -427,8 +415,6 @@ Located in `scripts/jsx/`, these scripts help generate test samples and validati
 2. Change ONE attribute in After Effects and save as a different file
 3. Compare: `aep-compare before.aep after.aep`
 
-**Using the Kaitai Web IDE**: The [Kaitai Struct Web IDE](https://ide.kaitai.io/) lets you upload `aep.ksy` and a .aep file to browse the parsed structure interactively.
-
 **Using Python REPL**:
 ```python
 from py_aep import parse
@@ -453,37 +439,21 @@ aep-compare without_attr.aep with_attr.aep
 
 Note the chunk type and byte position.
 
-#### 2. Update Kaitai Schema (if needed)
+#### 2. Update Binary Chunk (if needed)
 
-If the chunk or field isn't already parsed, add it to `aep.ksy`:
+If the chunk type isn't already parsed, add a chunk class in the appropriate `binary/*_chunks.py` module:
 
-```yaml
-- id: data
-  type:
-    switch-on: chunk_type
-    cases:
-      '"cdta"': chunk_cdta
-      '"xxxx"': chunk_xxxx  # Add new chunk type
+```python
+@register("xxxx")
+@attrs.define
+class XxxxChunk(Chunk):
+    my_field: int = u1_field(default=1)
 ```
 
-Then regenerate:
-
-```bash
-kaitai-struct-compiler --target python \
-  --outdir src/py_aep/kaitai \
-  src/py_aep/kaitai/aep.ksy \
-  --read-write --no-auto-read
+For boolean flags, use `BitField`:
+```python
+my_flag = BitField("_flags_byte", bit=2)
 ```
-
-> **Integer division pitfall:** In Kaitai Struct, `/` between two integers
-> compiles to Python's `//` (floor division). To get true (float) division,
-> multiply one operand by `1.0`:
-> ```yaml
-> # Wrong - truncates to integer
-> value: 'pixel_ratio_dividend / pixel_ratio_divisor'
-> # Correct - produces float
-> value: 'pixel_ratio_dividend * 1.0 / pixel_ratio_divisor'
-> ```
 
 #### 3. Update the Model
 
@@ -518,25 +488,26 @@ For read-only fields, set `read_only=True`:
 
 | Pattern | When to use |
 |---------|-------------|
-| `ChunkField("_body", "field")` | Direct 1:1 mapping to a `seq:` field |
-| `ChunkField.bool("_body", "field")` | Binary integer exposed as `bool` |
+| `ChunkField("_body", "field")` | Direct 1:1 mapping to a fmt_field |
+| `ChunkField[bool]("_body", "field")` | Boolean field (BitField, coerce=bool, or @property) |
+| `ChunkField[bool]("_body", "field", transform=bool, reverse=int)` | Generic integer field exposed as `bool` |
 | `ChunkField.enum(MyEnum, "_body", "field")` | IntEnum field (auto-detects `from_binary`/`to_binary`) |
-| `ChunkField("_body", "inst", reverse_instance_field=fn)` | Kaitai instance backed by multiple `seq:` fields; `fn(value, body)` returns `dict` of source fields |
+| `ChunkField("_body", "inst", reverse_multi=fn)` | Computed field backed by multiple binary fields; `fn(value, body)` returns `dict` of source fields |
 | `@property` (with optional setter) | Computed from multiple fields or non-chunk data |
 
 **Important**: Always add docstrings referencing the [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/). Keep docstring lines under 80 characters. End each docstring with "Read-only." or "Read / Write." as appropriate.
 
 #### 4. Update the Parser
 
-Parsers should be thin chunk-locators: find chunks, pass `chunk.body` to the model constructor. Don't extract individual fields:
+Parsers should be thin chunk-locators: find chunks, pass chunks to the model constructor. Don't extract individual fields:
 
 ```python
-def parse_comp_item(child_chunks: list[Aep.Chunk], ...) -> CompItem:
+def parse_comp_item(child_chunks: list[Chunk], ...) -> CompItem:
     cdta_chunk = find_by_type(chunks=child_chunks, chunk_type="cdta")
 
     return CompItem(
-        _cdta=cdta_chunk.body,  # Pass the whole chunk body
-        # ... other chunk bodies and non-chunk args ...
+        _cdta=cdta_chunk,  # Pass the whole chunk
+        # ... other chunks and non-chunk args ...
     )
 ```
 
@@ -624,19 +595,17 @@ Convert byte values to binary to identify the bit:
                     bit 2 changed
 ```
 
-#### 2. Update Kaitai Schema
+#### 2. Update Binary Chunk
 
-```yaml
-# Read individual bits (from MSB to LSB: 7 > 0)
-- id: preserve_nested_resolution
-  type: b1  # bit 7
-- type: b1  # skip bit 6
-- id: motion_blur
-  type: b1  # bit 5
-- type: b5  # skip remaining bits
+Add a `BitField` to the chunk class:
+
+```python
+@register("cdta")
+@attrs.define
+class CdtaChunk(Chunk):
+    _flags: int = fmt_field("B", endian=">", default=0)
+    motion_blur = BitField("_flags", bit=5)
 ```
-
-All bits in a byte must be accounted for (sum to 8).
 
 #### 3. Wire to Model
 
@@ -711,7 +680,7 @@ Test samples should be minimal and focused:
 - **Paths**: Use `pathlib` for file paths
 - **Docstrings**: Google-style (Args, Returns, Raises sections) for functions; inline docstrings after each field for model classes
 - **Cross-references**: Use mkdocstrings syntax `[ClassName][]` or `[text][fully.qualified.path]` to link to other classes in docstrings. Do **not** use Sphinx-style `:class:` / `:func:` notation.
-- **No `struct` module**: All binary decoding must be in `kaitai/aep.ksy`
+- **No `struct` module in model code**: All binary decoding is in `binary/` chunk classes
 - **No em dashes or en dashes**: Use regular dashes (`-`)
 
 ### Linting and Type Checking
@@ -723,8 +692,6 @@ uv run ruff check src/ tests/ ; uv run ruff format src/ tests/
 # Type checking
 uv run mypy src/py_aep
 ```
-
-`kaitai/aep.py` is auto-generated and excluded from linting.
 
 ## Documentation
 
@@ -765,5 +732,4 @@ Use [scoped cross-references](https://mkdocstrings.github.io/python/usage/config
 - **Issue tracker**: [GitHub Issues](https://github.com/forticheprod/py-aep/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/forticheprod/py-aep/discussions)
 - **After Effects Scripting**: [Official Scripting Guide](https://ae-scripting.docsforadobe.dev/)
-- **Kaitai Struct**: [Documentation](https://doc.kaitai.io/)
 - **Lottie Docs**: [AEP format documentation](https://github.com/hunger-zh/lottie-docs/blob/main/docs/aep.md)

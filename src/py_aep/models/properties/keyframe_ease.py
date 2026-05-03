@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import typing
 
-from ...kaitai.utils import propagate_check
-
 if typing.TYPE_CHECKING:
     from typing import Any
 
@@ -76,7 +74,6 @@ class KeyframeEase:
             getattr(self._kf_data, field_name)[self._dimension_index] = binary_value
         else:
             setattr(self._kf_data, field_name, binary_value)
-        propagate_check(self._kf_data)
 
     @property
     def influence(self) -> float:
@@ -103,4 +100,3 @@ class KeyframeEase:
             getattr(self._kf_data, field_name)[self._dimension_index] = binary_value
         else:
             setattr(self._kf_data, field_name, binary_value)
-        propagate_check(self._kf_data)

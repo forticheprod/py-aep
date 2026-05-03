@@ -345,3 +345,9 @@ def synthesize_layer_properties(layer: Layer) -> None:
             if group.match_name == "ADBE Transform Group":
                 continue  # already handled by _set_transform_defaults
             synthesize_children(group)
+        elif isinstance(group, Property):
+            _apply_bounds(group)
+            # Time Remap max defaults to 0 when no _tduM chunk provides the
+            # actual source duration.
+            if group.match_name == "ADBE Time Remapping" and group._tduM is None:
+                group._max_value_fallback = 0

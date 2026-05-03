@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import typing
 
-from ....kaitai.descriptors import ChunkField
+from ...descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ....kaitai import Aep
+    from ....binary.chunk import Chunk
 
 
 class TiffFormatOptions:
@@ -25,16 +25,16 @@ class TiffFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Aep.TiffRoptData) -> None:
+    def __init__(self, *, _body: Chunk) -> None:
         self._body = _body
 
-    lzw_compression = ChunkField.bool(
+    lzw_compression = ChunkField[bool](
         "_body",
         "lzw_compression",
     )
     """Whether LZW compression is enabled. Read / Write."""
 
-    ibm_pc_byte_order = ChunkField.bool(
+    ibm_pc_byte_order = ChunkField[bool](
         "_body",
         "ibm_pc_byte_order",
     )
