@@ -132,7 +132,7 @@ class XmlFormatOptions:
     ) -> None:
         self._body = _body
 
-        raw = bytes(getattr(_body, "data", b"") or b"")
+        raw = _body.data
         self._xml_root: ET.Element | None = None
         self._xml_header: bytes | None = None
         self._val_elements: dict[str, ET.Element] = {}
