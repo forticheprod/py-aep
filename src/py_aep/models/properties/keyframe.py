@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import math
 import typing
+from typing import Union, cast
 
 from py_aep.enums import KeyframeInterpolationType, Label
 
 from ..descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+    from ...binary.ldat_chunks import LdatItem
     from ..text.text_document import TextDocument
     from .keyframe_ease import KeyframeEase
     from .marker import MarkerValue
     from .property import Property
     from .shape import Shape
+
+    _ValueType = Union[
+        list[float], float, MarkerValue, Shape, TextDocument, None
+    ]
 
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0
@@ -83,7 +88,7 @@ class Keyframe:
     def __init__(
         self,
         *,
-        _ldat_item: Chunk,
+        _ldat_item: LdatItem,
         _time_scale: float,
         _frame_rate: float,
     ) -> None:
@@ -259,8 +264,8 @@ class Keyframe:
             else self._extract_raw_value()
         )
         if self._property is not None and isinstance(val, (int, float, list)):
-            return self._property._resolve_value(val)  # type: ignore[no-any-return]
-        return val  # type: ignore[return-value]
+            return cast("_ValueType", self._property._resolve_value(val))
+        return cast("_ValueType", val)
 
     @value.setter
     def value(
@@ -284,7 +289,8 @@ class Keyframe:
         - For any other value type, the list contains 1 object.
         """
         self._ensure_ease()
-        return self._resolve_ease(self._in_temporal_ease, "in")  # type: ignore[arg-type]
+        assert self._in_temporal_ease is not None
+        return self._resolve_ease(self._in_temporal_ease, "in")
 
     @in_temporal_ease.setter
     def in_temporal_ease(self, value: list[KeyframeEase]) -> None:
@@ -303,7 +309,8 @@ class Keyframe:
         - For any other value type, the list contains 1 object.
         """
         self._ensure_ease()
-        return self._resolve_ease(self._out_temporal_ease, "out")  # type: ignore[arg-type]
+        assert self._out_temporal_ease is not None
+        return self._resolve_ease(self._out_temporal_ease, "out")
 
     @out_temporal_ease.setter
     def out_temporal_ease(self, value: list[KeyframeEase]) -> None:

@@ -6,10 +6,10 @@ import logging
 import typing
 from contextlib import suppress
 
-if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk
-    from ..models.items.composition import CompItem
-
+from ..binary.chunk import ContainerChunk, ListChunk
+from ..binary.ldat_chunks import LdatChunk
+from ..binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk, TdumChunk
+from ..binary.scalar_chunks import S4Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
@@ -18,11 +18,15 @@ from ..binary.utils import (
 from ..models.properties.keyframe import Keyframe
 from ..models.properties.property import Property
 
+if typing.TYPE_CHECKING:
+    from ..binary.chunk import Chunk
+    from ..models.items.composition import CompItem
+
 logger = logging.getLogger(__name__)
 
 
 def parse_property(
-    tdbs_chunk: Chunk,
+    tdbs_chunk: ListChunk,
     match_name: str,
     composition: CompItem,
     property_depth: int,
@@ -44,12 +48,12 @@ def parse_property(
     """
     tdbs_child_chunks = tdbs_chunk.chunks
 
-    tdsb_chunk = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsb")
+    tdsb_chunk = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsb", cls=TdsbChunk)
 
-    tdb4_chunk = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdb4")
+    tdb4_chunk = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdb4", cls=Tdb4Chunk)
 
     try:
-        cdat = find_by_type(chunks=tdbs_child_chunks, chunk_type="cdat")
+        cdat: CdatChunk | None = find_by_type(chunks=tdbs_child_chunks, chunk_type="cdat", cls=CdatChunk)
     except ChunkNotFoundError:
         cdat = None
 
@@ -62,25 +66,25 @@ def parse_property(
     # to a 1-based layer index using the composition's mapping.
     # tdli stores the 1-based mask index directly.
     with suppress(ChunkNotFoundError):
-        layer_id = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi").value
+        layer_id = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi", cls=S4Chunk).value
         if layer_id == 0 or composition._layer_id_to_index is None:
             value = 0
         else:
             value = composition._layer_id_to_index.get(layer_id, 0)
     with suppress(ChunkNotFoundError):
-        value = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli").value
+        value = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli", cls=S4Chunk).value
 
     try:
-        expression_utf8 = find_by_type(chunks=tdbs_child_chunks, chunk_type="Utf8")
+        expression_utf8 = find_by_type(chunks=tdbs_child_chunks, chunk_type="Utf8", cls=Utf8Chunk)
     except ChunkNotFoundError:
         expression_utf8 = None
 
     try:
-        tdum = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdum")
+        tdum = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdum", cls=TdumChunk)
     except ChunkNotFoundError:
         tdum = None
     try:
-        tduM = find_by_type(chunks=tdbs_child_chunks, chunk_type="tduM")
+        tduM = find_by_type(chunks=tdbs_child_chunks, chunk_type="tduM", cls=TdumChunk)
     except ChunkNotFoundError:
         tduM = None
 
@@ -92,8 +96,8 @@ def parse_property(
 
     # Resolve _name_utf8 from the LIST:tdbs tdsn child.
     # tdsn is a ContainerChunk with a Utf8 child.
-    tdsn = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsn")
-    name_utf8 = tdsn.chunks[0]
+    tdsn = find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsn", cls=ContainerChunk)
+    name_utf8 = find_by_type(chunks=tdsn.chunks, chunk_type="Utf8", cls=Utf8Chunk)
 
     prop = Property(
         _tdsb=tdsb_chunk,
@@ -131,7 +135,7 @@ def _parse_keyframes(
         return []
 
     try:
-        ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat")
+        ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat", cls=LdatChunk)
     except ChunkNotFoundError:
         return []
 

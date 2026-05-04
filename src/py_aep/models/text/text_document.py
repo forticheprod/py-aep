@@ -22,6 +22,7 @@ from ...enums import (
 if typing.TYPE_CHECKING:
     from typing import Any
 
+    from ...binary.chunk import Chunk
     from .font_object import FontObject
 
 
@@ -66,7 +67,7 @@ _REVERSE_LEADING_TYPE_MAP: dict[LeadingType, int] = {
 }
 
 
-def _parse_color(paint: Any) -> list[float] | None:
+def _parse_color(paint: object) -> list[float] | None:
     """Extract [R, G, B] from a COS SimplePaint structure."""
     if not isinstance(paint, dict):
         return None
@@ -120,7 +121,7 @@ class TextDocument:
     tracking: float | None = CosField.float("_char_style", "8")  # type: ignore[assignment]
     """The Text layer's spacing between characters. Read / Write."""
 
-    auto_kern_type: AutoKernType | None = AutoKernType.NO_AUTO_KERN
+    auto_kern_type: AutoKernType = AutoKernType.NO_AUTO_KERN
     """The Text layer's auto kern type option. Read / Write."""
 
     horizontal_scale: float | None = CosField.float("_char_style", "6")  # type: ignore[assignment]
@@ -209,30 +210,30 @@ class TextDocument:
     hanging_roman: bool | None = CosField.bool("_para_style", "21")  # type: ignore[assignment]
     """The Text layer's Roman Hanging Punctuation. Read / Write."""
 
-    kerning: int | None = 0
+    kerning: int = 0
     """The Text layer's kerning value. Read / Write."""
 
-    baseline_direction: BaselineDirection | None = (
+    baseline_direction: BaselineDirection = (
         BaselineDirection.BASELINE_WITH_STREAM
     )
     """The Text layer's baseline direction. Read / Write."""
 
-    ligature: bool | None = False
+    ligature: bool = False
     """When `True`, ligature is used. Read / Write."""
 
-    no_break: bool | None = False
+    no_break: bool = False
     """When `True`, the no-break attribute is applied. Read / Write."""
 
-    digit_set: DigitSet | None = DigitSet.DEFAULT_DIGITS
+    digit_set: DigitSet = DigitSet.DEFAULT_DIGITS
     """The Text layer's digit set option. Read / Write."""
 
-    line_join_type: LineJoinType | None = LineJoinType.LINE_JOIN_MITER
+    line_join_type: LineJoinType = LineJoinType.LINE_JOIN_MITER
     """The Text layer's line join type for strokes. Read / Write."""
 
-    direction: ParagraphDirection | None = ParagraphDirection.DIRECTION_LEFT_TO_RIGHT
+    direction: ParagraphDirection = ParagraphDirection.DIRECTION_LEFT_TO_RIGHT
     """The Text layer's paragraph direction. Read / Write."""
 
-    line_orientation: LineOrientation | None = LineOrientation.HORIZONTAL
+    line_orientation: LineOrientation = LineOrientation.HORIZONTAL
     """The Text layer's line orientation. Read / Write."""
 
     # -- Constructor -------------------------------------------------------
@@ -245,7 +246,7 @@ class TextDocument:
         _doc: dict[str, Any] | None = None,
         _fonts: list[FontObject] | None = None,
         _cos_data: dict[str, Any] | None = None,
-        _btdk_body: Any | None = None,
+        _btdk_body: Chunk | None = None,
         # Fallback kwargs for fields without COS backing
         text: str | None = None,
         font: str | None = None,

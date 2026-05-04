@@ -38,6 +38,7 @@ if typing.TYPE_CHECKING:
     from typing import Iterator
 
     from ...binary.chunk import Chunk, ListChunk
+    from ...binary.render_chunks import RenderSettingsItem
     from ..items.composition import CompItem
     from ..project import Project
     from .output_module import OutputModule
@@ -233,10 +234,10 @@ class RenderQueueItem:
     def __init__(
         self,
         *,
-        _ldat: Chunk,
+        _ldat: RenderSettingsItem,
         _litm: ListChunk,
         _list_chunk: Chunk,
-        _rcom_utf8: Chunk | None = None,
+        _rcom_utf8: Utf8Chunk | None = None,
         parent: RenderQueue,
         comp: CompItem,
         output_modules: list[OutputModule],
@@ -385,7 +386,7 @@ class RenderQueueItem:
     @property
     def _use_this_frame_rate(self) -> float:
         """Custom frame rate value."""
-        return self._ldat.frame_rate  # type: ignore[no-any-return]
+        return self._ldat.frame_rate
 
     @_use_this_frame_rate.setter
     def _use_this_frame_rate(self, value: float) -> None:

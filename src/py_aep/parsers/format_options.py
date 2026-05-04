@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Union, cast
 
+from ..binary.render_chunks import OpenExrRoptChunk, PngRoptChunk, RoptChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import ChunkNotFoundError, find_by_type
 from ..models.renderqueue.format_options import (
     CineonFormatOptions,
@@ -45,7 +47,7 @@ def parse_format_options(
         is absent or the format is not yet supported.
     """
     try:
-        ropt_chunk = find_by_type(chunks=chunks, chunk_type="Ropt")
+        ropt_chunk = find_by_type(chunks=chunks, chunk_type="Ropt", cls=RoptChunk)
     except ChunkNotFoundError:
         return None
 
@@ -60,13 +62,13 @@ def parse_format_options(
     if format_code == "TIF ":
         return TiffFormatOptions(_body=ropt_chunk)
     if format_code == "oEXR":
-        return OpenExrFormatOptions(_body=ropt_chunk)
+        return OpenExrFormatOptions(_body=cast(OpenExrRoptChunk, ropt_chunk))
     if format_code == "png!":
         try:
-            hdr10_utf8 = find_by_type(chunks=chunks, chunk_type="Utf8")
+            hdr10_utf8 = find_by_type(chunks=chunks, chunk_type="Utf8", cls=Utf8Chunk)
         except ChunkNotFoundError:
             hdr10_utf8 = None
-        return PngFormatOptions(_body=ropt_chunk, _hdr10_utf8=hdr10_utf8)
+        return PngFormatOptions(_body=cast(PngRoptChunk, ropt_chunk), _hdr10_utf8=hdr10_utf8)
     if format_code in _XML_FORMAT_CODES:
         return XmlFormatOptions(_body=ropt_chunk)
 

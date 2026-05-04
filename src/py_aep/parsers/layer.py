@@ -4,6 +4,8 @@ import typing
 import warnings
 from typing import Any
 
+from ..binary.layer_chunks import LdtaChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
@@ -60,12 +62,12 @@ def parse_layer(
     child_chunks = layer_chunk.chunks
 
     try:
-        cmta = find_by_type(chunks=child_chunks, chunk_type="cmta")
+        cmta = find_by_type(chunks=child_chunks, chunk_type="cmta", cls=Utf8Chunk)
     except ChunkNotFoundError:
         cmta = None
 
-    ldta = find_by_type(chunks=child_chunks, chunk_type="ldta")
-    name_utf8 = find_by_type(chunks=child_chunks, chunk_type="Utf8")
+    ldta = find_by_type(chunks=child_chunks, chunk_type="ldta", cls=LdtaChunk)
+    name_utf8 = find_by_type(chunks=child_chunks, chunk_type="Utf8", cls=Utf8Chunk)
 
     layer_type = ldta.layer_type
 

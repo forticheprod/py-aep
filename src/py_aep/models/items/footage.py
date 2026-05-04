@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import typing
 from pathlib import PureWindowsPath
+from typing import cast
 
+from ...binary.footage_chunks import (
+    PlaceholderOptiChunk,
+    SoliOptiChunk,
+)
 from ...binary.utils import (
     UNDEFINED_FRAME,
     ChunkNotFoundError,
@@ -16,7 +21,13 @@ from ..transforms import strip_null
 from .av_item import AVItem
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
+    from ...binary.footage_chunks import (
+        OptiChunk,
+        SspcChunk,
+    )
+    from ...binary.item_chunks import IdtaChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from ..project import Project
     from ..sources.placeholder import PlaceholderSource
     from .folder import FolderItem
@@ -95,14 +106,14 @@ class FootageItem(AVItem):
     def __init__(
         self,
         *,
-        _idta: Chunk | None,
-        _name_utf8: Chunk,
-        _cmta: Chunk | None,
+        _idta: IdtaChunk,
+        _name_utf8: Utf8Chunk,
+        _cmta: Utf8Chunk | None,
         _item_list: ListChunk | None = None,
-        _sspc: Chunk,
-        _opti: Chunk,
+        _sspc: SspcChunk,
+        _opti: OptiChunk,
         project: Project,
-        parent_folder: FolderItem | None,
+        parent_folder: FolderItem,
         main_source: FileSource | SolidSource | PlaceholderSource,
     ) -> None:
         super().__init__(
@@ -150,10 +161,10 @@ class FootageItem(AVItem):
         handling for image sequences and PSD groups.
         """
         if isinstance(self._main_source, SolidSource):
-            return str(self._opti.solid_name)
+            return str(cast(SoliOptiChunk, self._opti).solid_name)
         if not isinstance(self._main_source, FileSource):
             # Placeholder
-            return strip_null(self._opti.placeholder_name)
+            return strip_null(cast(PlaceholderOptiChunk, self._opti).placeholder_name)
         return self._resolve_file_name(raw_name)
 
     def _resolve_file_name(self, raw_name: str) -> str:
@@ -163,7 +174,7 @@ class FootageItem(AVItem):
         the filename. Builds sequence names (e.g. `render.[0001-0700].exr`)
         when appropriate.
         """
-        file_source: FileSource = self._main_source  # type: ignore[assignment]
+        file_source = cast(FileSource, self._main_source)
 
         # Strip to basename so the item name matches AE's UI.
         item_name = raw_name
@@ -198,7 +209,7 @@ class FootageItem(AVItem):
         if UNDEFINED_FRAME in (start_frame, end_frame):
             return ""
 
-        file_source: FileSource = self._main_source  # type: ignore[assignment]
+        file_source = cast(FileSource, self._main_source)
         try:
             utf8_before_opti = find_chunks_before(
                 chunks=file_source._pin.chunks,

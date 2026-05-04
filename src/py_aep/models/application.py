@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import typing
-from typing import Any
 
 from .descriptors import ChunkField
 
@@ -14,7 +13,7 @@ if typing.TYPE_CHECKING:
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)x(\d+)$")
 
 
-def _reverse_version(value: str, body: Any) -> dict[str, Any]:
+def _reverse_version(value: str, body: object) -> dict[str, int]:
     """Parse `"major.minorxbuild"` back into Chunk fields."""
     m = _VERSION_RE.match(value)
     if not m:

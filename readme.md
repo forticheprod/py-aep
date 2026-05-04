@@ -89,7 +89,6 @@ Aurore Delaunay - github.15@audel.ovh
 ## Acknowledgments
 
 * [aftereffects-py-aep in Go](https://github.com/boltframe/aftereffects-py-aep)
-* [Kaitai Struct](https://kaitai.io)
 * [The invaluable Lottie Docs](https://github.com/hunger-zh/lottie-docs/blob/main/docs/aep.md)
 * [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/)
 * [AE version parsing](https://github.com/tinogithub/aftereffects-version-check)

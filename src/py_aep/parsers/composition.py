@@ -3,6 +3,11 @@ from __future__ import annotations
 import typing
 from typing import Any
 
+from ..binary.composition_chunks import CdtaChunk
+from ..binary.item_chunks import IdtaChunk
+from ..binary.layer_chunks import LdtaChunk
+from ..binary.misc_chunks import EwotChunk, PrinChunk
+from ..binary.scalar_chunks import U1Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
@@ -24,9 +29,9 @@ if typing.TYPE_CHECKING:
 
 def parse_composition(
     child_chunks: list[Chunk],
-    _idta: Chunk,
-    _name_utf8: Chunk,
-    _cmta: Chunk | None,
+    _idta: IdtaChunk,
+    _name_utf8: Utf8Chunk,
+    _cmta: Utf8Chunk | None,
     _item_list: ListChunk,
     project: Project,
     parent_folder: FolderItem,
@@ -46,14 +51,14 @@ def parse_composition(
         effect_param_defs: Project-level effect parameter definitions, used as
             fallback when layer-level parT chunks are missing.
     """
-    cdta_chunk = find_by_type(chunks=child_chunks, chunk_type="cdta")
+    cdta_chunk = find_by_type(chunks=child_chunks, chunk_type="cdta", cls=CdtaChunk)
     try:
-        cdrp_chunk = find_by_type(chunks=child_chunks, chunk_type="cdrp")
+        cdrp_chunk = find_by_type(chunks=child_chunks, chunk_type="cdrp", cls=U1Chunk)
     except ChunkNotFoundError:
         cdrp_chunk = None
 
     prin_list = find_by_list_type(chunks=child_chunks, list_type="PRin")
-    prin_chunk = find_by_type(chunks=prin_list.chunks, chunk_type="prin")
+    prin_chunk = find_by_type(chunks=prin_list.chunks, chunk_type="prin", cls=PrinChunk)
 
     composition = CompItem(
         _cdrp=cdrp_chunk,
@@ -85,7 +90,7 @@ def parse_composition(
     # layer IDs (ldta.layer_id).  Pre-scan all layer chunks so the mapping
     # is available when parsing effect properties.
     for idx, lc in enumerate(layer_sub_chunks, 1):
-        ldta = find_by_type(chunks=lc.chunks, chunk_type="ldta")
+        ldta = find_by_type(chunks=lc.chunks, chunk_type="ldta", cls=LdtaChunk)
         composition._layer_id_to_index[ldta.layer_id] = idx
 
     for layer_chunk in layer_sub_chunks:
@@ -133,7 +138,7 @@ def _collect_ewot_entries(child_chunks: list[Chunk]) -> list[EwotItem]:
     ewst_chunks = filter_by_list_type(chunks=child_chunks, list_type="Ewst")
     for ewst_chunk in ewst_chunks:
         try:
-            ewot_chunk = find_by_type(chunks=ewst_chunk.chunks, chunk_type="ewot")
+            ewot_chunk = find_by_type(chunks=ewst_chunk.chunks, chunk_type="ewot", cls=EwotChunk)
         except ChunkNotFoundError:
             continue
 

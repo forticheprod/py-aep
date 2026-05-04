@@ -43,7 +43,7 @@ def reverse_fractional(
     fractional_field: str,
     *,
     scale: int = 65536,
-) -> Callable[[float, Any], dict[str, int]]:
+) -> Callable[[float, object], dict[str, int]]:
     """Split a float into an integer part and a scaled fractional part.
 
     Example: `29.97` -> `{integer: 29, fractional: round(0.97 * 65536)}`.
@@ -54,7 +54,7 @@ def reverse_fractional(
         scale: Multiplier for the fractional part (default 65536).
     """
 
-    def _reverse(value: float, _body: Any) -> dict[str, int]:
+    def _reverse(value: float, _body: object) -> dict[str, int]:
         integer = int(value)
         fractional = round((value - integer) * scale)
         return {integer_field: integer, fractional_field: fractional}
@@ -76,7 +76,7 @@ def reverse_ratio(
     prefix: str,
     *,
     denominator_value: int = 100000,
-) -> Callable[[float, Any], dict[str, int]]:
+) -> Callable[[float, object], dict[str, int]]:
     """Decompose a float ratio into `{prefix}_dividend / divisor` fields.
 
     Example: `reverse_ratio("pixel_ratio")` with value `0.909091`
@@ -89,7 +89,7 @@ def reverse_ratio(
     dividend_field = f"{prefix}_dividend"
     divisor_field = f"{prefix}_divisor"
 
-    def _reverse(value: float, _body: Any) -> dict[str, int]:
+    def _reverse(value: float, _body: object) -> dict[str, int]:
         return {
             dividend_field: round(value * denominator_value),
             divisor_field: denominator_value,

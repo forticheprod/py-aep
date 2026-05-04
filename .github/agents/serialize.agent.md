@@ -20,8 +20,8 @@ Read these files to understand the patterns. They are the source of truth - this
 | `src/py_aep/models/application.py` | Minimal example - ChunkField with `reverse_multi` for multi-field writes, custom reverse function |
 | `src/py_aep/models/descriptors.py` | ChunkField / ChunkField.enum API, materialization context management |
 | `src/py_aep/models/validators.py` | `validate_number`, `validate_sequence`, `validate_one_of` |
-| `src/py_aep/reverses.py` | `reverse_ratio`, `reverse_frame_ticks`, `reverse_fractional`, `denormalize_values` |
-| `src/py_aep/transforms.py` | `normalize_values` |
+| `src/py_aep/models/reverses.py` | `reverse_ratio`, `reverse_frame_ticks`, `reverse_fractional`, `denormalize_values` |
+| `src/py_aep/models/transforms.py` | `normalize_values` |
 | `tests/test_models_composition.py` | **Roundtrip test pattern** - `TestRoundtrip*` classes: parse -> modify -> save -> re-parse -> assert |
 
 ## Procedure
@@ -43,7 +43,7 @@ Read these files to understand the patterns. They are the source of truth - this
 | Category | Descriptor | When to use |
 |----------|-----------|-------------|
 | 1:1 chunk field | `ChunkField("_body", "field")` | Model field maps directly to a chunk field (with optional `transform`/`reverse`/`read_only`) |
-| Boolean (BitField, coerce, or @property) | `ChunkField[bool]("_body", "field")` | Chunk field is `BitField`, has `coerce=bool`, or is a `@property` returning `bool` - already returns `bool`, no transform needed |
+| Boolean (BitField, bool_field(), or @property) | `ChunkField[bool]("_body", "field")` | Chunk field is `BitField`, uses `bool_field()`, or is a `@property` returning `bool` - already returns `bool`, no transform needed |
 | Boolean (generic integer) | `ChunkField[bool]("_body", "field", transform=bool, reverse=int)` | Chunk field is a generic integer (e.g. U1Chunk.value) - needs explicit `transform=bool`, `reverse=int` |
 | Enum chunk field | `ChunkField.enum(MyEnum, "_body", "field")` | IntEnum field. Auto-detects `from_binary`/`to_binary` on the enum class |
 | Multi-field (computed) | `ChunkField("_body", "field", reverse_multi=fn)` | Computed from multiple fields; `reverse_multi(value, body)` returns `dict` of source fields to update |
@@ -61,7 +61,7 @@ Refactor to a thin chunk-locator: find chunks, pass chunks to the model. Remove 
 
 ### 5. Add transforms, reverses, validators, and read_only
 - **Read-only fields**: Set `read_only=True`. No `reverse` needed.
-- **Booleans**: Use `ChunkField[bool]("_body", "field")` for all boolean fields. When the chunk field is a `BitField`, has `coerce=bool`, or is a `@property` returning `bool`, no transform is needed. When the chunk field is a generic integer (e.g. U1Chunk.value), add `transform=bool, reverse=int`.
+- **Booleans**: Use `ChunkField[bool]("_body", "field")` for all boolean fields. When the chunk field is a `BitField`, uses `bool_field()`, or is a `@property` returning `bool`, no transform is needed. When the chunk field is a generic integer (e.g. U1Chunk.value), add `transform=bool, reverse=int`.
 - **Enums**: Use `ChunkField.enum(MyEnum, "_body", "field")` - auto-detects `from_binary`/`to_binary`. Falls back to the enum class as transform and `int` as reverse.
 - **Identity-typed fields** (int->int, float->float, str->str, list->list): No `reverse` needed - only set `read_only=True` if read-only, otherwise omit both `reverse` and `read_only`.
 - **Multi-field writes** (computed from multiple fields): Use `ChunkField` with `reverse_multi` - a 2-arg callable `(value, body)` that returns a `dict` of `{field_name: value}` pairs.

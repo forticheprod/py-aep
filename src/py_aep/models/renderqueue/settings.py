@@ -7,15 +7,15 @@ model attribute (either a ChunkField descriptor or a `@property`).
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Iterator, Mapping
 from enum import IntEnum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, MutableMapping, Optional, Tuple, Type
 
 #: Type alias for a settings spec: (attribute_name, optional_enum_class).
-SettingsSpec = Dict[str, Tuple[str, Optional[type]]]
+SettingsSpec = Dict[str, Tuple[str, Optional[Type[IntEnum]]]]
 
 
-class SettingsView(MutableMapping):  # type: ignore[type-arg]
+class SettingsView(MutableMapping[str, Any]):
     """Dict-like view mapping ExtendScript setting keys to model attributes.
 
     Every read delegates to `getattr(owner, attr_name)` and every write
@@ -29,7 +29,7 @@ class SettingsView(MutableMapping):  # type: ignore[type-arg]
 
     def __init__(
         self,
-        owner: Any,
+        owner: object,
         specs: SettingsSpec,
     ) -> None:
         self._owner = owner

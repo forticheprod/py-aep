@@ -107,7 +107,7 @@ Watch for these architectural anti-patterns in this codebase:
 - **Docs**: Zensical (MkDocs-based), auto-deployed to GitHub Pages
 
 ### Key Design Decisions
-1. **Custom binary I/O**: attrs-based chunk classes with semantic field aliases (`u1_field`, `u4_field`, `f8_field`, etc.) for field layout, `coerce=bool` for boolean fields, and `read_aep()`/`write_aep()` for file I/O
+1. **Custom binary I/O**: attrs-based chunk classes with semantic field aliases (`u1_field`, `u4_field`, `f8_field`, `bool_field()`, etc.) for field layout, and `read_aep()`/`write_aep()` for file I/O
 2. **Descriptor-based serialization**: ChunkField writes through to chunk bodies for byte-identical roundtrips
 3. **ExtendScript-mirrored API**: Model classes and fields match Adobe's scripting guide
 4. **Synthetic chunks for synthesized properties**: Lazy materialization (flag-flipping) on first user write

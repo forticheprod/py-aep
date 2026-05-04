@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..binary.chunk import read_aep
+from ..binary.chunk import Chunk, ListChunk, read_aep
 
 #: Sentinel used in [ByteDifference][] when one chunk is shorter
 #: than the other and a byte position doesn't exist.
@@ -157,7 +157,7 @@ def parse_aep_chunks(file_path: Path) -> dict[str, bytes]:
     return result
 
 
-def _get_chunk_identifier(chunk: Any) -> str:
+def _get_chunk_identifier(chunk: Chunk) -> str:
     """Get a descriptive identifier for a chunk."""
     chunk_type = str(chunk.chunk_type)
 
@@ -200,7 +200,7 @@ def _build_chunk_path(
 
 
 def _extract_chunks_recursive(
-    chunks: list[Any],
+    chunks: list[Chunk],
     parent_path: str,
     result: dict[str, bytes],
     counters: dict[str, int] | None = None,
@@ -219,8 +219,8 @@ def _extract_chunks_recursive(
         current_path = _build_chunk_path(parent_path, identifier, counters)
 
         # Recurse into LIST chunks without storing their raw data
-        if chunk.chunk_type == "LIST":
-            if hasattr(chunk, "chunks") and chunk.chunks:
+        if isinstance(chunk, ListChunk):
+            if chunk.chunks:
                 child_counters: dict[str, int] = {}
                 _extract_chunks_recursive(
                     chunk.chunks, current_path, result, child_counters
@@ -278,7 +278,7 @@ def _compare_chunk_dicts(
 
 
 def _walk_chunks_tree(
-    chunks: list[Any],
+    chunks: list[Chunk],
     parent_path: str = "",
     depth: int = 0,
 ) -> Iterator[tuple[str, str, int, int, bool]]:
@@ -300,14 +300,10 @@ def _walk_chunks_tree(
 
         size = len(chunk.tobytes()) if chunk.chunk_type != "LIST" else 0
 
-        is_list = (
-            chunk.chunk_type == "LIST"
-            and hasattr(chunk, "chunks")
-            and chunk.chunks is not None
-        )
+        is_list = isinstance(chunk, ListChunk) and chunk.chunks is not None
         yield current_path, identifier, size, depth, is_list
 
-        if is_list:
+        if isinstance(chunk, ListChunk) and chunk.chunks is not None:
             yield from _walk_chunks_tree(chunk.chunks, current_path, depth + 1)
 
 

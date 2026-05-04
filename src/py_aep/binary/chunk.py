@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import struct
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Type, cast
 
 from attrs import Factory, define, field
 
@@ -20,11 +20,14 @@ from .bin_utils import (
     write_fmt,
     write_pad,
 )
-from .fmt_field import _decode_fields, _encode_value, _init_name, _struct_info
+from .fmt_field import FmtItem, _decode_fields, _encode_value, _init_name, _struct_info
 from .registry import CHUNK_TYPES, register
 
 if TYPE_CHECKING:
     from typing import IO, Any, Callable, Iterator
+
+    from .ldat_chunks import Lhd3Chunk
+    from .property_chunks import Tdb4Chunk
 
 # ---------------------------------------------------------------------------
 # Chunk base (also serves as fallback for unregistered types)
@@ -116,8 +119,9 @@ class Chunk:
             items_name, item_cls, item_size = items_info
             items_bytes = size - items_start
             count = items_bytes // item_size
+            fmt_cls = cast(Type[FmtItem], item_cls)
             kw[items_name] = [
-                item_cls.frombytes(fp.read(item_size))
+                fmt_cls.frombytes(fp.read(item_size))
                 for _ in range(count)
             ]
             rest = items_bytes - count * item_size
@@ -326,19 +330,19 @@ class _ReadContext:
 def _resolve_cdat_context(
     siblings: list[Chunk],
     ctx: _ReadContext,
-) -> dict[str, Any]:
+) -> dict[str, bool]:
     return {"is_le": ctx.grandparent_list_type == "otst"}
 
 
 def _resolve_ldat_context(
     siblings: list[Chunk],
     ctx: _ReadContext,
-) -> dict[str, Any]:
+) -> dict[str, int | bool]:
     if not siblings:
         return {}
-    lhd3 = siblings[0]
+    lhd3: Lhd3Chunk = siblings[0]  # type: ignore[assignment]
     try:
-        result: dict[str, Any] = {
+        result: dict[str, int | bool] = {
             "item_type": lhd3.item_type,
             "item_size": lhd3.item_size,
             "count": lhd3.count,
@@ -351,8 +355,9 @@ def _resolve_ldat_context(
         and ctx.parent_siblings is not None
         and len(ctx.parent_siblings) > 2
     ):
+        tdb4_sibling: Tdb4Chunk = ctx.parent_siblings[2]  # type: ignore[assignment]
         try:
-            result["is_spatial"] = ctx.parent_siblings[2].is_spatial
+            result["is_spatial"] = tdb4_sibling.is_spatial
         except AttributeError:
             pass
     return result
@@ -361,9 +366,9 @@ def _resolve_ldat_context(
 def _resolve_tdum_context(
     siblings: list[Chunk],
     ctx: _ReadContext,
-) -> dict[str, Any]:
+) -> dict[str, bool]:
     if len(siblings) > 2:
-        tdb4 = siblings[2]
+        tdb4: Tdb4Chunk = siblings[2]  # type: ignore[assignment]
         try:
             return {"is_color": tdb4.color, "is_integer": tdb4.integer}
         except AttributeError:

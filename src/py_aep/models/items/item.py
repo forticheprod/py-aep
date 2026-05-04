@@ -9,7 +9,8 @@ from ..descriptors import ChunkField
 from ..transforms import strip_null
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
+    from ...binary.item_chunks import IdtaChunk
     from ..guide import Guide
     from ..project import Project
     from .folder import FolderItem
@@ -52,9 +53,9 @@ class Item:
     def __init__(
         self,
         *,
-        _idta: Chunk | None,
-        _name_utf8: Chunk | None,
-        _cmta: Chunk | None,
+        _idta: IdtaChunk | None,
+        _name_utf8: Utf8Chunk | None,
+        _cmta: Utf8Chunk | None,
         _item_list: ListChunk | None,
         project: Project,
         parent_folder: FolderItem | None,

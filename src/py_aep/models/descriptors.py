@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 from contextvars import ContextVar
 from enum import IntEnum
-from typing import Any, Callable, Generic, Iterator, TypeVar, overload
+from typing import Any, Callable, Generic, Iterator, TypeVar, cast, overload
 
 T = TypeVar("T")
 
@@ -149,14 +149,14 @@ class ChunkField(Generic[T]):
         # differ from the binary) are stored in __dict__ and take priority
         # over the chunk body.
         if self.public_name in obj.__dict__:
-            return obj.__dict__[self.public_name]  # type: ignore[no-any-return]
+            return cast(T, obj.__dict__[self.public_name])
         body = getattr(obj, self.chunk_attr)
         if body is None:
             if self.default is not _SENTINEL:
-                return self.default  # type: ignore[no-any-return,return-value]
+                return cast(T, self.default)
             raise AttributeError(f"chunk body {self.chunk_attr!r} is None")
         value = getattr(body, self.field)
-        return self.transform(value) if self.transform else value  # type: ignore[no-any-return,return-value]
+        return cast(T, self.transform(value) if self.transform else value)
 
     def __set__(self, obj: Any, value: T) -> None:
         if self.read_only:

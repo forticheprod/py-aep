@@ -5,7 +5,9 @@ import typing
 from .item import Item
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
+    from ...binary.item_chunks import IdtaChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from ..project import Project
     from ..viewer.viewer import Viewer
 
@@ -39,9 +41,9 @@ class FolderItem(Item):
     def __init__(
         self,
         *,
-        _idta: Chunk | None,
-        _name_utf8: Chunk | None,
-        _cmta: Chunk | None,
+        _idta: IdtaChunk | None,
+        _name_utf8: Utf8Chunk | None,
+        _cmta: Utf8Chunk | None,
         _item_list: ListChunk | None = None,
         project: Project,
         parent_folder: FolderItem | None,

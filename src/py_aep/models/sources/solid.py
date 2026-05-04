@@ -9,6 +9,8 @@ from .footage import FootageSource
 
 if typing.TYPE_CHECKING:
     from ...binary.chunk import Chunk, ListChunk
+    from ...binary.footage_chunks import SspcChunk
+    from ...binary.scalar_chunks import U1Chunk
 
 
 class SolidSource(FootageSource):
@@ -44,9 +46,9 @@ class SolidSource(FootageSource):
     def __init__(
         self,
         *,
-        _sspc: Chunk,
+        _sspc: SspcChunk,
         _opti: Chunk,
-        _linl: Chunk | None = None,
+        _linl: U1Chunk | None = None,
         _clrs: ListChunk | None = None,
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)

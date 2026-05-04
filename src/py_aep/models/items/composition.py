@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import typing
-from typing import Any, List, cast
+from typing import List, cast
 
 from ...binary.chunk import ListChunk
 from ...binary.scalar_chunks import CsctChunk, U4Chunk, Utf8Chunk
@@ -31,7 +31,10 @@ from .av_item import AVItem
 from .footage import FootageItem
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+    from ...binary.composition_chunks import CdtaChunk
+    from ...binary.item_chunks import IdtaChunk
+    from ...binary.misc_chunks import PrinChunk
+    from ...binary.scalar_chunks import U1Chunk
     from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
     from ..project import Project
@@ -62,7 +65,7 @@ _reverse_work_area_start = reverse_ratio("work_area_start")
 _reverse_work_area_start_frame = reverse_frame_ticks("work_area_start")
 
 
-def _reverse_work_area_duration(value: float, body: Any) -> dict[str, int]:
+def _reverse_work_area_duration(value: float, body: CdtaChunk) -> dict[str, int]:
     """Reverse work area duration: sets work_area_end = work_area_start + value."""
     _DIVISOR = 10000
     work_start = body.work_area_start_dividend / body.work_area_start_divisor
@@ -72,7 +75,7 @@ def _reverse_work_area_duration(value: float, body: Any) -> dict[str, int]:
     }
 
 
-def _reverse_work_area_duration_frame(value: int, body: Any) -> dict[str, int]:
+def _reverse_work_area_duration_frame(value: int, body: CdtaChunk) -> dict[str, int]:
     """Reverse work area duration in frames: converts to seconds then sets end."""
     _DIVISOR = 10000
     work_start = body.work_area_start_dividend / body.work_area_start_divisor
@@ -373,15 +376,15 @@ class CompItem(AVItem):
     def __init__(
         self,
         *,
-        _cdrp: Chunk | None,
-        _cdta: Chunk,
-        _cmta: Chunk | None,
-        _idta: Chunk | None,
+        _cdrp: U1Chunk | None,
+        _cdta: CdtaChunk,
+        _cmta: Utf8Chunk | None,
+        _idta: IdtaChunk,
         _item_list: ListChunk | None = None,
-        _name_utf8: Chunk,
-        _prin: Chunk,
+        _name_utf8: Utf8Chunk,
+        _prin: PrinChunk,
         project: Project,
-        parent_folder: FolderItem | None,
+        parent_folder: FolderItem,
         marker_property: Property | None = None,
     ) -> None:
         self._cdta = _cdta
@@ -404,7 +407,7 @@ class CompItem(AVItem):
         self._layers_by_id: dict[int, Layer] | None = None
         self._layer_id_to_index: dict[int, int] = {}
         self._marker_property = marker_property
-        self._eg_template_name_utf8: Chunk | None = None
+        self._eg_template_name_utf8: Utf8Chunk | None = None
         self._eg_controllers: list[EssentialGraphicsController] = []
 
     def __iter__(self) -> typing.Iterator[Layer]:
@@ -437,7 +440,7 @@ class CompItem(AVItem):
         Read / Write."""
         if self._eg_template_name_utf8 is None:
             return None
-        return self._eg_template_name_utf8.value  # type: ignore[no-any-return]
+        return self._eg_template_name_utf8.value
 
     @motion_graphics_template_name.setter
     def motion_graphics_template_name(self, value: str) -> None:
@@ -485,7 +488,7 @@ class CompItem(AVItem):
         Args:
             index: The 1-based index of the EGP property.
         """
-        return self._eg_controllers[index - 1].name  # type: ignore[no-any-return]
+        return self._eg_controllers[index - 1].name
 
     def set_motion_graphics_controller_name(self, index: int, name: str) -> None:
         """Set the name of a single property in the Essential Graphics

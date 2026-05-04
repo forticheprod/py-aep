@@ -20,22 +20,24 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
 
 ### Key Directories
 - **`src/py_aep/binary/`** - Binary I/O layer (attrs-based)
-  - `chunk.py` - `Chunk` base, `ListChunk`, `ContainerChunk`, `read_aep()`/`write_aep()`. `ListChunk` and `ContainerChunk` support `__iter__`/`__len__` over their `chunks` list.
-  - `fmt_field.py` - `fmt_field()` declarative field-format binding + `_struct_info()` introspection. Semantic aliases: `u1_field`, `u2_field`, `u4_field`, `u8_field`, `s2_field`, `s4_field`, `f4_field`, `f8_field`, `bytes_field(n)`, `str_field(n, encoding)`, `ascii_field(n)`. Use `coerce=bool` for fields stored as integers but exposed as booleans.
+  - `chunk.py` - `Chunk` (`data: bytes`, `synthetic: bool`), `ListChunk` (`list_type`, `chunks`), `ContainerChunk` (`chunks`), `read_aep(fp) -> (ListChunk, str)`, `write_aep(fp, rifx, xmp) -> int`. `ListChunk` and `ContainerChunk` support `__iter__`/`__len__` over their `chunks` list.
+  - `fmt_field.py` - `fmt_field()` declarative field-format binding + `_struct_info()` introspection. Semantic aliases: `u1_field`, `u2_field`, `u4_field`, `u8_field`, `s2_field`, `s4_field`, `f4_field`, `f8_field`, `bool_field()`, `bytes_field(n)`, `str_field(n, encoding)`, `ascii_field(n)`. Also: `items_field(item_cls, item_size)` for repeating typed items, `FmtItem` base class for item types.
   - `bitfield.py` - `BitField` descriptor for single-bit flag access
   - `registry.py` - `@register` decorator + `CHUNK_TYPES` dispatch table
   - `bin_utils.py` - `read_fmt()`, `write_fmt()`, `read_bytes()`, `write_bytes()`
-  - `utils.py` - Chunk navigation helpers (`find_by_type`, `find_by_list_type`, `filter_by_type`)
+  - `utils.py` - Chunk navigation/mutation helpers: `find_by_type`, `find_by_list_type`, `filter_by_type`, `filter_by_list_type`, `find_chunks_before`, `find_chunks_after`, `group_chunks`, `split_on_type`, `str_value`, `toggle_flag_chunk`, `chunk_tree`, `recursive_find`
   - Chunk modules: `scalar_chunks.py`, `property_chunks.py`, `item_chunks.py`, `composition_chunks.py`, `layer_chunks.py`, `misc_chunks.py`, `footage_chunks.py`, `render_chunks.py`, `ldat_chunks.py`
-  - **Chunk subclass rules**: use semantic field aliases (`u1_field`, `u4_field`, `f8_field`, etc.) for fixed-layout fields (generic `Chunk.read()`/`write()` handles I/O). Use `BitField` for single-bit flags. Use `coerce=bool` on integer fields that represent booleans. Chunks with no typed fields (raw bytes only) do NOT override `read()` - base `Chunk.read()` stores body as `data: bytes`. Only override `read()` when the chunk needs context parameters (e.g. `is_le`, `is_color`) or polymorphic dispatch.
+  - **Chunk subclass rules**: use semantic field aliases (`u1_field`, `u4_field`, `f8_field`, etc.) for fixed-layout fields (generic `Chunk.read()`/`write()` handles I/O). Use `bool_field()` for 1-byte boolean fields. Use `BitField` for single-bit flags. Chunks with no typed fields (raw bytes only) do NOT override `read()` - base `Chunk.read()` stores body as `data: bytes`. Only override `read()` when the chunk needs context parameters (e.g. `is_le`, `is_color`) or polymorphic dispatch.
 - **`src/py_aep/__init__.py`** - Public API entry point: `parse()`
 - **`src/py_aep/parsers/`** - Transform raw chunks into models
   - `application.py`, `project.py`, `layer.py`, `property.py`, `synthesis.py`, `effect.py`, ...
   - Pattern: Each parser receives chunks + context, returns a model instance
 - **`src/py_aep/models/`** - Typed model classes mirroring AE's object model
   - `application.py`, `project.py`, `items/`, `layers/`, `properties/`, `sources/`, `renderqueue/`, `text/`, `viewer/`
-  - `models/descriptors.py` - `ChunkField` descriptors, `_materialization_allowed`, `_suppress_materialization`. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `coerce=bool`, and `@property`-returning-bool fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`.
+  - `models/descriptors.py` - `ChunkField` descriptors, `_materialization_allowed`, `_suppress_materialization`. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`.
   - `models/validators.py` - Validator factories for model field constraints
+  - `models/transforms.py` - `normalize_values`, `strip_null`
+  - `models/reverses.py` - `reverse_ratio`, `reverse_frame_ticks`, `reverse_fractional`, `denormalize_values`
 - **`src/py_aep/data/`** - Static data tables
   - `match_names.py` - Match name constants; `units.py` - Unit definitions for properties
 - **`src/py_aep/enums/`** - Enumerations matching ExtendScript values (`general.py`, `property.py`, `mappings.py`, ...)
@@ -89,19 +91,19 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 - **No docstrings that restate the function name or signature**. ExtendScript-sourced docstrings on model fields are fine.
 
 ### Getter/Setter Placement
-- **Chunk classes** (`@define`): Use semantic field aliases (`u1_field()`, `u4_field()`, `f8_field()`, etc.) for binary layout. Use `coerce=bool` for integer fields that represent booleans. Add computed `@property` only for derived values (e.g. `frame_rate` from integer+fractional parts).
-- **Model classes**: Use `ChunkField` descriptors for attributes backed by a single chunk field. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `coerce=bool`, and `@property`-returning-bool chunk fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `@property` for computed/composite values or when custom logic is needed (validation, multi-chunk updates, fallback behavior).
+- **Chunk classes** (`@define`): Use semantic field aliases (`u1_field()`, `u4_field()`, `f8_field()`, `bool_field()`, etc.) for binary layout. Add computed `@property` only for derived values (e.g. `frame_rate` from integer+fractional parts).
+- **Model classes**: Use `ChunkField` descriptors for attributes backed by a single chunk field. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool chunk fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `@property` for computed/composite values or when custom logic is needed (validation, multi-chunk updates, fallback behavior).
 - Never put business logic in chunk classes. Chunks are data containers.
 
 ### Synthesized Properties
-- `Property.new(match_name, spec, ...)` - factory classmethod creating a synthetic `Property` with backing chunks. Accepts `control_type` for effect params.
-- `PropertyGroup.new(match_name, ...)` - factory classmethod creating a synthetic empty `PropertyGroup` with backing chunks.
-- Both set `synthetic=True` on all created chunks.
+- `Property.new(spec, property_depth, *, parent_property, synthetic=False, ...)` - factory classmethod creating a `Property` with backing chunks. Pass `synthetic=True` to mark chunks as synthetic.
+- `PropertyGroup.new(match_name, auto_name, property_depth, *, parent_property=None, synthetic=False)` - factory classmethod creating an empty `PropertyGroup` with backing chunks.
+- When `synthetic=True`, all created chunks are skipped by `write_aep()`. On first user write (via ChunkField), `_ensure_materialized()` flips `synthetic=False` so chunks become visible.
 
 ### Adding New Parsed Data
 
 1. Add chunk class in the appropriate `binary/*_chunks.py` module
-2. Use semantic field aliases (`u1_field()`, `u4_field()`, etc.) for fixed-layout fields, `BitField` for flags, `coerce=bool` for boolean fields, `optional=True` for version-dependent fields
+2. Use semantic field aliases (`u1_field()`, `u4_field()`, `bool_field()`, etc.) for fixed-layout fields, `BitField` for flags, `optional=True` for version-dependent fields
 3. Register with `@register("xxxx")`
 4. Create/update model class in `models/` with docstrings referencing AE equivalents
 5. Add parser in `parsers/`:

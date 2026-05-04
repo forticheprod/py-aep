@@ -5,8 +5,11 @@ from __future__ import annotations
 import logging
 import typing
 from contextlib import suppress
-from typing import Any
+from typing import Any, cast
 
+from ..binary.chunk import ContainerChunk, ListChunk
+from ..binary.property_chunks import TdsbChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
@@ -28,7 +31,7 @@ from .utils import (
 )
 
 if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk, ListChunk
+    from ..binary.chunk import Chunk
     from ..models.items.composition import CompItem
 
 logger = logging.getLogger(__name__)
@@ -56,7 +59,7 @@ def _property_parser(
 def parse_properties(
     chunks_by_match_name: dict[str, list[Chunk]],
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Dispatch sub-property chunks into parsed Property/PropertyGroup items.
@@ -80,7 +83,7 @@ def parse_properties(
         # are auxiliary data that we skip when determining the property type.
         first_chunk = None
         for c in sub_prop_chunks:
-            if getattr(c, "list_type", None) is not None:
+            if isinstance(c, ListChunk):
                 first_chunk = c
                 break
         if first_chunk is None:
@@ -113,9 +116,9 @@ def parse_properties(
 def _dispatch_sspc(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse effect chunks - iterates all sspc LISTs for the match name."""
@@ -135,9 +138,9 @@ def _dispatch_sspc(
 def _dispatch_tdgp(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse property group chunks - handles masks and indexed groups."""
@@ -174,9 +177,9 @@ def _dispatch_tdgp(
 def _dispatch_tdbs(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse a leaf property from a tdbs chunk."""
@@ -194,9 +197,9 @@ def _dispatch_tdbs(
 def _dispatch_otst(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse an orientation property from an otst chunk."""
@@ -214,9 +217,9 @@ def _dispatch_otst(
 def _dispatch_btds(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse a text document property from a btds chunk."""
@@ -234,9 +237,9 @@ def _dispatch_btds(
 def _dispatch_oms(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse a shape/mask-path property from an om-s chunk."""
@@ -254,9 +257,9 @@ def _dispatch_oms(
 def _dispatch_mrst(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse markers from a mrst chunk."""
@@ -273,9 +276,9 @@ def _dispatch_mrst(
 def _dispatch_ovg2(
     match_name: str,
     sub_prop_chunks: list[Chunk],
-    first_chunk: Chunk,
+    first_chunk: ListChunk,
     child_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Skip Essential Properties override metadata."""
@@ -287,7 +290,7 @@ def parse_property_group(
     tdgp_chunk: ListChunk,
     group_match_name: str,
     property_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> PropertyGroup:
     """
@@ -319,15 +322,15 @@ def parse_property_group(
     # Try to read the group-level tdsb chunk.
     # Leaf properties always have a tdsb; groups may or may not.
     try:
-        group_tdsb = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsb")
+        group_tdsb: TdsbChunk | None = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsb", cls=TdsbChunk)
     except ChunkNotFoundError:
         group_tdsb = None
 
     # Resolve _name_utf8 from the tdgp's tdsn child
     # tdsn is a ContainerChunk with a Utf8 child
     try:
-        tdsn = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn")
-        name_utf8 = tdsn.chunks[0]
+        tdsn = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn", cls=ContainerChunk)
+        name_utf8: Utf8Chunk | None = find_by_type(chunks=tdsn.chunks, chunk_type="Utf8", cls=Utf8Chunk)
     except ChunkNotFoundError:
         name_utf8 = None
 
@@ -347,7 +350,7 @@ def _parse_mask_atom(
     tdgp_chunk: ListChunk,
     mkif_chunk: Chunk,
     property_depth: int,
-    effect_param_defs: dict[str, dict[str, Any]],
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> MaskPropertyGroup:
     """Parse a mask atom into a MaskPropertyGroup.
@@ -377,15 +380,14 @@ def _parse_mask_atom(
     chunks_by_mn = get_chunks_by_match_name(tdgp_chunk)
     mask_shape_chunks = chunks_by_mn.get("ADBE Mask Shape", [])
     for chunk in mask_shape_chunks:
-        lt = getattr(chunk, "list_type", None)
-        if lt == "om-s":
+        if isinstance(chunk, ListChunk) and chunk.list_type == "om-s":
             with suppress(ChunkNotFoundError):
                 tdbs = find_by_list_type(chunks=chunk.chunks, list_type="tdbs")
                 mask_shape_tdsb = find_by_type(chunks=tdbs.chunks, chunk_type="tdsb")
             break
 
     mask_group = MaskPropertyGroup(
-        _tdgp=base._tdgp,
+        _tdgp=cast(ListChunk, base._tdgp),
         _tdsb=base._tdsb,
         _name_utf8=base._name_utf8,
         _mkif=mkif_chunk,

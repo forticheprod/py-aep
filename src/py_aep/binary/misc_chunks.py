@@ -319,7 +319,9 @@ class PardChunk(Chunk):
         **kwargs: Any,
     ) -> PardChunk:
         if cls is not PardChunk:
-            return super().read(fp, size, chunk_type=chunk_type)  # type: ignore[return-value]
+            result = super().read(fp, size, chunk_type=chunk_type)
+            assert isinstance(result, PardChunk)
+            return result
         if size < 56:
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
         # Peek at discriminator (byte 15)
@@ -329,7 +331,7 @@ class PardChunk(Chunk):
         variant_cls = _PARD_VARIANTS.get(control_type, PardChunk)
         if variant_cls is PardChunk:
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
-        return variant_cls.read(fp, size, chunk_type=chunk_type)  # type: ignore[attr-defined, no-any-return]
+        return variant_cls.read(fp, size, chunk_type=chunk_type)
 
     @property
     def name(self) -> str:
@@ -345,7 +347,7 @@ class PardChunk(Chunk):
     @name.setter
     def name(self, value: str) -> None:
         encoded = value.encode("windows-1252")[:31]
-        self._raw_name = encoded + b"\x00" * (32 - len(encoded))
+        self._raw_name = encoded + b"\x00" * (32 - len(encoded))  # type: ignore[misc]
 
 
 @define
@@ -620,7 +622,7 @@ class OtlnChunk(Chunk):
     _trailing: bytes = field(default=b"", repr=False)
 
 
-_PARD_VARIANTS: dict[int, type] = {
+_PARD_VARIANTS: dict[int, type[PardChunk]] = {
     0: GenericPardChunk,
     1: GenericPardChunk,
     2: ScalarPardChunk,
@@ -646,7 +648,7 @@ _PARD_VARIANTS: dict[int, type] = {
 
 
 @define
-class FeatherPoint(FmtItem):
+class FeatherPointItem(FmtItem):
     """A single variable-width mask feather point (32 bytes).
 
     Integer fields are little-endian; float fields are big-endian.
@@ -680,5 +682,5 @@ class Fth5Chunk(Chunk):
     """Variable-width mask feather points (32 bytes per point)."""
     chunk_type: str = "fth5"
 
-    points: list[FeatherPoint] = items_field(FeatherPoint, 32)
+    points: list[FeatherPointItem] = items_field(FeatherPointItem, 32)
     _trailing: bytes = field(default=b"", repr=False)

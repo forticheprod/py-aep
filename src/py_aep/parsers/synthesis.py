@@ -21,7 +21,7 @@ Note:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..enums import PropertyValueType
 from ..models.layers.av_layer import AVLayer
@@ -197,7 +197,7 @@ def _set_transform_defaults(layer: Layer) -> None:
         anchor_h = comp_h
 
     # Spatial defaults depend on layer dimensions.
-    spatial_defaults: dict[str, Any] = {
+    spatial_defaults: dict[str, list[float] | float] = {
         "ADBE Anchor Point": [anchor_w / 2.0, anchor_h / 2.0, 0.0],
         "ADBE Position": [comp_w / 2.0, comp_h / 2.0, 0.0],
         "ADBE Position_0": comp_w / 2.0,
@@ -246,7 +246,7 @@ def _set_transform_defaults(layer: Layer) -> None:
         "ADBE Position_1": 0.0,
     }
 
-    overrides: dict[str, tuple[Any, Any]] = {}
+    overrides: dict[str, tuple[float | list[float], float | list[float]]] = {}
     for spec in _TRANSFORM_SPECS:
         mn = spec.match_name
         default = _TRANSFORM_FIXED_DEFAULTS.get(mn)

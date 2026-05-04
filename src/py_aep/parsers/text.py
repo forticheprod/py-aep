@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..binary.chunk import Chunk
 from ..models.text.font_object import FontObject
 from ..models.text.text_document import TextDocument
 
@@ -122,7 +123,7 @@ def _get_first_char_style(doc: dict[str, Any]) -> dict[str, Any] | None:
     """
     result = _g(doc, "0", "6", "0", 0, "0", "0", "6")
     if isinstance(result, dict):
-        return result  # type: ignore[return-value]
+        return result
     return None
 
 
@@ -133,14 +134,14 @@ def _get_first_para_style(doc: dict[str, Any]) -> dict[str, Any] | None:
     """
     result = _g(doc, "0", "5", "0", 0, "0", "0", "5")
     if isinstance(result, dict):
-        return result  # type: ignore[return-value]
+        return result
     return None
 
 
 def parse_text_documents(
     cos_data: dict[str, Any],
     fonts: list[FontObject],
-    btdk_body: Any | None = None,
+    btdk_body: Chunk,
 ) -> list[TextDocument]:
     """Parse text documents from COS data.
 
@@ -188,7 +189,7 @@ def parse_text_documents(
 
 def parse_btdk_cos(
     cos_data: dict[str, Any],
-    btdk_body: Any | None = None,
+    btdk_body: Chunk,
 ) -> tuple[list[TextDocument], list[FontObject]]:
     """Parse a btdk COS dict into text documents and fonts.
 

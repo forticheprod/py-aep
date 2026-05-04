@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..binary.scalar_chunks import AsciiChunk, U1Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_type,
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 
 def parse_viewers(
     folder_chunks: list[Chunk],
-    items: list[Item] | None = None,
+    items: list[Item],
 ) -> list[Viewer]:
     """Parse viewer panels from folder-level chunks.
 
@@ -43,7 +44,7 @@ def parse_viewers(
     blocks = group_chunks(folder_chunks, "fvdv", "fifl")
     viewers: list[Viewer] = []
     for i, block in enumerate(blocks):
-        item = items[i] if items and i < len(items) else None
+        item = items[i] if i < len(items) else None
         viewer = _build_viewer(block)
         if viewer is not None:
             viewer._views = _parse_views(block, item, viewer)
@@ -104,12 +105,12 @@ def _build_viewer(
         block does not contain a recognised viewer type.
     """
     try:
-        fitt = find_by_type(block, "fitt")
+        fitt = find_by_type(block, "fitt", cls=AsciiChunk)
     except ChunkNotFoundError:
         return None
 
-    foac = find_by_type(block, "foac")
-    fiac = find_by_type(block, "fiac")
+    foac = find_by_type(block, "foac", cls=U1Chunk)
+    fiac = find_by_type(block, "fiac", cls=U1Chunk)
 
     return Viewer(
         _fitt=fitt,

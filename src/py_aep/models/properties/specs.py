@@ -22,7 +22,7 @@ class _PropSpec(NamedTuple):
 
     match_name: str
     auto_name: str
-    value: Any
+    value: int | float | list[float] | None
     pvt: PropertyValueType
     dimensions: int = 1
     is_spatial: bool = False
@@ -2203,7 +2203,7 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
 # Map of match_name > fixed default for standard transform properties.
 # Position and Anchor Point defaults depend on layer/comp dimensions and
 # are handled separately.
-_TRANSFORM_FIXED_DEFAULTS: dict[str, Any] = {
+_TRANSFORM_FIXED_DEFAULTS: dict[str, float | list[float]] = {
     "ADBE Scale": [100.0, 100.0, 100.0],
     "ADBE Rotate X": 0.0,
     "ADBE Rotate Y": 0.0,

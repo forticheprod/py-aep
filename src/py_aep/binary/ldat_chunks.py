@@ -384,7 +384,7 @@ class LdatItem:
 # ---------------------------------------------------------------------------
 
 
-def _read_item(data: bytes, item_type: LdatItemType) -> Any:
+def _read_item(data: bytes, item_type: LdatItemType) -> FmtItem | LdatItem:
     """Dispatch item reading by type."""
     if item_type == LdatItemType.lrdr:
         return RenderSettingsItem.frombytes(data)

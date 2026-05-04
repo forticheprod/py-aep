@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import typing
-from typing import Any, List, cast
+from typing import List, cast
 
 from py_aep.enums import AutoOrientType, Label
 
@@ -14,7 +14,9 @@ from ..reverses import reverse_ratio
 from ..transforms import strip_null
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
+    from ...binary.layer_chunks import LdtaChunk
+    from ...binary.misc_chunks import OtlnItem
     from ..items.composition import CompItem
 
 
@@ -23,7 +25,7 @@ _reverse_in_point = reverse_ratio("in_point")
 _reverse_out_point = reverse_ratio("out_point")
 
 
-def _reverse_auto_orient(value: AutoOrientType, _body: Any) -> dict[str, int]:
+def _reverse_auto_orient(value: AutoOrientType, _body: object) -> dict[str, int]:
     """Decompose AutoOrientType into individual ldta bit flags."""
     return {
         "auto_orient_along_path": int(value == AutoOrientType.ALONG_PATH),
@@ -37,7 +39,7 @@ def _reverse_auto_orient(value: AutoOrientType, _body: Any) -> dict[str, int]:
     }
 
 
-def _reverse_stretch(value: float, _body: Any) -> dict[str, int]:
+def _reverse_stretch(value: float, _body: object) -> dict[str, int]:
     """Decompose stretch (percentage) into dividend/divisor."""
     _TIME_DIVISOR = 10000
     if value == 0:
@@ -151,9 +153,9 @@ class Layer(PropertyGroup):
     def __init__(
         self,
         *,
-        _ldta: Chunk,
-        _cmta: Chunk | None,
-        _name_utf8: Chunk,
+        _ldta: LdtaChunk,
+        _cmta: Utf8Chunk | None,
+        _name_utf8: Utf8Chunk,
         _layer_list: ListChunk,
         containing_comp: CompItem,
         properties: list[Property | PropertyGroup],
@@ -161,7 +163,7 @@ class Layer(PropertyGroup):
         self._ldta = _ldta
         self._cmta = _cmta
         self._layer_list = _layer_list
-        self._otln_entry: Chunk | None = None
+        self._otln_entry: OtlnItem | None = None
 
         layer_type_val = _ldta.layer_type
         match_name = self._LAYER_MATCH_NAMES.get(layer_type_val, "ADBE AV Layer")
@@ -195,7 +197,7 @@ class Layer(PropertyGroup):
     @selected.setter
     def selected(self, value: bool) -> None:
         if self._otln_entry is not None:
-            self._otln_entry.selected = int(value)
+            self._otln_entry.selected = value
         else:
             self._selected = value
 

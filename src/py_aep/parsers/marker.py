@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import typing
 
+from ..binary.chunk import ListChunk
+from ..binary.misc_chunks import NmhdChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     filter_by_list_type,
     filter_by_type,
@@ -18,13 +21,12 @@ from ..models.properties.property import Property
 from .property_value import parse_property
 
 if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk
     from ..models.items.composition import CompItem
     from ..models.properties.keyframe import Keyframe
 
 
 def parse_markers(
-    mrst_chunk: Chunk,
+    mrst_chunk: ListChunk,
     composition: CompItem,
     property_depth: int = 1,
 ) -> Property:
@@ -58,7 +60,7 @@ def parse_markers(
 
 
 def parse_marker(
-    nmrd_chunk: Chunk,
+    nmrd_chunk: ListChunk,
     keyframe: Keyframe | None = None,
     frame_time: int = 0,
 ) -> MarkerValue:
@@ -70,12 +72,12 @@ def parse_marker(
         keyframe: The keyframe that holds this marker value.
         frame_time: Fallback time in frames (used when no keyframe ref).
     """
-    nmhd_chunk = find_by_type(chunks=nmrd_chunk.chunks, chunk_type="NmHd")
+    nmhd_chunk = find_by_type(chunks=nmrd_chunk.chunks, chunk_type="NmHd", cls=NmhdChunk)
 
-    utf8_chunks = filter_by_type(chunks=nmrd_chunk.chunks, chunk_type="Utf8")
+    utf8_chunks = filter_by_type(chunks=nmrd_chunk.chunks, chunk_type="Utf8", cls=Utf8Chunk)
 
     # Collect cue point param Utf8 chunks
-    param_utf8s = utf8_chunks[5:]
+    param_utf8s: list[Utf8Chunk] = utf8_chunks[5:]
 
     return MarkerValue(
         _nmhd=nmhd_chunk,
