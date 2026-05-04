@@ -240,7 +240,7 @@ class OptiChunk(Chunk):
     ) -> OptiChunk:
         if cls is not OptiChunk:
             # Variant subclass - use its own read
-            return super().read(fp, size, chunk_type=chunk_type)  # type: ignore[return-value]
+            return super().read(fp, size, chunk_type=chunk_type)  # type: ignore[return-value]  # returns Self
         if size < 6:
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
         # Peek at discriminator (first 4 bytes = asset_type)
@@ -257,7 +257,7 @@ class OptiChunk(Chunk):
         variant_cls = _OPTI_VARIANTS.get(asset_type, OptiChunk)
         if variant_cls is OptiChunk:
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
-        return variant_cls.read(fp, size, chunk_type=chunk_type)  # type: ignore[attr-defined, no-any-return]
+        return variant_cls.read(fp, size, chunk_type=chunk_type)
 
 
 @define
@@ -377,7 +377,7 @@ class PlaceholderOptiChunk(OptiChunk):
         self._trailing = value.encode("windows-1252") + suffix
 
 
-_OPTI_VARIANTS: dict[str, type] = {
+_OPTI_VARIANTS: dict[str, type[OptiChunk]] = {
     "Soli": SoliOptiChunk,
     "8BPS": PsdOptiChunk,
 }

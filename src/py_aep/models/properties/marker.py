@@ -8,11 +8,12 @@ from ..descriptors import ChunkField
 from ..validators import validate_number
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+    from ...binary.misc_chunks import NmhdChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from .keyframe import Keyframe
 
 
-def _reverse_duration(value: float, body: Chunk) -> dict[str, int]:
+def _reverse_duration(value: float, body: NmhdChunk) -> dict[str, int]:
     """Convert duration in seconds to frame_duration in 600ths."""
     return {"frame_duration": round(value * 600)}
 
@@ -96,15 +97,15 @@ class MarkerValue:
     def __init__(
         self,
         *,
-        _nmhd: Chunk,
-        _comment_utf8: Chunk,
-        _chapter_utf8: Chunk,
-        _url_utf8: Chunk,
-        _frame_target_utf8: Chunk,
-        _cue_point_name_utf8: Chunk,
+        _nmhd: NmhdChunk,
+        _comment_utf8: Utf8Chunk,
+        _chapter_utf8: Utf8Chunk,
+        _url_utf8: Utf8Chunk,
+        _frame_target_utf8: Utf8Chunk,
+        _cue_point_name_utf8: Utf8Chunk,
         _keyframe: Keyframe | None = None,
         frame_time: int = 0,
-        _param_utf8s: list[Chunk] | None = None,
+        _param_utf8s: list[Utf8Chunk] | None = None,
     ) -> None:
         self._nmhd = _nmhd
         self._comment_utf8 = _comment_utf8

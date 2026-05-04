@@ -637,7 +637,11 @@ def _interpolate_spatial_bezier(
     v0 = kf0.value
     v1 = kf1.value
     if not isinstance(v0, list) or not isinstance(v1, list):
-        return list(v0) if isinstance(v0, list) else [float(v0)]  # type: ignore[arg-type]
+        if isinstance(v0, list):
+            return [float(x) for x in v0]
+        if isinstance(v0, (int, float)):
+            return [float(v0)]
+        return []
 
     dt = t1 - t0
     if dt == 0:

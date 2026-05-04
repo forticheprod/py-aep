@@ -49,21 +49,27 @@ from .settings import (
 )
 
 if TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+    from ...binary.render_chunks import (
+        OutputModuleSettingsItem,
+        RenderSettingsItem,
+        RouuChunk,
+    )
+    from ...binary.scalar_chunks import Utf8Chunk
     from ..project import Project
     from .render_queue_item import RenderQueueItem
 
 
-def _validate_crop(peer_field: str, dimension: str) -> Callable[[int, Any], None]:
+def _validate_crop(peer_field: str, dimension: str) -> Callable[[int, OutputModule], None]:
     """Factory for crop validators that check range and final dimension."""
     range_check = validate_number(min=-30000, max=30000, integer=True)
 
-    def validator(value: int, obj: Any) -> None:
+    def validator(value: int, obj: OutputModule) -> None:
         range_check(value, obj)
         peer: int = getattr(obj, peer_field)
-        comp_dim: int = getattr(obj._parent_rqi.comp, dimension)
+        parent_rqi = obj._parent_rqi
+        comp_dim: int = getattr(parent_rqi.comp, dimension)
         res_attr = "resolution_x" if dimension == "width" else "resolution_y"
-        divisor = getattr(obj._parent_rqi._ldat, res_attr) or 1
+        divisor = getattr(parent_rqi._ldat, res_attr) or 1
         dim = math.ceil(comp_dim / divisor)
         remaining = dim - value - peer
         if remaining < 1:
@@ -280,12 +286,12 @@ class OutputModule:
     def __init__(
         self,
         *,
-        _om_ldat: Chunk,
-        _roou: Chunk,
-        _alas_utf8: Chunk | None,
-        _file_name_utf8: Chunk | None,
-        _name_utf8: Chunk | None,
-        _render_settings_ldat: Chunk,
+        _om_ldat: OutputModuleSettingsItem,
+        _roou: RouuChunk,
+        _alas_utf8: Utf8Chunk | None,
+        _file_name_utf8: Utf8Chunk | None,
+        _name_utf8: Utf8Chunk | None,
+        _render_settings_ldat: RenderSettingsItem,
         parent: RenderQueueItem,
         format_options: (
             CineonFormatOptions
@@ -397,7 +403,7 @@ class OutputModule:
     def _output_audio(self) -> OutputAudio:
         """Output audio setting (derived from two binary sources)."""
         audio_enabled = self._roou.audio_disabled_hi != 0xFF
-        return map_output_audio(audio_enabled, self._om_ldat.output_audio)
+        return map_output_audio(audio_enabled, bool(self._om_ldat.output_audio))
 
     @_output_audio.setter
     def _output_audio(self, value: OutputAudio) -> None:
@@ -456,7 +462,7 @@ class OutputModule:
         """Effective frame rate: custom if enabled, else comp frame rate."""
         rqi = self._parent_rqi
         if rqi._ldat.use_this_frame_rate:
-            return rqi._ldat.frame_rate  # type: ignore[no-any-return]
+            return rqi._ldat.frame_rate
         return rqi.comp.frame_rate
 
     def _update_output_dimensions(self) -> None:
@@ -475,7 +481,7 @@ class OutputModule:
         """Output color space derived from ICC profile and working space."""
         return map_output_color_space(
             self._om_ldat.output_profile_id,
-            self._om_ldat.output_color_space_working,
+            bool(self._om_ldat.output_color_space_working),
             self._project.working_space,
         )
 

@@ -33,12 +33,14 @@ from .validators import validate_number, validate_one_of
 
 if typing.TYPE_CHECKING:
     from ..binary.chunk import Chunk
+    from ..binary.item_chunks import HeadChunk, NnhdChunk
+    from ..binary.scalar_chunks import F8Chunk, U1Chunk
     from .items.item import Item
     from .layers.layer import Layer
     from .renderqueue.render_queue import RenderQueue
 
 
-def _reverse_working_gamma(value: float, _body: Any) -> dict[str, int]:
+def _reverse_working_gamma(value: float, _body: object) -> dict[str, int]:
     """Decompose working gamma into binary selector.
 
     AE stores a single selector byte: 0 -> 2.2, nonzero -> 2.4.
@@ -170,7 +172,7 @@ class Project:
     """The gamma value used for the working color space, either 2.2 or 2.4.
     Read / Write."""
 
-    gpu_accel_type = ChunkField[Any](
+    gpu_accel_type = ChunkField[GpuAccelType](
         "_gpug_utf8",
         "value",
         transform=lambda value: GpuAccelType.from_binary(strip_null(value)),
@@ -182,16 +184,16 @@ class Project:
     def __init__(
         self,
         *,
-        _nnhd: Chunk,
-        _head: Chunk,
-        _acer: Chunk,
-        _adfr: Chunk,
+        _nnhd: NnhdChunk,
+        _head: HeadChunk,
+        _acer: U1Chunk,
+        _adfr: F8Chunk,
         _dwga: Chunk,
-        _gpug_utf8: Chunk,
-        _exen_utf8: Chunk | None,
-        _cms_utf8: Chunk | None,
-        _ws_utf8: Chunk | None,
-        _dcs_utf8: Chunk | None,
+        _gpug_utf8: Utf8Chunk,
+        _exen_utf8: Utf8Chunk | None,
+        _cms_utf8: Utf8Chunk | None,
+        _ws_utf8: Utf8Chunk | None,
+        _dcs_utf8: Utf8Chunk | None,
         _rifx: ListChunk,
         _xmp: str,
         file: str,
@@ -471,7 +473,7 @@ class Project:
             self._cms_utf8 = chunk
 
 
-def _get_effect_names(root_chunks: list[Any]) -> list[str]:
+def _get_effect_names(root_chunks: list[Chunk]) -> list[str]:
     """Get the list of effect names used in the project."""
     pefl_chunk = find_by_list_type(chunks=root_chunks, list_type="Pefl")
     pjef_chunks = filter_by_type(chunks=pefl_chunk.chunks, chunk_type="pjef")

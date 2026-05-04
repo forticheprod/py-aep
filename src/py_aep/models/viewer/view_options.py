@@ -7,13 +7,11 @@ from ..descriptors import ChunkField
 from ..validators import validate_number
 
 if typing.TYPE_CHECKING:
-    from typing import Any
-
     from ...binary.chunk import Chunk
     from ..items.av_item import AVItem
 
 
-def _reverse_fast_preview(value: FastPreviewType, body: Any) -> dict[str, int]:
+def _reverse_fast_preview(value: FastPreviewType, body: object) -> dict[str, int]:
     """Decompose FastPreviewType into individual fips bit flags."""
     return {
         "fast_preview_adaptive": int(value == FastPreviewType.FP_ADAPTIVE_RESOLUTION),

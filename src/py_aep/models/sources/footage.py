@@ -3,6 +3,7 @@ from __future__ import annotations
 import typing
 from typing import List
 
+from ...binary.scalar_chunks import U1Chunk
 from ...binary.utils import find_by_type, toggle_flag_chunk
 from ...enums import (
     AlphaMode,
@@ -17,7 +18,8 @@ from ..transforms import normalize_values
 from ..validators import validate_number, validate_sequence
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
+    from ...binary.footage_chunks import SspcChunk
 
 
 def _reverse_field_separation_type(
@@ -147,8 +149,8 @@ class FootageSource:
     def __init__(
         self,
         *,
-        _sspc: Chunk,
-        _linl: Chunk | None = None,
+        _sspc: SspcChunk,
+        _linl: U1Chunk | None = None,
         _clrs: ListChunk | None = None,
     ) -> None:
         self._sspc = _sspc
@@ -185,7 +187,7 @@ class FootageSource:
             Not exposed in ExtendScript."""
         if self._clrs is None:
             return "Embedded"
-        ipws_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="ipws")
+        ipws_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="ipws", cls=U1Chunk)
         apid_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="apid")
         return map_media_color_space(
             bool(ipws_chunk.value),

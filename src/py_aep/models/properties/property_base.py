@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import typing
-from typing import Any, cast
+from typing import cast
 
 from py_aep.enums import PropertyType
 
@@ -14,7 +14,10 @@ from ..descriptors import ChunkField
 _TDSN_SENTINEL = "-_0_/-"
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+    from ...binary.misc_chunks import EwotItem
+    from ...binary.property_chunks import TdsbChunk
+    from ...binary.scalar_chunks import Utf8Chunk
+    from ..layers.layer import Layer
     from .property_group import PropertyGroup
 
 
@@ -35,8 +38,8 @@ class PropertyBase:
     def __init__(
         self,
         *,
-        _tdsb: Chunk | None,
-        _name_utf8: Chunk | None = None,
+        _tdsb: TdsbChunk | None,
+        _name_utf8: Utf8Chunk | None = None,
         parent_property: PropertyGroup | None = None,
         match_name: str,
         property_depth: int,
@@ -48,7 +51,7 @@ class PropertyBase:
         self._auto_name = auto_name
         self._property_depth = property_depth
 
-        self._ewot_entry: Chunk | None = None
+        self._ewot_entry: EwotItem | None = None
 
         self._name: str | None = None
         self._selected = False
@@ -77,7 +80,7 @@ class PropertyBase:
     @selected.setter
     def selected(self, value: bool) -> None:
         if self._ewot_entry is not None:
-            self._ewot_entry.selected = int(value)
+            self._ewot_entry.selected = value
         else:
             self._selected = value
 
@@ -182,7 +185,7 @@ class PropertyBase:
         """
         if self.property_depth == 0 or self.parent_property is None:
             return None
-        return self.parent_property.properties.index(cast(Any, self))
+        return self.parent_property.properties.index(self)  # type: ignore[arg-type]
 
     @property
     def can_set_enabled(self) -> bool:
@@ -210,7 +213,7 @@ class PropertyBase:
         return False
 
     @property
-    def _containing_layer(self) -> Any:
+    def _containing_layer(self) -> Layer | None:
         """Walk up the parent_property chain to find the containing layer.
 
         Returns the Layer object (detected by having `_ldta`), or `None`
@@ -219,7 +222,7 @@ class PropertyBase:
         node = self.parent_property
         while node is not None:
             if hasattr(node, "_ldta"):
-                return node
+                return cast("Layer", node)
             node = node.parent_property
         return None
 

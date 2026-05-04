@@ -470,7 +470,8 @@ class GpuAccelType(IntEnum):
 
         Returns the UUID string itself if the UUID is not recognized.
         """
-        return _GPU_UUID_TO_ENUM.get(uuid, uuid)  # type: ignore[return-value]
+        result = _GPU_UUID_TO_ENUM.get(uuid)
+        return result if result is not None else uuid
 
     @staticmethod
     def to_binary(value: GpuAccelType | str) -> str:

@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 import math
 import typing
-from typing import cast
+from typing import Optional, cast
 
 from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
 from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk
+from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk, TdumChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ...data.units import UNITS_TEXT_MAP
 from ..descriptors import ChunkField
@@ -54,12 +54,12 @@ _SEPARATION_FOLLOWERS: list[str] = [
 ]
 
 
-def _get_min(prop: Any) -> float | None:
+def _get_min(prop: Property) -> float | None:
     v = prop.min_value
     return v if isinstance(v, (int, float)) else None
 
 
-def _get_max(prop: Any) -> float | None:
+def _get_max(prop: Property) -> float | None:
     v = prop.max_value
     return v if isinstance(v, (int, float)) else None
 
@@ -74,7 +74,7 @@ _NUMERIC_VALUE_TYPES: set[PropertyValueType] = {
 }
 
 
-def _get_dimensions(prop: Any) -> int:
+def _get_dimensions(prop: Property) -> int:
     d: int = prop.dimensions
     # Color properties use dimensions=1 but store 4-element lists.
     if prop._color:
@@ -212,7 +212,7 @@ class Property(PropertyBase):
         override = _NAME_OVERRIDES.get(self.match_name)
         if override is not None:
             return override
-        base_name: str = PropertyBase.name.fget(self)  # type: ignore[attr-defined]
+        base_name = super().name
         # NO_VALUE effect properties that store the match_name in tdsn
         # are unnamed separators/group headers - ExtendScript returns "".
         if (
@@ -225,7 +225,7 @@ class Property(PropertyBase):
 
     @name.setter
     def name(self, value: str) -> None:
-        PropertyBase.name.fset(self, value)  # type: ignore[attr-defined]
+        PropertyBase.__dict__["name"].fset(self, value)
 
     @classmethod
     def new(
@@ -266,12 +266,12 @@ class Property(PropertyBase):
 
         _tdsb = TdsbChunk(synthetic=synthetic)
         _tdb4 = Tdb4Chunk(synthetic=synthetic, dimensions=spec.dimensions)
-        _tdb4.is_spatial = int(spec.is_spatial)
-        _tdb4.can_vary_over_time = int(can_vary)
-        _tdb4.color = int(spec.color)
-        _tdb4.no_value = int(no_value)
-        _tdb4.vector = int(spec.dimensions > 1)
-        _tdb4.integer = int(spec.integer)
+        _tdb4.is_spatial = spec.is_spatial
+        _tdb4.can_vary_over_time = can_vary
+        _tdb4.color = spec.color
+        _tdb4.no_value = no_value
+        _tdb4.vector = spec.dimensions > 1
+        _tdb4.integer = spec.integer
 
         display = spec.auto_name or _TDSN_SENTINEL
         name_utf8 = Utf8Chunk(
@@ -343,14 +343,14 @@ class Property(PropertyBase):
         self,
         *,
         _tdmn: Chunk | None = None,
-        _tdsb: Chunk,
-        _tdb4: Chunk,
-        _expression_utf8: Chunk | None = None,
-        _name_utf8: Chunk,
+        _tdsb: TdsbChunk,
+        _tdb4: Tdb4Chunk,
+        _expression_utf8: Utf8Chunk | None = None,
+        _name_utf8: Utf8Chunk,
         _tdbs: ListChunk,
-        _tdum: Chunk | None = None,
-        _tduM: Chunk | None = None,
-        _cdat: Chunk | None = None,
+        _tdum: TdumChunk | None = None,
+        _tduM: TdumChunk | None = None,
+        _cdat: CdatChunk | None = None,
         parent_property: PropertyGroup | None = None,
         match_name: str,
         property_depth: int,
@@ -442,6 +442,7 @@ class Property(PropertyBase):
         to a synthesized property. After this method, the property is
         indistinguishable from one that was parsed from binary.
         """
+        assert self._tdsb is not None
         if not self._tdsb.synthetic:
             return
 
@@ -460,7 +461,7 @@ class Property(PropertyBase):
                     cc.synthetic = False
 
     @staticmethod
-    def _read_tdum(body: Chunk) -> Any:
+    def _read_tdum(body: TdumChunk) -> int | float | list[float]:
         """Extract value from a tdum/tduM chunk body."""
         if body.is_color:
             return list(body.values)
@@ -470,7 +471,7 @@ class Property(PropertyBase):
             return body.values[0]
         return list(body.values)
 
-    def _read_cdat_raw(self) -> Any:
+    def _read_cdat_raw(self) -> float | list[float] | None:
         """Read the raw value from the cdat chunk body.
 
         Returns a scalar for 1D non-color properties, a list for
@@ -671,6 +672,7 @@ class Property(PropertyBase):
                 2,  # camera
             ):
                 return False
+            assert self._tdsb is not None
             return bool(self._tdsb.dimensions_separated)
         return False
 
@@ -679,7 +681,8 @@ class Property(PropertyBase):
         self._ensure_materialized()
         self._dimensions_separated = value
         if self.match_name == _SEPARATION_LEADER:
-            self._tdsb.dimensions_separated = int(value)
+            assert self._tdsb is not None
+            self._tdsb.dimensions_separated = value
 
     @property
     def expression(self) -> str:
@@ -840,7 +843,7 @@ class Property(PropertyBase):
         parent = self.parent_property
         if parent is None or not hasattr(parent, "properties"):
             return None
-        return cast("Property | None", parent.property(_SEPARATION_LEADER))
+        return cast(Optional[Property], parent.property(_SEPARATION_LEADER))
 
     def get_separation_follower(self, dim: int) -> Property | None:
         """
@@ -863,7 +866,7 @@ class Property(PropertyBase):
                 f"dim must be in range [0, {len(_SEPARATION_FOLLOWERS) - 1}], got {dim}"
             )
         match_name = _SEPARATION_FOLLOWERS[dim]
-        return cast("Property | None", parent.property(match_name))
+        return cast(Optional[Property], parent.property(match_name))
 
     def nearest_key_index(self, time: float) -> int:
         """
@@ -916,6 +919,7 @@ class Property(PropertyBase):
         if (
             self.property_value_type == PropertyValueType.MASK_INDEX
             and self._is_in_effect()
+            and self._tdsb is not None
             and not self._tdsb.synthetic
         ):
             return True

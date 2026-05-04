@@ -7,6 +7,10 @@ import typing
 from contextlib import suppress
 from typing import Any
 
+from ..binary.chunk import ContainerChunk
+from ..binary.misc_chunks import PardChunk
+from ..binary.property_chunks import TdsbChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
@@ -102,8 +106,8 @@ def _resolve_effect_value(
         # last_value from parT is already 1-indexed and reflects the
         # current value even when the property is absent from tdgp.
         raw_default = param_def.get("default_value", 0)
-        fallback: Any = raw_default + 1
-        value: Any = param_def.get("last_value", fallback)
+        fallback = raw_default + 1
+        value = param_def.get("last_value", fallback)
         return value, value
     if control_type == PropertyControlType.BOOLEAN:
         value = param_def.get("default_value", param_def.get("last_value"))
@@ -393,10 +397,10 @@ def parse_effect(
         composition: The parent composition.
     """
     sspc_child_chunks = sspc_chunk.chunks
-    fnam_chunk = find_by_type(chunks=sspc_child_chunks, chunk_type="fnam")
+    fnam_chunk = find_by_type(chunks=sspc_child_chunks, chunk_type="fnam", cls=ContainerChunk)
 
     # fnam is a ContainerChunk with a Utf8 child
-    fnam_utf8 = fnam_chunk.chunks[0]
+    fnam_utf8 = find_by_type(chunks=fnam_chunk.chunks, chunk_type="Utf8", cls=Utf8Chunk)
     tdgp_chunk = find_by_list_type(chunks=sspc_child_chunks, list_type="tdgp")
 
     try:
@@ -415,12 +419,12 @@ def parse_effect(
     if param_defs and group_match_name not in effect_param_defs:
         effect_param_defs[group_match_name] = param_defs
     # Resolve _name_utf8 from the effect tdgp's tdsn child
-    tdsn = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn")
-    effect_name_utf8 = tdsn.chunks[0]
+    tdsn = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn", cls=ContainerChunk)
+    effect_name_utf8 = find_by_type(chunks=tdsn.chunks, chunk_type="Utf8", cls=Utf8Chunk)
 
     try:
         effect_tdsb = find_by_type(
-            chunks=tdgp_chunk.chunks, chunk_type="tdsb"
+            chunks=tdgp_chunk.chunks, chunk_type="tdsb", cls=TdsbChunk
         )
     except ChunkNotFoundError:
         effect_tdsb = None
@@ -567,7 +571,7 @@ def _extract_no_value(body: Any, result: dict[str, Any]) -> None:
 
 def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]:
     """Parse effect parameter definition from pard chunk, returning a dict of values."""
-    pard_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pard")
+    pard_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pard", cls=PardChunk)
 
     control_type = PropertyControlType(pard_chunk.property_control_type)
 
@@ -581,9 +585,9 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
         extractor(pard_chunk, result)
 
     with suppress(ChunkNotFoundError):
-        pdnm_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pdnm")
+        pdnm_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pdnm", cls=ContainerChunk)
         # pdnm is a ContainerChunk with a Utf8 child
-        utf8_chunk = pdnm_chunk.chunks[0]
+        utf8_chunk = find_by_type(chunks=pdnm_chunk.chunks, chunk_type="Utf8", cls=Utf8Chunk)
         pdnm_data = str_value(utf8_chunk)
         if control_type == PropertyControlType.ENUM:
             result["property_parameters"] = pdnm_data.split("|")

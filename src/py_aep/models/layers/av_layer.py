@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import typing
-from typing import Any
 
 from py_aep.enums import (
     BlendingMode,
@@ -12,13 +11,14 @@ from py_aep.enums import (
 )
 
 from ..descriptors import ChunkField
+from ..properties.property import Property
 from .layer import Layer
 
 if typing.TYPE_CHECKING:
     from ..items.item import Item
 
 
-def _reverse_frame_blending(value: FrameBlendingType, _body: Any) -> dict[str, int]:
+def _reverse_frame_blending(value: FrameBlendingType, _body: object) -> dict[str, int]:
     """Decompose FrameBlendingType into frame_blending + frame_blending_mode bits."""
     if value == FrameBlendingType.NO_FRAME_BLEND:
         return {"frame_blending": 0}
@@ -127,11 +127,11 @@ class AVLayer(Layer):
 
     def _on_environment_layer_set(self) -> None:
         if self._ldta.environment_layer:
-            self._ldta.three_d_layer = 1
+            self._ldta.three_d_layer = True
 
     def _on_three_d_layer_set(self) -> None:
         if self._ldta.three_d_layer:
-            self._ldta.environment_layer = 0
+            self._ldta.environment_layer = False
 
     @property
     def _matte_layer_id(self) -> int:
@@ -329,12 +329,15 @@ class AVLayer(Layer):
             prop = self["ADBE Time Remapping"]
         except KeyError:
             return False
-        return bool(prop._animated)  # type: ignore[union-attr]
+        if not isinstance(prop, Property):
+            return False
+        return bool(prop._animated)
 
     @time_remap_enabled.setter
     def time_remap_enabled(self, value: bool) -> None:
         prop = self["ADBE Time Remapping"]
-        prop._animated = value  # type: ignore[union-attr]
+        if isinstance(prop, Property):
+            prop._animated = value
 
     @property
     def width(self) -> int:

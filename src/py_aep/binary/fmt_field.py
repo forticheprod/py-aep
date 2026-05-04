@@ -161,7 +161,7 @@ def bool_field(**kw: Any) -> Any:
 
 
 @lru_cache(maxsize=None)
-def _struct_info(
+def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None on instances, but type objects are always hashable
     cls: type,
 ) -> tuple[
     str,
@@ -323,7 +323,7 @@ class FmtItem:
     @classmethod
     def frombytes(cls, data: bytes) -> FmtItem:
         """Construct an item from bytes using its `_struct_info` metadata."""
-        info = _struct_info(cls)
+        info = _struct_info(cls)  # type: ignore[arg-type]
         if info is None:
             raise TypeError(f"{cls.__name__} has no fmt_field metadata")
         fmt, data_fields, _, encodings, _, endians, _, coerces = info
@@ -344,7 +344,7 @@ class FmtItem:
 
     def tobytes(self) -> bytes:
         """Serialize an item to bytes using its `_struct_info` metadata."""
-        info = _struct_info(type(self))
+        info = _struct_info(type(self))  # type: ignore[arg-type]
         if info is None:
             raise TypeError(f"{type(self).__name__} has no fmt_field metadata")
         fmt, data_fields, _, encodings, _, endians, _, coerces = info

@@ -9,7 +9,8 @@ from ...descriptors import ChunkField
 from ...validators import validate_one_of
 
 if typing.TYPE_CHECKING:
-    from ....binary.chunk import Chunk
+    from ....binary.render_chunks import PngRoptChunk
+    from ....binary.scalar_chunks import Utf8Chunk
 
 
 class PngFormatOptions:
@@ -36,8 +37,8 @@ class PngFormatOptions:
     def __init__(
         self,
         *,
-        _body: Chunk,
-        _hdr10_utf8: Chunk | None = None,
+        _body: PngRoptChunk,
+        _hdr10_utf8: Utf8Chunk | None = None,
     ) -> None:
         self._body = _body
         self._hdr10_utf8 = _hdr10_utf8

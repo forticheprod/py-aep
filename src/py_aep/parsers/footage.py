@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import typing
 
+from ..binary.footage_chunks import OptiChunk, SspcChunk
+from ..binary.item_chunks import IdtaChunk
+from ..binary.scalar_chunks import U1Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
@@ -20,9 +23,9 @@ if typing.TYPE_CHECKING:
 
 def parse_footage(
     child_chunks: list[Chunk],
-    _idta: Chunk,
-    _name_utf8: Chunk,
-    _cmta: Chunk | None,
+    _idta: IdtaChunk,
+    _name_utf8: Utf8Chunk,
+    _cmta: Utf8Chunk | None,
     _item_list: ListChunk,
     project: Project,
     parent_folder: FolderItem,
@@ -41,14 +44,14 @@ def parse_footage(
     pin_chunk = find_by_list_type(chunks=child_chunks, list_type="Pin ")
 
     pin_child_chunks = pin_chunk.chunks
-    sspc_chunk = find_by_type(chunks=pin_child_chunks, chunk_type="sspc")
-    opti_chunk = find_by_type(chunks=pin_child_chunks, chunk_type="opti")
+    sspc_chunk = find_by_type(chunks=pin_child_chunks, chunk_type="sspc", cls=SspcChunk)
+    opti_chunk = find_by_type(chunks=pin_child_chunks, chunk_type="opti", cls=OptiChunk)
 
     # Extract CLRS color management chunks (optional)
     try:
         clrs = find_by_list_type(chunks=pin_child_chunks, list_type="CLRS")
         try:
-            linl = find_by_type(chunks=clrs.chunks, chunk_type="linl")
+            linl: U1Chunk | None = find_by_type(chunks=clrs.chunks, chunk_type="linl", cls=U1Chunk)
         except ChunkNotFoundError:
             linl = None
     except ChunkNotFoundError:

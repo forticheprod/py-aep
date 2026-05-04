@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from ..binary.chunk import ContainerChunk, ListChunk
+from ..binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     find_by_list_type,
     find_by_type,
@@ -60,12 +63,12 @@ def parse_render_queue_items(
     # This ldat contains N × item_size bytes, one block per render queue item
     list_settings_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="list")
 
-    settings_lhd3 = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3")
+    settings_lhd3 = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3", cls=Lhd3Chunk)
     num_items = settings_lhd3.count
     if num_items == 0:
         return []
 
-    settings_ldat = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat")
+    settings_ldat = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat", cls=LdatChunk)
     render_settings_chunks: list[RenderSettingsItem] = settings_ldat.items
 
     # LItm chunk is probably the RQItemCollection.
@@ -79,14 +82,17 @@ def parse_render_queue_items(
     list_chunk = None
 
     for chunk in litm_chunk.chunks:
-        if chunk.chunk_type == "RCom":
+        if isinstance(chunk, ContainerChunk) and chunk.chunk_type == "RCom":
             # RCom is a ContainerChunk with a Utf8 child
-            rcom_chunk = chunk.chunks[0] if chunk.chunks else None
-        elif chunk.chunk_type == "LIST":
-            list_type = chunk.list_type
-            if list_type == "list":
+            rcom_chunk = find_by_type(
+                chunks=chunk.chunks,
+                chunk_type="Utf8",
+                cls=Utf8Chunk,
+            )
+        elif isinstance(chunk, ListChunk):
+            if chunk.list_type == "list":
                 list_chunk = chunk
-            elif list_type == "LOm " and list_chunk is not None:
+            elif chunk.list_type == "LOm " and list_chunk is not None:
                 # We have both list_chunk and lom_chunk, parse the item
                 item = parse_render_queue_item(
                     list_chunk=list_chunk,
@@ -106,11 +112,11 @@ def parse_render_queue_items(
 
 
 def parse_render_queue_item(
-    list_chunk: Chunk,
-    lom_chunk: Chunk,
+    list_chunk: ListChunk,
+    lom_chunk: ListChunk,
     ldat_body: RenderSettingsItem,
-    rcom_utf8: Chunk | None,
-    litm_chunk: Chunk,
+    rcom_utf8: Utf8Chunk | None,
+    litm_chunk: ListChunk,
     project: Project,
     render_queue: RenderQueue,
 ) -> RenderQueueItem:
@@ -126,7 +132,7 @@ def parse_render_queue_item(
         project: The Project object being constructed, used to link comp
             references in render queue items.
     """
-    om_ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat")
+    om_ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat", cls=LdatChunk)
     om_ldat_items = om_ldat.items
 
     # comp_id is stored in the render settings ldat

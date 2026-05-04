@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 def _reorder_and_fill(
-    container: PropertyGroup | Any,
+    container: PropertyGroup,
     specs: Sequence[_PropSpec | _GroupSpec],
     child_depth: int,
     *,
@@ -114,7 +114,7 @@ def _reorder_and_fill(
                 if tail_mode == "all" or isinstance(child, PropertyGroup):
                     ordered.append(child)
 
-    container.properties = ordered  # type: ignore[assignment]
+    container.properties = ordered
 
 
 _INDEXED_GROUP_MATCH_NAMES: set[str] = {
@@ -169,7 +169,7 @@ class PropertyGroup(PropertyBase):
         auto_name: str,
         property_depth: int,
         *,
-        parent_property: PropertyGroup | Any | None = None,
+        parent_property: PropertyGroup | None = None,
         synthetic: bool = False,
     ) -> PropertyGroup:
         """Create a synthetic empty PropertyGroup with backing chunks.
@@ -227,10 +227,10 @@ class PropertyGroup(PropertyBase):
         *,
         _tdmn: Chunk | None = None,
         _tdgp: ListChunk | None = None,
-        _tdsb: Chunk | None,
-        _name_utf8: Chunk | None = None,
-        _fnam_utf8: Chunk | None = None,
-        parent_property: PropertyGroup | Any | None = None,
+        _tdsb: TdsbChunk | None,
+        _name_utf8: Utf8Chunk | None = None,
+        _fnam_utf8: Utf8Chunk | None = None,
+        parent_property: PropertyGroup | None = None,
         match_name: str,
         property_depth: int,
         properties: list[Property | PropertyGroup],
@@ -289,6 +289,7 @@ class PropertyGroup(PropertyBase):
         # Flip synthetic flags on tdmn + group-owned chunks (not children).
         if self._tdmn is not None:
             self._tdmn.synthetic = False
+        assert self._tdgp is not None
         self._tdgp.synthetic = False
         self._tdsb.synthetic = False
         if self._name_utf8 is not None:

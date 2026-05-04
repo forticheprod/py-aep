@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typing
 
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
@@ -14,21 +15,19 @@ from ..binary.utils import (
 from ..models.essential_graphics import EssentialGraphicsController
 
 if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk
+    from ..binary.chunk import Chunk, ListChunk
 
 
-def _parse_controller(cctl_chunk: Chunk) -> EssentialGraphicsController:
+def _parse_controller(cctl_chunk: ListChunk) -> EssentialGraphicsController:
     """Parse a single LIST:CCtl chunk into a controller.
 
     Args:
         cctl_chunk: A LIST:CCtl chunk.
     """
-    chunks = cctl_chunk.chunks
-
-    cps2 = find_by_list_type(chunks=chunks, list_type="CpS2")
+    cps2 = find_by_list_type(chunks=cctl_chunk.chunks, list_type="CpS2")
     name_utf8 = filter_by_type(chunks=cps2.chunks, chunk_type="Utf8")[0]
 
-    ctyp = find_by_type(chunks=chunks, chunk_type="CTyp")
+    ctyp = find_by_type(chunks=cctl_chunk.chunks, chunk_type="CTyp")
 
     return EssentialGraphicsController(
         _name_utf8=name_utf8,
@@ -38,7 +37,7 @@ def _parse_controller(cctl_chunk: Chunk) -> EssentialGraphicsController:
 
 def parse_essential_graphics(
     child_chunks: list[Chunk],
-) -> tuple[Chunk, list[EssentialGraphicsController]] | None:
+) -> tuple[Utf8Chunk, list[EssentialGraphicsController]] | None:
     """Parse the Essential Graphics panel from a composition's child chunks.
 
     Reads the `LIST:CIF3` chunk (the most complete EG definition version)
@@ -60,7 +59,9 @@ def parse_essential_graphics(
 
     # Template name from the first LIST:CpS2
     cps2 = find_by_list_type(chunks=cif3_chunks, list_type="CpS2")
-    template_name_utf8 = filter_by_type(chunks=cps2.chunks, chunk_type="Utf8")[0]
+    template_name_utf8 = filter_by_type(
+        chunks=cps2.chunks, chunk_type="Utf8", cls=Utf8Chunk,
+    )[0]
 
     # Parse controllers from LIST:CCtl entries
     cctl_chunks = filter_by_list_type(chunks=cif3_chunks, list_type="CCtl")

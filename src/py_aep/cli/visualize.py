@@ -30,10 +30,13 @@ from ..models.application import Application
 from ..models.items.composition import CompItem
 from ..models.items.folder import FolderItem
 from ..models.items.footage import FootageItem
+from ..models.items.item import Item
 from ..models.layers.layer import Layer
 from ..models.project import Project
 from ..models.properties.property import Property
 from ..models.properties.property_group import PropertyGroup
+from ..models.renderqueue.output_module import OutputModule
+from ..models.renderqueue.render_queue_item import RenderQueueItem
 
 # =============================================================================
 # Node builders - Convert model objects to a uniform dict structure
@@ -74,7 +77,7 @@ def build_project_node(
 
 
 def build_item_node(
-    item: Any, project: Project, include_properties: bool = True
+    item: Item, project: Project, include_properties: bool = True
 ) -> dict[str, Any]:
     """Build a node for any item type."""
     if isinstance(item, FolderItem):
@@ -261,7 +264,7 @@ def build_render_queue_node(project: Project) -> dict[str, Any]:
 
 
 def build_render_queue_item_node(
-    item: Any, index: int, project: Project
+    item: RenderQueueItem, index: int, project: Project
 ) -> dict[str, Any]:
     """Build a render queue item node with output modules."""
     attrs: dict[str, Any] = {
@@ -284,7 +287,7 @@ def build_render_queue_item_node(
     }
 
 
-def build_output_module_node(om: Any) -> dict[str, Any]:
+def build_output_module_node(om: OutputModule) -> dict[str, Any]:
     """Build an output module node."""
     attrs: dict[str, Any] = {}
     if om.file:

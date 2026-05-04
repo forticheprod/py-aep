@@ -988,13 +988,13 @@ class TestFipsChunk:
 
 class TestFth5Chunk:
     def test_roundtrip(self) -> None:
-        from py_aep.binary.misc_chunks import FeatherPoint, Fth5Chunk
+        from py_aep.binary.misc_chunks import FeatherPointItem, Fth5Chunk
 
         pts = [
-            FeatherPoint(seg_loc=1, interp_raw=0, rel_seg_loc=0.5,
-                         radius=10.0, corner_angle=45.0, tension=0.5),
-            FeatherPoint(seg_loc=2, interp_raw=2, rel_seg_loc=0.75,
-                         radius=-5.0, corner_angle=0.0, tension=1.0),
+            FeatherPointItem(seg_loc=1, interp_raw=0, rel_seg_loc=0.5,
+                             radius=10.0, corner_angle=45.0, tension=0.5),
+            FeatherPointItem(seg_loc=2, interp_raw=2, rel_seg_loc=0.75,
+                             radius=-5.0, corner_angle=0.0, tension=1.0),
         ]
         chunk = Fth5Chunk(chunk_type="fth5", points=pts)
         buf = BytesIO()

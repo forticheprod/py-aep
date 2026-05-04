@@ -8,7 +8,11 @@ from ..descriptors import ChunkField
 from ..validators import validate_number
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+    from ...binary.ldat_chunks import ShapePoint
+    from ...binary.misc_chunks import (
+        FeatherPointItem,
+        ShphChunk,
+    )
     from ..items.composition import CompItem
 
 
@@ -72,7 +76,7 @@ class FeatherPoint:
     The angle value is 0% for feather points not at corners.
     Read / Write."""
 
-    def __init__(self, *, _fp: Chunk) -> None:
+    def __init__(self, *, _fp: FeatherPointItem) -> None:
         self._fp = _fp
 
     @property
@@ -137,8 +141,8 @@ class Shape:
     def __init__(
         self,
         *,
-        _shph: Chunk | None = None,
-        _points: list[Chunk] | None = None,
+        _shph: ShphChunk | None = None,
+        _points: list[ShapePoint] | None = None,
         _is_mask: bool = False,
         _composition: CompItem | None = None,
         closed: bool | None = None,
@@ -160,7 +164,7 @@ class Shape:
             return (float(self._composition.width), float(self._composition.height))
         return None
 
-    def _denormalize_point(self, pt: Chunk) -> list[float]:
+    def _denormalize_point(self, pt: ShapePoint) -> list[float]:
         """Convert a normalized [0,1] shape point to absolute coordinates."""
         shph = self._shph
         assert shph is not None

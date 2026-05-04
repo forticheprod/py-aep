@@ -12,6 +12,8 @@ from .property_group import PropertyGroup
 
 if typing.TYPE_CHECKING:
     from ...binary.chunk import Chunk, ListChunk
+    from ...binary.property_chunks import TdsbChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from .property import Property
 
 
@@ -84,10 +86,10 @@ class MaskPropertyGroup(PropertyGroup):
         self,
         *,
         _tdgp: ListChunk,
-        _tdsb: Chunk | None,
+        _tdsb: TdsbChunk | None,
         _mkif: Chunk,
         _mask_shape_tdsb: Chunk | None,
-        _name_utf8: Chunk | None = None,
+        _name_utf8: Utf8Chunk | None = None,
         match_name: str,
         property_depth: int,
         auto_name: str | None = None,

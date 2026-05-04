@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
     from .chunk import Chunk
 
-T = TypeVar("T")
+T = TypeVar("T", bound="Chunk")
 
 CHUNK_TYPES: dict[str, type[Chunk]] = {}
 
@@ -18,7 +18,7 @@ def register(*chunk_types: str) -> Callable[[type[T]], type[T]]:
 
     def decorator(cls: type[T]) -> type[T]:
         for ct in chunk_types:
-            CHUNK_TYPES[ct] = cls  # type: ignore[assignment]
+            CHUNK_TYPES[ct] = cls
         return cls
 
     return decorator

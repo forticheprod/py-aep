@@ -6,7 +6,7 @@ from ....enums import OpenExrCompression
 from ...descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ....binary.chunk import Chunk
+    from ....binary.render_chunks import OpenExrRoptChunk
 
 
 class OpenExrFormatOptions:
@@ -26,7 +26,7 @@ class OpenExrFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Chunk) -> None:
+    def __init__(self, *, _body: OpenExrRoptChunk) -> None:
         self._body = _body
 
     compression = ChunkField.enum(
@@ -68,7 +68,7 @@ class OpenExrFormatOptions:
         `45.0` in After Effects. Read / Write.
         """
         if self.compression in (OpenExrCompression.DWAA, OpenExrCompression.DWAB):
-            return self._body.dwa_compression_level  # type: ignore[no-any-return]
+            return self._body.dwa_compression_level
         return None
 
     @dwa_compression_level.setter

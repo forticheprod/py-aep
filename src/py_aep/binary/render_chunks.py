@@ -135,7 +135,7 @@ class RoptChunk(Chunk):
     ) -> RoptChunk:
         if cls is not RoptChunk:
             # Variant subclass - use standard fmt_field parsing
-            return super().read(fp, size, chunk_type=chunk_type)  # type: ignore[return-value]
+            return super().read(fp, size, chunk_type=chunk_type)  # type: ignore[return-value]  # returns Self
         if size < 4:
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
         # Peek at discriminator (first 4 bytes = format_code)
@@ -145,7 +145,7 @@ class RoptChunk(Chunk):
         variant_cls = _ROPT_VARIANTS.get(format_code, RoptChunk)
         if variant_cls is RoptChunk:
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
-        return variant_cls.read(fp, size, chunk_type=chunk_type)  # type: ignore[attr-defined, no-any-return]
+        return variant_cls.read(fp, size, chunk_type=chunk_type)
 
 
 @define
@@ -229,7 +229,7 @@ class PngRoptChunk(RoptChunk):
     _trailing: bytes = field(default=b"", repr=False)
 
 
-_ROPT_VARIANTS: dict[str, type] = {
+_ROPT_VARIANTS: dict[str, type[RoptChunk]] = {
     "sDPX": CineonRoptChunk,
     "JPEG": JpegRoptChunk,
     "oEXR": OpenExrRoptChunk,

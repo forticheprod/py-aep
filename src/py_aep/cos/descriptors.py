@@ -13,7 +13,7 @@ This module mirrors the role of
 
 from __future__ import annotations
 
-from typing import Any, Callable, Generic, TypeVar, overload
+from typing import Any, Callable, Generic, TypeVar, cast, overload
 
 T = TypeVar("T")
 
@@ -78,19 +78,19 @@ class CosField(Generic[T]):
             return self
         # Instance-dict overrides (set by parser or user when no dict)
         if self.public_name in obj.__dict__:
-            return obj.__dict__[self.public_name]  # type: ignore[no-any-return]
+            return cast(T, obj.__dict__[self.public_name])
         d: dict[str, Any] | None = getattr(obj, self.dict_attr, None)
         if d is None:
-            return self.default  # type: ignore[return-value]
+            return cast(T, self.default)
         raw = d.get(self.key, _SENTINEL)
         if raw is _SENTINEL:
-            return self.default  # type: ignore[return-value]
+            return cast(T, self.default)
         if self.transform is not None:
             try:
-                return self.transform(raw)  # type: ignore[no-any-return,return-value]
+                return cast(T, self.transform(raw))
             except (TypeError, ValueError, KeyError, IndexError):
-                return self.default  # type: ignore[return-value]
-        return raw  # type: ignore[no-any-return,return-value]
+                return cast(T, self.default)
+        return cast(T, raw)
 
     def __set__(self, obj: Any, value: T) -> None:
         if self.read_only:

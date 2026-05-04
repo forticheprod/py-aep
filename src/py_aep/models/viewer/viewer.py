@@ -6,7 +6,7 @@ from ...enums import ViewerType
 from ..descriptors import ChunkField
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+    from ...binary.scalar_chunks import AsciiChunk, U1Chunk
     from .view import View
 
 
@@ -39,9 +39,9 @@ class Viewer:
     def __init__(
         self,
         *,
-        _fitt: Chunk,
-        _foac: Chunk,
-        _fiac: Chunk,
+        _fitt: AsciiChunk,
+        _foac: U1Chunk,
+        _fiac: U1Chunk,
     ) -> None:
         self._fitt = _fitt
         self._foac = _foac

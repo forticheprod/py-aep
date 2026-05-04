@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 import typing
 from pathlib import PurePosixPath
+from typing import cast
 
+from ...binary.footage_chunks import PsdOptiChunk
 from ...binary.utils import (
     UNDEFINED_FRAME,
     ChunkNotFoundError,
@@ -17,9 +19,9 @@ from ..transforms import strip_null
 from .footage import FootageSource
 
 if typing.TYPE_CHECKING:
-    from typing import Any
-
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
+    from ...binary.footage_chunks import OptiChunk, SspcChunk
+    from ...binary.scalar_chunks import U1Chunk
 
 
 class FileSource(FootageSource):
@@ -68,7 +70,7 @@ class FileSource(FootageSource):
         return ""
 
     @property
-    def file_attributes(self) -> dict[str, Any]:
+    def file_attributes(self) -> dict[str, int | str]:
         """
         Format-specific metadata extracted from the source file header stored
         in the project.
@@ -100,9 +102,9 @@ class FileSource(FootageSource):
         self,
         *,
         _pin: ListChunk,
-        _sspc: Chunk,
-        _opti: Chunk | None = None,
-        _linl: Chunk | None = None,
+        _sspc: SspcChunk,
+        _opti: OptiChunk,
+        _linl: U1Chunk | None = None,
         _clrs: ListChunk | None = None,
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)
@@ -170,19 +172,20 @@ class FileSource(FootageSource):
                     )
                     self._file = str(PurePosixPath(self._file) / first_frame)
 
-        if _opti is not None and getattr(_opti, "asset_type", "") == "8BPS":
-            self._file_attributes: dict[str, Any] = {
-                "psd_layer_index": _opti.psd_layer_index,
-                "psd_group_name": strip_null(_opti.psd_group_name or ""),
-                "psd_layer_count": _opti.psd_layer_count,
-                "psd_canvas_width": _opti.psd_canvas_width,
-                "psd_canvas_height": _opti.psd_canvas_height,
-                "psd_bit_depth": _opti.psd_bit_depth,
-                "psd_channels": _opti.psd_channels,
-                "psd_layer_top": _opti.psd_layer_top,
-                "psd_layer_left": _opti.psd_layer_left,
-                "psd_layer_bottom": _opti.psd_layer_bottom,
-                "psd_layer_right": _opti.psd_layer_right,
+        if getattr(_opti, "asset_type", "") == "8BPS":
+            psd_opti = cast(PsdOptiChunk, _opti)
+            self._file_attributes: dict[str, int | str] = {
+                "psd_layer_index": psd_opti.psd_layer_index,
+                "psd_group_name": strip_null(psd_opti.psd_group_name or ""),
+                "psd_layer_count": psd_opti.psd_layer_count,
+                "psd_canvas_width": psd_opti.psd_canvas_width,
+                "psd_canvas_height": psd_opti.psd_canvas_height,
+                "psd_bit_depth": psd_opti.psd_bit_depth,
+                "psd_channels": psd_opti.psd_channels,
+                "psd_layer_top": psd_opti.psd_layer_top,
+                "psd_layer_left": psd_opti.psd_layer_left,
+                "psd_layer_bottom": psd_opti.psd_layer_bottom,
+                "psd_layer_right": psd_opti.psd_layer_right,
             }
         else:
             self._file_attributes = {}

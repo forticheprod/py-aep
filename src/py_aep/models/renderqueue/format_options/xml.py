@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from enum import IntEnum
 from typing import TYPE_CHECKING, Dict
 
 from ....enums import (
@@ -23,7 +24,7 @@ _ADOBE_TICKS_PER_SECOND = 254016000000
 class _EnumParam:
     """Descriptor for XML enum parameters (read/write)."""
 
-    def __init__(self, key: str, enum_cls: type) -> None:
+    def __init__(self, key: str, enum_cls: type[IntEnum]) -> None:
         self._key = key
         self._enum_cls = enum_cls
 
@@ -36,7 +37,7 @@ class _EnumParam:
         return obj._enum_param(self._key, self._enum_cls)
 
     def __set__(self, obj: XmlFormatOptions, value: object) -> None:
-        obj._set_enum_param(self._key, value, self._enum_cls)  # type: ignore[arg-type]
+        obj._set_enum_param(self._key, value, self._enum_cls)
 
 
 def _extract_params(
@@ -71,7 +72,7 @@ def _extract_params(
     return params, elements
 
 
-def _try_enum_or_int(enum_cls: type, raw_str: str) -> object:
+def _try_enum_or_int(enum_cls: type[IntEnum], raw_str: str) -> object:
     """Try to parse an int, then map to an enum; fall back to int."""
     try:
         raw_value = int(raw_str)
@@ -180,14 +181,14 @@ class XmlFormatOptions:
         self._sync_xml()
 
     def _set_enum_param(
-        self, key: str, value: int | None, enum_cls: type | None = None
+        self, key: str, value: object, enum_cls: type[IntEnum] | None = None
     ) -> None:
         """Set an Adobe parameter from an enum or int value."""
         if value is None:
             return
-        int_value = int(value)
-        if enum_cls is not None and int_value not in enum_cls._value2member_map_:  # type: ignore[attr-defined]
-            members = ", ".join(f"{m.name} ({m.value})" for m in enum_cls)  # type: ignore[attr-defined]
+        int_value = int(value)  # type: ignore[call-overload]
+        if enum_cls is not None and int_value not in enum_cls._value2member_map_:
+            members = ", ".join(f"{m.name} ({m.value})" for m in enum_cls)
             raise ValueError(
                 f"Invalid value {value!r} for {key!r}. "
                 f"Valid {enum_cls.__name__} values: {members}"

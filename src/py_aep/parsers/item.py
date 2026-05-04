@@ -3,6 +3,11 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from ..binary.chunk import ListChunk
+from ..binary.item_chunks import IdtaChunk
+from ..binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ..binary.misc_chunks import OtlnChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
@@ -17,7 +22,7 @@ from .footage import parse_footage
 from .view import parse_viewers
 
 if TYPE_CHECKING:
-    from ..binary.chunk import Chunk, ListChunk
+    from ..binary.chunk import Chunk
     from ..binary.misc_chunks import OtlnItem
     from ..models.items.composition import CompItem
     from ..models.items.footage import FootageItem
@@ -42,10 +47,10 @@ def parse_item(
     """
     child_chunks = item_chunk.chunks
 
-    idta = find_by_type(chunks=child_chunks, chunk_type="idta")
-    name_utf8 = find_by_type(chunks=child_chunks, chunk_type="Utf8")
+    idta = find_by_type(chunks=child_chunks, chunk_type="idta", cls=IdtaChunk)
+    name_utf8 = find_by_type(chunks=child_chunks, chunk_type="Utf8", cls=Utf8Chunk)
     try:
-        cmta = find_by_type(chunks=child_chunks, chunk_type="cmta")
+        cmta: Utf8Chunk | None = find_by_type(chunks=child_chunks, chunk_type="cmta", cls=Utf8Chunk)
     except ChunkNotFoundError:
         cmta = None
 
@@ -101,10 +106,10 @@ def parse_folder(
     is_root: bool,
     child_chunks: list[Chunk],
     project: Project,
-    _idta: Chunk | None,
-    _name_utf8: Chunk | None,
-    _cmta: Chunk | None,
-    _item_list: ListChunk | None,
+    _idta: IdtaChunk | None,
+    _name_utf8: Utf8Chunk | None,
+    _cmta: Utf8Chunk | None,
+    _item_list: ListChunk,
     parent_folder: FolderItem | None,
 ) -> FolderItem:
     """
@@ -138,7 +143,7 @@ def parse_folder(
     otln_map = _build_otln_map(folder_chunks)
     child_item_chunks = filter_by_list_type(chunks=folder_chunks, list_type="Item")
     for child_item_chunk in child_item_chunks:
-        idta = find_by_type(chunks=child_item_chunk.chunks, chunk_type="idta")
+        idta = find_by_type(chunks=child_item_chunk.chunks, chunk_type="idta", cls=IdtaChunk)
         child_item = parse_item(
             item_chunk=child_item_chunk,
             project=project,
@@ -164,19 +169,18 @@ def _build_otln_map(
     otln_map: dict[int, list[OtlnItem]] = {}
     last_comp_id: int | None = None
     for chunk in folder_chunks:
-        lt = getattr(chunk, "list_type", None)
-        if lt is None:
+        if not isinstance(chunk, ListChunk):
             continue
-        if lt == "Item":
-            idta = find_by_type(chunks=chunk.chunks, chunk_type="idta")
+        if chunk.list_type == "Item":
+            idta = find_by_type(chunks=chunk.chunks, chunk_type="idta", cls=IdtaChunk)
             if idta.item_type == ItemType.COMPOSITION:
                 last_comp_id = idta.item_id
             else:
                 last_comp_id = None
-        elif lt == "FEE " and last_comp_id is not None:
+        elif chunk.list_type == "FEE " and last_comp_id is not None:
             with suppress(ChunkNotFoundError):
                 otln_chunk = find_by_type(
-                    chunks=chunk.chunks, chunk_type="otln"
+                    chunks=chunk.chunks, chunk_type="otln", cls=OtlnChunk
                 )
                 otln_map[last_comp_id] = otln_chunk.items
             last_comp_id = None
@@ -198,9 +202,9 @@ def _parse_guides(child_chunks: list[Chunk]) -> list[Guide]:
         return []
 
     list_chunk = find_by_list_type(chunks=gide_list.chunks, list_type="list")
-    lhd3 = find_by_type(chunks=list_chunk.chunks, chunk_type="lhd3")
+    lhd3 = find_by_type(chunks=list_chunk.chunks, chunk_type="lhd3", cls=Lhd3Chunk)
     if lhd3.count == 0:
         return []
 
-    ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat")
+    ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat", cls=LdatChunk)
     return [Guide(_guide_item=item) for item in ldat.items]

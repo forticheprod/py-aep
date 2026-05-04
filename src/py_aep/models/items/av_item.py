@@ -5,7 +5,9 @@ import typing
 from .item import Item
 
 if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
+    from ...binary.item_chunks import IdtaChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from ..descriptors import ChunkField
     from ..project import Project
     from ..viewer.viewer import Viewer
@@ -52,12 +54,12 @@ class AVItem(Item):
     def __init__(
         self,
         *,
-        _idta: Chunk | None,
-        _name_utf8: Chunk,
-        _cmta: Chunk | None,
+        _idta: IdtaChunk,
+        _name_utf8: Utf8Chunk,
+        _cmta: Utf8Chunk | None,
         _item_list: ListChunk | None = None,
         project: Project,
-        parent_folder: FolderItem | None,
+        parent_folder: FolderItem,
         type_name: str,
     ) -> None:
         super().__init__(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..binary.render_chunks import RouuChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
@@ -46,15 +48,15 @@ def parse_output_module(
     Returns:
         OutputModule with parsed attributes.
     """
-    roou_chunk = find_by_type(chunks=chunks, chunk_type="Roou")
+    roou_chunk = find_by_type(chunks=chunks, chunk_type="Roou", cls=RouuChunk)
 
     # Get the alas chunk for write-through
     # Utf8 chunks after the Als2 LIST: [0] = format/template name, [1] = file
     # name template. Files without hdrm (pre-2024) have no Utf8 before Als2.
     try:
         als2_chunk = find_by_list_type(chunks=chunks, list_type="Als2")
-        alas_utf8 = find_by_type(chunks=als2_chunk.chunks, chunk_type="alas")
-        post_als2_utf8 = find_chunks_after(chunks, "Utf8", "LIST:Als2")
+        alas_utf8 = find_by_type(chunks=als2_chunk.chunks, chunk_type="alas", cls=Utf8Chunk)
+        post_als2_utf8 = find_chunks_after(chunks, "Utf8", "LIST:Als2", cls=Utf8Chunk)
         name_utf8 = post_als2_utf8[0]
         file_name_utf8 = post_als2_utf8[1]
     except ChunkNotFoundError:
