@@ -52,8 +52,8 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
 ```powershell
 uv sync --extra dev --extra docs
 uv run mypy src/py_aep
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+uv run ruff check src/ tests/ scripts/
+uv run ruff format src/ tests/ scripts/
 uv run zensical build --strict  # Build documentation
 uv run pytest 2>&1 | Select-Object -Last 40
 uv sync --python 3.7 --extra dev  # For Python 3.7
