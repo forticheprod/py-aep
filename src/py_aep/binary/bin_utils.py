@@ -1,8 +1,8 @@
 """Low-level binary I/O primitives for AEP chunk parsing.
 
 All functions default to big-endian because AEP files are always RIFX.
-The `endian` parameter on `read_fmt` / `write_fmt` exists for Phase 2
-typed chunks that have little-endian fields.
+The `endian` parameter on `read_fmt` / `write_fmt` exists for typed chunks
+that have little-endian fields.
 """
 from __future__ import annotations
 

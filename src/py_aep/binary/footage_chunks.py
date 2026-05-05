@@ -1,7 +1,7 @@
 """Footage chunk types: sspc (source settings), opti (asset info).
 
 SspcChunk uses `fmt_field()` for all fixed-layout fields with `BitField`
-descriptors for alpha flags and `@property` for computed values.
+descriptors for alpha flags.
 OptiChunk uses variant subclass dispatch: SoliOptiChunk (fmt_field),
 PsdOptiChunk (custom read/write for LE fields), PlaceholderOptiChunk.
 """
@@ -134,84 +134,6 @@ class SspcChunk(Chunk):
     invert_alpha = BitField("_alpha_flags", 1)
     premultiplied = BitField("_alpha_flags", 0)
 
-    # -- Computed properties -----------------------------------------------
-
-    @property
-    def premul_color(self) -> list[int]:
-        """Premultiply color as [R, G, B]."""
-        return [self.premul_color_r, self.premul_color_g, self.premul_color_b]
-
-    @premul_color.setter
-    def premul_color(self, value: list[int]) -> None:
-        self.premul_color_r, self.premul_color_g, self.premul_color_b = (
-            value[0], value[1], value[2]
-        )
-
-    @property
-    def native_frame_rate(self) -> float:
-        return (
-            self.native_frame_rate_integer
-            + self.native_frame_rate_fractional / 65536.0
-        )
-
-    @property
-    def pixel_aspect(self) -> float:
-        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
-
-    @property
-    def has_alpha(self) -> bool:
-        return self.alpha_mode_raw != 3
-
-    @property
-    def has_audio(self) -> bool:
-        return self.audio_sample_rate > 0
-
-    @property
-    def field_separation_type(self) -> int:
-        """0 = OFF, 1 = UPPER_FIELD_FIRST, 2 = LOWER_FIELD_FIRST."""
-        if self.field_separation_type_raw == 0:
-            return 0
-        return self.field_order + 1
-
-    @property
-    def conform_frame_rate(self) -> float:
-        """0 = no conforming."""
-        return (
-            self.conform_frame_rate_integer
-            + self.conform_frame_rate_fractional / 65536.0
-        )
-
-    @property
-    def display_frame_rate(self) -> float:
-        """Effective frame rate (accounts for conform and pulldown)."""
-        base = (
-            self.conform_frame_rate
-            if self.conform_frame_rate != 0
-            else self.native_frame_rate
-        )
-        return base * (0.8 if self.remove_pulldown != 0 else 1.0)
-
-    @property
-    def source_duration(self) -> float:
-        """Raw duration in seconds (before conform/loop)."""
-        return self.duration_dividend / self.duration_divisor
-
-    @property
-    def duration(self) -> float:
-        """Total duration in seconds (with conform and loop)."""
-        conform_factor = (
-            self.native_frame_rate / self.conform_frame_rate
-            if self.conform_frame_rate != 0
-            else 1.0
-        )
-        return self.source_duration * conform_factor * self.loop
-
-    @property
-    def frame_duration(self) -> float:
-        """Total number of frames."""
-        return self.duration * self.display_frame_rate
-
-
 # ---------------------------------------------------------------------------
 # opti - footage asset info (variant dispatch by asset_type)
 # ---------------------------------------------------------------------------
@@ -283,16 +205,6 @@ class SoliOptiChunk(OptiChunk):
     """Solid item name."""
 
     _trailing: bytes = field(default=b"", repr=False)
-
-    @property
-    def color(self) -> list[float]:
-        """RGB color as a 3-element list."""
-        return [self.color_r, self.color_g, self.color_b]
-
-    @color.setter
-    def color(self, value: list[float]) -> None:
-        self.color_r, self.color_g, self.color_b = value[0], value[1], value[2]
-
 
 @define
 class PsdOptiChunk(OptiChunk):

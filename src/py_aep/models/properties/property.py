@@ -1004,7 +1004,7 @@ class Property(PropertyBase):
         layer = self._containing_layer
         if layer is None:
             return 0
-        start_time: float = layer._ldta.start_time
+        start_time: float = layer.start_time
         if start_time == 0.0:
             return 0
         result: int = round(start_time * layer.containing_comp.frame_rate)

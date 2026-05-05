@@ -28,6 +28,7 @@ from ...binary.scalar_chunks import Utf8Chunk
 from ..descriptors import (
     ChunkField,
 )
+from ..transforms import compute_fractional, compute_ratio
 from .settings import (
     SettingsView,
     settings_to_number,
@@ -52,6 +53,29 @@ def _start_time_from_binary(value: int) -> datetime | None:
     if not value:
         return None
     return _AEP_EPOCH + timedelta(seconds=value)
+
+
+def _compute_ldat_frame_rate(body: RenderSettingsItem) -> float:
+    """Compute render-settings frame rate from integer/fractional fields."""
+    return compute_fractional(body, "frame_rate_integer", "frame_rate_fractional")
+
+
+def _compute_ldat_time_span_start(body: RenderSettingsItem) -> float:
+    """Compute time-span start in seconds from dividend/divisor fields."""
+    if body.time_span_start_divisor == 0:
+        return 0.0
+    return compute_ratio(body, "time_span_start_dividend", "time_span_start_divisor")
+
+
+def _compute_ldat_time_span_duration(body: RenderSettingsItem) -> float:
+    """Compute time-span duration in seconds from dividend/divisor fields."""
+    if body.time_span_duration_divisor == 0:
+        return 0.0
+    return compute_ratio(
+        body,
+        "time_span_duration_dividend",
+        "time_span_duration_divisor",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +410,7 @@ class RenderQueueItem:
     @property
     def _use_this_frame_rate(self) -> float:
         """Custom frame rate value."""
-        return self._ldat.frame_rate
+        return _compute_ldat_frame_rate(self._ldat)
 
     @_use_this_frame_rate.setter
     def _use_this_frame_rate(self, value: float) -> None:
@@ -439,7 +463,10 @@ class RenderQueueItem:
             return 0.0, self.comp.duration
         if source == TimeSpanSource.WORK_AREA_ONLY:
             return self.comp.work_area_start, self.comp.work_area_duration
-        return self._ldat.time_span_start, self._ldat.time_span_duration
+        return (
+            _compute_ldat_time_span_start(self._ldat),
+            _compute_ldat_time_span_duration(self._ldat),
+        )
 
     def _resolved_time_span_frames(self) -> tuple[int, int]:
         """Return (start, duration) in frames based on time span source."""

@@ -254,9 +254,11 @@ def _synthesize_effect_property(
     pvt = param_def.get("property_value_type", PropertyValueType.OneD)
 
     if pvt == PropertyValueType.NO_VALUE:
+        raw_display = param_def.get("name")
         display = (
-            param_def.get("name")
-            or MATCH_NAME_TO_AUTO_NAME.get(match_name, "")
+            raw_display
+            if isinstance(raw_display, str) and raw_display
+            else MATCH_NAME_TO_AUTO_NAME.get(match_name, "")
         )
         return PropertyGroup.new(
             match_name,

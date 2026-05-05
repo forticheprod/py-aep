@@ -5,12 +5,9 @@ from __future__ import annotations
 import os
 
 try:
-    from importlib.metadata import PackageNotFoundError, version
+    import importlib.metadata as importlib_metadata
 except ImportError:
-    from importlib_metadata import (  # type: ignore[import,no-redef]  # Python 3.7
-        PackageNotFoundError,
-        version,
-    )
+    import importlib_metadata  # type: ignore[import,no-redef]  # Python 3.7
 
 from .enums import (
     AlphaMode,
@@ -151,8 +148,8 @@ from .models import (
 )
 
 try:
-    __version__ = version("py_aep")
-except PackageNotFoundError:
+    __version__ = importlib_metadata.version("py_aep")
+except importlib_metadata.PackageNotFoundError:
     __version__ = "0.0.0"
 
 __all__ = [

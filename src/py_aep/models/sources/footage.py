@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import typing
-from typing import List
+from typing import Any, List, cast
 
 from ...binary.scalar_chunks import U1Chunk
 from ...binary.utils import find_by_type, toggle_flag_chunk
@@ -12,9 +12,9 @@ from ...enums import (
     PulldownPhase,
 )
 from ...enums.mappings import map_media_color_space
-from ..descriptors import ChunkField
-from ..reverses import denormalize_values, reverse_fractional
-from ..transforms import normalize_values
+from ..descriptors import ChunkField, ComputedField
+from ..reverses import denormalize_values, reverse_fractional, unpack_values
+from ..transforms import compute_fractional, normalize_values, pack_values
 from ..validators import validate_number, validate_sequence
 
 if typing.TYPE_CHECKING:
@@ -35,6 +35,56 @@ def _reverse_field_separation_type(
     }
 
 
+def _compute_has_alpha(body: SspcChunk) -> bool:
+    return body.alpha_mode_raw != 3
+
+
+def _compute_field_separation_type(body: SspcChunk) -> FieldSeparationType:
+    if body.field_separation_type_raw == 0:
+        return FieldSeparationType.OFF
+    return FieldSeparationType.from_binary(body.field_order + 1)
+
+
+def _compute_conform_frame_rate(body: SspcChunk) -> float:
+    return compute_fractional(
+        body, "conform_frame_rate_integer", "conform_frame_rate_fractional",
+    )
+
+
+def _compute_display_frame_rate(body: SspcChunk) -> float:
+    conform = _compute_conform_frame_rate(body)
+    base = (
+        conform
+        if conform != 0
+        else compute_fractional(
+            body, "native_frame_rate_integer", "native_frame_rate_fractional",
+        )
+    )
+    return base * (0.8 if body.remove_pulldown != 0 else 1.0)
+
+
+def _compute_premul_color(body: SspcChunk) -> list[float]:
+    return normalize_values(
+        cast(
+            List[int],
+            pack_values(
+                body,
+                "premul_color_r",
+                "premul_color_g",
+                "premul_color_b",
+            ),
+        )
+    )
+
+
+def _reverse_premul_color(
+    value: list[float], _body: object
+) -> dict[str, Any]:
+    return unpack_values("premul_color_r", "premul_color_g", "premul_color_b")(
+        denormalize_values(value), _body
+    )
+
+
 class FootageSource:
     """
     The `FootageSource` object holds information describing the source of some
@@ -53,16 +103,16 @@ class FootageSource:
     If `has_alpha` is `False`, this attribute has no relevant meaning.
     Read / Write."""
 
-    field_separation_type = ChunkField.enum(
+    field_separation_type = ComputedField.enum(
         FieldSeparationType,
         "_sspc",
-        "field_separation_type",
-        reverse_multi=_reverse_field_separation_type,
+        compute=_compute_field_separation_type,
+        reverse=_reverse_field_separation_type,
     )
     """How the fields are to be separated in non-still footage.
     Read / Write."""
 
-    has_alpha = ChunkField[bool]("_sspc", "has_alpha", read_only=True)
+    has_alpha = ComputedField[bool]("_sspc", compute=_compute_has_alpha)
     """When `True`, the footage has an alpha component. In this case, the
     attributes `alpha_mode`, `invert_alpha`, and `premultiplied` have valid
     values. When `False`, those attributes have no relevant meaning for the
@@ -92,11 +142,10 @@ class FootageSource:
     """The number of times that the footage is to be played consecutively
     when used in a composition. Read / Write."""
 
-    premul_color = ChunkField[List[float]](
+    premul_color = ComputedField[List[float]](
         "_sspc",
-        "premul_color",
-        transform=normalize_values,
-        reverse=denormalize_values,
+        compute=_compute_premul_color,
+        reverse=_reverse_premul_color,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The color to be premultiplied. This attribute is valid only if
@@ -116,10 +165,10 @@ class FootageSource:
     Note:
         Not exposed in ExtendScript."""
 
-    conform_frame_rate = ChunkField[float](
+    conform_frame_rate = ComputedField[float](
         "_sspc",
-        "conform_frame_rate",
-        reverse_multi=reverse_fractional(
+        compute=_compute_conform_frame_rate,
+        reverse=reverse_fractional(
             "conform_frame_rate_integer", "conform_frame_rate_fractional"
         ),
         validate=validate_number(min=0.0, max=999.0),
@@ -127,8 +176,8 @@ class FootageSource:
     """A frame rate to use instead of the `native_frame_rate` value. If
     set to 0, the `native_frame_rate` is used instead. Read / Write."""
 
-    display_frame_rate = ChunkField[float](
-        "_sspc", "display_frame_rate", read_only=True
+    display_frame_rate = ComputedField[float](
+        "_sspc", compute=_compute_display_frame_rate
     )
     """The effective frame rate as displayed and rendered in compositions.
     If `remove_pulldown` is active, the rate is multiplied by 0.8.
@@ -143,7 +192,12 @@ class FootageSource:
     [PulldownPhase.OFF][py_aep.enums.PulldownPhase] by default.
     Read / Write."""
 
-    native_frame_rate = ChunkField[float]("_sspc", "native_frame_rate", read_only=True)
+    native_frame_rate = ComputedField[float](
+        "_sspc",
+        compute=lambda body: compute_fractional(
+            body, "native_frame_rate_integer", "native_frame_rate_fractional",
+        ),
+    )
     """The native frame rate of the footage. Read-only."""
 
     def __init__(
@@ -198,4 +252,4 @@ class FootageSource:
     def is_still(self) -> bool:
         """When `True` the footage is still; When `False`, it has a
         time-based component. Read-only."""
-        return bool(self._sspc.source_duration == 0)
+        return bool(self._sspc.duration_dividend == 0)

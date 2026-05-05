@@ -1,8 +1,8 @@
 """Composition chunk type: cdta (204 bytes).
 
 Uses `fmt_field()` for all fixed-layout fields, `BitField` descriptors
-for two flag bytes, and `@property` accessors for computed values
-(time scale, frame rate, duration, work area, etc.).
+for two flag bytes and sentinel-aware helpers for work-area end
+interpretation.
 """
 from __future__ import annotations
 
@@ -20,8 +20,7 @@ class CdtaChunk(Chunk):
     """Composition data chunk (204 bytes).
 
     Holds timing, dimensions, motion blur, and composition flags.
-    Computed properties (time_scale, frame_rate, duration, etc.) derive
-    from the raw dividend/divisor fields using true division.
+    Binary fields stay raw except for sentinel-aware work-area end helpers.
     """
 
     chunk_type: str = "cdta"
@@ -122,116 +121,30 @@ class CdtaChunk(Chunk):
     # -- Computed properties -----------------------------------------------
 
     @property
-    def bg_color(self) -> list[int]:
-        """Background color as [R, G, B]."""
-        return [self.bg_color_r, self.bg_color_g, self.bg_color_b]
-
-    @bg_color.setter
-    def bg_color(self, value: list[int]) -> None:
-        self.bg_color_r, self.bg_color_g, self.bg_color_b = (
-            value[0], value[1], value[2]
-        )
-
-    @property
-    def resolution_factor(self) -> list[int]:
-        """Resolution factor as [horizontal, vertical]."""
-        return [self.resolution_factor_h, self.resolution_factor_v]
-
-    @resolution_factor.setter
-    def resolution_factor(self, value: list[int]) -> None:
-        self.resolution_factor_h, self.resolution_factor_v = value[0], value[1]
-
-    @property
-    def time_scale(self) -> float:
-        """Effective time scale (integer + fractional/256)."""
-        return self.time_scale_integer + self.time_scale_fractional / 256.0
-
-    @property
-    def frame_rate(self) -> float:
-        """Composition frame rate (integer + fractional/65536)."""
-        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
-
-    @property
-    def display_start_time(self) -> float:
-        """Display start time in seconds."""
-        return self.display_start_time_dividend / self.display_start_time_divisor
-
-    @property
-    def display_start_frame(self) -> float:
-        """Display start time in frames."""
-        return self.display_start_time * self.frame_rate
-
-    @property
-    def duration(self) -> float:
-        """Composition duration in seconds."""
-        return self.duration_dividend / self.duration_divisor
-
-    @property
-    def frame_duration(self) -> float:
-        """Composition duration in frames."""
-        return self.duration * self.frame_rate
-
-    @property
-    def pixel_aspect(self) -> float:
-        """Pixel aspect ratio."""
-        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
-
-    @property
-    def time(self) -> float:
-        """Current time in seconds."""
-        return self.time_dividend / self.time_divisor
-
-    @property
-    def frame_time(self) -> float:
-        """Current time in frames."""
-        return self.time * self.frame_rate
-
-    @property
-    def work_area_start_absolute(self) -> float:
-        """Absolute work area start in seconds."""
-        return (
-            self.display_start_time
-            + self.work_area_start_dividend / self.work_area_start_divisor
-        )
-
-    @property
-    def frame_work_area_start_absolute(self) -> float:
-        """Absolute work area start in frames."""
-        return self.work_area_start_absolute * self.frame_rate
-
-    @property
     def work_area_end_absolute(self) -> float:
         """Absolute work area end in seconds."""
+        display_start_time = (
+            self.display_start_time_dividend / self.display_start_time_divisor
+        )
         if self.work_area_end_dividend == 0xFFFFFFFF:
-            return self.display_start_time + self.duration
+            duration = self.duration_dividend / self.duration_divisor
+            return display_start_time + duration
         return (
-            self.display_start_time
+            display_start_time
             + self.work_area_end_dividend / self.work_area_end_divisor
         )
 
     @property
     def frame_work_area_end_absolute(self) -> float:
         """Absolute work area end in frames."""
+        frame_rate = self.frame_rate_integer + self.frame_rate_fractional / 65536.0
         if self.work_area_end_dividend == 0xFFFFFFFF:
-            return self.display_start_frame + self.frame_duration
-        return self.work_area_end_absolute * self.frame_rate
+            display_start_time = (
+                self.display_start_time_dividend / self.display_start_time_divisor
+            )
+            duration = self.duration_dividend / self.duration_divisor
+            return (display_start_time + duration) * frame_rate
+        return self.work_area_end_absolute * frame_rate
 
-    @property
-    def work_area_start_relative(self) -> float:
-        """Work area start relative to composition start (seconds)."""
-        return self.work_area_start_absolute - self.display_start_time
 
-    @property
-    def frame_work_area_start_relative(self) -> float:
-        """Work area start relative to composition start (frames)."""
-        return self.frame_work_area_start_absolute - self.display_start_frame
 
-    @property
-    def work_area_duration(self) -> float:
-        """Work area duration in seconds."""
-        return self.work_area_end_absolute - self.work_area_start_absolute
-
-    @property
-    def frame_work_area_duration(self) -> float:
-        """Work area duration in frames."""
-        return self.frame_work_area_end_absolute - self.frame_work_area_start_absolute

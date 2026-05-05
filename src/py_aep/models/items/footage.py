@@ -14,10 +14,14 @@ from ...binary.utils import (
     find_chunks_before,
     str_value,
 )
-from ..descriptors import ChunkField
+from ..descriptors import ChunkField, ComputedField
 from ..sources.file import FileSource
+from ..sources.footage import (
+    _compute_conform_frame_rate,
+    _compute_display_frame_rate,
+)
 from ..sources.solid import SolidSource
-from ..transforms import strip_null
+from ..transforms import compute_fractional, compute_ratio, strip_null
 from .av_item import AVItem
 
 if typing.TYPE_CHECKING:
@@ -31,6 +35,32 @@ if typing.TYPE_CHECKING:
     from ..project import Project
     from ..sources.placeholder import PlaceholderSource
     from .folder import FolderItem
+
+
+def _compute_fi_duration(body: SspcChunk) -> float:
+    """Total duration in seconds (with conform and loop)."""
+    source_duration = body.duration_dividend / body.duration_divisor
+    conform = _compute_conform_frame_rate(body)
+    if conform != 0:
+        native = compute_fractional(
+            body, "native_frame_rate_integer", "native_frame_rate_fractional",
+        )
+        conform_factor = native / conform
+    else:
+        conform_factor = 1.0
+    return source_duration * conform_factor * body.loop
+
+
+def _compute_fi_frame_duration(body: SspcChunk) -> int:
+    return int(_compute_fi_duration(body) * _compute_display_frame_rate(body))
+
+
+def _compute_fi_pixel_aspect(body: SspcChunk) -> float:
+    return compute_ratio(body, "pixel_ratio_dividend", "pixel_ratio_divisor")
+
+
+def _compute_fi_has_audio(body: SspcChunk) -> bool:
+    return body.audio_sample_rate > 0
 
 
 class FootageItem(AVItem):
@@ -61,23 +91,18 @@ class FootageItem(AVItem):
     height = ChunkField[int]("_sspc", "height", read_only=True)
     """The height of the item in pixels. Read-only."""
 
-    duration = ChunkField[float]("_sspc", "duration", read_only=True)
+    duration = ComputedField[float]("_sspc", compute=_compute_fi_duration)
     """The duration of the item in seconds. Still footages have a duration
     of 0. Read-only."""
 
-    frame_rate = ChunkField[float]("_sspc", "display_frame_rate", read_only=True)
+    frame_rate = ComputedField[float]("_sspc", compute=_compute_display_frame_rate)
     """The frame rate of the item in frames-per-second. Read-only."""
 
-    frame_duration = ChunkField[int](
-        "_sspc",
-        "frame_duration",
-        transform=int,
-        read_only=True,
-    )
+    frame_duration = ComputedField[int]("_sspc", compute=_compute_fi_frame_duration)
     """The duration of the item in frames. Still footages have a duration
     of 0. Read-only."""
 
-    pixel_aspect = ChunkField[float]("_sspc", "pixel_aspect", read_only=True)
+    pixel_aspect = ComputedField[float]("_sspc", compute=_compute_fi_pixel_aspect)
     """The pixel aspect ratio of the item (1.0 is square). Read-only."""
 
     footage_missing = ChunkField[bool](
@@ -94,7 +119,7 @@ class FootageItem(AVItem):
     [FileSource.missing_footage_path][py_aep.models.sources.file.FileSource.missing_footage_path].
     Read-only."""
 
-    has_audio: bool = ChunkField[bool]("_sspc", "has_audio", read_only=True)  # type: ignore[assignment]
+    has_audio = ComputedField[bool]("_sspc", compute=_compute_fi_has_audio)
     """When `True`, the footage has an audio component. Read-only."""
 
     start_frame = ChunkField[int]("_sspc", "start_frame", read_only=True)
@@ -182,7 +207,7 @@ class FootageItem(AVItem):
             item_name = ""
 
         if not item_name:
-            if self._sspc.duration != 0 and file_source.target_is_folder:
+            if self.duration != 0 and file_source.target_is_folder:
                 item_name = self._build_sequence_name()
             if not item_name:
                 # PureWindowsPath handles both / and \ separators,

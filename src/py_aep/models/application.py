@@ -3,17 +3,17 @@ from __future__ import annotations
 import re
 import typing
 
-from .descriptors import ChunkField
+from .descriptors import ChunkField, ComputedField
 
 if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk
+    from ..binary.item_chunks import HeadChunk
     from .project import Project
     from .viewer.viewer import Viewer
 
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)x(\d+)$")
 
 
-def _reverse_version(value: str, body: object) -> dict[str, int]:
+def _reverse_version(value: str, body: HeadChunk) -> dict[str, int]:
     """Parse `"major.minorxbuild"` back into Chunk fields."""
     m = _VERSION_RE.match(value)
     if not m:
@@ -29,6 +29,12 @@ def _reverse_version(value: str, body: object) -> dict[str, int]:
         "ae_version_minor": minor,
         "ae_build_number": build,
     }
+
+
+def _compute_version(body: HeadChunk) -> str:
+    """Format the AE version as `{major}.{minor}x{build}`."""
+    major = body.ae_version_major_a * 8 + body.ae_version_major_b
+    return f"{major}.{body.ae_version_minor}x{body.ae_build_number}"
 
 
 class Application:
@@ -61,10 +67,10 @@ class Application:
         cause issues when opening the file in After Effects.
     """
 
-    version = ChunkField[str](
+    version = ComputedField[str](
         "_head",
-        "version",
-        reverse_multi=_reverse_version,
+        compute=_compute_version,
+        reverse=_reverse_version,
     )
     """The version of After Effects that last saved the project, formatted as
     "{major}.{minor}x{build}" (e.g., "25.6x101"). Read / Write.
@@ -88,7 +94,7 @@ class Application:
     def __init__(
         self,
         *,
-        _head: Chunk,
+        _head: HeadChunk,
         project: Project,
         active_viewer: Viewer | None = None,
     ) -> None:

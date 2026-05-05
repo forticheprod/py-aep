@@ -10,12 +10,24 @@ from py_aep.enums import (
     TrackMatteType,
 )
 
-from ..descriptors import ChunkField
+from ..descriptors import ChunkField, ComputedField
 from ..properties.property import Property
 from .layer import Layer
 
 if typing.TYPE_CHECKING:
+    from ...binary.layer_chunks import LdtaChunk
     from ..items.item import Item
+
+
+def _compute_frame_blending_type(body: LdtaChunk) -> FrameBlendingType:
+    """Derive FrameBlendingType from frame_blending + frame_blending_mode bits."""
+    if not body.frame_blending:
+        return FrameBlendingType.NO_FRAME_BLEND
+    return (
+        FrameBlendingType.PIXEL_MOTION
+        if body.frame_blending_mode
+        else FrameBlendingType.FRAME_MIX
+    )
 
 
 def _reverse_frame_blending(value: FrameBlendingType, _body: object) -> dict[str, int]:
@@ -81,11 +93,11 @@ class AVLayer(Layer):
     composition. Setting this to `True` automatically sets
     [three_d_layer][] to `True`. Read / Write."""
 
-    frame_blending_type = ChunkField.enum(
+    frame_blending_type = ComputedField.enum(
         FrameBlendingType,
         "_ldta",
-        "frame_blending_type",
-        reverse_multi=_reverse_frame_blending,
+        compute=_compute_frame_blending_type,
+        reverse=_reverse_frame_blending,
     )
     """The type of frame blending for the layer. Read / Write."""
 
@@ -169,7 +181,8 @@ class AVLayer(Layer):
         (seconds). Clamped to `start_time` for non-still footage layers.
         Read / Write.
         """
-        raw = float(self.start_time + self._ldta.in_point * self._stretch_factor)
+        raw_in_point = self._ldta.in_point_dividend / self._ldta.in_point_divisor
+        raw = float(self.start_time + raw_in_point * self._stretch_factor)
         if not self._should_clamp_times():
             return raw
         return max(raw, self.start_time)
@@ -184,7 +197,8 @@ class AVLayer(Layer):
         (seconds). Clamped to `start_time + source.duration * stretch` for
         non-still footage layers without time remapping. Read / Write.
         """
-        raw = float(self.start_time + self._ldta.out_point * self._stretch_factor)
+        raw_out_point = self._ldta.out_point_dividend / self._ldta.out_point_divisor
+        raw = float(self.start_time + raw_out_point * self._stretch_factor)
         if not self._should_clamp_times():
             return raw
         source_duration = getattr(self.source, "duration", 0)

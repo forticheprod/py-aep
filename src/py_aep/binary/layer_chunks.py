@@ -113,43 +113,6 @@ class LdtaChunk(Chunk):
     audio_enabled = BitField("_layer_flags_2", 1)
     enabled = BitField("_layer_flags_2", 0)
 
-    # -- Computed properties -----------------------------------------------
 
-    @property
-    def start_time(self) -> float:
-        return self.start_time_dividend / self.start_time_divisor
 
-    @property
-    def in_point(self) -> float:
-        """In point relative to start_time (seconds, before stretch)."""
-        return self.in_point_dividend / self.in_point_divisor
 
-    @property
-    def out_point(self) -> float:
-        """Out point relative to start_time (seconds, before stretch)."""
-        return self.out_point_dividend / self.out_point_divisor
-
-    @property
-    def stretch(self) -> float:
-        """Time stretch as percentage (100 = normal speed)."""
-        if self.stretch_divisor == 0:
-            return 0.0
-        return self.stretch_dividend * 100.0 / self.stretch_divisor
-
-    @property
-    def auto_orient_type(self) -> int:
-        """0=none, 1=along_path, 2=camera_or_poi, 3=characters_toward_camera."""
-        if self.auto_orient_along_path:
-            return 1
-        if self.camera_or_poi_auto_orient and self.three_d_layer:
-            return 2
-        if self.characters_toward_camera and self.three_d_per_char:
-            return 3
-        return 0
-
-    @property
-    def frame_blending_type(self) -> int:
-        """0=none, 1=frame_mix, 2=pixel_motion."""
-        if not self.frame_blending:
-            return 0
-        return 2 if self.frame_blending_mode else 1

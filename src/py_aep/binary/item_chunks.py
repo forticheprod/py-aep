@@ -87,11 +87,6 @@ class HeadChunk(Chunk):
         self._version_word = (self._version_word & ~(0x1F << 26)) | ((value & 0x1F) << 26)
 
     @property
-    def ae_version_os(self) -> int:
-        """OS code: 12=Windows, 13=Mac, 14=Mac ARM64."""
-        return (self._version_word >> 22) & 0x0F
-
-    @property
     def ae_version_major_b(self) -> int:
         return (self._version_word >> 19) & 0x07
 
@@ -106,10 +101,6 @@ class HeadChunk(Chunk):
     @ae_version_minor.setter
     def ae_version_minor(self, value: int) -> None:
         self._version_word = (self._version_word & ~(0x0F << 15)) | ((value & 0x0F) << 15)
-
-    @property
-    def ae_version_patch(self) -> int:
-        return (self._version_word >> 11) & 0x0F
 
     @property
     def ae_version_beta_flag(self) -> bool:
@@ -135,17 +126,6 @@ class HeadChunk(Chunk):
     def ae_version_major(self) -> int:
         """Full major version (e.g. 25)."""
         return self.ae_version_major_a * 8 + self.ae_version_major_b
-
-    @property
-    def ae_version_beta(self) -> bool:
-        """True if this is a beta version."""
-        return not self.ae_version_beta_flag
-
-    @property
-    def version(self) -> str:
-        """Formatted version string: `"major.minorxbuild"`."""
-        return f"{self.ae_version_major}.{self.ae_version_minor}x{self.ae_build_number}"
-
 
 # ---------------------------------------------------------------------------
 # nnhd - project display settings (40 bytes)

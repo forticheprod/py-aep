@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from enum import IntEnum
-from typing import Any, Dict, MutableMapping, Optional, Tuple, Type
+from typing import Any, Dict, MutableMapping, Optional, Tuple, Type, cast
 
 #: Type alias for a settings spec: (attribute_name, optional_enum_class).
 SettingsSpec = Dict[str, Tuple[str, Optional[Type[IntEnum]]]]
@@ -166,9 +166,9 @@ def _to_string_value(key: str, value: Any) -> str:
     if isinstance(value, IntEnum):
         return value.label  # type: ignore[attr-defined,no-any-return]
     if key == "Resolution":
-        return _RESOLUTION_STRINGS.get(tuple(value), "Custom")
+        return _RESOLUTION_STRINGS.get(cast(Tuple[int, int], tuple(value)), "Custom")
     if key == "Resize to":
-        return _RESIZE_TO_STRINGS.get(tuple(value), "Custom")
+        return _RESIZE_TO_STRINGS.get(cast(Tuple[int, int], tuple(value)), "Custom")
     if isinstance(value, bool):
         return str(value).lower()
     return str(value)
