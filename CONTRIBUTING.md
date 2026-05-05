@@ -35,7 +35,7 @@ py_aep transforms binary .aep files into typed Python objects through a three-st
 - Pattern: Each parser receives chunks + context, passes chunks to the model
 
 **Stage 3: Data Models**
-- `src/py_aep/models/` - Classes using ChunkField descriptors, mirroring AE's object model
+- `src/py_aep/models/` - Classes using ChunkField and ComputedField descriptors, mirroring AE's object model
 - `items/` - CompItem, FootageItem, FolderItem
 - `layers/` - Layer types (AVLayer, TextLayer, ShapeLayer, etc.)
 - `properties/` - Effects and animation (Property, PropertyGroup, Keyframe, MarkerValue)
@@ -84,7 +84,18 @@ class CompItem(AVItem):
 
 When a user writes `comp.frame_rate = 30.0`, the descriptor converts the value back to binary representation and writes it to the underlying chunk.
 
-**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate chunk data. ChunkField descriptors use `reverse` (scalar) or `reverse_multi` (multi-field) functions to convert user-facing values back to binary format. The binary writer (`write_aep()`) backpatches parent chunk sizes automatically.
+**ComputedField descriptors**: Model attributes derived from multiple raw chunk fields. The `compute` function reads, `reverse` writes back a dict of field updates:
+```python
+class CompItem(AVItem):
+    frame_rate = ComputedField[float](
+        "_cdta",
+        compute=_compute_frame_rate,
+        reverse=_reverse_frame_rate,
+    )
+    """The frame rate of the composition. Read / Write."""
+```
+
+**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate chunk data. ChunkField descriptors use `reverse` (scalar) or `reverse_multi` (multi-field), and ComputedField uses `reverse(value, body) -> dict`, to convert user-facing values back to binary format. The binary writer (`write_aep()`) backpatches parent chunk sizes automatically.
 
 ### Property & Effect Parsing Flow
 
@@ -493,6 +504,8 @@ For read-only fields, set `read_only=True`:
 | `ChunkField[bool]("_body", "field", transform=bool, reverse=int)` | Generic integer field exposed as `bool` |
 | `ChunkField.enum(MyEnum, "_body", "field")` | IntEnum field (auto-detects `from_binary`/`to_binary`) |
 | `ChunkField("_body", "inst", reverse_multi=fn)` | Computed field backed by multiple binary fields; `fn(value, body)` returns `dict` of source fields |
+| `ComputedField[float]("_body", compute=fn, reverse=fn)` | Multi-field read (`compute(body)`) and write (`reverse(value, body) -> dict`) |
+| `ComputedField.enum(MyEnum, "_body", compute=fn, reverse=fn)` | IntEnum derived from multiple raw fields |
 | `@property` (with optional setter) | Computed from multiple fields or non-chunk data |
 
 **Important**: Always add docstrings referencing the [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/). Keep docstring lines under 80 characters. End each docstring with "Read-only." or "Read / Write." as appropriate.

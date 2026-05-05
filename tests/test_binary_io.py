@@ -1,4 +1,4 @@
-"""Tests for Phase 1 binary I/O foundation."""
+"""Tests for binary I/O foundation."""
 from __future__ import annotations
 
 from io import BytesIO
@@ -1074,7 +1074,7 @@ class TestOptiChunk:
             color_b=0.0,
             solid_name="Red Solid",
         )
-        assert chunk.color == [1.0, 0.5, 0.0]
+        assert [chunk.color_r, chunk.color_g, chunk.color_b] == [1.0, 0.5, 0.0]
 
         buf = BytesIO()
         chunk.write(buf)

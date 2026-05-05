@@ -4,6 +4,7 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from ..binary.item_chunks import HeadChunk, NnhdChunk
+from ..binary.misc_chunks import DwgaChunk
 from ..binary.scalar_chunks import F8Chunk, U1Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
@@ -40,7 +41,7 @@ def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
     nnhd_chunk = find_by_type(chunks=root_chunks, chunk_type="nnhd", cls=NnhdChunk)
     acer_chunk = find_by_type(chunks=root_chunks, chunk_type="acer", cls=U1Chunk)
     adfr_chunk = find_by_type(chunks=root_chunks, chunk_type="adfr", cls=F8Chunk)
-    dwga_chunk = find_by_type(chunks=root_chunks, chunk_type="dwga")
+    dwga_chunk = find_by_type(chunks=root_chunks, chunk_type="dwga", cls=DwgaChunk)
     gpug_chunk = find_by_list_type(chunks=root_chunks, list_type="gpuG")
     gpug_utf8 = find_by_type(chunks=gpug_chunk.chunks, chunk_type="Utf8", cls=Utf8Chunk)
 

@@ -24,7 +24,7 @@ from ..enums import (
     LutInterpolationMethod,
     TimeDisplayType,
 )
-from .descriptors import ChunkField
+from .descriptors import ChunkField, ComputedField
 from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
@@ -34,18 +34,24 @@ from .validators import validate_number, validate_one_of
 if typing.TYPE_CHECKING:
     from ..binary.chunk import Chunk
     from ..binary.item_chunks import HeadChunk, NnhdChunk
+    from ..binary.misc_chunks import DwgaChunk
     from ..binary.scalar_chunks import F8Chunk, U1Chunk
     from .items.item import Item
     from .layers.layer import Layer
     from .renderqueue.render_queue import RenderQueue
 
 
-def _reverse_working_gamma(value: float, _body: object) -> dict[str, int]:
+def _reverse_working_gamma(value: float, _body: DwgaChunk) -> dict[str, int]:
     """Decompose working gamma into binary selector.
 
     AE stores a single selector byte: 0 -> 2.2, nonzero -> 2.4.
     """
     return {"working_gamma_selector": 0 if value == 2.2 else 1}
+
+
+def _compute_working_gamma(body: DwgaChunk) -> float:
+    """Return the project working gamma from the selector byte."""
+    return 2.2 if body.working_gamma_selector == 0 else 2.4
 
 
 class Project:
@@ -163,10 +169,10 @@ class Project:
     Note:
         Not exposed in ExtendScript"""
 
-    working_gamma = ChunkField[float](
+    working_gamma = ComputedField[float](
         "_dwga",
-        "working_gamma",
-        reverse_multi=_reverse_working_gamma,
+        compute=_compute_working_gamma,
+        reverse=_reverse_working_gamma,
         validate=validate_one_of((2.2, 2.4)),
     )
     """The gamma value used for the working color space, either 2.2 or 2.4.
@@ -181,6 +187,19 @@ class Project:
     """The GPU acceleration type for the project. None if not
     recognised. Read / Write."""
 
+    # ChunkField needs a chunk_attr that resolves to an object holding the
+    # target field.  _xmp lives directly on Project, so we alias _aep = self
+    # in __init__ so the descriptor chain is: getattr(self, "_aep") -> self,
+    # then getattr(self, "_xmp") -> the raw XMP string.
+    xmp_packet = ChunkField[ET.Element](
+        "_aep",
+        "_xmp",
+        transform=ET.fromstring,
+        reverse=lambda el: ET.tostring(el, encoding="unicode"),
+    )
+    """The XMP packet for the project, containing metadata.
+    Read / Write."""
+
     def __init__(
         self,
         *,
@@ -188,7 +207,7 @@ class Project:
         _head: HeadChunk,
         _acer: U1Chunk,
         _adfr: F8Chunk,
-        _dwga: Chunk,
+        _dwga: DwgaChunk,
         _gpug_utf8: Utf8Chunk,
         _exen_utf8: Utf8Chunk | None,
         _cms_utf8: Utf8Chunk | None,
@@ -213,6 +232,7 @@ class Project:
         self._dcs_utf8 = _dcs_utf8
         self._rifx = _rifx
         self._xmp = _xmp
+        self._aep = self
 
         # Read-only attributes
         self._file = file
@@ -260,12 +280,6 @@ class Project:
     @property
     def _root_chunks(self) -> list[Chunk]:
         return self._rifx.chunks
-
-    @property
-    def xmp_packet(self) -> ET.Element:
-        """The XMP packet for the project, containing metadata.
-        Read-only."""
-        return ET.fromstring(self._xmp)
 
     @property
     def linear_blending(self) -> bool:

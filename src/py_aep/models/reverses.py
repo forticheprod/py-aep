@@ -7,7 +7,9 @@ the `ChunkField` `reverse_multi` signature: `(value, body) -> dict`.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
+
+from .transforms import compute_fractional
 
 # Divisor used when writing tick-based time values.  10 000 gives sub-frame
 # precision for all standard frame rates.
@@ -19,8 +21,9 @@ def reverse_frame_ticks(
 ) -> Callable[[int, Any], dict[str, int]]:
     """Convert a frame count to `{prefix}_dividend / divisor` time ticks.
 
-    The frame count is divided by `body.frame_rate` to obtain seconds,
-    then stored as tick-based dividend / divisor.
+    The frame count is divided by the frame rate (computed from raw
+    integer + fractional fields) to obtain seconds, then stored as
+    tick-based dividend / divisor.
 
     Args:
         prefix: Field-name prefix (e.g. `"duration"`).
@@ -29,7 +32,10 @@ def reverse_frame_ticks(
     divisor_field = f"{prefix}_divisor"
 
     def _reverse(value: int, body: Any) -> dict[str, int]:
-        seconds = value / body.frame_rate
+        frame_rate = compute_fractional(
+            body, "frame_rate_integer", "frame_rate_fractional",
+        )
+        seconds = value / frame_rate
         return {
             dividend_field: round(seconds * _TIME_DIVISOR),
             divisor_field: _TIME_DIVISOR,
@@ -93,6 +99,28 @@ def reverse_ratio(
         return {
             dividend_field: round(value * denominator_value),
             divisor_field: denominator_value,
+        }
+
+    return _reverse
+
+
+def unpack_values(
+    *field_names: str,
+) -> Callable[[Sequence[Any], object], dict[str, Any]]:
+    """Unpack a value sequence into named raw chunk fields.
+
+    Args:
+        field_names: Destination field names for each packed value.
+    """
+
+    def _reverse(value: Sequence[Any], _body: object) -> dict[str, Any]:
+        if len(value) != len(field_names):
+            raise ValueError(
+                f"Expected {len(field_names)} values, got {len(value)}"
+            )
+        return {
+            field_name: value[i]
+            for i, field_name in enumerate(field_names)
         }
 
     return _reverse

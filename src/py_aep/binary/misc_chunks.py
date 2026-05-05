@@ -94,15 +94,6 @@ class MkifChunk(Chunk):
     color_g: int = u1_field()
     color_b: int = u1_field()
 
-    @property
-    def color(self) -> list[int]:
-        """Mask color as [R, G, B] (0-255)."""
-        return [self.color_r, self.color_g, self.color_b]
-
-    @color.setter
-    def color(self, value: list[int]) -> None:
-        self.color_r, self.color_g, self.color_b = value[0], value[1], value[2]
-
 
 # ---------------------------------------------------------------------------
 # shph - shape path header (24 bytes)
@@ -175,12 +166,6 @@ class NmhdChunk(Chunk):
     # BitField descriptors
     protected_region = BitField("_marker_flags", 1)
     navigation = BitField("_marker_flags", 0)
-
-    @property
-    def duration(self) -> float:
-        """Marker duration in seconds."""
-        return self.frame_duration / 600.0
-
 
 # ---------------------------------------------------------------------------
 # fips - viewer panel settings (96 bytes)
@@ -533,18 +518,12 @@ class DwgaChunk(Chunk):
     """Working gamma selector chunk (1 byte).
 
     Stores a single byte: 0 = gamma 2.2, non-zero = gamma 2.4.
-    The computed `working_gamma` property returns the float value.
     """
 
     chunk_type: str = "dwga"
 
     working_gamma_selector: int = u1_field()
     _trailing: bytes = field(default=b"", repr=False)
-
-    @property
-    def working_gamma(self) -> float:
-        """Working gamma value: 2.2 (selector=0) or 2.4 (selector!=0)."""
-        return 2.2 if self.working_gamma_selector == 0 else 2.4
 
 
 # ---------------------------------------------------------------------------

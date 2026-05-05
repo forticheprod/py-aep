@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING, Any, cast
 
 from .item import Item
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.item_chunks import IdtaChunk
     from ...binary.scalar_chunks import Utf8Chunk
-    from ..descriptors import ChunkField
     from ..project import Project
     from ..viewer.viewer import Viewer
     from .composition import CompItem
@@ -33,22 +32,22 @@ class AVItem(Item):
     See: https://ae-scripting.docsforadobe.dev/item/avitem/
     """
 
-    duration: ChunkField[float]
+    duration: Any
     """The duration of the item in seconds. Still footages have a duration of 0. Read-only."""
 
-    frame_duration: ChunkField[int]
+    frame_duration: Any
     """The duration of the item in frames. Still footages have a duration of 0. Read-only."""
 
-    frame_rate: ChunkField[float]
+    frame_rate: Any
     """The frame rate of the item in frames-per-second. Read-only."""
 
-    height: ChunkField[int]
+    height: Any
     """The height of the item in pixels. Read-only."""
 
-    pixel_aspect: ChunkField[float]
+    pixel_aspect: Any
     """The pixel aspect ratio of the item (1.0 is square). Read-only."""
 
-    width: ChunkField[int]
+    width: Any
     """The width of the item in pixels. Read-only."""
 
     def __init__(
@@ -75,7 +74,7 @@ class AVItem(Item):
         self._viewer: Viewer | None = None
 
     @property
-    def has_audio(self) -> bool:
+    def has_audio(self) -> Any:
         """When `True`, the AVItem has an audio component.
 
         In a [CompItem][], the value is linked to the composition.
@@ -94,10 +93,10 @@ class AVItem(Item):
         the value depends on the footage source (e.g. audio-only files
         return `False`).
         """
-        return self.width > 0 and self.height > 0
+        return cast(bool, self.width > 0 and self.height > 0)
 
     @property
-    def time(self) -> float:
+    def time(self) -> Any:
         """The current time of the item when it is being previewed directly
         from the Project panel. This value is a number of seconds. It is an
         error to set this value for a [FootageItem][] whose `main_source`
@@ -105,7 +104,7 @@ class AVItem(Item):
         return 0.0
 
     @property
-    def frame_time(self) -> int:
+    def frame_time(self) -> Any:
         """The current time of the item when it is being previewed directly
         from the Project panel. This value is a number of frames."""
         return 0

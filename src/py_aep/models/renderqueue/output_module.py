@@ -462,7 +462,7 @@ class OutputModule:
         """Effective frame rate: custom if enabled, else comp frame rate."""
         rqi = self._parent_rqi
         if rqi._ldat.use_this_frame_rate:
-            return rqi._ldat.frame_rate
+            return rqi._use_this_frame_rate
         return rqi.comp.frame_rate
 
     def _update_output_dimensions(self) -> None:

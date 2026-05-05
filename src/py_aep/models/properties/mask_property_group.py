@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import typing
-from typing import List
+from typing import Any, List, cast
 
 from ...enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
-from ..descriptors import ChunkField
-from ..reverses import denormalize_values
-from ..transforms import normalize_values
+from ..descriptors import ChunkField, ComputedField
+from ..reverses import denormalize_values, unpack_values
+from ..transforms import normalize_values, pack_values
 from ..validators import validate_sequence
 from .property_group import PropertyGroup
 
@@ -15,6 +15,18 @@ if typing.TYPE_CHECKING:
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from .property import Property
+
+
+def _compute_color(body: object) -> list[float]:
+    return normalize_values(
+        cast(List[int], pack_values(body, "color_r", "color_g", "color_b"))
+    )
+
+
+def _reverse_color(value: list[float], _body: object) -> dict[str, Any]:
+    return unpack_values("color_r", "color_g", "color_b")(
+        denormalize_values(value), _body
+    )
 
 
 class MaskPropertyGroup(PropertyGroup):
@@ -42,11 +54,10 @@ class MaskPropertyGroup(PropertyGroup):
     See: https://ae-scripting.docsforadobe.dev/property/maskpropertygroup/
     """
 
-    color = ChunkField[List[float]](
+    color = ComputedField[List[float]](
         "_mkif",
-        "color",
-        transform=normalize_values,
-        reverse=denormalize_values,
+        compute=_compute_color,
+        reverse=_reverse_color,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The color used to draw the mask outline as it appears in the user

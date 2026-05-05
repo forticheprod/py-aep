@@ -321,26 +321,6 @@ class RenderSettingsItem(FmtItem):
 
     queue_item_notify = BitField("_flag_byte", 2)
 
-    @property
-    def frame_rate(self) -> float:
-        """Reconstructed frame rate from integer + fractional parts."""
-        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
-
-    @property
-    def time_span_start(self) -> float:
-        """Time span start in seconds (dividend / divisor)."""
-        if self.time_span_start_divisor == 0:
-            return 0.0
-        return self.time_span_start_dividend / self.time_span_start_divisor
-
-    @property
-    def time_span_duration(self) -> float:
-        """Time span duration in seconds (dividend / divisor)."""
-        if self.time_span_duration_divisor == 0:
-            return 0.0
-        return self.time_span_duration_dividend / self.time_span_duration_divisor
-
-
 # ---------------------------------------------------------------------------
 # Output module settings ldat item (128 bytes per item)
 # ---------------------------------------------------------------------------

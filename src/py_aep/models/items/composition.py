@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import typing
-from typing import List, cast
+from typing import Any, List, cast
 
 from ...binary.chunk import ListChunk
 from ...binary.scalar_chunks import CsctChunk, U4Chunk, Utf8Chunk
-from ..descriptors import ChunkField
+from ..descriptors import ChunkField, ComputedField
 from ..layers.av_layer import AVLayer
 from ..layers.camera_layer import CameraLayer
 from ..layers.light_layer import LightLayer
@@ -18,11 +18,17 @@ from ..reverses import (
     reverse_fractional,
     reverse_frame_ticks,
     reverse_ratio,
+    unpack_values,
 )
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
-from ..transforms import normalize_values
+from ..transforms import (
+    compute_fractional,
+    compute_ratio,
+    normalize_values,
+    pack_values,
+)
 from ..validators import (
     validate_number,
     validate_sequence,
@@ -65,6 +71,95 @@ _reverse_work_area_start = reverse_ratio("work_area_start")
 _reverse_work_area_start_frame = reverse_frame_ticks("work_area_start")
 
 
+def _compute_frame_rate(body: CdtaChunk) -> float:
+    return compute_fractional(body, "frame_rate_integer", "frame_rate_fractional")
+
+
+def _compute_bg_color(body: CdtaChunk) -> list[float]:
+    return normalize_values(
+        cast(
+            List[int],
+            pack_values(body, "bg_color_r", "bg_color_g", "bg_color_b"),
+        )
+    )
+
+
+def _reverse_bg_color(value: list[float], _body: object) -> dict[str, Any]:
+    return unpack_values("bg_color_r", "bg_color_g", "bg_color_b")(
+        denormalize_values(value), _body
+    )
+
+
+def _compute_resolution_factor(body: CdtaChunk) -> list[int]:
+    return cast(
+        List[int],
+        pack_values(body, "resolution_factor_h", "resolution_factor_v"),
+    )
+
+
+def _reverse_resolution_factor(value: list[int], _body: object) -> dict[str, Any]:
+    return unpack_values("resolution_factor_h", "resolution_factor_v")(
+        value, _body
+    )
+
+
+def _compute_work_area_duration(body: CdtaChunk) -> float:
+    work_start = body.work_area_start_dividend / body.work_area_start_divisor
+    if body.work_area_end_dividend == 0xFFFFFFFF:
+        return body.duration_dividend / body.duration_divisor - work_start
+    return body.work_area_end_dividend / body.work_area_end_divisor - work_start
+
+
+def _compute_duration(body: CdtaChunk) -> float:
+    return compute_ratio(body, "duration_dividend", "duration_divisor")
+
+
+def _compute_frame_duration(body: CdtaChunk) -> int:
+    return int(_compute_duration(body) * _compute_frame_rate(body))
+
+
+def _compute_pixel_aspect(body: CdtaChunk) -> float:
+    return compute_ratio(body, "pixel_ratio_dividend", "pixel_ratio_divisor")
+
+
+def _compute_time_scale(body: CdtaChunk) -> float:
+    return compute_fractional(
+        body, "time_scale_integer", "time_scale_fractional", scale=256,
+    )
+
+
+def _compute_display_start_time(body: CdtaChunk) -> float:
+    return compute_ratio(
+        body, "display_start_time_dividend", "display_start_time_divisor",
+    )
+
+
+def _compute_display_start_frame(body: CdtaChunk) -> int:
+    return int(_compute_display_start_time(body) * _compute_frame_rate(body))
+
+
+def _compute_time(body: CdtaChunk) -> float:
+    return compute_ratio(body, "time_dividend", "time_divisor")
+
+
+def _compute_frame_time(body: CdtaChunk) -> int:
+    return int(_compute_time(body) * _compute_frame_rate(body))
+
+
+def _compute_work_area_start(body: CdtaChunk) -> float:
+    return compute_ratio(
+        body, "work_area_start_dividend", "work_area_start_divisor",
+    )
+
+
+def _compute_work_area_start_frame(body: CdtaChunk) -> int:
+    return int(_compute_work_area_start(body) * _compute_frame_rate(body))
+
+
+def _compute_work_area_duration_frame(body: CdtaChunk) -> int:
+    return int(_compute_work_area_duration(body) * _compute_frame_rate(body))
+
+
 def _reverse_work_area_duration(value: float, body: CdtaChunk) -> dict[str, int]:
     """Reverse work area duration: sets work_area_end = work_area_start + value."""
     _DIVISOR = 10000
@@ -79,7 +174,10 @@ def _reverse_work_area_duration_frame(value: int, body: CdtaChunk) -> dict[str, 
     """Reverse work area duration in frames: converts to seconds then sets end."""
     _DIVISOR = 10000
     work_start = body.work_area_start_dividend / body.work_area_start_divisor
-    duration_seconds = value / body.frame_rate
+    frame_rate = compute_fractional(
+        body, "frame_rate_integer", "frame_rate_fractional",
+    )
+    duration_seconds = value / frame_rate
     return {
         "work_area_end_dividend": round((work_start + duration_seconds) * _DIVISOR),
         "work_area_end_divisor": _DIVISOR,
@@ -110,11 +208,10 @@ class CompItem(AVItem):
 
     See: https://ae-scripting.docsforadobe.dev/item/compitem/"""
 
-    bg_color = ChunkField[List[float]](
+    bg_color = ComputedField[List[float]](
         "_cdta",
-        "bg_color",
-        transform=normalize_values,
-        reverse=denormalize_values,
+        compute=_compute_bg_color,
+        reverse=_reverse_bg_color,
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The background color of the composition. The three array values specify
@@ -187,10 +284,10 @@ class CompItem(AVItem):
     Shutter Phase setting in the Advanced tab of the Composition Settings
     dialog box. Read / Write."""
 
-    resolution_factor = ChunkField[List[int]](
+    resolution_factor = ComputedField[List[int]](
         "_cdta",
-        "resolution_factor",
-        transform=list,
+        compute=_compute_resolution_factor,
+        reverse=_reverse_resolution_factor,
         validate=validate_sequence(length=2, min=1, max=99, integer=True),
     )
     """The x and y downsample resolution factors for rendering the
@@ -224,27 +321,26 @@ class CompItem(AVItem):
     Samples Per Frame setting in the Advanced tab of the Composition
     Settings dialog box. Read / Write."""
 
-    frame_rate = ChunkField[float](
+    frame_rate = ComputedField[float](
         "_cdta",
-        "frame_rate",
-        reverse_multi=_reverse_frame_rate,
+        compute=_compute_frame_rate,
+        reverse=_reverse_frame_rate,
         validate=validate_number(min=1.0, max=999.0),
     )
     """The frame rate of the item in frames-per-second. Read / Write."""
 
-    duration = ChunkField[float](
+    duration = ComputedField[float](
         "_cdta",
-        "duration",
-        reverse_multi=_reverse_duration,
+        compute=_compute_duration,
+        reverse=_reverse_duration,
         validate=validate_number(min=0.0, max=10800.0),
     )
     """The duration of the item in seconds. Read / Write."""
 
-    frame_duration = ChunkField[int](
+    frame_duration = ComputedField[int](
         "_cdta",
-        "frame_duration",
-        transform=int,
-        reverse_multi=_reverse_frame_duration,
+        compute=_compute_frame_duration,
+        reverse=_reverse_frame_duration,
         validate=validate_number(
             min=1,
             max=lambda self: int(self.duration * self.frame_rate),
@@ -253,32 +349,31 @@ class CompItem(AVItem):
     )
     """The duration of the item in frames. Read / Write."""
 
-    pixel_aspect = ChunkField[float](
+    pixel_aspect = ComputedField[float](
         "_cdta",
-        "pixel_aspect",
-        reverse_multi=_reverse_pixel_aspect,
+        compute=_compute_pixel_aspect,
+        reverse=_reverse_pixel_aspect,
         validate=validate_number(min=0.01, max=100.0),
     )
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
 
-    time_scale = ChunkField[float]("_cdta", "time_scale", read_only=True)
+    time_scale = ComputedField[float]("_cdta", compute=_compute_time_scale)
     """The time scale, used as a divisor for keyframe time values. Read-only."""
 
-    display_start_time = ChunkField[float](
+    display_start_time = ComputedField[float](
         "_cdta",
-        "display_start_time",
-        reverse_multi=_reverse_display_start_time,
+        compute=_compute_display_start_time,
+        reverse=_reverse_display_start_time,
         validate=validate_number(min=-10800.0, max=86340.0),
     )
     """The time set as the beginning of the composition, in seconds. This
     is the equivalent of the Start Timecode or Start Frame setting in the
     Composition Settings dialog box. Read / Write."""
 
-    display_start_frame = ChunkField[int](
+    display_start_frame = ComputedField[int](
         "_cdta",
-        "display_start_frame",
-        transform=int,
-        reverse_multi=_reverse_display_start_frame,
+        compute=_compute_display_start_frame,
+        reverse=_reverse_display_start_frame,
         validate=validate_number(
             min=lambda self: int(-10800.0 * self.frame_rate),
             max=lambda self: int(86340.0 * self.frame_rate),
@@ -287,10 +382,10 @@ class CompItem(AVItem):
     )
     """The frame value of the beginning of the composition. Read / Write."""
 
-    work_area_start = ChunkField[float](
+    work_area_start = ComputedField[float](
         "_cdta",
-        "work_area_start_relative",
-        reverse_multi=_reverse_work_area_start,
+        compute=_compute_work_area_start,
+        reverse=_reverse_work_area_start,
         validate=validate_number(
             min=0.0,
             max=lambda self: self.duration - 1 / self.frame_rate,
@@ -299,11 +394,10 @@ class CompItem(AVItem):
     """The work area start time relative to composition start.
     Read / Write."""
 
-    work_area_start_frame = ChunkField[int](
+    work_area_start_frame = ComputedField[int](
         "_cdta",
-        "frame_work_area_start_relative",
-        transform=int,
-        reverse_multi=_reverse_work_area_start_frame,
+        compute=_compute_work_area_start_frame,
+        reverse=_reverse_work_area_start_frame,
         validate=validate_number(
             min=0,
             max=lambda self: self.frame_duration - 1,
@@ -313,10 +407,10 @@ class CompItem(AVItem):
     """The work area start frame relative to composition start.
     Read / Write."""
 
-    work_area_duration = ChunkField[float](
+    work_area_duration = ComputedField[float](
         "_cdta",
-        "work_area_duration",
-        reverse_multi=_reverse_work_area_duration,
+        compute=_compute_work_area_duration,
+        reverse=_reverse_work_area_duration,
         validate=validate_number(
             min=lambda self: 1 / self.frame_rate,
             max=lambda self: self.duration - self.work_area_start,
@@ -324,11 +418,10 @@ class CompItem(AVItem):
     )
     """The work area duration in seconds. Read / Write."""
 
-    work_area_duration_frame = ChunkField[int](
+    work_area_duration_frame = ComputedField[int](
         "_cdta",
-        "frame_work_area_duration",
-        transform=int,
-        reverse_multi=_reverse_work_area_duration_frame,
+        compute=_compute_work_area_duration_frame,
+        reverse=_reverse_work_area_duration_frame,
         validate=validate_number(
             min=1,
             max=lambda self: self.frame_duration - self.work_area_start_frame,
@@ -337,10 +430,10 @@ class CompItem(AVItem):
     )
     """The work area duration in frames. Read / Write."""
 
-    time: float = ChunkField[float](  # type: ignore[assignment]
+    time = ComputedField[float](
         "_cdta",
-        "time",
-        reverse_multi=reverse_ratio("time"),
+        compute=_compute_time,
+        reverse=reverse_ratio("time"),
         validate=validate_number(
             min=lambda self: self.display_start_time,
             max=lambda self: (
@@ -353,11 +446,10 @@ class CompItem(AVItem):
     this value for a [FootageItem][] whose `main_source` is still
     (`item.main_source.is_still is True`). Read / Write."""
 
-    frame_time: int = ChunkField[int](  # type: ignore[assignment]
+    frame_time = ComputedField[int](
         "_cdta",
-        "frame_time",
-        transform=int,
-        reverse_multi=reverse_frame_ticks("time"),
+        compute=_compute_frame_time,
+        reverse=reverse_frame_ticks("time"),
         validate=validate_number(
             min=lambda self: self.display_start_frame,
             max=lambda self: self.display_start_frame + self.frame_duration - 1,

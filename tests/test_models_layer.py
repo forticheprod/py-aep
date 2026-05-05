@@ -1994,7 +1994,7 @@ class TestLayerStylesEnabled:
 
 
 class TestTransformNaming:
-    """Phase 3 context-dependent naming on transform properties."""
+    """context-dependent naming on transform properties."""
 
     def test_2d_rotate_z_named_rotation(self) -> None:
         """2D layers show Rotate Z as 'Rotation'."""

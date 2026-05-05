@@ -819,6 +819,23 @@ class TestRoundtripRevision:
         assert project2.revision == original + 10
 
 
+class TestRoundtripXmpPacket:
+    """Roundtrip tests for Project.xmp_packet."""
+
+    def test_set_xmp_packet(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "linearBlending_false.aep").project
+
+        xmp_packet = project.xmp_packet
+        xmp_packet.set("py_aep_test_marker", "1")
+        project.xmp_packet = xmp_packet
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+
+        assert project2.xmp_packet.get("py_aep_test_marker") == "1"
+
+
 VERSIONS_DIR = Path(__file__).parent.parent / "samples" / "versions"
 
 
