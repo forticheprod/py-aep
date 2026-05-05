@@ -60,9 +60,9 @@ jobs:
       with:
         python-version: '3.7'
     - name: Install dependencies
-      run: pip install "pytest>=7.0,<8.0" -e .
+      run: pip install "pytest>=7.0,<8.0" "attrs>=20.1.0" "importlib_metadata" "typing_extensions>=3.7"
     - name: Test with pytest
-      run: pytest -v --no-header -ra --tb=short -o "addopts="
+      run: PYTHONPATH=src pytest -v --no-header -ra --tb=short -o "addopts="
   pytest:
     needs: lfs
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-quality')
