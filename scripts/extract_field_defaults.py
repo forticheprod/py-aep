@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import struct
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,11 +22,6 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from attrs import NOTHING
-from attrs import fields as attrs_fields
-
-from py_aep.binary.bitfield import BitField
-from py_aep.binary.chunk import Chunk, ContainerChunk, ListChunk, read_aep
-from py_aep.binary.fmt_field import FmtItem, _init_name, _struct_info
 
 # Force all chunk registrations
 import py_aep.binary.composition_chunks  # noqa: F401
@@ -39,6 +33,9 @@ import py_aep.binary.misc_chunks  # noqa: F401
 import py_aep.binary.property_chunks  # noqa: F401
 import py_aep.binary.render_chunks  # noqa: F401
 import py_aep.binary.scalar_chunks  # noqa: F401
+from py_aep.binary.bitfield import BitField
+from py_aep.binary.chunk import read_aep
+from py_aep.binary.fmt_field import FmtItem, _struct_info
 
 
 def walk_chunks(chunk: Any) -> Any:
