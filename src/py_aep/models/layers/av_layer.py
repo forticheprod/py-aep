@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from py_aep.enums import (
     BlendingMode,
@@ -14,7 +14,7 @@ from ..descriptors import ChunkField, ComputedField
 from ..properties.property import Property
 from .layer import Layer
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.layer_chunks import LdtaChunk
     from ..items.item import Item
 
@@ -30,7 +30,7 @@ def _compute_frame_blending_type(body: LdtaChunk) -> FrameBlendingType:
     )
 
 
-def _reverse_frame_blending(value: FrameBlendingType, _body: object) -> dict[str, int]:
+def _reverse_frame_blending(value: FrameBlendingType, _body: LdtaChunk) -> dict[str, int]:
     """Decompose FrameBlendingType into frame_blending + frame_blending_mode bits."""
     if value == FrameBlendingType.NO_FRAME_BLEND:
         return {"frame_blending": 0}
@@ -38,6 +38,14 @@ def _reverse_frame_blending(value: FrameBlendingType, _body: object) -> dict[str
         "frame_blending": 1,
         "frame_blending_mode": int(value == FrameBlendingType.PIXEL_MOTION),
     }
+
+
+def _validate_collapse_transformation(value: bool, obj: AVLayer) -> None:
+    if not getattr(obj, "can_set_collapse_transformation", True):
+        raise AttributeError(
+            "'collapse_transformation' is read-only when"
+            " 'can_set_collapse_transformation' is False."
+        )
 
 
 class AVLayer(Layer):
@@ -78,7 +86,10 @@ class AVLayer(Layer):
     blending_mode = ChunkField.enum(BlendingMode, "_ldta", "blending_mode")
     """The blending mode of the layer. Read / Write."""
 
-    collapse_transformation = ChunkField[bool]("_ldta", "collapse_transformation")
+    collapse_transformation = ChunkField[bool](
+        "_ldta", "collapse_transformation",
+        validate=_validate_collapse_transformation,
+    )
     """`True` if collapse transformation is on for this layer.
     Read / Write."""
 
@@ -349,6 +360,11 @@ class AVLayer(Layer):
 
     @time_remap_enabled.setter
     def time_remap_enabled(self, value: bool) -> None:
+        if not self.can_set_time_remap_enabled:
+            raise AttributeError(
+                "'time_remap_enabled' is read-only when"
+                " 'can_set_time_remap_enabled' is False."
+            )
         prop = self["ADBE Time Remapping"]
         if isinstance(prop, Property):
             prop._animated = value

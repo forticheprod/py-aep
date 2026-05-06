@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import typing
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import PropertyType
 
@@ -13,12 +12,19 @@ from ..descriptors import ChunkField
 # user-visible name and falls back to auto_name.
 _TDSN_SENTINEL = "-_0_/-"
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.misc_chunks import EwotItem
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from ..layers.layer import Layer
     from .property_group import PropertyGroup
+
+
+def _validate_enabled(value: bool, obj: PropertyBase) -> None:
+    if not obj.can_set_enabled:
+        raise AttributeError(
+            "'enabled' is read-only when 'can_set_enabled' is False."
+        )
 
 
 class PropertyBase:
@@ -32,7 +38,9 @@ class PropertyBase:
     See: https://ae-scripting.docsforadobe.dev/property/propertybase/
     """
 
-    enabled = ChunkField[bool]("_tdsb", "enabled", default=True)
+    enabled = ChunkField[bool](
+        "_tdsb", "enabled", default=True, validate=_validate_enabled,
+    )
     """Corresponds to the setting of the eyeball icon. Read / Write."""
 
     def __init__(
@@ -196,7 +204,7 @@ class PropertyBase:
         """
         if self.property_depth == 0:
             return True
-        if self.is_effect:
+        if self.is_effect or self._is_in_effect():
             return True
         mn = self.match_name
         if mn == "ADBE Text Path Options":

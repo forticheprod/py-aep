@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-import typing
 from pathlib import PurePosixPath
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from ...binary.footage_chunks import PsdOptiChunk
+from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import (
     UNDEFINED_FRAME,
     ChunkNotFoundError,
@@ -13,12 +13,10 @@ from ...binary.utils import (
     find_by_list_type,
     find_chunks_before,
     parse_alas_data,
-    str_value,
 )
-from ..transforms import strip_null
 from .footage import FootageSource
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.footage_chunks import OptiChunk, SspcChunk
     from ...binary.scalar_chunks import U1Chunk
@@ -120,7 +118,7 @@ class FileSource(FootageSource):
             utf8_chunks = filter_by_type(
                 chunks=stvc_chunk.chunks, chunk_type="Utf8"
             )
-            self._file_names = [str_value(chunk) for chunk in utf8_chunks]
+            self._file_names = [cast("Utf8Chunk", chunk).value for chunk in utf8_chunks]
         except ChunkNotFoundError:
             self._file_names = []
 
@@ -163,8 +161,8 @@ class FileSource(FootageSource):
             except ChunkNotFoundError:
                 utf8_before_opti = []
             if len(utf8_before_opti) >= 2:
-                prefix = str_value(utf8_before_opti[-2])
-                extension = str_value(utf8_before_opti[-1])
+                prefix = cast("Utf8Chunk", utf8_before_opti[-2]).value
+                extension = cast("Utf8Chunk", utf8_before_opti[-1]).value
                 if prefix or extension:
                     first_frame = (
                         f"{prefix}{_sspc.start_frame:0{_sspc.frame_padding}d}"
@@ -173,10 +171,10 @@ class FileSource(FootageSource):
                     self._file = str(PurePosixPath(self._file) / first_frame)
 
         if getattr(_opti, "asset_type", "") == "8BPS":
-            psd_opti = cast(PsdOptiChunk, _opti)
+            psd_opti = cast("PsdOptiChunk", _opti)
             self._file_attributes: dict[str, int | str] = {
                 "psd_layer_index": psd_opti.psd_layer_index,
-                "psd_group_name": strip_null(psd_opti.psd_group_name or ""),
+                "psd_group_name": psd_opti.psd_group_name or "",
                 "psd_layer_count": psd_opti.psd_layer_count,
                 "psd_canvas_width": psd_opti.psd_canvas_width,
                 "psd_canvas_height": psd_opti.psd_canvas_height,

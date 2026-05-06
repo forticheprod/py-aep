@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Callable
 
-    from .chunk import Chunk
+    from .chunk import Chunk, ListChunk
 
 
 def remove_chunks_by_type(
@@ -42,7 +42,7 @@ def toggle_flag_chunk(
 
 def _unflag_markers(
     parent_chunks: list[Chunk],
-    target: Chunk,
+    target: ListChunk,
 ) -> None:
     """Clear the `synthetic` flag on tdmn chunks adjacent to *target*."""
     idx = None

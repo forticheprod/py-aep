@@ -22,21 +22,25 @@ import contextlib
 import json
 import sys
 from pathlib import Path
-from typing import Any, Generator, TextIO
+from typing import TYPE_CHECKING
 
 from py_aep import parse
 
-from ..models.application import Application
 from ..models.items.composition import CompItem
 from ..models.items.folder import FolderItem
 from ..models.items.footage import FootageItem
-from ..models.items.item import Item
-from ..models.layers.layer import Layer
-from ..models.project import Project
-from ..models.properties.property import Property
 from ..models.properties.property_group import PropertyGroup
-from ..models.renderqueue.output_module import OutputModule
-from ..models.renderqueue.render_queue_item import RenderQueueItem
+
+if TYPE_CHECKING:
+    from typing import Any, Generator, TextIO
+
+    from ..models.application import Application
+    from ..models.items.item import Item
+    from ..models.layers.layer import Layer
+    from ..models.project import Project
+    from ..models.properties.property import Property
+    from ..models.renderqueue.output_module import OutputModule
+    from ..models.renderqueue.render_queue_item import RenderQueueItem
 
 # =============================================================================
 # Node builders - Convert model objects to a uniform dict structure

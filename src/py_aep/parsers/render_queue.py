@@ -63,12 +63,12 @@ def parse_render_queue_items(
     # This ldat contains N × item_size bytes, one block per render queue item
     list_settings_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="list")
 
-    settings_lhd3 = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3", cls=Lhd3Chunk)
+    settings_lhd3 = cast("Lhd3Chunk", find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3"))
     num_items = settings_lhd3.count
     if num_items == 0:
         return []
 
-    settings_ldat = find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat", cls=LdatChunk)
+    settings_ldat = cast("LdatChunk", find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat"))
     render_settings_chunks: list[RenderSettingsItem] = settings_ldat.items
 
     # LItm chunk is probably the RQItemCollection.
@@ -84,11 +84,10 @@ def parse_render_queue_items(
     for chunk in litm_chunk.chunks:
         if isinstance(chunk, ContainerChunk) and chunk.chunk_type == "RCom":
             # RCom is a ContainerChunk with a Utf8 child
-            rcom_chunk = find_by_type(
+            rcom_chunk = cast("Utf8Chunk", find_by_type(
                 chunks=chunk.chunks,
                 chunk_type="Utf8",
-                cls=Utf8Chunk,
-            )
+            ))
         elif isinstance(chunk, ListChunk):
             if chunk.list_type == "list":
                 list_chunk = chunk
@@ -132,12 +131,12 @@ def parse_render_queue_item(
         project: The Project object being constructed, used to link comp
             references in render queue items.
     """
-    om_ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat", cls=LdatChunk)
+    om_ldat = cast("LdatChunk", find_by_type(chunks=list_chunk.chunks, chunk_type="ldat"))
     om_ldat_items = om_ldat.items
 
     # comp_id is stored in the render settings ldat
     comp_id = ldat_body.comp_id
-    comp = cast(CompItem, project.items[comp_id])
+    comp = cast("CompItem", project.items[comp_id])
 
     lom_child_chunks = lom_chunk.chunks
 

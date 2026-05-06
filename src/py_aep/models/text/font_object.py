@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ...cos.descriptors import CosField
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from typing import Any
 
 
@@ -33,16 +33,16 @@ class FontObject:
     See: https://ae-scripting.docsforadobe.dev/text/fontobject/
     """
 
-    post_script_name: str = CosField("_font_data", "0", transform=str, default="")  # type: ignore[assignment]
+    post_script_name = CosField[str]("_font_data", "0", transform=str, default="")
     """The PostScript name of the font. Read-only."""
 
-    version: str | None = CosField("_font_data", "5", transform=str)  # type: ignore[assignment]
+    version = CosField[str]("_font_data", "5", transform=str, default=None)
     """The version number of the font. Read-only."""
 
     def __init__(
         self,
         *,
-        _font_data: dict[str, Any] | None = None,
+        _font_data: dict[str, Any],
         _font_entry: dict[str, Any] | None = None,
         post_script_name: str | None = None,
         version: str | None = None,

@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import json
-import typing
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ..binary.chunk import ListChunk, write_aep
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     filter_by_type,
     find_by_list_type,
-    str_value,
     toggle_flag_chunk,
 )
 from ..enums import (
@@ -28,12 +26,13 @@ from .descriptors import ChunkField, ComputedField
 from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
-from .transforms import strip_null
 from .validators import validate_number, validate_one_of
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
+    from typing import ClassVar, Iterator
+
     from ..binary.chunk import Chunk
-    from ..binary.item_chunks import HeadChunk, NnhdChunk
+    from ..binary.item_chunks import HeadChunk, NhedChunk, NnhdChunk
     from ..binary.misc_chunks import DwgaChunk
     from ..binary.scalar_chunks import F8Chunk, U1Chunk
     from .items.item import Item
@@ -79,6 +78,7 @@ class Project:
         BitsPerChannel,
         "_nnhd",
         "bits_per_channel",
+        post_set=lambda obj: obj._sync_nhed_field("bits_per_channel"),
     )
     """The color depth of the current project, either 8, 16, or 32 bits.
     Read / Write."""
@@ -87,6 +87,7 @@ class Project:
         FeetFramesFilmType,
         "_nnhd",
         "feet_frames_film_type",
+        post_set=lambda obj: obj._sync_nhed_field("_display_byte"),
     )
     """The film type for feet+frames timecode display, either MM16 (16mm) or
     MM35 (35mm). Read / Write."""
@@ -95,6 +96,7 @@ class Project:
         FootageTimecodeDisplayStartType,
         "_nnhd",
         "footage_timecode_display_start_type",
+        post_set=lambda obj: obj._sync_nhed_field("footage_timecode_display_start_type"),
     )
     """The Footage Start Time setting in the Project Settings dialog box,
     which is enabled when Timecode is selected as the time display style.
@@ -112,6 +114,7 @@ class Project:
         FramesCountType,
         "_nnhd",
         "frames_count_type",
+        post_set=lambda obj: obj._sync_nhed_field("frames_count_type"),
     )
     """The Frame Count menu setting in the Project Settings dialog box.
     Read / Write."""
@@ -121,11 +124,16 @@ class Project:
         "display_start_frame",
         reverse_multi=lambda value, _body: {"frames_count_type": value},
         validate=validate_one_of((0, 1)),
+        post_set=lambda obj: obj._sync_nhed_field("frames_count_type"),
     )
     """The start frame number for the project display (0 or 1). An alternate
     way of setting the Frame Count menu setting. Read / Write."""
 
-    frames_use_feet_frames = ChunkField[bool]("_nnhd", "frames_use_feet_frames")
+    frames_use_feet_frames = ChunkField[bool](
+        "_nnhd",
+        "frames_use_feet_frames",
+        post_set=lambda obj: obj._sync_nhed_field("_feet_byte"),
+    )
     """When `True`, the Frames field in the UI is displayed as
     feet+frames. Read / Write."""
 
@@ -133,12 +141,15 @@ class Project:
         TimeDisplayType,
         "_nnhd",
         "time_display_type",
+        post_set=lambda obj: obj._sync_nhed_field("_display_byte"),
     )
     """The time display style, corresponding to the Time Display Style
     section in the Project Settings dialog box. Read / Write."""
 
     transparency_grid_thumbnails = ChunkField[bool](
-        "_nnhd", "transparency_grid_thumbnails"
+        "_nnhd",
+        "transparency_grid_thumbnails",
+        post_set=lambda obj: obj._sync_nhed_field("transparency_grid_thumbnails"),
     )
     """When `True`, thumbnail views use the transparency checkerboard
     pattern. Read / Write."""
@@ -181,7 +192,7 @@ class Project:
     gpu_accel_type = ChunkField[GpuAccelType](
         "_gpug_utf8",
         "value",
-        transform=lambda value: GpuAccelType.from_binary(strip_null(value)),
+        transform=GpuAccelType.from_binary,
         reverse=GpuAccelType.to_binary,
     )
     """The GPU acceleration type for the project. None if not
@@ -203,6 +214,7 @@ class Project:
     def __init__(
         self,
         *,
+        _nhed: NhedChunk,
         _nnhd: NnhdChunk,
         _head: HeadChunk,
         _acer: U1Chunk,
@@ -220,6 +232,7 @@ class Project:
         render_queue: RenderQueue | None,
     ) -> None:
         # Chunk body references for descriptors
+        self._nhed = _nhed
         self._nnhd = _nnhd
         self._head = _head
         self._acer = _acer
@@ -244,7 +257,7 @@ class Project:
     def __repr__(self) -> str:
         return f"Project(file={self._file!r})"
 
-    def __iter__(self) -> typing.Iterator[Item]:
+    def __iter__(self) -> Iterator[Item]:
         """Return an iterator over the project's items."""
         return iter(self.items.values())
 
@@ -275,11 +288,14 @@ class Project:
         """The root folder. This is a virtual folder that contains all items
         in the Project panel, but not items contained inside other folders in
         the Project panel. Read-only."""
-        return cast(FolderItem, self._items[0])
+        return cast("FolderItem", self._items[0])
 
     @property
     def _root_chunks(self) -> list[Chunk]:
         return self._rifx.chunks
+
+    def _sync_nhed_field(self, field_name: str) -> None:
+        setattr(self._nhed, field_name, getattr(self._nnhd, field_name))
 
     @property
     def linear_blending(self) -> bool:
@@ -306,7 +322,7 @@ class Project:
         """The Expressions Engine setting in the Project Settings dialog box
         ("extendscript" or "javascript-1.0"). Read / Write."""
         if self._exen_utf8 is not None:
-            return strip_null(self._exen_utf8.value)
+            return self._exen_utf8.value
         return "extendscript"
 
     @expression_engine.setter
@@ -460,7 +476,7 @@ class Project:
             write_aep(f, self._rifx, self._xmp)
         self._file = str(path)
 
-    _CMS_DEFAULTS: typing.ClassVar[dict[str, int | str]] = {
+    _CMS_DEFAULTS: ClassVar[dict[str, int | str]] = {
         "colorManagementSystem": 0,
         "lutInterpolationMethod": 0,
         "ocioConfigurationFile": "",
@@ -491,4 +507,4 @@ def _get_effect_names(root_chunks: list[Chunk]) -> list[str]:
     """Get the list of effect names used in the project."""
     pefl_chunk = find_by_list_type(chunks=root_chunks, list_type="Pefl")
     pjef_chunks = filter_by_type(chunks=pefl_chunk.chunks, chunk_type="pjef")
-    return [str_value(chunk) for chunk in pjef_chunks]
+    return [cast("Utf8Chunk", chunk).value for chunk in pjef_chunks]

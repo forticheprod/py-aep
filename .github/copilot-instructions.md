@@ -25,7 +25,7 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
   - `bitfield.py` - `BitField` descriptor for single-bit flag access
   - `registry.py` - `@register` decorator + `CHUNK_TYPES` dispatch table
   - `bin_utils.py` - `read_fmt()`, `write_fmt()`, `read_bytes()`, `write_bytes()`
-  - `utils.py` - Chunk navigation/mutation helpers: `find_by_type`, `find_by_list_type`, `filter_by_type`, `filter_by_list_type`, `find_chunks_before`, `find_chunks_after`, `group_chunks`, `split_on_type`, `str_value`, `toggle_flag_chunk`, `chunk_tree`, `recursive_find`
+  - `utils.py` - Chunk navigation/mutation helpers: `find_by_type`, `find_by_list_type`, `filter_by_type`, `filter_by_list_type`, `find_chunks_before`, `find_chunks_after`, `group_chunks`, `split_on_type`, `toggle_flag_chunk`, `chunk_tree`, `recursive_find`
   - Chunk modules: `scalar_chunks.py`, `property_chunks.py`, `item_chunks.py`, `composition_chunks.py`, `layer_chunks.py`, `misc_chunks.py`, `footage_chunks.py`, `render_chunks.py`, `ldat_chunks.py`
   - **Chunk subclass rules**: use semantic field aliases (`u1_field`, `u4_field`, `f8_field`, etc.) for fixed-layout fields (generic `Chunk.read()`/`write()` handles I/O). Use `bool_field()` for 1-byte boolean fields. Use `BitField` for single-bit flags. Chunks with no typed fields (raw bytes only) do NOT override `read()` - base `Chunk.read()` stores body as `data: bytes`. Only override `read()` when the chunk needs context parameters (e.g. `is_le`, `is_color`) or polymorphic dispatch.
 - **`src/py_aep/__init__.py`** - Public API entry point: `parse()`

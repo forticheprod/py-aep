@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from py_aep.enums import Label
 
 from ..descriptors import ChunkField, ComputedField
 from ..validators import validate_number
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.misc_chunks import NmhdChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from .keyframe import Keyframe
@@ -129,8 +129,8 @@ class MarkerValue:
         """Key-value pairs for Flash Video cue-point parameters."""
         result: dict[str, str] = {}
         for i in range(0, len(self._param_utf8s) - 1, 2):
-            key = self._param_utf8s[i].value.split("\x00")[0]
-            val = self._param_utf8s[i + 1].value.split("\x00")[0]
+            key = self._param_utf8s[i].value
+            val = self._param_utf8s[i + 1].value
             result[key] = val
         return result
 

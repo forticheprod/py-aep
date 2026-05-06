@@ -10,7 +10,10 @@ cross-field validation (e.g. checking that one field is >= another).
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any, Callable, Sequence
 
 
 def validate_number(

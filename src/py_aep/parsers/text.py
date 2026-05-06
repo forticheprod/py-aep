@@ -30,11 +30,15 @@ Default styles live at `data["1"]["2"]` (character) and
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
-from ..binary.chunk import Chunk
 from ..models.text.font_object import FontObject
 from ..models.text.text_document import TextDocument
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from ..binary.chunk import ListChunk
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +145,7 @@ def _get_first_para_style(doc: dict[str, Any]) -> dict[str, Any] | None:
 def parse_text_documents(
     cos_data: dict[str, Any],
     fonts: list[FontObject],
-    btdk_body: Chunk,
+    btdk_body: ListChunk,
 ) -> list[TextDocument]:
     """Parse text documents from COS data.
 
@@ -189,7 +193,7 @@ def parse_text_documents(
 
 def parse_btdk_cos(
     cos_data: dict[str, Any],
-    btdk_body: Chunk,
+    btdk_body: ListChunk,
 ) -> tuple[list[TextDocument], list[FontObject]]:
     """Parse a btdk COS dict into text documents and fonts.
 

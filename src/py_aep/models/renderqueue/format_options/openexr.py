@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ....enums import OpenExrCompression
 from ...descriptors import ChunkField
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ....binary.render_chunks import OpenExrRoptChunk
 
 

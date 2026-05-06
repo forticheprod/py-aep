@@ -995,9 +995,10 @@ class ViewerType(IntEnum):
         Raises:
             ValueError: If the label is not recognized.
         """
-        clean = label.split("\x00")[0] if label else ""
+        if not label:
+            label = ""
         try:
-            return _VIEWER_STRING_MAP[clean]
+            return _VIEWER_STRING_MAP[label]
         except KeyError:
             raise ValueError(f"Unknown viewer type label: {label!r}") from None
 

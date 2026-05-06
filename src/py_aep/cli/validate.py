@@ -20,9 +20,12 @@ import sys
 from dataclasses import fields, is_dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from py_aep import parse
+
+if TYPE_CHECKING:
+    from typing import Any
 
 # Fields to skip to avoid circular references.
 # Back-references: containing_comp, parent_folder, parent (OutputModule),

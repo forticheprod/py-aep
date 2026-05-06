@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import typing
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ..binary.layer_chunks import LdtaChunk
-from ..binary.scalar_chunks import Utf8Chunk
+from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
@@ -24,7 +23,7 @@ from .utils import (
     get_chunks_by_match_name,
 )
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ..binary.chunk import ListChunk
     from ..models.items.composition import CompItem
     from ..models.layers.layer import Layer
@@ -62,12 +61,12 @@ def parse_layer(
     child_chunks = layer_chunk.chunks
 
     try:
-        cmta = find_by_type(chunks=child_chunks, chunk_type="cmta", cls=Utf8Chunk)
+        cmta = cast("CmtaChunk", find_by_type(chunks=child_chunks, chunk_type="cmta"))
     except ChunkNotFoundError:
         cmta = None
 
-    ldta = find_by_type(chunks=child_chunks, chunk_type="ldta", cls=LdtaChunk)
-    name_utf8 = find_by_type(chunks=child_chunks, chunk_type="Utf8", cls=Utf8Chunk)
+    ldta = cast("LdtaChunk", find_by_type(chunks=child_chunks, chunk_type="ldta"))
+    name_utf8 = cast("Utf8Chunk", find_by_type(chunks=child_chunks, chunk_type="Utf8"))
 
     layer_type = ldta.layer_type
 

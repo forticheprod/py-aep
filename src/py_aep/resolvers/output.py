@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import math
 import re
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING
 
 from ..enums import OutputChannels, OutputColorDepth, TimeSpanSource
 
 if TYPE_CHECKING:
+    from typing import Any, Mapping
+
     from ..models.items.composition import CompItem
 
 # Roou format_id (4-char) to file extension.

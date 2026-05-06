@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import typing
 from typing import TYPE_CHECKING, Any
 
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
@@ -8,7 +7,7 @@ from py_aep.enums import PropertyType
 
 from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.property_chunks import TdsbChunk
-from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.scalar_chunks import TdmnChunk, Utf8Chunk
 from .overrides import _PROPERTY_MIN_MAX
 from .property import Property
 from .property_base import _TDSN_SENTINEL, PropertyBase
@@ -20,10 +19,9 @@ from .specs import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
     from typing import Literal
 
-    from ...binary.chunk import Chunk
     from .specs import _GroupSpec, _PropSpec
 
 
@@ -185,7 +183,7 @@ class PropertyGroup(PropertyBase):
         _tdsb = TdsbChunk(synthetic=synthetic)
         display = auto_name or _TDSN_SENTINEL
         name_utf8 = Utf8Chunk(
-            chunk_type="Utf8", value=display + "\x00", synthetic=synthetic
+            chunk_type="Utf8", value=display, synthetic=synthetic
         )
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
@@ -198,13 +196,13 @@ class PropertyGroup(PropertyBase):
         )
 
         # Insert into parent's chunk tree.
-        _tdmn: Chunk | None = None
+        _tdmn: TdmnChunk | None = None
         if parent_property is not None:
             parent_tdgp = getattr(parent_property, "_tdgp", None)
             if parent_tdgp is not None:
-                _tdmn = Utf8Chunk(
+                _tdmn = TdmnChunk(
                     chunk_type="tdmn",
-                    value=match_name + "\x00",
+                    value=match_name,
                     synthetic=synthetic,
                 )
                 parent_tdgp.chunks.append(_tdmn)
@@ -225,7 +223,7 @@ class PropertyGroup(PropertyBase):
     def __init__(
         self,
         *,
-        _tdmn: Chunk | None = None,
+        _tdmn: TdmnChunk | None = None,
         _tdgp: ListChunk | None = None,
         _tdsb: TdsbChunk | None,
         _name_utf8: Utf8Chunk | None = None,
@@ -300,7 +298,7 @@ class PropertyGroup(PropertyBase):
                     c.synthetic = False
                     break
 
-    def __iter__(self) -> typing.Iterator[Property | PropertyGroup]:
+    def __iter__(self) -> Iterator[Property | PropertyGroup]:
         """Return an iterator over the properties in this group."""
         return iter(self.properties)
 

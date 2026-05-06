@@ -7,9 +7,11 @@ model attribute (either a ChunkField descriptor or a `@property`).
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
 from enum import IntEnum
-from typing import Any, Dict, MutableMapping, Optional, Tuple, Type, cast
+from typing import TYPE_CHECKING, Any, Dict, MutableMapping, Optional, Tuple, Type, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
 
 #: Type alias for a settings spec: (attribute_name, optional_enum_class).
 SettingsSpec = Dict[str, Tuple[str, Optional[Type[IntEnum]]]]

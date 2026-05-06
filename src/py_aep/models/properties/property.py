@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import logging
 import math
-import typing
-from typing import Optional, cast
+from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
 from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk, TdumChunk
-from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk
+from ...binary.scalar_chunks import TdmnChunk, Utf8Chunk
 from ...data.units import UNITS_TEXT_MAP
 from ..descriptors import ChunkField
 from ..validators import validate_number, validate_sequence
@@ -23,10 +22,10 @@ from .overrides import (
 from .property_base import _TDSN_SENTINEL, PropertyBase
 from .specs import _USE_VALUE
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from typing import Any
 
-    from ...binary.chunk import Chunk
+    from ...binary.property_chunks import TdumChunk
     from ..text.text_document import TextDocument
     from .keyframe import Keyframe
     from .marker import MarkerValue
@@ -275,7 +274,7 @@ class Property(PropertyBase):
 
         display = spec.auto_name or _TDSN_SENTINEL
         name_utf8 = Utf8Chunk(
-            chunk_type="Utf8", value=display + "\x00", synthetic=synthetic
+            chunk_type="Utf8", value=display, synthetic=synthetic
         )
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
@@ -299,12 +298,12 @@ class Property(PropertyBase):
             _tdbs.chunks.append(_cdat)
 
         # Insert into parent's chunk tree.
-        _tdmn: Chunk | None = None
+        _tdmn: TdmnChunk | None = None
         tdgp = parent_property._tdgp
         if tdgp is not None:
-            _tdmn = Utf8Chunk(
+            _tdmn = TdmnChunk(
                 chunk_type="tdmn",
-                value=spec.match_name + "\x00",
+                value=spec.match_name,
                 synthetic=synthetic,
             )
             tdgp.chunks.append(_tdmn)
@@ -342,7 +341,7 @@ class Property(PropertyBase):
     def __init__(
         self,
         *,
-        _tdmn: Chunk | None = None,
+        _tdmn: TdmnChunk | None = None,
         _tdsb: TdsbChunk,
         _tdb4: Tdb4Chunk,
         _expression_utf8: Utf8Chunk | None = None,
@@ -694,8 +693,7 @@ class Property(PropertyBase):
         if self._expression is not None:
             return self._expression
         if self._expression_utf8 is not None:
-            text: str = self._expression_utf8.value
-            return text.split("\x00")[0]
+            return self._expression_utf8.value
         return ""
 
     @expression.setter
@@ -843,7 +841,7 @@ class Property(PropertyBase):
         parent = self.parent_property
         if parent is None or not hasattr(parent, "properties"):
             return None
-        return cast(Optional[Property], parent.property(_SEPARATION_LEADER))
+        return cast("Property | None", parent.property(_SEPARATION_LEADER))
 
     def get_separation_follower(self, dim: int) -> Property | None:
         """
@@ -866,7 +864,7 @@ class Property(PropertyBase):
                 f"dim must be in range [0, {len(_SEPARATION_FOLLOWERS) - 1}], got {dim}"
             )
         match_name = _SEPARATION_FOLLOWERS[dim]
-        return cast(Optional[Property], parent.property(match_name))
+        return cast("Property | None", parent.property(match_name))
 
     def nearest_key_index(self, time: float) -> int:
         """

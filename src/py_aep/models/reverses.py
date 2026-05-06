@@ -7,9 +7,12 @@ the `ChunkField` `reverse_multi` signature: `(value, body) -> dict`.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING
 
 from .transforms import compute_fractional
+
+if TYPE_CHECKING:
+    from typing import Any, Callable, Sequence
 
 # Divisor used when writing tick-based time values.  10 000 gives sub-frame
 # precision for all standard frame rates.

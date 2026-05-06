@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ...enums import ChannelType, FastPreviewType
 from ..descriptors import ChunkField
 from ..validators import validate_number
 
-if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk
+if TYPE_CHECKING:
+    from ...binary.misc_chunks import FipsChunk
     from ..items.av_item import AVItem
 
 
-def _reverse_fast_preview(value: FastPreviewType, body: object) -> dict[str, int]:
+def _reverse_fast_preview(value: FastPreviewType, body: FipsChunk) -> dict[str, int]:
     """Decompose FastPreviewType into individual fips bit flags."""
     return {
         "fast_preview_adaptive": int(value == FastPreviewType.FP_ADAPTIVE_RESOLUTION),
@@ -213,7 +213,7 @@ class ViewOptions:
     def __init__(
         self,
         *,
-        _fips: Chunk,
+        _fips: FipsChunk,
         _item: AVItem | None = None,
     ) -> None:
         self._fips = _fips

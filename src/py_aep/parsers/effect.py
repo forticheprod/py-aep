@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import logging
-import typing
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk
 from ..binary.misc_chunks import PardChunk
 from ..binary.property_chunks import TdsbChunk
-from ..binary.scalar_chunks import Utf8Chunk
+from ..binary.scalar_chunks import TdmnChunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
     find_by_list_type,
     find_by_type,
-    str_value,
 )
 from ..data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..enums import (
@@ -32,7 +30,9 @@ from .utils import (
     get_chunks_by_match_name,
 )
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
+    from typing import Any, Callable
+
     from ..binary.chunk import Chunk, ListChunk
     from ..models.items.composition import CompItem
 
@@ -399,10 +399,10 @@ def parse_effect(
         composition: The parent composition.
     """
     sspc_child_chunks = sspc_chunk.chunks
-    fnam_chunk = find_by_type(chunks=sspc_child_chunks, chunk_type="fnam", cls=ContainerChunk)
+    fnam_chunk = cast("ContainerChunk", find_by_type(chunks=sspc_child_chunks, chunk_type="fnam"))
 
     # fnam is a ContainerChunk with a Utf8 child
-    fnam_utf8 = find_by_type(chunks=fnam_chunk.chunks, chunk_type="Utf8", cls=Utf8Chunk)
+    fnam_utf8 = cast("Utf8Chunk", find_by_type(chunks=fnam_chunk.chunks, chunk_type="Utf8"))
     tdgp_chunk = find_by_list_type(chunks=sspc_child_chunks, list_type="tdgp")
 
     try:
@@ -421,13 +421,13 @@ def parse_effect(
     if param_defs and group_match_name not in effect_param_defs:
         effect_param_defs[group_match_name] = param_defs
     # Resolve _name_utf8 from the effect tdgp's tdsn child
-    tdsn = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn", cls=ContainerChunk)
-    effect_name_utf8 = find_by_type(chunks=tdsn.chunks, chunk_type="Utf8", cls=Utf8Chunk)
+    tdsn = cast("ContainerChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn"))
+    effect_name_utf8 = cast("Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8"))
 
     try:
-        effect_tdsb = find_by_type(
-            chunks=tdgp_chunk.chunks, chunk_type="tdsb", cls=TdsbChunk
-        )
+        effect_tdsb = cast("TdsbChunk", find_by_type(
+            chunks=tdgp_chunk.chunks, chunk_type="tdsb"
+        ))
     except ChunkNotFoundError:
         effect_tdsb = None
 
@@ -459,21 +459,21 @@ def parse_effect(
 
 
 _PARD_EXTRACTORS: dict[
-    PropertyControlType, typing.Callable[[Any, dict[str, Any]], None]
+    PropertyControlType, Callable[[Any, dict[str, Any]], None]
 ] = {}
 
 
 def _pard_extractor(
     *control_types: PropertyControlType,
-) -> typing.Callable[
-    [typing.Callable[[Any, dict[str, Any]], None]],
-    typing.Callable[[Any, dict[str, Any]], None],
+) -> Callable[
+    [Callable[[Any, dict[str, Any]], None]],
+    Callable[[Any, dict[str, Any]], None],
 ]:
     """Register a pard field extractor for the given control type(s)."""
 
     def decorator(
-        func: typing.Callable[[Any, dict[str, Any]], None],
-    ) -> typing.Callable[[Any, dict[str, Any]], None]:
+        func: Callable[[Any, dict[str, Any]], None],
+    ) -> Callable[[Any, dict[str, Any]], None]:
         for ct in control_types:
             _PARD_EXTRACTORS[ct] = func
         return func
@@ -573,7 +573,7 @@ def _extract_no_value(body: Any, result: dict[str, Any]) -> None:
 
 def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]:
     """Parse effect parameter definition from pard chunk, returning a dict of values."""
-    pard_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pard", cls=PardChunk)
+    pard_chunk = cast("PardChunk", find_by_type(chunks=parameter_chunks, chunk_type="pard"))
 
     control_type = PropertyControlType(pard_chunk.property_control_type)
 
@@ -587,10 +587,10 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
         extractor(pard_chunk, result)
 
     with suppress(ChunkNotFoundError):
-        pdnm_chunk = find_by_type(chunks=parameter_chunks, chunk_type="pdnm", cls=ContainerChunk)
+        pdnm_chunk = cast("ContainerChunk", find_by_type(chunks=parameter_chunks, chunk_type="pdnm"))
         # pdnm is a ContainerChunk with a Utf8 child
-        utf8_chunk = find_by_type(chunks=pdnm_chunk.chunks, chunk_type="Utf8", cls=Utf8Chunk)
-        pdnm_data = str_value(utf8_chunk)
+        utf8_chunk = cast("Utf8Chunk", find_by_type(chunks=pdnm_chunk.chunks, chunk_type="Utf8"))
+        pdnm_data = utf8_chunk.value
         if control_type == PropertyControlType.ENUM:
             result["property_parameters"] = pdnm_data.split("|")
         elif pdnm_data:
@@ -627,7 +627,7 @@ def parse_effect_definitions(
         efdf_child_chunks = efdf_chunk.chunks
         # First tdmn in EfDf contains the effect match name
         tdmn_chunk = find_by_type(chunks=efdf_child_chunks, chunk_type="tdmn")
-        effect_match_name = str_value(tdmn_chunk)
+        effect_match_name = cast("TdmnChunk", tdmn_chunk).value
 
         # Parse param defs from the sspc chunk
         sspc_chunk = find_by_list_type(chunks=efdf_child_chunks, list_type="sspc")

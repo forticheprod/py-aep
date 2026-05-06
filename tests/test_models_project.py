@@ -446,6 +446,8 @@ class TestRoundtripBitsPerChannel:
         project2 = parse_aep(out).project
 
         assert project2.bits_per_channel == BitsPerChannel.THIRTY_TWO
+        assert project2._nhed.bits_per_channel == BitsPerChannel.THIRTY_TWO.to_binary()
+        assert project2._nnhd.bits_per_channel == BitsPerChannel.THIRTY_TWO.to_binary()
 
     def test_set_eight(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "bitsPerChannel_32.aep").project
@@ -474,6 +476,7 @@ class TestRoundtripFeetFramesFilmType:
         project2 = parse_aep(out).project
 
         assert project2.feet_frames_film_type == FeetFramesFilmType.MM16
+        assert project2._nhed.feet_frames_film_type == project2._nnhd.feet_frames_film_type
 
     def test_set_mm35(self, tmp_path: Path) -> None:
         """Set to MM16 then back to MM35 via chained roundtrip."""
@@ -555,6 +558,7 @@ class TestRoundtripFramesCountType:
         project2 = parse_aep(out).project
 
         assert project2.frames_count_type == FramesCountType.FC_START_1
+        assert project2._nhed.frames_count_type == project2._nnhd.frames_count_type
 
     def test_set_start_0(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "displayStartFrame_1.aep").project
@@ -583,6 +587,7 @@ class TestRoundtripDisplayStartFrame:
         project2 = parse_aep(out).project
 
         assert project2.display_start_frame == 1
+        assert project2._nhed.frames_count_type == project2._nnhd.frames_count_type
 
     def test_set_0(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "displayStartFrame_1.aep").project
@@ -602,27 +607,29 @@ class TestRoundtripFramesUseFeetFrames:
 
     def test_enable(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "framesUseFeetFrames_false.aep").project
-        assert project.frames_use_feet_frames == 0
+        assert project.frames_use_feet_frames is False
 
-        project.frames_use_feet_frames = 1
+        project.frames_use_feet_frames = True
 
         out = tmp_path / "modified.aep"
         project.save(out)
         project2 = parse_aep(out).project
 
-        assert project2.frames_use_feet_frames == 1
+        assert project2.frames_use_feet_frames is True
+        assert project2._nhed.frames_use_feet_frames == project2._nnhd.frames_use_feet_frames
 
     def test_disable(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "framesUseFeetFrames_true.aep").project
-        assert project.frames_use_feet_frames == 1
+        assert project.frames_use_feet_frames is True
 
-        project.frames_use_feet_frames = 0
+        project.frames_use_feet_frames = False
 
         out = tmp_path / "modified.aep"
         project.save(out)
         project2 = parse_aep(out).project
 
-        assert project2.frames_use_feet_frames == 0
+        assert project2.frames_use_feet_frames is False
+        assert project2._nhed.frames_use_feet_frames == project2._nnhd.frames_use_feet_frames
 
 
 class TestRoundtripTimeDisplayType:
@@ -639,6 +646,7 @@ class TestRoundtripTimeDisplayType:
         project2 = parse_aep(out).project
 
         assert project2.time_display_type == TimeDisplayType.FRAMES
+        assert project2._nhed.time_display_type == project2._nnhd.time_display_type
 
     def test_set_timecode(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "timeDisplayType_frames.aep").project
@@ -669,6 +677,10 @@ class TestRoundtripTransparencyGridThumbnails:
         project2 = parse_aep(out).project
 
         assert project2.transparency_grid_thumbnails is True
+        assert (
+            project2._nhed.transparency_grid_thumbnails
+            == project2._nnhd.transparency_grid_thumbnails
+        )
 
     def test_disable(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "transparencyGridThumbnails_true.aep").project

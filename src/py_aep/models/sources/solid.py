@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import typing
-from typing import Any, List, cast
+from typing import TYPE_CHECKING, Any, List, cast
 
 from ..descriptors import ComputedField
 from ..reverses import unpack_values
@@ -9,17 +8,17 @@ from ..transforms import pack_values
 from ..validators import validate_sequence
 from .footage import FootageSource
 
-if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
-    from ...binary.footage_chunks import SspcChunk
+if TYPE_CHECKING:
+    from ...binary.chunk import ListChunk
+    from ...binary.footage_chunks import OptiChunk, SspcChunk
     from ...binary.scalar_chunks import U1Chunk
 
 
-def _compute_color(body: object) -> list[float]:
-    return cast(List[float], pack_values(body, "color_r", "color_g", "color_b"))
+def _compute_color(body: OptiChunk) -> list[float]:
+    return cast("list[float]", pack_values(body, "color_r", "color_g", "color_b"))
 
 
-def _reverse_color(value: list[float], _body: object) -> dict[str, Any]:
+def _reverse_color(value: list[float], _body: OptiChunk) -> dict[str, Any]:
     return unpack_values("color_r", "color_g", "color_b")(value, _body)
 
 
@@ -57,7 +56,7 @@ class SolidSource(FootageSource):
         self,
         *,
         _sspc: SspcChunk,
-        _opti: Chunk,
+        _opti: OptiChunk,
         _linl: U1Chunk | None = None,
         _clrs: ListChunk | None = None,
     ) -> None:

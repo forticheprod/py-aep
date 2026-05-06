@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from .footage import FootageSource
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.footage_chunks import SspcChunk
     from ...binary.scalar_chunks import U1Chunk

@@ -13,7 +13,10 @@ This module mirrors the role of
 
 from __future__ import annotations
 
-from typing import Any, Callable, Generic, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
+
+if TYPE_CHECKING:
+    from typing import Any, Callable
 
 T = TypeVar("T")
 

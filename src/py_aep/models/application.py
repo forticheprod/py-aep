@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-import typing
+from typing import TYPE_CHECKING
 
 from .descriptors import ChunkField, ComputedField
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ..binary.item_chunks import HeadChunk
     from .project import Project
     from .viewer.viewer import Viewer

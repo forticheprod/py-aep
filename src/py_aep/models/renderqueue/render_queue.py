@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING, Iterator
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ..project import Project
     from .render_queue_item import RenderQueueItem
 
@@ -31,7 +31,7 @@ class RenderQueue:
         self._items = items
         self._parent = parent
 
-    def __iter__(self) -> typing.Iterator[RenderQueueItem]:
+    def __iter__(self) -> Iterator[RenderQueueItem]:
         return iter(self.items)
 
     @property

@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-import typing
-from typing import List, cast
+from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import AutoOrientType, Label
 
-from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.scalar_chunks import CmtaChunk
 from ..descriptors import ChunkField, ComputedField
-from ..properties.marker import MarkerValue
 from ..properties.property import Property
 from ..properties.property_group import PropertyGroup
 from ..reverses import reverse_ratio
-from ..transforms import compute_ratio, strip_null
+from ..transforms import compute_ratio
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.layer_chunks import LdtaChunk
     from ...binary.misc_chunks import OtlnItem
+    from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
     from ..items.composition import CompItem
+    from ..properties.marker import MarkerValue
 
 
 _reverse_start_time = reverse_ratio("start_time")
@@ -25,7 +25,7 @@ _reverse_in_point = reverse_ratio("in_point")
 _reverse_out_point = reverse_ratio("out_point")
 
 
-def _reverse_auto_orient(value: AutoOrientType, _body: object) -> dict[str, int]:
+def _reverse_auto_orient(value: AutoOrientType, _body: LdtaChunk) -> dict[str, int]:
     """Decompose AutoOrientType into individual ldta bit flags."""
     return {
         "auto_orient_along_path": int(value == AutoOrientType.ALONG_PATH),
@@ -50,7 +50,7 @@ def _compute_auto_orient(body: LdtaChunk) -> AutoOrientType:
     return AutoOrientType.NO_AUTO_ORIENT
 
 
-def _reverse_stretch(value: float, _body: object) -> dict[str, int]:
+def _reverse_stretch(value: float, _body: LdtaChunk) -> dict[str, int]:
     """Decompose stretch (percentage) into dividend/divisor."""
     _TIME_DIVISOR = 10000
     if value == 0:
@@ -183,7 +183,7 @@ class Layer(PropertyGroup):
         self,
         *,
         _ldta: LdtaChunk,
-        _cmta: Utf8Chunk | None,
+        _cmta: CmtaChunk | None,
         _name_utf8: Utf8Chunk,
         _layer_list: ListChunk,
         containing_comp: CompItem,
@@ -235,12 +235,13 @@ class Layer(PropertyGroup):
         """A descriptive comment for the layer. Read / Write."""
         if self._cmta is None:
             return ""
-        return strip_null(self._cmta.value)
+        return self._cmta.value
 
     @comment.setter
     def comment(self, value: str) -> None:
         if self._cmta is None:
-            chunk = Utf8Chunk(chunk_type="cmta", value=value)
+            chunk = CmtaChunk(chunk_type="cmta")
+            chunk.value = value
             self._layer_list.chunks.append(chunk)
             self._cmta = chunk
         else:
@@ -385,7 +386,7 @@ class Layer(PropertyGroup):
             prop = self["ADBE Marker"]
         except KeyError:
             return None
-        return cast(Property, prop)
+        return cast("Property", prop)
 
     @property
     def markers(self) -> list[MarkerValue]:
@@ -403,7 +404,7 @@ class Layer(PropertyGroup):
         if self.marker is None:
             return []
         return cast(
-            List[MarkerValue],  # Cannot use `list` for Py3.7
+            "list[MarkerValue]",
             [kf.value for kf in self.marker.keyframes],
         )
 

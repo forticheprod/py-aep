@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import typing
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING
 
 from py_aep.enums import (
     ColorDepthSetting,
@@ -35,10 +34,10 @@ from .settings import (
     settings_to_string,
 )
 
-if typing.TYPE_CHECKING:
-    from typing import Iterator
+if TYPE_CHECKING:
+    from typing import Any, Iterator
 
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import ListChunk
     from ...binary.render_chunks import RenderSettingsItem
     from ..items.composition import CompItem
     from ..project import Project
@@ -260,7 +259,7 @@ class RenderQueueItem:
         *,
         _ldat: RenderSettingsItem,
         _litm: ListChunk,
-        _list_chunk: Chunk,
+        _list_chunk: ListChunk,
         _rcom_utf8: Utf8Chunk | None = None,
         parent: RenderQueue,
         comp: CompItem,

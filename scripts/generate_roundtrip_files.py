@@ -1,7 +1,7 @@
 """Generate roundtrip test files for manual verification in After Effects.
 
 Each output file starts from a base .aep and applies a group of related
-modifications, then saves to `samples/roundtrip/`. The JSX companion
+modifications, then saves to `samples/unused/roundtrip/`. The JSX companion
 script `scripts/jsx/open_roundtrip_files.jsx` can then open each file
 in AE to confirm it loads without errors.
 
@@ -29,9 +29,22 @@ from py_aep import parse as parse_aep  # noqa: E402
 
 if TYPE_CHECKING:
     from py_aep.models.application import Application
+    from py_aep.models.items.composition import CompItem
+    from py_aep.models.items.folder import FolderItem
+    from py_aep.models.items.footage import FootageItem
+    from py_aep.models.items.item import Item
+    from py_aep.models.layers.av_layer import AVLayer
+    from py_aep.models.layers.layer import Layer
+    from py_aep.models.properties.mask_property_group import MaskPropertyGroup
+    from py_aep.models.renderqueue.render_queue_item import RenderQueueItem
+    from py_aep.models.sources.solid import SolidSource
 
 DEFAULT_BASE = ROOT / "samples" / "versions" / "ae2025" / "complete.aep"
-OUTPUT_DIR = ROOT / "samples" / "roundtrip"
+OUTPUT_DIR = ROOT / "samples" / "unused" / "roundtrip"
+DROP_FRAME_COMP_NAME = "DropFrame_Comp"
+HIGH_FPS_COMP_NAME = "HighFPS_Comp"
+MAIN_COMP_NAME = "Main_Comp"
+VALID_BUILD_NAME = "20.1x42"
 
 
 # ---------------------------------------------------------------------------
@@ -45,17 +58,93 @@ def _register(name: str, description: str, apply_fn: object) -> None:
     SCENARIOS.append((name, description, apply_fn))
 
 
+def _get_comp(app: Application, name: str) -> CompItem:
+    for comp in app.project.compositions:
+        if comp.name == name:
+            return comp
+    raise ValueError(f"Composition not found: {name}")
+
+
+def _get_item(app: Application, name: str) -> Item:
+    for item in app.project.items.values():
+        if item.name == name:
+            return item
+    raise ValueError(f"Project item not found: {name}")
+
+
+def _get_folder(app: Application, name: str) -> FolderItem:
+    for folder in app.project.folders:
+        if folder.name == name:
+            return folder
+    raise ValueError(f"Folder not found: {name}")
+
+
+def _get_av_layers(comp: CompItem, *, minimum: int) -> list[AVLayer]:
+    from py_aep.models.layers.av_layer import AVLayer
+
+    av_layers = [layer for layer in comp.layers if isinstance(layer, AVLayer)]
+    if len(av_layers) < minimum:
+        raise ValueError(
+            f"{comp.name} needs at least {minimum} AV layers, "
+            f"found {len(av_layers)}"
+        )
+    return av_layers
+
+
+def _get_first_mask_layer(comp: CompItem) -> Layer:
+    for layer in comp.layers:
+        if layer.masks and len(layer.masks) > 0:
+            return layer
+    raise ValueError(f"No masked layer found in composition: {comp.name}")
+
+
+def _get_first_mask(comp: CompItem) -> MaskPropertyGroup:
+    from py_aep.models.properties.mask_property_group import MaskPropertyGroup
+
+    layer = _get_first_mask_layer(comp)
+    masks = layer.masks
+    if masks is None or len(masks) == 0:
+        raise ValueError(f"No mask found in composition: {comp.name}")
+    mask = masks[0]
+    if not isinstance(mask, MaskPropertyGroup):
+        raise ValueError(f"First mask in {comp.name} is not a MaskPropertyGroup")
+    return mask
+
+
+def _get_solid_footages(
+    app: Application, *, minimum: int
+) -> list[tuple[FootageItem, SolidSource]]:
+    from py_aep.models.sources.solid import SolidSource
+
+    solids: list[tuple[FootageItem, SolidSource]] = []
+    for item in app.project.footages:
+        source = item.main_source
+        if isinstance(source, SolidSource):
+            solids.append((item, source))
+    if len(solids) < minimum:
+        raise ValueError(
+            f"Project needs at least {minimum} solid footages, found {len(solids)}"
+        )
+    return solids
+
+
+def _get_render_queue_item(app: Application) -> RenderQueueItem:
+    rq = app.project.render_queue
+    if rq is None or not rq.items:
+        raise ValueError("Project has no render queue item to modify")
+    return rq.items[0]
+
+
 # -- 1. Composition settings & geometry -------------------------------------
 
 def _comp_settings(app: Application) -> None:
-    comp = app.project.compositions[0]
+    comp = _get_comp(app, DROP_FRAME_COMP_NAME)
     comp.bg_color = [0.1, 0.2, 0.3]
     comp.width = 3840
     comp.height = 2160
     comp.pixel_aspect = 2.0
     comp.renderer = "ADBE Calder"
     comp.resolution_factor = [2, 2]
-    comp.draft3d = True
     comp.preserve_nested_frame_rate = True
     comp.preserve_nested_resolution = True
     comp.motion_blur_adaptive_sample_limit = 128
@@ -63,7 +152,7 @@ def _comp_settings(app: Application) -> None:
 
 _register(
     "comp_settings",
-    "bg_color, size, pixel_aspect, renderer, resolution, draft3d, "
+    "DropFrame_Comp: bg_color, size, pixel_aspect, renderer, resolution, "
     "preserve_nested_*, motion_blur_samples*",
     _comp_settings,
 )
@@ -72,20 +161,20 @@ _register(
 # -- 2. Composition timing & work area -------------------------------------
 
 def _comp_timing(app: Application) -> None:
-    comp = app.project.compositions[0]
+    comp = _get_comp(app, DROP_FRAME_COMP_NAME)
     comp.frame_rate = 24.0
+    comp.display_start_frame = 120
     comp.display_start_time = 5.0
     comp.duration = 120.0
     comp.work_area_start = 1.0
     comp.work_area_duration = 10.0
     comp.time = 6.0
-    comp.display_start_frame = 10
-    comp.drop_frame = True
+    comp.drop_frame = False
 
 _register(
     "comp_timing",
-    "frame_rate, display_start_time, duration, work_area_start/duration, "
-    "time, display_start_frame, drop_frame",
+    "DropFrame_Comp: frame_rate, consistent display_start_time/frame, "
+    "duration, work_area_start/duration, time, drop_frame",
     _comp_timing,
 )
 
@@ -93,14 +182,14 @@ _register(
 # -- 3. Composition flags & shutter ----------------------------------------
 
 def _comp_flags(app: Application) -> None:
-    comp = app.project.compositions[0]
-    comp.motion_blur = False
-    comp.frame_blending = False
-    comp.hide_shy_layers = False
+    comp = _get_comp(app, DROP_FRAME_COMP_NAME)
+    comp.motion_blur = True
+    comp.frame_blending = True
+    comp.hide_shy_layers = True
     comp.shutter_angle = 360
     comp.shutter_phase = -180
-    # Modify a second comp too
-    comp2 = app.project.compositions[1]
+
+    comp2 = _get_comp(app, HIGH_FPS_COMP_NAME)
     comp2.motion_blur = True
     comp2.frame_blending = True
     comp2.hide_shy_layers = True
@@ -109,7 +198,8 @@ def _comp_flags(app: Application) -> None:
 
 _register(
     "comp_flags",
-    "motion_blur, frame_blending, hide_shy, shutter_angle/phase on 2 comps",
+    "DropFrame_Comp + HighFPS_Comp: motion_blur, frame_blending, hide_shy, "
+    "shutter_angle/phase",
     _comp_flags,
 )
 
@@ -119,14 +209,13 @@ _register(
 def _layer_flags(app: Application) -> None:
     from py_aep.enums import BlendingMode, Label, LayerQuality, LayerSamplingQuality
 
-    comp = app.project.compositions[0]
-    layer = comp.layers[0]
+    comp = _get_comp(app, DROP_FRAME_COMP_NAME)
+    layer = _get_av_layers(comp, minimum=1)[0]
     layer.comment = "roundtrip test comment"
     layer.locked = True
     layer.shy = True
     layer.solo = True
     layer.enabled = False
-    layer.selected = True
     layer.label = Label.RED
 
     layer.adjustment_layer = True
@@ -142,9 +231,9 @@ def _layer_flags(app: Application) -> None:
 
 _register(
     "layer_flags",
-    "comment, locked, shy, solo, enabled, selected, label, "
-    "AVLayer: adjustment, effects, motion_blur, collapse, guide, quality, "
-    "sampling, blending_mode, audio",
+    "DropFrame_Comp layer 1: comment, locked, shy, solo, enabled, label, "
+    "AVLayer adjustment/effects/motion_blur/collapse/guide/quality/"
+    "sampling/blending_mode/audio",
     _layer_flags,
 )
 
@@ -153,28 +242,26 @@ _register(
 
 def _layer_timing(app: Application) -> None:
     from py_aep.enums import AutoOrientType, FrameBlendingType, Label
-    from py_aep.models.layers.av_layer import AVLayer
 
-    comp = app.project.compositions[0]
-    layer = comp.layers[0]
-    layer.auto_orient = AutoOrientType.ALONG_PATH
-    layer.in_point = layer.in_point + 1.0
-    layer.out_point = layer.out_point - 1.0
-    layer.start_time = 2.0
-    layer.stretch = 50.0
+    comp = _get_comp(app, MAIN_COMP_NAME)
+    av_layers = _get_av_layers(comp, minimum=8)
 
-    # Modify several layers with different settings
-    for i, lyr in enumerate(comp.layers[1:4]):
+    av_layers[0].auto_orient = AutoOrientType.ALONG_PATH
+    av_layers[1].in_point = av_layers[1].in_point + 1.0
+    av_layers[2].out_point = av_layers[2].out_point - 1.0
+    av_layers[3].start_time = 2.0
+    av_layers[4].stretch = 50.0
+
+    for i, lyr in enumerate(av_layers[5:8]):
         lyr.comment = f"layer {i + 1} modified"
         lyr.shy = i % 2 == 0
         lyr.label = Label.YELLOW
-        if isinstance(lyr, AVLayer):
-            lyr.frame_blending_type = FrameBlendingType.FRAME_MIX
+        lyr.frame_blending_type = FrameBlendingType.FRAME_MIX
 
 _register(
     "layer_timing",
-    "auto_orient, in/out_point, start_time, stretch, "
-    "multi-layer comment/shy/label/frame_blending",
+    "Main_Comp AV layers: auto_orient, in/out/start/stretch on separate "
+    "layers, plus comment/shy/label/frame_blending",
     _layer_timing,
 )
 
@@ -189,23 +276,21 @@ def _project_settings(app: Application) -> None:
     )
 
     proj = app.project
-    proj.bits_per_channel = BitsPerChannel.SIXTEEN
+    proj.bits_per_channel = BitsPerChannel.THIRTY_TWO
     proj.time_display_type = TimeDisplayType.FRAMES
     proj.frames_count_type = FramesCountType.FC_START_1
-    proj.display_start_frame = 0
-    proj.transparency_grid_thumbnails = True
-    proj.frames_use_feet_frames = True
-    proj.linear_blending = True
-    proj.linearize_working_space = True
-    proj.expression_engine = "javascript-1.0"
+    proj.display_start_frame = 1
+    proj.transparency_grid_thumbnails = False
+    proj.frames_use_feet_frames = False
+    proj.linear_blending = False
+    proj.linearize_working_space = False
+    proj.expression_engine = "extendscript"
     proj.compensate_for_scene_referred_profiles = True
 
 _register(
     "project_settings",
-    "bits_per_channel, time_display_type, frames_count_type, "
-    "display_start_frame, transparency_grid, feet_frames, "
-    "linear_blending, linearize_working_space, expression_engine, "
-    "compensate_for_scene_referred",
+    "project bits/time display/frame count/display start/transparency/"
+    "feet frames/linearize/expression engine/scene-referred settings",
     _project_settings,
 )
 
@@ -215,25 +300,20 @@ _register(
 def _masks(app: Application) -> None:
     from py_aep.enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
 
-    comp = app.project.compositions[0]
-    for layer in comp.layers:
-        if not layer.masks:
-            continue
-        mask = layer.masks[0]
-        mask.enabled = not mask.enabled
-        mask.color = [1.0, 0.0, 0.0]
-        mask.inverted = True
-        mask.locked = True
-        mask.mask_mode = MaskMode.SUBTRACT
-        mask.mask_feather_falloff = MaskFeatherFalloff.LINEAR
-        mask.mask_motion_blur = MaskMotionBlur.ON
-        mask.roto_bezier = True
-        return
+    comp = _get_comp(app, MAIN_COMP_NAME)
+    mask = _get_first_mask(comp)
+    mask.color = [1.0, 0.0, 0.0]
+    mask.inverted = True
+    mask.locked = True
+    mask.mask_mode = MaskMode.SUBTRACT
+    mask.mask_feather_falloff = MaskFeatherFalloff.FFO_LINEAR
+    mask.mask_motion_blur = MaskMotionBlur.ON
+    mask.roto_bezier = True
 
 _register(
     "masks",
-    "enabled, color, inverted, locked, mask_mode, "
-    "feather_falloff, motion_blur, roto_bezier",
+    "Main_Comp first masked layer: color, inverted, locked, "
+    "mask_mode, feather_falloff, motion_blur, roto_bezier",
     _masks,
 )
 
@@ -242,32 +322,31 @@ _register(
 
 def _items(app: Application) -> None:
     from py_aep.enums import Label
-    from py_aep.models.sources.solid import SolidSource
 
-    proj = app.project
-    # Rename and relabel items
-    for i, item in enumerate(list(proj.items.values())[:5]):
+    item_names = [
+        DROP_FRAME_COMP_NAME,
+        HIGH_FPS_COMP_NAME,
+        MAIN_COMP_NAME,
+        "NonSquarePAR_Comp",
+        "Pre_Comp",
+    ]
+    for i, item_name in enumerate(item_names):
+        item = _get_item(app, item_name)
         item.label = Label.FUCHSIA
         item.comment = f"item {i} comment"
 
-    # Change solid source colors
-    solid_count = 0
-    for item in proj.footages:
-        if isinstance(item.main_source, SolidSource) and solid_count < 3:
-            item.main_source.color = [
-                0.2 * (solid_count + 1),
-                0.1,
-                0.3 * (solid_count + 1),
-            ]
-            solid_count += 1
+    solid_footages = _get_solid_footages(app, minimum=3)
+    for i, (_item, source) in enumerate(solid_footages[:3]):
+        source.color = [0.2 * (i + 1), 0.1, 0.3 * (i + 1)]
 
-    # Modify folder labels
-    for folder in proj.folders[:2]:
+    for folder_name in ("Compositions", "Subfolder"):
+        folder = _get_folder(app, folder_name)
         folder.label = Label.CYAN
 
 _register(
     "items",
-    "item labels/comments, solid source colors, folder labels",
+    "named comp item labels/comments, first 3 solid source colors, named "
+    "folder labels",
     _items,
 )
 
@@ -277,10 +356,7 @@ _register(
 def _render_queue(app: Application) -> None:
     from py_aep.enums import LogType, PostRenderAction
 
-    rq = app.project.render_queue
-    if not rq or not rq.items:
-        return
-    rqi = rq.items[0]
+    rqi = _get_render_queue_item(app)
     rqi.log_type = LogType.ERRORS_AND_PER_FRAME_INFO
     rqi.queue_item_notify = True
     rqi._skip_existing_files = True
@@ -303,98 +379,94 @@ def _everything(app: Application) -> None:
         AutoOrientType,
         BitsPerChannel,
         BlendingMode,
+        FrameBlendingType,
+        FramesCountType,
         Label,
         LayerQuality,
         LogType,
         MaskMode,
         TimeDisplayType,
     )
-    from py_aep.models.sources.solid import SolidSource
 
-    app.build_name = "99.9x999"
+    app.build_name = VALID_BUILD_NAME
 
-    # Project
     proj = app.project
-    proj.bits_per_channel = BitsPerChannel.SIXTEEN
+    proj.bits_per_channel = BitsPerChannel.THIRTY_TWO
     proj.time_display_type = TimeDisplayType.FRAMES
-    proj.transparency_grid_thumbnails = True
-    proj.linear_blending = True
-    proj.expression_engine = "javascript-1.0"
+    proj.frames_count_type = FramesCountType.FC_START_1
+    proj.display_start_frame = 1
+    proj.transparency_grid_thumbnails = False
+    proj.linear_blending = False
+    proj.linearize_working_space = False
+    proj.expression_engine = "extendscript"
     proj.compensate_for_scene_referred_profiles = True
 
-    # Composition
-    comp = proj.compositions[0]
+    comp = _get_comp(app, MAIN_COMP_NAME)
+    av_layers = _get_av_layers(comp, minimum=7)
     comp.bg_color = [0.5, 0.5, 0.5]
     comp.width = 1280
     comp.height = 720
     comp.frame_rate = 25.0
     comp.duration = 60.0
     comp.display_start_time = 2.0
-    comp.pixel_aspect = 1.0
+    comp.pixel_aspect = 1.5
     comp.resolution_factor = [4, 4]
     comp.motion_blur = False
-    comp.frame_blending = False
+    comp.frame_blending = True
     comp.hide_shy_layers = True
     comp.shutter_angle = 90
     comp.shutter_phase = -45
-    comp.draft3d = True
     comp.preserve_nested_frame_rate = True
+    comp.preserve_nested_resolution = True
     comp.work_area_start = 0.5
     comp.work_area_duration = 5.0
-    comp.drop_frame = True
 
-    # Layer flags + AVLayer
-    layer = comp.layers[0]
-    layer.comment = "everything test"
-    layer.locked = True
-    layer.shy = True
-    layer.solo = True
-    layer.enabled = False
-    layer.label = Label.ORANGE
-    layer.auto_orient = AutoOrientType.ALONG_PATH
-    layer.in_point = layer.in_point + 0.5
-    layer.out_point = layer.out_point - 0.5
-    layer.start_time = 1.0
-    layer.stretch = 75.0
-    layer.blending_mode = BlendingMode.SCREEN
-    layer.quality = LayerQuality.BEST
-    layer.effects_active = False
-    layer.motion_blur = True
-    layer.adjustment_layer = True
-    layer.audio_enabled = False
+    primary_layer = av_layers[0]
+    primary_layer.comment = "everything test"
+    primary_layer.locked = True
+    primary_layer.shy = True
+    primary_layer.solo = False
+    primary_layer.enabled = False
+    primary_layer.label = Label.ORANGE
+    primary_layer.auto_orient = AutoOrientType.ALONG_PATH
+    primary_layer.blending_mode = BlendingMode.SCREEN
+    primary_layer.quality = LayerQuality.BEST
+    primary_layer.effects_active = False
+    primary_layer.motion_blur = True
+    primary_layer.adjustment_layer = True
+    primary_layer.audio_enabled = False
 
-    # Multiple layers
-    for i, lyr in enumerate(comp.layers[1:3]):
+    av_layers[1].in_point = av_layers[1].in_point + 0.5
+    av_layers[2].out_point = av_layers[2].out_point - 0.5
+    av_layers[3].start_time = 1.0
+    av_layers[4].stretch = 75.0
+
+    for i, lyr in enumerate(av_layers[5:7]):
         lyr.comment = f"everything layer {i + 1}"
         lyr.shy = True
         lyr.label = Label.YELLOW
+    av_layers[5].frame_blending_type = FrameBlendingType.FRAME_MIX
 
-    # Masks
-    for lyr in comp.layers:
-        if lyr.masks:
-            lyr.masks[0].enabled = False
-            lyr.masks[0].inverted = True
-            lyr.masks[0].mask_mode = MaskMode.SUBTRACT
-            break
+    mask = _get_first_mask(comp)
+    mask.inverted = True
+    mask.mask_mode = MaskMode.SUBTRACT
 
-    # Item labels
-    for item in list(proj.items.values())[:3]:
+    for item_name in [DROP_FRAME_COMP_NAME, HIGH_FPS_COMP_NAME, MAIN_COMP_NAME]:
+        item = _get_item(app, item_name)
         item.label = Label.FUCHSIA
 
-    # Solid colors
-    for item in proj.footages[:2]:
-        if isinstance(item.main_source, SolidSource):
-            item.main_source.color = [1.0, 0.0, 0.0]
+    for _item, source in _get_solid_footages(app, minimum=2)[:2]:
+        source.color = [1.0, 0.0, 0.0]
 
-    # Render queue
-    rq = proj.render_queue
-    rq.items[0].log_type = LogType.ERRORS_AND_PER_FRAME_INFO
-    rq.items[0].queue_item_notify = True
+    rqi = _get_render_queue_item(app)
+    rqi.log_type = LogType.ERRORS_AND_PER_FRAME_INFO
+    rqi.queue_item_notify = True
+
 
 _register(
     "everything",
-    "app + project + comp + layer + AVLayer + masks + items + "
-    "solids + render_queue - all at once",
+    "valid build_name + project + Main_Comp + AV layers + masked layer + "
+    "items + solids + render_queue",
     _everything,
 )
 
@@ -410,6 +482,10 @@ def generate(
 ) -> dict[str, str]:
     """Generate roundtrip files. Returns {filename: status} dict."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    # delete existing files
+    for file in output_dir.glob("*"):
+        if file.is_file():
+            file.unlink()
     results: dict[str, str] = {}
 
     for name, _desc, apply_fn in SCENARIOS:
@@ -444,7 +520,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=OUTPUT_DIR,
-        help="Output directory (default: samples/roundtrip/)",
+        help="Output directory (default: samples/unused/roundtrip/)",
     )
     parser.add_argument(
         "--only",

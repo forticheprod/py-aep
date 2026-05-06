@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ..binary.item_chunks import HeadChunk
 from ..binary.utils import find_by_type
@@ -33,7 +33,7 @@ def parse_app(rifx: ListChunk, project: Project) -> Application:
         project: The already-parsed [Project][].
     """
     root_chunks = rifx.chunks
-    head_chunk = find_by_type(chunks=root_chunks, chunk_type="head", cls=HeadChunk)
+    head_chunk = cast("HeadChunk", find_by_type(chunks=root_chunks, chunk_type="head"))
 
     # Collect viewer panels from the folder tree (parsed during parse_folder)
     viewers = _collect_viewers(project.root_folder)

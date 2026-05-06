@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from py_aep.enums import Label
 
-from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
 from ..descriptors import ChunkField
-from ..transforms import strip_null
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.item_chunks import IdtaChunk
     from ..guide import Guide
@@ -45,7 +44,6 @@ class Item:
     name = ChunkField[str](
         "_name_utf8",
         "value",
-        transform=strip_null,
     )
     """The name of the item, as shown in the Project panel.
     Read / Write."""
@@ -55,7 +53,7 @@ class Item:
         *,
         _idta: IdtaChunk | None,
         _name_utf8: Utf8Chunk | None,
-        _cmta: Utf8Chunk | None,
+        _cmta: CmtaChunk | None,
         _item_list: ListChunk | None,
         project: Project,
         parent_folder: FolderItem | None,
@@ -76,14 +74,15 @@ class Item:
         """The item comment. Read / Write."""
         if self._cmta is None:
             return ""
-        return strip_null(self._cmta.value)
+        return self._cmta.value
 
     @comment.setter
     def comment(self, value: str) -> None:
         if self._cmta is not None:
             self._cmta.value = value
         elif self._item_list is not None:
-            chunk = Utf8Chunk(chunk_type="cmta", value=value)
+            chunk = CmtaChunk(chunk_type="cmta")
+            chunk.value = value
             self._item_list.chunks.append(chunk)
             self._cmta = chunk
 

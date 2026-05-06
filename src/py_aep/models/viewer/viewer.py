@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ...enums import ViewerType
 from ..descriptors import ChunkField
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.scalar_chunks import AsciiChunk, U1Chunk
     from .view import View
 

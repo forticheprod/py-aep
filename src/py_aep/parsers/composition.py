@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import typing
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ..binary.composition_chunks import CdtaChunk
 from ..binary.item_chunks import IdtaChunk
 from ..binary.layer_chunks import LdtaChunk
 from ..binary.misc_chunks import EwotChunk, PrinChunk
-from ..binary.scalar_chunks import U1Chunk, Utf8Chunk
+from ..binary.scalar_chunks import CmtaChunk, U1Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
@@ -18,7 +17,7 @@ from ..models.items.composition import CompItem
 from .essential_graphics import parse_essential_graphics
 from .layer import parse_layer
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ListChunk
     from ..binary.misc_chunks import EwotItem, OtlnItem
     from ..models.items.folder import FolderItem
@@ -31,7 +30,7 @@ def parse_composition(
     child_chunks: list[Chunk],
     _idta: IdtaChunk,
     _name_utf8: Utf8Chunk,
-    _cmta: Utf8Chunk | None,
+    _cmta: CmtaChunk | None,
     _item_list: ListChunk,
     project: Project,
     parent_folder: FolderItem,
@@ -51,14 +50,14 @@ def parse_composition(
         effect_param_defs: Project-level effect parameter definitions, used as
             fallback when layer-level parT chunks are missing.
     """
-    cdta_chunk = find_by_type(chunks=child_chunks, chunk_type="cdta", cls=CdtaChunk)
+    cdta_chunk = cast("CdtaChunk", find_by_type(chunks=child_chunks, chunk_type="cdta"))
     try:
-        cdrp_chunk = find_by_type(chunks=child_chunks, chunk_type="cdrp", cls=U1Chunk)
+        cdrp_chunk = cast("U1Chunk", find_by_type(chunks=child_chunks, chunk_type="cdrp"))
     except ChunkNotFoundError:
         cdrp_chunk = None
 
     prin_list = find_by_list_type(chunks=child_chunks, list_type="PRin")
-    prin_chunk = find_by_type(chunks=prin_list.chunks, chunk_type="prin", cls=PrinChunk)
+    prin_chunk = cast("PrinChunk", find_by_type(chunks=prin_list.chunks, chunk_type="prin"))
 
     composition = CompItem(
         _cdrp=cdrp_chunk,
@@ -90,7 +89,7 @@ def parse_composition(
     # layer IDs (ldta.layer_id).  Pre-scan all layer chunks so the mapping
     # is available when parsing effect properties.
     for idx, lc in enumerate(layer_sub_chunks, 1):
-        ldta = find_by_type(chunks=lc.chunks, chunk_type="ldta", cls=LdtaChunk)
+        ldta = cast("LdtaChunk", find_by_type(chunks=lc.chunks, chunk_type="ldta"))
         composition._layer_id_to_index[ldta.layer_id] = idx
 
     for layer_chunk in layer_sub_chunks:
@@ -138,7 +137,7 @@ def _collect_ewot_entries(child_chunks: list[Chunk]) -> list[EwotItem]:
     ewst_chunks = filter_by_list_type(chunks=child_chunks, list_type="Ewst")
     for ewst_chunk in ewst_chunks:
         try:
-            ewot_chunk = find_by_type(chunks=ewst_chunk.chunks, chunk_type="ewot", cls=EwotChunk)
+            ewot_chunk = cast("EwotChunk", find_by_type(chunks=ewst_chunk.chunks, chunk_type="ewot"))
         except ChunkNotFoundError:
             continue
 
