@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING, cast
 
 from ..binary.footage_chunks import OptiChunk, SspcChunk
 from ..binary.item_chunks import IdtaChunk
-from ..binary.scalar_chunks import U1Chunk, Utf8Chunk
+from ..binary.scalar_chunks import CmtaChunk, U1Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
@@ -15,7 +15,7 @@ from ..models.sources.file import FileSource
 from ..models.sources.placeholder import PlaceholderSource
 from ..models.sources.solid import SolidSource
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ListChunk
     from ..models.items.folder import FolderItem
     from ..models.project import Project
@@ -25,7 +25,7 @@ def parse_footage(
     child_chunks: list[Chunk],
     _idta: IdtaChunk,
     _name_utf8: Utf8Chunk,
-    _cmta: Utf8Chunk | None,
+    _cmta: CmtaChunk | None,
     _item_list: ListChunk,
     project: Project,
     parent_folder: FolderItem,
@@ -44,14 +44,14 @@ def parse_footage(
     pin_chunk = find_by_list_type(chunks=child_chunks, list_type="Pin ")
 
     pin_child_chunks = pin_chunk.chunks
-    sspc_chunk = find_by_type(chunks=pin_child_chunks, chunk_type="sspc", cls=SspcChunk)
-    opti_chunk = find_by_type(chunks=pin_child_chunks, chunk_type="opti", cls=OptiChunk)
+    sspc_chunk = cast("SspcChunk", find_by_type(chunks=pin_child_chunks, chunk_type="sspc"))
+    opti_chunk = cast("OptiChunk", find_by_type(chunks=pin_child_chunks, chunk_type="opti"))
 
     # Extract CLRS color management chunks (optional)
     try:
         clrs = find_by_list_type(chunks=pin_child_chunks, list_type="CLRS")
         try:
-            linl: U1Chunk | None = find_by_type(chunks=clrs.chunks, chunk_type="linl", cls=U1Chunk)
+            linl: U1Chunk | None = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
         except ChunkNotFoundError:
             linl = None
     except ChunkNotFoundError:

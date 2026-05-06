@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import typing
-from typing import Any, List, cast
+from typing import TYPE_CHECKING, Any, List, cast
 
 from ...binary.chunk import ListChunk
 from ...binary.scalar_chunks import CsctChunk, U4Chunk, Utf8Chunk
@@ -12,7 +11,6 @@ from ..layers.light_layer import LightLayer
 from ..layers.shape_layer import ShapeLayer
 from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
-from ..properties.marker import MarkerValue
 from ..reverses import (
     denormalize_values,
     reverse_fractional,
@@ -36,14 +34,17 @@ from ..validators import (
 from .av_item import AVItem
 from .footage import FootageItem
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
+    from typing import Iterator
+
     from ...binary.composition_chunks import CdtaChunk
     from ...binary.item_chunks import IdtaChunk
     from ...binary.misc_chunks import PrinChunk
-    from ...binary.scalar_chunks import U1Chunk
+    from ...binary.scalar_chunks import CmtaChunk, U1Chunk
     from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
     from ..project import Project
+    from ..properties.marker import MarkerValue
     from ..properties.property import Property
     from .folder import FolderItem
 
@@ -78,13 +79,13 @@ def _compute_frame_rate(body: CdtaChunk) -> float:
 def _compute_bg_color(body: CdtaChunk) -> list[float]:
     return normalize_values(
         cast(
-            List[int],
+            "list[int]",
             pack_values(body, "bg_color_r", "bg_color_g", "bg_color_b"),
         )
     )
 
 
-def _reverse_bg_color(value: list[float], _body: object) -> dict[str, Any]:
+def _reverse_bg_color(value: list[float], _body: CdtaChunk) -> dict[str, Any]:
     return unpack_values("bg_color_r", "bg_color_g", "bg_color_b")(
         denormalize_values(value), _body
     )
@@ -92,12 +93,12 @@ def _reverse_bg_color(value: list[float], _body: object) -> dict[str, Any]:
 
 def _compute_resolution_factor(body: CdtaChunk) -> list[int]:
     return cast(
-        List[int],
+        "list[int]",
         pack_values(body, "resolution_factor_h", "resolution_factor_v"),
     )
 
 
-def _reverse_resolution_factor(value: list[int], _body: object) -> dict[str, Any]:
+def _reverse_resolution_factor(value: list[int], _body: CdtaChunk) -> dict[str, Any]:
     return unpack_values("resolution_factor_h", "resolution_factor_v")(
         value, _body
     )
@@ -470,7 +471,7 @@ class CompItem(AVItem):
         *,
         _cdrp: U1Chunk | None,
         _cdta: CdtaChunk,
-        _cmta: Utf8Chunk | None,
+        _cmta: CmtaChunk | None,
         _idta: IdtaChunk,
         _item_list: ListChunk | None = None,
         _name_utf8: Utf8Chunk,
@@ -502,7 +503,7 @@ class CompItem(AVItem):
         self._eg_template_name_utf8: Utf8Chunk | None = None
         self._eg_controllers: list[EssentialGraphicsController] = []
 
-    def __iter__(self) -> typing.Iterator[Layer]:
+    def __iter__(self) -> Iterator[Layer]:
         """Return an iterator over the composition's layers."""
         return iter(self.layers)
 
@@ -639,7 +640,7 @@ class CompItem(AVItem):
         if self.marker_property is None:
             return []
         return cast(
-            List[MarkerValue],  # Cannot use `list` for Py3.7`
+            "list[MarkerValue]",
             [kf.value for kf in self.marker_property.keyframes],
         )
 

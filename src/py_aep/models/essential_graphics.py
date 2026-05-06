@@ -7,12 +7,12 @@ can have an EGP definition stored in a `LIST:CIF3` chunk.
 
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from .descriptors import ChunkField
 
-if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk
+if TYPE_CHECKING:
+    from ..binary.scalar_chunks import U4Chunk, Utf8Chunk
 
 
 class EssentialGraphicsController:
@@ -36,8 +36,8 @@ class EssentialGraphicsController:
     def __init__(
         self,
         *,
-        _name_utf8: Chunk,
-        _ctyp: Chunk,
+        _name_utf8: Utf8Chunk,
+        _ctyp: U4Chunk,
     ) -> None:
         self._name_utf8 = _name_utf8
         self._ctyp = _ctyp

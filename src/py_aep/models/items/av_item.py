@@ -7,7 +7,7 @@ from .item import Item
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.item_chunks import IdtaChunk
-    from ...binary.scalar_chunks import Utf8Chunk
+    from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
     from ..project import Project
     from ..viewer.viewer import Viewer
     from .composition import CompItem
@@ -55,7 +55,7 @@ class AVItem(Item):
         *,
         _idta: IdtaChunk,
         _name_utf8: Utf8Chunk,
-        _cmta: Utf8Chunk | None,
+        _cmta: CmtaChunk | None,
         _item_list: ListChunk | None = None,
         project: Project,
         parent_folder: FolderItem,

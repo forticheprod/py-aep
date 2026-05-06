@@ -6,7 +6,7 @@
  * by parse() + save() are valid After Effects projects.
  *
  * The folder is resolved relative to this script's location:
- *   scripts/jsx/../../samples/roundtrip/
+ *   scripts/jsx/../../samples/unused/roundtrip/
  *
  * Usage:
  *   1. Run generate_roundtrip_files.py first to produce the .aep files
@@ -16,12 +16,12 @@
 (function() {
     "use strict";
 
-    // Resolve samples/roundtrip/ relative to this script
+    // Resolve samples/unused/roundtrip/ relative to this script
     var scriptFile = new File($.fileName);
     var scriptDir = scriptFile.parent;
-    var folder = new Folder(scriptDir.fsName + "/../../samples/roundtrip");
+    var folder = new Folder(scriptDir.fsName + "/../../samples/unused/roundtrip");
     if (!folder.exists) {
-        $.writeln("ERROR: Could not find samples/roundtrip/ relative to script.");
+        $.writeln("ERROR: Could not find samples/unused/roundtrip/ relative to script.");
         $.writeln("$.fileName was: " + $.fileName);
         $.writeln("Resolved to: " + folder.fsName);
         $.writeln("Run generate_roundtrip_files.py first.");

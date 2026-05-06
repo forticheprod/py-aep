@@ -11,7 +11,10 @@ from __future__ import annotations
 import contextlib
 from contextvars import ContextVar
 from enum import IntEnum
-from typing import Any, Callable, Generic, Iterator, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
+
+if TYPE_CHECKING:
+    from typing import Any, Callable, Iterator
 
 T = TypeVar("T")
 
@@ -139,8 +142,9 @@ class ChunkField(Generic[T]):
         default: Optional default value returned when the chunk body is
             `None`. If not given, accessing the field when the body is
             `None` raises `AttributeError`.
-        post_set: Optional method name on the model instance to call
-            after the value has been written.
+        post_set: Optional method name on the model instance, or a
+            callable receiving the model instance, invoked after the
+            value has been written.
     """
 
     def __init__(
@@ -154,7 +158,7 @@ class ChunkField(Generic[T]):
         read_only: bool = False,
         validate: Callable[..., None] | None = None,
         default: Any = _SENTINEL,
-        post_set: str | None = None,
+        post_set: Callable[[Any], None] | str | None = None,
     ) -> None:
         if reverse is not None and reverse_multi is not None:
             raise TypeError(
@@ -213,7 +217,10 @@ class ChunkField(Generic[T]):
         else:
             setattr(body, self.field, value)
         if self.post_set is not None:
-            getattr(obj, self.post_set)()
+            if isinstance(self.post_set, str):
+                getattr(obj, self.post_set)()
+            else:
+                self.post_set(obj)
 
     @classmethod
     def enum(

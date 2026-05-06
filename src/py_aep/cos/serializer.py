@@ -9,9 +9,12 @@ bytes suitable for writing back into a btdk chunk's `binary_data`.
 from __future__ import annotations
 
 import io
-from typing import Any
+from typing import TYPE_CHECKING
 
 from .cos import IndirectObject, IndirectReference, Stream
+
+if TYPE_CHECKING:
+    from typing import Any
 
 
 def serialize(data: Any) -> bytes:

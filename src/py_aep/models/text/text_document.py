@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ...cos import CosField, serialize
 from ...enums import (
@@ -19,10 +19,10 @@ from ...enums import (
     ParagraphJustification,
 )
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from typing import Any
 
-    from ...binary.chunk import Chunk
+    from ...binary.chunk import ListChunk
     from .font_object import FontObject
 
 
@@ -109,109 +109,113 @@ class TextDocument:
 
     # -- Character-style CosField descriptors (_char_style dict) -----------
 
-    font_size: float | None = CosField.float("_char_style", "1")  # type: ignore[assignment]
+    font_size = CosField.float("_char_style", "1", default=None)
     """The Text layer's font size in pixels. Read / Write."""
 
-    faux_bold: bool | None = CosField.bool("_char_style", "2")  # type: ignore[assignment]
+    faux_bold = CosField.bool("_char_style", "2", default=None)
     """`True` if a Text layer has faux bold enabled. Read / Write."""
 
-    faux_italic: bool | None = CosField.bool("_char_style", "3")  # type: ignore[assignment]
+    faux_italic = CosField.bool("_char_style", "3", default=None)
     """`True` if a Text layer has faux italic enabled. Read / Write."""
 
-    tracking: float | None = CosField.float("_char_style", "8")  # type: ignore[assignment]
+    tracking = CosField.float("_char_style", "8", default=None)
     """The Text layer's spacing between characters. Read / Write."""
 
     auto_kern_type: AutoKernType = AutoKernType.NO_AUTO_KERN
     """The Text layer's auto kern type option. Read / Write."""
 
-    horizontal_scale: float | None = CosField.float("_char_style", "6")  # type: ignore[assignment]
+    horizontal_scale = CosField.float("_char_style", "6", default=None)
     """This Text layer's horizontal scale in pixels. Read / Write."""
 
-    vertical_scale: float | None = CosField.float("_char_style", "7")  # type: ignore[assignment]
+    vertical_scale = CosField.float("_char_style", "7", default=None)
     """This Text layer's vertical scale in pixels. Read / Write."""
 
-    baseline_shift: float | None = CosField.float("_char_style", "9")  # type: ignore[assignment]
+    baseline_shift = CosField.float("_char_style", "9", default=None)
     """This Text layer's baseline shift in pixels. Read / Write."""
 
-    font_caps_option: FontCapsOption | None = CosField.enum(  # type: ignore[assignment]
+    font_caps_option = CosField.enum(
         FontCapsOption,
         "_char_style",
         "12",
         map=_FONT_CAPS_MAP,
         reverse_map=_REVERSE_FONT_CAPS_MAP,
+        default=None,
     )
     """The Text layer's font caps option. Read / Write."""
 
-    font_baseline_option: FontBaselineOption | None = CosField.enum(  # type: ignore[assignment]
+    font_baseline_option = CosField.enum(
         FontBaselineOption,
         "_char_style",
         "13",
         map=_FONT_BASELINE_MAP,
         reverse_map=_REVERSE_FONT_BASELINE_MAP,
+        default=None,
     )
     """The Text layer's font baseline option. Read / Write."""
 
-    tsume: float | None = CosField.float("_char_style", "17")  # type: ignore[assignment]
+    tsume = CosField.float("_char_style", "17", default=0.0)
     """This Text layer's tsume value (0.0 to 1.0). Read / Write."""
 
-    apply_fill: bool | None = CosField.bool("_char_style", "56")  # type: ignore[assignment]
+    apply_fill = CosField.bool("_char_style", "56", default=None)
     """When `True`, the Text layer shows a fill. Read / Write."""
 
-    apply_stroke: bool | None = CosField.bool("_char_style", "57")  # type: ignore[assignment]
+    apply_stroke = CosField.bool("_char_style", "57", default=False)
     """When `True`, the Text layer shows a stroke. Read / Write."""
 
-    stroke_over_fill: bool | None = CosField.bool("_char_style", "58")  # type: ignore[assignment]
+    stroke_over_fill = CosField.bool("_char_style", "58", default=True)
     """When `True`, the stroke appears over the fill. Read / Write."""
 
-    stroke_width: float | None = CosField.float("_char_style", "63")  # type: ignore[assignment]
+    stroke_width = CosField.float("_char_style", "63", default=1.0)
     """The Text layer's stroke thickness in pixels. Read / Write."""
 
     # -- Paragraph-style CosField descriptors (_para_style dict) -----------
 
-    justification: ParagraphJustification | None = CosField.enum(  # type: ignore[assignment]
+    justification = CosField.enum(
         ParagraphJustification,
         "_para_style",
         "0",
         map=_JUSTIFICATION_MAP,
         reverse_map=_REVERSE_JUSTIFICATION_MAP,
+        default=None,
     )
     """The paragraph justification for the Text layer. Read / Write."""
 
-    first_line_indent: float | None = CosField.float("_para_style", "1")  # type: ignore[assignment]
+    first_line_indent = CosField.float("_para_style", "1", default=0.0)
     """The Text layer's paragraph first line indent. Read / Write."""
 
-    start_indent: float | None = CosField.float("_para_style", "2")  # type: ignore[assignment]
+    start_indent = CosField.float("_para_style", "2", default=0.0)
     """The Text layer's paragraph start indent. Read / Write."""
 
-    end_indent: float | None = CosField.float("_para_style", "3")  # type: ignore[assignment]
+    end_indent = CosField.float("_para_style", "3", default=0.0)
     """The Text layer's paragraph end indent. Read / Write."""
 
-    space_before: float | None = CosField.float("_para_style", "4")  # type: ignore[assignment]
+    space_before = CosField.float("_para_style", "4", default=0.0)
     """The Text layer's paragraph space before. Read / Write."""
 
-    space_after: float | None = CosField.float("_para_style", "5")  # type: ignore[assignment]
+    space_after = CosField.float("_para_style", "5", default=0.0)
     """The Text layer's paragraph space after. Read / Write."""
 
-    auto_leading: bool | None = CosField.bool("_para_style", "6")  # type: ignore[assignment]
+    auto_leading = CosField.bool("_para_style", "6", default=True)
     """The Text layer's auto leading option. Read / Write."""
 
-    leading_type: LeadingType | None = CosField.enum(  # type: ignore[assignment]
+    leading_type = CosField.enum(
         LeadingType,
         "_para_style",
         "8",
         map=_LEADING_TYPE_MAP,
         reverse_map=_REVERSE_LEADING_TYPE_MAP,
+        default=LeadingType.ROMAN_LEADING_TYPE,
     )
     """The Text layer's paragraph leading type. Read / Write."""
 
-    auto_hyphenate: bool | None = CosField.bool("_para_style", "9")  # type: ignore[assignment]
+    auto_hyphenate = CosField.bool("_para_style", "9", default=None)
     """The Text layer's auto hyphenate option. Read / Write."""
 
-    hanging_roman: bool | None = CosField.bool("_para_style", "21")  # type: ignore[assignment]
+    hanging_roman = CosField.bool("_para_style", "21", default=False)
     """The Text layer's Roman Hanging Punctuation. Read / Write."""
 
     kerning: int = 0
-    """The Text layer's kerning value. Read / Write."""
+    """The Text layer's kerning value. Read-Only."""
 
     baseline_direction: BaselineDirection = (
         BaselineDirection.BASELINE_WITH_STREAM
@@ -244,9 +248,9 @@ class TextDocument:
         _char_style: dict[str, Any] | None = None,
         _para_style: dict[str, Any] | None = None,
         _doc: dict[str, Any] | None = None,
-        _fonts: list[FontObject] | None = None,
-        _cos_data: dict[str, Any] | None = None,
-        _btdk_body: Chunk | None = None,
+        _fonts: list[FontObject],
+        _cos_data: dict[str, Any],
+        _btdk_body: ListChunk,
         # Fallback kwargs for fields without COS backing
         text: str | None = None,
         font: str | None = None,
@@ -259,7 +263,7 @@ class TextDocument:
         self._char_style = _char_style
         self._para_style = _para_style
         self._doc = _doc
-        self._fonts = _fonts or []
+        self._fonts = _fonts
         self._cos_data = _cos_data
         self._btdk_body = _btdk_body
         # Instance overrides for non-descriptor fields
@@ -468,23 +472,23 @@ class TextDocument:
         return baseline == FontBaselineOption.FONT_FAUXED_SUBSCRIPT
 
     @property
-    def every_line_composer(self) -> bool | None:
+    def every_line_composer(self) -> bool:
         """The Text layer's Every-Line Composer option. Read / Write.
 
         `True` when Every-Line Composer is used, `False` for Single-Line.
         """
         if "every_line_composer" in self.__dict__:
             result: bool | None = self.__dict__["every_line_composer"]
-            return result
+            return bool(result)
         if self._para_style is not None:
             # COS key "15" stores single-line composer flag (inverted)
             val = self._para_style.get("15")
             if val is not None:
                 return not val
-        return None
+        return False
 
     @every_line_composer.setter
-    def every_line_composer(self, value: bool | None) -> None:
+    def every_line_composer(self, value: bool) -> None:
         self.__dict__.pop("every_line_composer", None)
         if self._para_style is not None and value is not None:
             self._para_style["15"] = not value
@@ -495,14 +499,13 @@ class TextDocument:
     @property
     def composer_engine(self) -> ComposerEngine | None:
         """The Text layer's composer engine type. Read-only."""
-        if self._cos_data is not None:
-            engine_info = self._cos_data.get("1", {}).get("4")
-            if isinstance(engine_info, dict):
-                engine_name = engine_info.get("3")
-                if engine_name == "DVA":
-                    return ComposerEngine.LATIN_CJK_ENGINE
-                if engine_name == "Universal":
-                    return ComposerEngine.UNIVERSAL_TYPE_ENGINE
+        engine_info = self._cos_data.get("1", {}).get("4")
+        if isinstance(engine_info, dict):
+            engine_name = engine_info.get("3")
+            if engine_name == "DVA":
+                return ComposerEngine.LATIN_CJK_ENGINE
+            if engine_name == "Universal":
+                return ComposerEngine.UNIVERSAL_TYPE_ENGINE
         return None
 
     @property
@@ -534,5 +537,4 @@ class TextDocument:
 
     def _propagate_cos(self) -> None:
         """Serialize COS data back to the btdk chunk's binary_data."""
-        if self._cos_data is not None and self._btdk_body is not None:
-            self._btdk_body.data = serialize(self._cos_data)
+        self._btdk_body.data = serialize(self._cos_data)

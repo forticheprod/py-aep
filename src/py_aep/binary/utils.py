@@ -2,15 +2,13 @@
 from __future__ import annotations
 
 import json
-import typing
-from typing import TypeVar, overload
+from typing import TYPE_CHECKING, cast
 
 from .chunk import Chunk, ListChunk
+from .scalar_chunks import Utf8Chunk
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from typing import Any
-
-_C = TypeVar("_C", bound="Chunk")
 
 
 class ChunkNotFoundError(Exception):
@@ -21,24 +19,8 @@ class ChunkNotFoundError(Exception):
 UNDEFINED_FRAME = 0xFFFFFFFF
 
 
-@overload
-def find_by_type(chunks: list[Chunk], chunk_type: str) -> Chunk: ...
-
-
-@overload
-def find_by_type(
-    chunks: list[Chunk], chunk_type: str, cls: type[_C]
-) -> _C: ...
-
-
-def find_by_type(
-    chunks: list[Chunk],
-    chunk_type: str,
-    cls: type[_C] | None = None,
-) -> Chunk:
+def find_by_type(chunks: list[Chunk], chunk_type: str) -> Chunk:
     """Return first chunk matching `chunk_type`.
-
-    Pass *cls* to narrow the return type without an explicit `cast()`.
 
     Raises:
         ChunkNotFoundError: If no matching chunk is found.
@@ -61,25 +43,8 @@ def find_by_list_type(chunks: list[Chunk], list_type: str) -> ListChunk:
     raise ChunkNotFoundError(f"Missing LIST/{list_type} chunk")
 
 
-@overload
-def filter_by_type(chunks: list[Chunk], chunk_type: str) -> list[Chunk]: ...
-
-
-@overload
-def filter_by_type(
-    chunks: list[Chunk], chunk_type: str, cls: type[_C]
-) -> list[_C]: ...
-
-
-def filter_by_type(
-    chunks: list[Chunk],
-    chunk_type: str,
-    cls: type[_C] | None = None,
-) -> list[Any]:
-    """Return all chunks matching `chunk_type`.
-
-    Pass *cls* to narrow the element type without explicit casts.
-    """
+def filter_by_type(chunks: list[Chunk], chunk_type: str) -> list[Chunk]:
+    """Return all chunks matching `chunk_type`."""
     return [c for c in chunks if c.chunk_type == chunk_type]
 
 
@@ -115,24 +80,11 @@ def _find_anchor_index(chunks: list[Chunk], anchor_type: str) -> int:
     raise ChunkNotFoundError(f"Missing {anchor_type} chunk")
 
 
-@overload
-def find_chunks_before(
-    chunks: list[Chunk], chunk_type: str, before_type: str,
-) -> list[Chunk]: ...
-
-
-@overload
-def find_chunks_before(
-    chunks: list[Chunk], chunk_type: str, before_type: str, cls: type[_C],
-) -> list[_C]: ...
-
-
 def find_chunks_before(
     chunks: list[Chunk],
     chunk_type: str,
     before_type: str,
-    cls: type[_C] | None = None,
-) -> list[Any]:
+) -> list[Chunk]:
     """Return consecutive chunks of `chunk_type` immediately before `before_type`.
 
     Scans *chunks* for the first occurrence of *before_type*, then collects the
@@ -140,8 +92,6 @@ def find_chunks_before(
 
     *before_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
     prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
-
-    Pass *cls* to narrow the element type without explicit casts.
 
     Raises:
         ChunkNotFoundError: If no chunk with *before_type* is found.
@@ -156,24 +106,11 @@ def find_chunks_before(
     return result
 
 
-@overload
-def find_chunks_after(
-    chunks: list[Chunk], chunk_type: str, after_type: str,
-) -> list[Chunk]: ...
-
-
-@overload
-def find_chunks_after(
-    chunks: list[Chunk], chunk_type: str, after_type: str, cls: type[_C],
-) -> list[_C]: ...
-
-
 def find_chunks_after(
     chunks: list[Chunk],
     chunk_type: str,
     after_type: str,
-    cls: type[_C] | None = None,
-) -> list[Any]:
+) -> list[Chunk]:
     """Return consecutive chunks of `chunk_type` immediately after `after_type`.
 
     Scans *chunks* for the first occurrence of *after_type*, then collects the
@@ -181,8 +118,6 @@ def find_chunks_after(
 
     *after_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
     prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
-
-    Pass *cls* to narrow the element type without explicit casts.
 
     Raises:
         ChunkNotFoundError: If no chunk with *after_type* is found.
@@ -242,23 +177,6 @@ def split_on_type(
     return groups
 
 
-def str_value(chunk: Chunk) -> str:
-    """Return the string contents of a chunk.
-
-    Works with typed chunks (`Utf8Chunk`, scalar chunks)
-    and raw chunks whose `data` is null-terminated bytes.
-    """
-    value = getattr(chunk, "value", None)
-    if isinstance(value, str):
-        return value.split("\x00")[0]
-    if value is not None:
-        return str(value)
-    data: bytes | None = getattr(chunk, "data", None)
-    if data is not None:
-        return data.rstrip(b"\x00").decode("utf-8", errors="replace")
-    return ""
-
-
 def parse_alas_data(parent_chunks: list[Chunk]) -> dict[str, Any]:
     """Parse path information from an Als2/alas chunk structure.
 
@@ -274,7 +192,7 @@ def parse_alas_data(parent_chunks: list[Chunk]) -> dict[str, Any]:
         alas_chunk = find_by_type(chunks=als2_chunk.chunks, chunk_type="alas")
     except ChunkNotFoundError:
         return {}
-    alas_text = str_value(alas_chunk)
+    alas_text = cast("Utf8Chunk", alas_chunk).value
     if not alas_text:
         return {}
     result = json.loads(alas_text)

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from .view_options import ViewOptions
     from .viewer import Viewer
 

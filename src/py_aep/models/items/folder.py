@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING, Iterator
 
 from .item import Item
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.item_chunks import IdtaChunk
-    from ...binary.scalar_chunks import Utf8Chunk
+    from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
     from ..project import Project
     from ..viewer.viewer import Viewer
 
@@ -43,7 +43,7 @@ class FolderItem(Item):
         *,
         _idta: IdtaChunk | None,
         _name_utf8: Utf8Chunk | None,
-        _cmta: Utf8Chunk | None,
+        _cmta: CmtaChunk | None,
         _item_list: ListChunk | None = None,
         project: Project,
         parent_folder: FolderItem | None,
@@ -60,7 +60,7 @@ class FolderItem(Item):
         self.items: list[Item] = []
         self._viewers: list[Viewer] = []
 
-    def __iter__(self) -> typing.Iterator[Item]:
+    def __iter__(self) -> Iterator[Item]:
         """Return an iterator over the folder items."""
         return iter(self.items)
 

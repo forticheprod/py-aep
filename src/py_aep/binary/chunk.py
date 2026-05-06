@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import struct
 from io import BytesIO
-from typing import TYPE_CHECKING, Type, cast
+from typing import TYPE_CHECKING, cast
 
 from attrs import Factory, define, field
 
@@ -119,7 +119,7 @@ class Chunk:
             items_name, item_cls, item_size = items_info
             items_bytes = size - items_start
             count = items_bytes // item_size
-            fmt_cls = cast(Type[FmtItem], item_cls)
+            fmt_cls = cast("type[FmtItem]", item_cls)
             kw[items_name] = [
                 fmt_cls.frombytes(fp.read(item_size))
                 for _ in range(count)

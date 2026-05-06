@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from ..binary.misc_chunks import FipsChunk
 from ..binary.scalar_chunks import AsciiChunk, U1Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
@@ -73,7 +74,7 @@ def _parse_views(
     Returns:
         A list of [View][py_aep.models.viewer.view.View] objects.
     """
-    fips_chunks = filter_by_type(block, "fips")
+    fips_chunks = cast("list[FipsChunk]", filter_by_type(block, "fips"))
     av_item = item if isinstance(item, AVItem) else None
     # Each locked view owns 4 consecutive fips (3D viewport slots).
     # Create one View per group of 4, using the first slot.
@@ -105,12 +106,12 @@ def _build_viewer(
         block does not contain a recognised viewer type.
     """
     try:
-        fitt = find_by_type(block, "fitt", cls=AsciiChunk)
+        fitt = cast("AsciiChunk", find_by_type(block, "fitt"))
     except ChunkNotFoundError:
         return None
 
-    foac = find_by_type(block, "foac", cls=U1Chunk)
-    fiac = find_by_type(block, "fiac", cls=U1Chunk)
+    foac = cast("U1Chunk", find_by_type(block, "foac"))
+    fiac = cast("U1Chunk", find_by_type(block, "fiac"))
 
     return Viewer(
         _fitt=fitt,

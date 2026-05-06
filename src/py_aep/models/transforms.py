@@ -7,7 +7,10 @@ Helpers in this module are used by both `ChunkField` transforms and
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
 
 
 def pack_values(body: Any, *field_names: str) -> list[Any]:

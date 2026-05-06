@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import io
 import logging
-import typing
 from contextlib import suppress
+from typing import TYPE_CHECKING, cast
 
-from ..binary.chunk import ListChunk
 from ..binary.ldat_chunks import LdatChunk
 from ..binary.misc_chunks import Fth5Chunk, ShphChunk
 from ..binary.property_chunks import CdatChunk, OtdaChunk
@@ -23,15 +22,16 @@ from ..enums import (
     PropertyControlType,
     PropertyValueType,
 )
-from ..models.properties.property import Property
 from ..models.properties.shape import FeatherPoint, Shape
 from .property_value import (
     parse_property,
 )
 from .text import parse_btdk_cos
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
+    from ..binary.chunk import ListChunk
     from ..models.items.composition import CompItem
+    from ..models.properties.property import Property
 
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ def parse_orientation(
     # cdat is parameterized with is_le; .value returns the correctly-
     # endian doubles regardless of context.
     try:
-        cdat = find_by_type(chunks=tdbs_chunk.chunks, chunk_type="cdat", cls=CdatChunk)
+        cdat = cast("CdatChunk", find_by_type(chunks=tdbs_chunk.chunks, chunk_type="cdat"))
         values = list(cdat.values)
         while len(values) < 3:
             values.append(0.0)
@@ -91,7 +91,7 @@ def parse_orientation(
     # otda data.
     with suppress(ChunkNotFoundError):
         otky_chunk = find_by_list_type(chunks=otst_chunk.chunks, list_type="otky")
-        otda_chunks = filter_by_type(chunks=otky_chunk.chunks, chunk_type="otda", cls=OtdaChunk)
+        otda_chunks = cast("list[OtdaChunk]", filter_by_type(chunks=otky_chunk.chunks, chunk_type="otda"))
         for idx, kf in enumerate(prop.keyframes):
             if idx < len(otda_chunks):
                 kf.value = list(otda_chunks[idx].values)
@@ -129,15 +129,15 @@ def _parse_shape_shap(
     Returns:
         A [Shape][] with absolute coordinates and tangent offsets.
     """
-    shph_chunk = find_by_type(chunks=shap_chunk.chunks, chunk_type="shph", cls=ShphChunk)
+    shph_chunk = cast("ShphChunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="shph"))
     list_chunk = find_by_list_type(chunks=shap_chunk.chunks, list_type="list")
 
-    ldat = find_by_type(chunks=list_chunk.chunks, chunk_type="ldat", cls=LdatChunk)
+    ldat = cast("LdatChunk", find_by_type(chunks=list_chunk.chunks, chunk_type="ldat"))
     points = ldat.items
 
     # Extract variable-width mask feather data from fth5 chunk (if present).
     try:
-        fth5 = find_by_type(chunks=shap_chunk.chunks, chunk_type="fth5", cls=Fth5Chunk)
+        fth5 = cast("Fth5Chunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="fth5"))
         feather_points = [FeatherPoint(_fp=pt) for pt in fth5.points]
     except ChunkNotFoundError:
         feather_points = []

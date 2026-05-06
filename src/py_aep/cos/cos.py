@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import io
-import typing
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any
+from typing import TYPE_CHECKING
 
-if typing.TYPE_CHECKING:
-    from typing import BinaryIO
+if TYPE_CHECKING:
+    from typing import Any, BinaryIO, NoReturn
 
 """
 source: https://gitlab.com/mattbas/python-lottie/-/blob/master/lib/lottie/parsers/aep/cos.py
@@ -231,7 +230,7 @@ class CosParser:
         if char is None or char != exp:
             self.raise_lex(head + (char or b""), head + exp)
 
-    def raise_lex(self, token: bytes, exp: bytes | None = None) -> typing.NoReturn:
+    def raise_lex(self, token: bytes, exp: bytes | None = None) -> NoReturn:
         msg = f"Unknown COS token {token!r}"
         if exp is not None:
             msg += f", expected {exp!r}"

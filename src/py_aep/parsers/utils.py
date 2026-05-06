@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from ..binary.utils import str_value
+from ..binary.scalar_chunks import TdmnChunk
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ListChunk
@@ -22,7 +22,7 @@ def get_chunks_by_match_name(
         match_name = ""
         for chunk in root_chunk.chunks:
             if chunk.chunk_type == "tdmn":
-                match_name = str_value(chunk)
+                match_name = cast("TdmnChunk", chunk).value
                 if match_name == "ADBE Group End":
                     skip_to_next_tdmn_flag = True
                 else:

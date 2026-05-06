@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import typing
-from typing import Any, List, cast
+from typing import TYPE_CHECKING, Any, List, cast
 
-from ...binary.scalar_chunks import U1Chunk
 from ...binary.utils import find_by_type, toggle_flag_chunk
 from ...enums import (
     AlphaMode,
@@ -17,14 +15,15 @@ from ..reverses import denormalize_values, reverse_fractional, unpack_values
 from ..transforms import compute_fractional, normalize_values, pack_values
 from ..validators import validate_number, validate_sequence
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.footage_chunks import SspcChunk
+    from ...binary.scalar_chunks import U1Chunk
 
 
 def _reverse_field_separation_type(
     value: FieldSeparationType,
-    body: object,
+    body: SspcChunk,
 ) -> dict[str, int]:
     """Decompose a combined field-separation value back into Chunk fields."""
     if value == FieldSeparationType.OFF:
@@ -66,7 +65,7 @@ def _compute_display_frame_rate(body: SspcChunk) -> float:
 def _compute_premul_color(body: SspcChunk) -> list[float]:
     return normalize_values(
         cast(
-            List[int],
+            "list[int]",
             pack_values(
                 body,
                 "premul_color_r",
@@ -78,7 +77,7 @@ def _compute_premul_color(body: SspcChunk) -> list[float]:
 
 
 def _reverse_premul_color(
-    value: list[float], _body: object
+    value: list[float], _body: SspcChunk
 ) -> dict[str, Any]:
     return unpack_values("premul_color_r", "premul_color_g", "premul_color_b")(
         denormalize_values(value), _body
@@ -241,7 +240,7 @@ class FootageSource:
             Not exposed in ExtendScript."""
         if self._clrs is None:
             return "Embedded"
-        ipws_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="ipws", cls=U1Chunk)
+        ipws_chunk = cast("U1Chunk", find_by_type(chunks=self._clrs.chunks, chunk_type="ipws"))
         apid_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="apid")
         return map_media_color_space(
             bool(ipws_chunk.value),

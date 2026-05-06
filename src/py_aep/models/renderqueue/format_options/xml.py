@@ -15,7 +15,7 @@ from ...descriptors import ChunkField
 from ...transforms import strip_null
 
 if TYPE_CHECKING:
-    from ....binary.chunk import Chunk
+    from ....binary.render_chunks import RoptChunk
 
 # Adobe stores FPS as ticks-per-frame with a 254016000000 tick base.
 _ADOBE_TICKS_PER_SECOND = 254016000000
@@ -129,7 +129,7 @@ class XmlFormatOptions:
     def __init__(
         self,
         *,
-        _body: Chunk,
+        _body: RoptChunk,
     ) -> None:
         self._body = _body
 

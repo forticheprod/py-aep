@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import (
     AudioBitDepth,
@@ -30,7 +30,6 @@ from ...resolvers.output import (
     resolve_time_span,
 )
 from ..descriptors import ChunkField
-from ..items.composition import CompItem
 from ..transforms import strip_null
 from ..validators import validate_number
 from .format_options import (
@@ -49,12 +48,15 @@ from .settings import (
 )
 
 if TYPE_CHECKING:
+    from typing import Any, Callable
+
     from ...binary.render_chunks import (
         OutputModuleSettingsItem,
         RenderSettingsItem,
         RouuChunk,
     )
     from ...binary.scalar_chunks import Utf8Chunk
+    from ..items.composition import CompItem
     from ..project import Project
     from .render_queue_item import RenderQueueItem
 
@@ -350,7 +352,7 @@ class OutputModule:
         Read-only."""
         if self._name_utf8 is None:
             return ""
-        return strip_null(self._name_utf8.value)
+        return self._name_utf8.value
 
     @property
     def parent(self) -> RenderQueueItem:
@@ -373,7 +375,7 @@ class OutputModule:
             or comp_id is None
         ):
             return self._parent_rqi.comp
-        return cast(CompItem, self._project.items[comp_id])
+        return cast("CompItem", self._project.items[comp_id])
 
     @property
     def settings(self) -> SettingsView:
@@ -586,7 +588,7 @@ class OutputModule:
         """Parsed JSON from the alas chunk."""
         if self._alas_utf8 is None:
             return {}
-        text = strip_null(self._alas_utf8.value)
+        text = self._alas_utf8.value
         if not text:
             return {}
         data = json.loads(text)
@@ -623,7 +625,7 @@ class OutputModule:
         """The file name template from the Utf8 chunk."""
         if self._file_name_utf8 is None:
             return ""
-        return strip_null(self._file_name_utf8.value)
+        return self._file_name_utf8.value
 
     @property
     def file_template(self) -> str:
@@ -649,7 +651,7 @@ class OutputModule:
             file_name = ""
 
         if self._alas_utf8 is not None:
-            text = strip_null(self._alas_utf8.value)
+            text = self._alas_utf8.value
             data = json.loads(text) if text else {}
             if not isinstance(data, dict):
                 data = {}

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import typing
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ....enums import Hdr10ColorPrimaries, PngCompression
 from ...descriptors import ChunkField
 from ...validators import validate_one_of
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ....binary.render_chunks import PngRoptChunk
     from ....binary.scalar_chunks import Utf8Chunk
 
@@ -44,9 +43,8 @@ class PngFormatOptions:
         self._hdr10_utf8 = _hdr10_utf8
         self._hdr10_meta: dict[str, Any] = {}
         if _hdr10_utf8 is not None:
-            text = _hdr10_utf8.value.split("\x00")[0]
             try:
-                parsed = json.loads(text)
+                parsed = json.loads(_hdr10_utf8.value)
                 if isinstance(parsed, dict):
                     self._hdr10_meta = parsed
             except (json.JSONDecodeError, ValueError):

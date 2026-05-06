@@ -22,9 +22,14 @@ import sys
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING
 
-from ..binary.chunk import Chunk, ListChunk, read_aep
+from ..binary.chunk import ListChunk, read_aep
+
+if TYPE_CHECKING:
+    from typing import Any, Iterator
+
+    from ..binary.chunk import Chunk
 
 #: Sentinel used in [ByteDifference][] when one chunk is shorter
 #: than the other and a byte position doesn't exist.

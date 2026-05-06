@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import math
-import typing
-from typing import Union, cast
+from typing import TYPE_CHECKING, Union, cast
 
 from py_aep.enums import KeyframeInterpolationType, Label
 
 from ..descriptors import ChunkField
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.ldat_chunks import LdatItem
     from ..text.text_document import TextDocument
     from .keyframe_ease import KeyframeEase

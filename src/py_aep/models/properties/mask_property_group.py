@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import typing
-from typing import Any, List, cast
+from typing import TYPE_CHECKING, Any, List, cast
 
 from ...enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
 from ..descriptors import ChunkField, ComputedField
@@ -10,20 +9,21 @@ from ..transforms import normalize_values, pack_values
 from ..validators import validate_sequence
 from .property_group import PropertyGroup
 
-if typing.TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+if TYPE_CHECKING:
+    from ...binary.chunk import ListChunk
+    from ...binary.misc_chunks import MkifChunk
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from .property import Property
 
 
-def _compute_color(body: object) -> list[float]:
+def _compute_color(body: MkifChunk) -> list[float]:
     return normalize_values(
-        cast(List[int], pack_values(body, "color_r", "color_g", "color_b"))
+        cast("list[int]", pack_values(body, "color_r", "color_g", "color_b"))
     )
 
 
-def _reverse_color(value: list[float], _body: object) -> dict[str, Any]:
+def _reverse_color(value: list[float], _body: MkifChunk) -> dict[str, Any]:
     return unpack_values("color_r", "color_g", "color_b")(
         denormalize_values(value), _body
     )
@@ -98,8 +98,8 @@ class MaskPropertyGroup(PropertyGroup):
         *,
         _tdgp: ListChunk,
         _tdsb: TdsbChunk | None,
-        _mkif: Chunk,
-        _mask_shape_tdsb: Chunk | None,
+        _mkif: MkifChunk,
+        _mask_shape_tdsb: TdsbChunk | None,
         _name_utf8: Utf8Chunk | None = None,
         match_name: str,
         property_depth: int,

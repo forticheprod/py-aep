@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ....enums import CineonFileFormat
 from ...descriptors import ChunkField
 from ...validators import validate_number, validate_one_of
 
-if typing.TYPE_CHECKING:
-    from ....binary.chunk import Chunk
+if TYPE_CHECKING:
+    from ....binary.render_chunks import RoptChunk
 
 
 class CineonFormatOptions:
@@ -28,7 +28,7 @@ class CineonFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Chunk) -> None:
+    def __init__(self, *, _body: RoptChunk) -> None:
         self._body = _body
 
     ten_bit_black_point = ChunkField[int](

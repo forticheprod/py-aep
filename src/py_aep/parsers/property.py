@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-import typing
 from contextlib import suppress
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
-from ..binary.chunk import ContainerChunk, ListChunk
+from ..binary.chunk import ListChunk
+from ..binary.misc_chunks import MkifChunk
 from ..binary.property_chunks import TdsbChunk
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
@@ -18,7 +18,6 @@ from ..binary.utils import (
     find_by_type,
 )
 from ..models.properties.mask_property_group import MaskPropertyGroup
-from ..models.properties.property import Property
 from ..models.properties.property_group import PropertyGroup
 from .effect import parse_effect
 from .marker import parse_markers
@@ -30,26 +29,32 @@ from .utils import (
     get_chunks_by_match_name,
 )
 
-if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk
+if TYPE_CHECKING:
+    from typing import Any, Callable
+
+    from ..binary.chunk import Chunk, ContainerChunk
+    from ..binary.misc_chunks import MkifChunk
+    from ..binary.property_chunks import TdsbChunk
+    from ..binary.scalar_chunks import Utf8Chunk
     from ..models.items.composition import CompItem
+    from ..models.properties.property import Property
 
 logger = logging.getLogger(__name__)
 
-_PROPERTY_PARSERS: dict[str, typing.Callable[..., list[Property | PropertyGroup]]] = {}
+_PROPERTY_PARSERS: dict[str, Callable[..., list[Property | PropertyGroup]]] = {}
 
 
 def _property_parser(
     list_type: str,
-) -> typing.Callable[
-    [typing.Callable[..., list[Property | PropertyGroup]]],
-    typing.Callable[..., list[Property | PropertyGroup]],
+) -> Callable[
+    [Callable[..., list[Property | PropertyGroup]]],
+    Callable[..., list[Property | PropertyGroup]],
 ]:
     """Register a property parser for the given LIST subtype."""
 
     def decorator(
-        func: typing.Callable[..., list[Property | PropertyGroup]],
-    ) -> typing.Callable[..., list[Property | PropertyGroup]]:
+        func: Callable[..., list[Property | PropertyGroup]],
+    ) -> Callable[..., list[Property | PropertyGroup]]:
         _PROPERTY_PARSERS[list_type] = func
         return func
 
@@ -155,7 +160,7 @@ def _dispatch_tdgp(
             )
             for tdgp_c, mkif_c in zip(
                 filter_by_list_type(chunks=sub_prop_chunks, list_type="tdgp"),
-                filter_by_type(chunks=sub_prop_chunks, chunk_type="mkif"),
+                cast("list[MkifChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="mkif")),
             )
         ]
         for i, mask in enumerate(masks, 1):
@@ -322,15 +327,15 @@ def parse_property_group(
     # Try to read the group-level tdsb chunk.
     # Leaf properties always have a tdsb; groups may or may not.
     try:
-        group_tdsb: TdsbChunk | None = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsb", cls=TdsbChunk)
+        group_tdsb: TdsbChunk | None = cast("TdsbChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsb"))
     except ChunkNotFoundError:
         group_tdsb = None
 
     # Resolve _name_utf8 from the tdgp's tdsn child
     # tdsn is a ContainerChunk with a Utf8 child
     try:
-        tdsn = find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn", cls=ContainerChunk)
-        name_utf8: Utf8Chunk | None = find_by_type(chunks=tdsn.chunks, chunk_type="Utf8", cls=Utf8Chunk)
+        tdsn = cast("ContainerChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn"))
+        name_utf8: Utf8Chunk | None = cast("Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8"))
     except ChunkNotFoundError:
         name_utf8 = None
 
@@ -348,7 +353,7 @@ def parse_property_group(
 
 def _parse_mask_atom(
     tdgp_chunk: ListChunk,
-    mkif_chunk: Chunk,
+    mkif_chunk: MkifChunk,
     property_depth: int,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
@@ -383,11 +388,11 @@ def _parse_mask_atom(
         if isinstance(chunk, ListChunk) and chunk.list_type == "om-s":
             with suppress(ChunkNotFoundError):
                 tdbs = find_by_list_type(chunks=chunk.chunks, list_type="tdbs")
-                mask_shape_tdsb = find_by_type(chunks=tdbs.chunks, chunk_type="tdsb")
+                mask_shape_tdsb = cast("TdsbChunk", find_by_type(chunks=tdbs.chunks, chunk_type="tdsb"))
             break
 
     mask_group = MaskPropertyGroup(
-        _tdgp=cast(ListChunk, base._tdgp),
+        _tdgp=cast("ListChunk", base._tdgp),
         _tdsb=base._tdsb,
         _name_utf8=base._name_utf8,
         _mkif=mkif_chunk,

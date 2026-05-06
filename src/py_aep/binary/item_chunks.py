@@ -1,4 +1,4 @@
-"""Item and project-level chunk types: idta, head, nnhd.
+"""Item and project-level chunk types: idta, head, nhed, nnhd.
 
 All three use `fmt_field()` for fixed-layout I/O.
 HeadChunk packs version info into a 32-bit bitfield word with @property
@@ -128,6 +128,56 @@ class HeadChunk(Chunk):
         return self.ae_version_major_a * 8 + self.ae_version_major_b
 
 # ---------------------------------------------------------------------------
+# nhed - compact project settings mirror (32 bytes)
+# ---------------------------------------------------------------------------
+
+
+@register("nhed")
+@define
+class NhedChunk(Chunk):
+    """Compact root-level mirror for selected project settings.
+
+    Sample comparisons show that several `nnhd` display settings are
+    mirrored here at more compact offsets. Some bytes still have
+    unknown semantics and are preserved exactly.
+    """
+
+    chunk_type: str = "nhed"
+
+    _reserved_00: bytes = bytes_field(8, repr=False)
+    _display_byte: int = u1_field(repr=False)
+    footage_timecode_display_start_type: int = u1_field()
+    _reserved_0a: bytes = bytes_field(1, repr=False)
+    _feet_byte: int = u1_field(repr=False)
+    timecode_default_base: int = u1_field()
+    _reserved_0d: bytes = bytes_field(1, repr=False)
+    frames_count_type: int = u1_field()
+    bits_per_channel: int = u1_field()
+    transparency_grid_thumbnails: bool = bool_field()
+    _reserved_11: bytes = bytes_field(15, repr=False)
+
+    feet_frames_film_type = BitField("_display_byte", 7)
+    frames_use_feet_frames = BitField("_feet_byte", 0)
+
+    @property
+    def time_display_type(self) -> int:
+        """Time display type (0=TIMECODE, 1=FRAMES)."""
+        return self._display_byte & 0x7F
+
+    @time_display_type.setter
+    def time_display_type(self, value: int) -> None:
+        self._display_byte = (self._display_byte & 0x80) | (value & 0x7F)
+
+    @property
+    def display_start_frame(self) -> int:
+        return self.frames_count_type % 2
+
+    @display_start_frame.setter
+    def display_start_frame(self, value: int) -> None:
+        self.frames_count_type = value
+
+
+# ---------------------------------------------------------------------------
 # nnhd - project display settings (40 bytes)
 # ---------------------------------------------------------------------------
 
@@ -159,16 +209,11 @@ class NnhdChunk(Chunk):
     _reserved_15: bytes = bytes_field(3, repr=False)
     bits_per_channel: int = u1_field()
     transparency_grid_thumbnails: bool = bool_field()
-    _unknown_1a: bytes = bytes_field(5, repr=False)
-    _linearize_byte: int = u1_field(repr=False)
-    """Byte 31: bit 5 = linearize_working_space."""
-
-    _unknown_20: bytes = bytes_field(8, repr=False)
+    _unknown_1a: bytes = bytes_field(14, repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
     feet_frames_film_type = BitField("_display_byte", 7)
     frames_use_feet_frames = BitField("_feet_byte", 0)
-    linearize_working_space = BitField("_linearize_byte", 5)
 
     @property
     def time_display_type(self) -> int:

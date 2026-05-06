@@ -5,7 +5,7 @@ Extracts composition and layer markers from MRST / Nmrd chunks.
 
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ListChunk
 from ..binary.misc_chunks import NmhdChunk
@@ -20,7 +20,7 @@ from ..models.properties.marker import MarkerValue
 from ..models.properties.property import Property
 from .property_value import parse_property
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ..models.items.composition import CompItem
     from ..models.properties.keyframe import Keyframe
 
@@ -72,9 +72,9 @@ def parse_marker(
         keyframe: The keyframe that holds this marker value.
         frame_time: Fallback time in frames (used when no keyframe ref).
     """
-    nmhd_chunk = find_by_type(chunks=nmrd_chunk.chunks, chunk_type="NmHd", cls=NmhdChunk)
+    nmhd_chunk = cast("NmhdChunk", find_by_type(chunks=nmrd_chunk.chunks, chunk_type="NmHd"))
 
-    utf8_chunks = filter_by_type(chunks=nmrd_chunk.chunks, chunk_type="Utf8", cls=Utf8Chunk)
+    utf8_chunks = cast("list[Utf8Chunk]", filter_by_type(chunks=nmrd_chunk.chunks, chunk_type="Utf8"))
 
     # Collect cue point param Utf8 chunks
     param_utf8s: list[Utf8Chunk] = utf8_chunks[5:]

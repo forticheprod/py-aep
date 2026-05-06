@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ..enums import GuideOrientationType
 from .descriptors import ChunkField
 from .validators import validate_number
 
-if typing.TYPE_CHECKING:
-    from ..binary.chunk import Chunk
+if TYPE_CHECKING:
+    from ..binary.ldat_chunks import GuideItem
 
 
 class Guide:
@@ -46,7 +46,7 @@ class Guide:
     position_type = ChunkField[int]("_guide_item", "position_type")
     """The position type of the guide. Always 0 (pixels). Read / Write."""
 
-    def __init__(self, _guide_item: Chunk) -> None:
+    def __init__(self, _guide_item: GuideItem) -> None:
         self._guide_item = _guide_item
 
     def __repr__(self) -> str:

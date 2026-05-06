@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ..descriptors import ChunkField
 from ..validators import validate_number
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ...binary.ldat_chunks import ShapePoint
     from ...binary.misc_chunks import (
         FeatherPointItem,

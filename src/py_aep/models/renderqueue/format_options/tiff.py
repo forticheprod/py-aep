@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import typing
+from typing import TYPE_CHECKING
 
 from ...descriptors import ChunkField
 
-if typing.TYPE_CHECKING:
-    from ....binary.chunk import Chunk
+if TYPE_CHECKING:
+    from ....binary.render_chunks import RoptChunk
 
 
 class TiffFormatOptions:
@@ -25,7 +25,7 @@ class TiffFormatOptions:
         ```
     """
 
-    def __init__(self, *, _body: Chunk) -> None:
+    def __init__(self, *, _body: RoptChunk) -> None:
         self._body = _body
 
     lzw_compression = ChunkField[bool](
