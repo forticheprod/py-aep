@@ -2056,3 +2056,298 @@ class TestTransformNaming:
         assert match_names.index("ADBE Transform Group") < match_names.index(
             "ADBE Camera Options Group"
         )
+
+
+# ------------------------------------------------------------------ #
+# Phase 2: Mutation methods                                          #
+# ------------------------------------------------------------------ #
+
+VERSIONS_DIR = Path(__file__).parent.parent / "samples" / "versions"
+
+
+class TestSetTrackMatte:
+    """Tests for AVLayer.set_track_matte()."""
+
+    def test_basic(self) -> None:
+        """Assign ALPHA track matte on a file that has none."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_no.aep")
+        comp = app.project.compositions[0]
+        matted, matte = comp.layers[0], comp.layers[1]
+
+        matted.set_track_matte(matte, TrackMatteType.ALPHA)
+
+        assert matted.track_matte_type == TrackMatteType.ALPHA
+        assert matted._matte_layer_id == matte.id
+        assert matted.track_matte_layer is matte
+        assert not matte.enabled
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        """Set matte, save, reparse, verify persisted."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_no.aep")
+        comp = app.project.compositions[0]
+        matted, matte = comp.layers[0], comp.layers[1]
+
+        matted.set_track_matte(matte, TrackMatteType.LUMA)
+        app.project.save(tmp_path / "out.aep")
+
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = app2.project.compositions[0]
+        matted2 = comp2.layers[0]
+        matte2 = comp2.layers[1]
+
+        assert matted2.track_matte_type == TrackMatteType.LUMA
+        assert matted2._matte_layer_id == matte2.id
+        assert not matte2.enabled
+
+    def test_replaces_existing(self) -> None:
+        """Switching matte re-enables the old matte layer."""
+        app = parse_aep(SAMPLES_DIR / "trackMatteType.aep")
+        comp = get_comp(app.project, "trackMatteType_ALPHA")
+        matted = comp.layers[0]
+        old_matte = comp.layers[1]
+        assert not old_matte.enabled
+
+        # Switch to LUMA with the same matte layer (type changes only)
+        matted.set_track_matte(old_matte, TrackMatteType.LUMA)
+        assert matted.track_matte_type == TrackMatteType.LUMA
+        # Matte stays disabled since it's still the matte
+        assert not old_matte.enabled
+
+    def test_none_clears_ref(self) -> None:
+        """Passing None clears matte_layer_id but preserves the type."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_yes.aep")
+        comp = app.project.compositions[0]
+        matted = comp.layers[0]
+        matte = comp.layers[1]
+        assert not matte.enabled
+
+        matted.set_track_matte(None, TrackMatteType.ALPHA)
+
+        assert matted.track_matte_type == TrackMatteType.ALPHA
+        assert matted._matte_layer_id == 0
+        assert matted.track_matte_layer is None
+        # Old matte re-enabled
+        assert matte.enabled
+
+    def test_noop_with_no_track_matte(self) -> None:
+        """NO_TRACK_MATTE + non-None layer is a no-op."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_no.aep")
+        comp = app.project.compositions[0]
+        matted, matte = comp.layers[0], comp.layers[1]
+        original_type = matted.track_matte_type
+
+        matted.set_track_matte(matte, TrackMatteType.NO_TRACK_MATTE)
+
+        assert matted.track_matte_type == original_type
+        assert matted._matte_layer_id == 0
+        assert matte.enabled
+
+    def test_pre_ae23_raises(self) -> None:
+        """Files older than AE 23 don't have matte_layer_id."""
+        app = parse_aep(VERSIONS_DIR / "ae2022" / "complete.aep")
+        comp = app.project.compositions[0]
+        layer = comp.layers[0]
+
+        with pytest.raises(AttributeError, match="AE 23.0"):
+            layer.set_track_matte(layer, TrackMatteType.ALPHA)
+
+    def test_wrong_comp_raises(self) -> None:
+        """Matte layer from a different comp raises ValueError."""
+        app = parse_aep(SAMPLES_DIR / "trackMatteType.aep")
+        comp_a = get_comp(app.project, "trackMatteType_ALPHA")
+        comp_l = get_comp(app.project, "trackMatteType_LUMA")
+        matted = comp_a.layers[0]
+        foreign = comp_l.layers[1]
+
+        with pytest.raises(ValueError, match="same composition"):
+            matted.set_track_matte(foreign, TrackMatteType.ALPHA)
+
+
+class TestRemoveTrackMatte:
+    """Tests for AVLayer.remove_track_matte()."""
+
+    def test_basic(self) -> None:
+        """Remove matte reference and re-enable the matte layer."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_yes.aep")
+        comp = app.project.compositions[0]
+        matted = comp.layers[0]
+        matte = comp.layers[1]
+        assert not matte.enabled
+
+        matted.remove_track_matte()
+
+        assert matted._matte_layer_id == 0
+        assert matted.track_matte_layer is None
+        assert matte.enabled
+
+    def test_preserves_type(self) -> None:
+        """track_matte_type stays after removing the matte."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_yes.aep")
+        comp = app.project.compositions[0]
+        matted = comp.layers[0]
+        assert matted.track_matte_type == TrackMatteType.ALPHA
+
+        matted.remove_track_matte()
+
+        assert matted.track_matte_type == TrackMatteType.ALPHA
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        """Remove matte, save, reparse."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_yes.aep")
+        comp = app.project.compositions[0]
+        comp.layers[0].remove_track_matte()
+        app.project.save(tmp_path / "out.aep")
+
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = app2.project.compositions[0]
+        assert comp2.layers[0]._matte_layer_id == 0
+        assert comp2.layers[1].enabled
+
+    def test_pre_ae23_raises(self) -> None:
+        """Files older than AE 23 raise AttributeError."""
+        app = parse_aep(VERSIONS_DIR / "ae2022" / "complete.aep")
+        comp = app.project.compositions[0]
+        with pytest.raises(AttributeError, match="AE 23.0"):
+            comp.layers[0].remove_track_matte()
+
+
+class TestReplaceSource:
+    """Tests for AVLayer.replace_source()."""
+
+    def test_basic(self) -> None:
+        """Swap source and verify the new source is returned."""
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(app.project, "Main_Comp")
+        layer = comp.layers[0]  # first AVLayer
+        old_source = layer.source
+        # Pick any other footage item as new source
+        new_source = next(
+            item
+            for item in app.project.footages
+            if item is not old_source
+        )
+
+        layer.replace_source(new_source)
+
+        assert layer.source is new_source
+        assert layer._source_id == new_source.id
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        """Replace source, save, reparse, verify."""
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(app.project, "Main_Comp")
+        layer = comp.layers[0]
+        new_source = next(
+            item
+            for item in app.project.footages
+            if item is not layer.source
+        )
+        new_id = new_source.id
+
+        layer.replace_source(new_source)
+        app.project.save(tmp_path / "out.aep")
+
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = get_comp(app2.project, "Main_Comp")
+        assert comp2.layers[0]._source_id == new_id
+
+    def test_updates_used_in(self) -> None:
+        """_used_in back-references are updated."""
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(app.project, "Main_Comp")
+        layer = comp.layers[0]
+        old_source = layer.source
+        new_source = next(
+            item
+            for item in app.project.footages
+            if item is not old_source and hasattr(item, "_used_in")
+        )
+
+        layer.replace_source(new_source)
+
+        assert comp in new_source._used_in
+        # old_source removed if no other layer in comp uses it
+        still_used = any(
+            ly._source_id == old_source.id
+            for ly in comp.layers
+            if hasattr(ly, "_source_id") and ly is not layer
+        )
+        if not still_used:
+            assert comp not in old_source._used_in
+
+    def test_fix_expressions_raises(self) -> None:
+        """fix_expressions=True raises NotImplementedError."""
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(app.project, "Main_Comp")
+        layer = comp.layers[0]
+        source = next(iter(app.project.footages))
+
+        with pytest.raises(NotImplementedError, match="fix_expressions"):
+            layer.replace_source(source, fix_expressions=True)
+
+    def test_not_in_project_raises(self) -> None:
+        """Source not in project.items raises ValueError."""
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(app.project, "Main_Comp")
+        layer = comp.layers[0]
+
+        class _FakeItem:
+            id = 999999
+            name = "ghost"
+
+        with pytest.raises(ValueError, match="not in the project"):
+            layer.replace_source(_FakeItem())  # type: ignore[arg-type]
+
+    def test_sourceless_layer_raises(self) -> None:
+        """Shape/text layers (source=None) cannot have their source replaced."""
+        project = parse_project(SAMPLES_DIR / "type.aep")
+        layer = get_layer(project, "type_shape")
+        assert isinstance(layer, ShapeLayer)
+        assert layer.source is None
+
+        with pytest.raises(ValueError, match="does not have a source"):
+            layer.replace_source(project.footages[0])
+
+    def test_3d_model_layer_raises(self) -> None:
+        """ThreeDModelLayer cannot have its source replaced."""
+        project = parse_project(SAMPLES_DIR / "three_d_model_layer.aep")
+        layer = get_first_layer(project)
+        assert isinstance(layer, ThreeDModelLayer)
+
+        with pytest.raises(ValueError, match="3D model layers"):
+            layer.replace_source(layer.source)
+
+    def test_direct_cycle_raises(self) -> None:
+        """Replacing a layer's source with its own comp raises ValueError."""
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(app.project, "Main_Comp")
+        layer = comp.layers[0]
+
+        with pytest.raises(ValueError, match="composition cycle"):
+            layer.replace_source(comp)
+
+    def test_deep_cycle_raises(self) -> None:
+        """Cycle detection catches indirect chains (A > B > A)."""
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(app.project, "Main_Comp")
+        # Find a sub-comp used as a source by a layer in Main_Comp
+        sub_comp = None
+        for layer in comp.av_layers:
+            src = layer.source
+            if src is not None and hasattr(src, "layers") and src is not comp:
+                sub_comp = src
+                break
+        if sub_comp is None:
+            pytest.skip("No nested comp layer in Main_Comp")
+        # Find a layer in sub_comp that has a source (not text/shape)
+        sub_layer = None
+        for ly in sub_comp.av_layers:
+            if ly.source is not None:
+                sub_layer = ly
+                break
+        if sub_layer is None:
+            pytest.skip("No sourced layer in sub-comp")
+        # sub_comp is used inside Main_Comp, so setting a layer
+        # in sub_comp to point at Main_Comp would create A > B > A.
+        with pytest.raises(ValueError, match="composition cycle"):
+            sub_layer.replace_source(comp)

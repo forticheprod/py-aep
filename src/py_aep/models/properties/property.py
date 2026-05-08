@@ -5,6 +5,7 @@ import math
 from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
+from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
 from ...binary.chunk import ContainerChunk, ListChunk
@@ -227,7 +228,7 @@ class Property(PropertyBase):
         PropertyBase.__dict__["name"].fset(self, value)
 
     @classmethod
-    def new(
+    def _new(
         cls,
         spec: _PropSpec,
         property_depth: int,
@@ -698,6 +699,10 @@ class Property(PropertyBase):
 
     @expression.setter
     def expression(self, value: str) -> None:
+        if value and not self.can_set_expression:
+            raise AttributeError(
+                f"Expression cannot be set on property {self.match_name!r}"
+            )
         self._ensure_materialized()
         self._expression = value
         if self._expression_utf8 is None:
@@ -725,6 +730,13 @@ class Property(PropertyBase):
         self._expression_enabled = value
         if not self._tdb4.synthetic:
             self._tdb4.expression_disabled = not value
+
+    @property
+    def can_set_expression(self) -> bool:
+        """
+        When `True`, an expression can be set for the named property. Read-only.
+        """
+        return resolve_can_set_expression(self)
 
     @property
     def property_control_type(self) -> PropertyControlType:
@@ -927,7 +939,7 @@ class Property(PropertyBase):
             return not _values_equal(self.value, self.default_value)
         # Effect properties with no known default are considered modified
         # when they have a value - ExtendScript treats the absence of a
-        # default as "always modified".  LAYER_INDEX is excluded because
+        # default as "always modified". LAYER_INDEX is excluded because
         # its binary default (0 = "None" layer) is not stored in pard;
         # layer references should report False when unset.
         if (

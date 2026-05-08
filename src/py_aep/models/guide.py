@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from ..binary.ldat_chunks import GuideItem
 from ..enums import GuideOrientationType
 from .descriptors import ChunkField
 from .validators import validate_number
-
-if TYPE_CHECKING:
-    from ..binary.ldat_chunks import GuideItem
 
 
 class Guide:
@@ -48,6 +44,28 @@ class Guide:
 
     def __init__(self, _guide_item: GuideItem) -> None:
         self._guide_item = _guide_item
+
+    @classmethod
+    def _new(cls, orientation_type: int, position: int) -> Guide:
+        """Create a new guide with the given orientation and position.
+
+        Any `orientation_type` value other than 0 or 1 defaults to
+        horizontal (matching ExtendScript behavior).
+
+        Args:
+            orientation_type: 0 for horizontal, 1 for vertical.
+            position: The pixel position of the guide.
+
+        Returns:
+            A new `Guide` instance backed by a freshly created `GuideItem`.
+        """
+        orientation = GuideOrientationType.from_binary(orientation_type)
+        item = GuideItem(
+            orientation_type=orientation.to_binary(),
+            position_type=0,
+            position=float(position),
+        )
+        return cls(_guide_item=item)
 
     def __repr__(self) -> str:
         orient = (

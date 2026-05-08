@@ -1504,7 +1504,9 @@ class TestLhd3Chunk:
         count: int,
         item_size: int,
         item_type_raw: int,
-        trailing: bytes = b"",
+        trail_version: int = 1,
+        trail_next_id: int = 2,
+        trailing: bytes = b"\x00" * 20,
     ) -> bytes:
         import struct
 
@@ -1515,6 +1517,7 @@ class TestLhd3Chunk:
             + struct.pack(">H", item_size)
             + b"\x00" * 3
             + struct.pack(">B", item_type_raw)
+            + struct.pack(">II", trail_version, trail_next_id)
             + trailing
         )
 

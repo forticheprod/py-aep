@@ -54,6 +54,13 @@ def parse_item(
     except ChunkNotFoundError:
         cmta = None
 
+    try:
+        gide: ListChunk | None = find_by_list_type(
+            chunks=item_chunk.chunks, list_type="Gide"
+        )
+    except ChunkNotFoundError:
+        gide = None
+
     item_type = idta.item_type
 
     item: FolderItem | FootageItem | CompItem
@@ -66,6 +73,7 @@ def parse_item(
             _name_utf8=name_utf8,
             _cmta=cmta,
             _item_list=item_chunk,
+            _gide=gide,
             parent_folder=parent_folder,
         )
 
@@ -76,6 +84,7 @@ def parse_item(
             _name_utf8=name_utf8,
             _cmta=cmta,
             _item_list=item_chunk,
+            _gide=gide,
             project=project,
             parent_folder=parent_folder,
         )
@@ -87,6 +96,7 @@ def parse_item(
             _name_utf8=name_utf8,
             _cmta=cmta,
             _item_list=item_chunk,
+            _gide=gide,
             project=project,
             parent_folder=parent_folder,
             effect_param_defs=project._effect_param_defs,
@@ -110,6 +120,7 @@ def parse_folder(
     _name_utf8: Utf8Chunk | None,
     _cmta: CmtaChunk | None,
     _item_list: ListChunk,
+    _gide: ListChunk | None,
     parent_folder: FolderItem | None,
 ) -> FolderItem:
     """
@@ -123,6 +134,7 @@ def parse_folder(
         _name_utf8: The Utf8 chunk containing the folder name.
         _cmta: The cmta chunk (None if no comment).
         _item_list: The LIST chunk for creating new chunks.
+        _gide: The LIST chunk for guides (None if no guides).
         parent_folder: The folder's parent folder.
     """
     folder = FolderItem(
@@ -130,6 +142,7 @@ def parse_folder(
         _name_utf8=_name_utf8,
         _cmta=_cmta,
         _item_list=_item_list,
+        _gide=_gide,
         project=project,
         parent_folder=parent_folder,
     )

@@ -57,7 +57,7 @@ def _param_def_to_spec(
         param_def: The parameter definition dict from parT parsing.
 
     Returns:
-        A `_PropSpec` suitable for `Property.new()`.
+        A `_PropSpec` suitable for `Property._new()`.
     """
     pvt = param_def.get("property_value_type", PropertyValueType.OneD)
     control_type = param_def["property_control_type"]
@@ -260,7 +260,7 @@ def _synthesize_effect_property(
             if isinstance(raw_display, str) and raw_display
             else MATCH_NAME_TO_AUTO_NAME.get(match_name, "")
         )
-        return PropertyGroup.new(
+        return PropertyGroup._new(
             match_name,
             display,
             property_depth,
@@ -269,7 +269,7 @@ def _synthesize_effect_property(
         )
 
     spec = _param_def_to_spec(match_name, param_def)
-    prop = Property.new(
+    prop = Property._new(
         spec,
         property_depth,
         parent_property=parent_property,
@@ -360,7 +360,7 @@ def _parse_effect_properties(
     # synthesize_children() will fill it from _COMPOSITING_OPTIONS_SPECS.
     if not any(c.match_name == "ADBE Effect Built In Params" for c in ordered):
         ordered.append(
-            PropertyGroup.new(
+            PropertyGroup._new(
                 "ADBE Effect Built In Params",
                 "Compositing Options",
                 child_depth,

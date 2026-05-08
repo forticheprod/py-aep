@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, cast
 
-from py_aep.enums import AutoOrientType, Label
+from py_aep.enums import AutoOrientType, Label, LayerType
 
 from ...binary.scalar_chunks import CmtaChunk
 from ..descriptors import ChunkField, ComputedField
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     from ..items.composition import CompItem
     from ..properties.marker import MarkerValue
 
+
+logger = logging.getLogger(__name__)
 
 _reverse_start_time = reverse_ratio("start_time")
 _reverse_in_point = reverse_ratio("in_point")
@@ -97,24 +100,22 @@ class Layer(PropertyGroup):
     See: https://ae-scripting.docsforadobe.dev/layer/layer/
     """
 
-    # Maps ldta layer_type (int) to ExtendScript match name.
-    _LAYER_MATCH_NAMES: dict[int, str] = {
-        0: "ADBE AV Layer",
-        1: "ADBE Light Layer",
-        2: "ADBE Camera Layer",
-        3: "ADBE Text Layer",
-        4: "ADBE Vector Layer",
-        5: "ADBE 3D Model Layer",
+    _LAYER_MATCH_NAMES: dict[LayerType, str] = {
+        LayerType.AV: "ADBE AV Layer",
+        LayerType.LIGHT: "ADBE Light Layer",
+        LayerType.CAMERA: "ADBE Camera Layer",
+        LayerType.TEXT: "ADBE Text Layer",
+        LayerType.SHAPE: "ADBE Vector Layer",
+        LayerType.THREE_D_MODEL: "ADBE 3D Model Layer",
     }
 
-    # Maps ldta layer_type (int) to ExtendScript layerType string.
-    _LAYER_TYPE_NAMES: dict[int, str] = {
-        0: "AVLayer",
-        1: "LightLayer",
-        2: "CameraLayer",
-        3: "Layer",
-        4: "Layer",
-        5: "Layer",
+    _LAYER_TYPE_NAMES: dict[LayerType, str] = {
+        LayerType.AV: "AVLayer",
+        LayerType.LIGHT: "LightLayer",
+        LayerType.CAMERA: "CameraLayer",
+        LayerType.TEXT: "Layer",
+        LayerType.SHAPE: "Layer",
+        LayerType.THREE_D_MODEL: "Layer",
     }
 
     enabled = ChunkField[bool]("_ldta", "enabled")
@@ -194,8 +195,16 @@ class Layer(PropertyGroup):
         self._layer_list = _layer_list
         self._otln_entry: OtlnItem | None = None
 
-        layer_type_val = _ldta.layer_type
-        match_name = self._LAYER_MATCH_NAMES.get(layer_type_val, "ADBE AV Layer")
+        try:
+            layer_type_raw = _ldta.layer_type
+            layer_type = LayerType(layer_type_raw)
+            match_name = self._LAYER_MATCH_NAMES[layer_type]
+        except (ValueError, KeyError):
+            logger.warning(
+                "Unknown layer type %d for layer '%s' in comp '%s'. Defaulting to 'ADBE AV Layer'.",
+                layer_type_raw, _name_utf8.value, containing_comp.name
+            )
+            match_name = "ADBE AV Layer"
 
         super().__init__(
             _tdsb=None,
@@ -257,7 +266,7 @@ class Layer(PropertyGroup):
         """The type of layer. Matches ExtendScript `layerType` values:
         `"AVLayer"`, `"LightLayer"`, `"CameraLayer"`, or `"Layer"`.
         Read-only."""
-        return self._LAYER_TYPE_NAMES.get(self._ldta.layer_type, "AVLayer")
+        return self._LAYER_TYPE_NAMES.get(LayerType(self._ldta.layer_type), "AVLayer")
 
     @property
     def time(self) -> float:
@@ -497,7 +506,7 @@ class Layer(PropertyGroup):
         if not self.enabled:
             return False
 
-        any_solo = any(layer.solo for layer in self.containing_comp.layers)
+        any_solo = bool(self.containing_comp.solo_layers)
         if any_solo and not self.solo:
             return False
 

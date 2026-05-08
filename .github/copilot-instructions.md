@@ -96,8 +96,8 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 - Never put business logic in chunk classes. Chunks are data containers.
 
 ### Synthesized Properties
-- `Property.new(spec, property_depth, *, parent_property, synthetic=False, ...)` - factory classmethod creating a `Property` with backing chunks. Pass `synthetic=True` to mark chunks as synthetic.
-- `PropertyGroup.new(match_name, auto_name, property_depth, *, parent_property=None, synthetic=False)` - factory classmethod creating an empty `PropertyGroup` with backing chunks.
+- `Property._new(spec, property_depth, *, parent_property, synthetic=False, ...)` - factory classmethod creating a `Property` with backing chunks. Pass `synthetic=True` to mark chunks as synthetic.
+- `PropertyGroup._new(match_name, auto_name, property_depth, *, parent_property=None, synthetic=False)` - factory classmethod creating an empty `PropertyGroup` with backing chunks.
 - When `synthetic=True`, all created chunks are skipped by `write_aep()`. On first user write (via ChunkField), `_ensure_materialized()` flips `synthetic=False` so chunks become visible.
 
 ### Adding New Parsed Data

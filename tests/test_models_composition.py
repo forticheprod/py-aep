@@ -1193,6 +1193,143 @@ class TestValidateGuidePosition:
             comp.guides[0].position = -1.0
 
 
+class TestAddGuide:
+    """Tests for Item.add_guide()."""
+
+    def test_add_guide_to_existing(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_both")
+        original_count = len(comp.guides)
+
+        idx = comp.add_guide(0, 500)
+        assert idx == original_count
+        assert len(comp.guides) == original_count + 1
+        assert comp.guides[idx].orientation_type == GuideOrientationType.HORIZONTAL
+        assert comp.guides[idx].position == 500.0
+
+        out = tmp_path / "add_guide.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_both")
+        assert len(comp2.guides) == original_count + 1
+        assert comp2.guides[idx].orientation_type == GuideOrientationType.HORIZONTAL
+        assert comp2.guides[idx].position == 500.0
+
+    def test_add_guide_vertical(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_horizontal")
+
+        idx = comp.add_guide(1, 200)
+        assert comp.guides[idx].orientation_type == GuideOrientationType.VERTICAL
+        assert comp.guides[idx].position == 200.0
+
+        out = tmp_path / "add_vert.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_horizontal")
+        assert comp2.guides[idx].orientation_type == GuideOrientationType.VERTICAL
+        assert comp2.guides[idx].position == 200.0
+
+    def test_add_guide_to_empty_comp(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_none")
+        assert comp.guides == []
+
+        idx = comp.add_guide(0, 300)
+        assert idx == 0
+        assert len(comp.guides) == 1
+        assert comp.guides[0].position == 300.0
+
+        out = tmp_path / "bootstrap_guide.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_none")
+        assert len(comp2.guides) == 1
+        assert comp2.guides[0].orientation_type == GuideOrientationType.HORIZONTAL
+        assert comp2.guides[0].position == 300.0
+
+    def test_add_guide_returns_index(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_none")
+        assert comp.add_guide(0, 100) == 0
+        assert comp.add_guide(1, 200) == 1
+        assert comp.add_guide(0, 300) == 2
+
+    def test_add_guide_invalid_orientation_defaults_horizontal(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_none")
+        comp.add_guide(99, 100)
+        assert comp.guides[0].orientation_type == GuideOrientationType.HORIZONTAL
+
+    def test_add_guide_invariant(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_both")
+        comp.add_guide(0, 123)
+        assert len(comp._ldat.items) == comp._lhd3.count
+
+
+class TestRemoveGuide:
+    """Tests for Item.remove_guide()."""
+
+    def test_remove_guide_first(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_both")
+        original_count = len(comp.guides)
+        second_guide_pos = comp.guides[1].position
+
+        comp.remove_guide(0)
+        assert len(comp.guides) == original_count - 1
+        assert comp.guides[0].position == second_guide_pos
+
+        out = tmp_path / "remove_first.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_both")
+        assert len(comp2.guides) == original_count - 1
+        assert comp2.guides[0].position == second_guide_pos
+
+    def test_remove_guide_last_remaining(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_horizontal")
+        assert len(comp.guides) == 1
+
+        comp.remove_guide(0)
+        assert comp.guides == []
+        assert comp._gide is None
+
+        out = tmp_path / "remove_last.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_horizontal")
+        assert comp2.guides == []
+
+    def test_remove_guide_invalid_index_raises(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_horizontal")
+        with pytest.raises(IndexError):
+            comp.remove_guide(5)
+        with pytest.raises(IndexError):
+            comp.remove_guide(-1)
+
+    def test_remove_guide_invariant(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_both")
+        comp.remove_guide(0)
+        assert len(comp._ldat.items) == comp._lhd3.count
+
+    def test_remove_all_then_add(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_horizontal")
+        comp.remove_guide(0)
+        assert comp.guides == []
+
+        idx = comp.add_guide(1, 400)
+        assert idx == 0
+        assert comp.guides[0].orientation_type == GuideOrientationType.VERTICAL
+
+        out = tmp_path / "remove_add.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_horizontal")
+        assert len(comp2.guides) == 1
+        assert comp2.guides[0].orientation_type == GuideOrientationType.VERTICAL
+        assert comp2.guides[0].position == 400.0
+
+
 class TestRoundtripDraft3d:
     """Roundtrip tests for CompItem.draft3d."""
 
@@ -1273,7 +1410,7 @@ class TestEssentialGraphics:
         comp = next(c for c in project.compositions if c.name == "primary")
         assert comp.motion_graphics_template_name == "Untitled"
         assert comp.motion_graphics_template_controller_count == 1
-        assert comp.get_motion_graphics_template_controller_name(1) == "Fill Color"
+        assert comp.get_motion_graphics_template_controller_name(0) == "Fill Color"
         assert comp.motion_graphics_template_controller_names == ["Fill Color"]
 
     def test_custom_template_name(self) -> None:
@@ -1294,7 +1431,7 @@ class TestEssentialGraphics:
     def test_controller_renamed(self) -> None:
         project = parse_project(EG_SAMPLES_DIR / "controller_renamed.aep")
         comp = next(c for c in project.compositions if c.name == "primary")
-        assert comp.get_motion_graphics_template_controller_name(1) == "Renamed Color"
+        assert comp.get_motion_graphics_template_controller_name(0) == "Renamed Color"
 
     def test_no_essential_properties(self) -> None:
         project = parse_project(EG_SAMPLES_DIR / "no_essential_properties.aep")
@@ -1346,16 +1483,16 @@ class TestRoundtripEssentialGraphics:
     def test_rename_controller(self, tmp_path: Path) -> None:
         project = parse_aep(EG_SAMPLES_DIR / "fill_color_added.aep").project
         comp = next(c for c in project.compositions if c.name == "primary")
-        assert comp.get_motion_graphics_template_controller_name(1) == "Fill Color"
+        assert comp.get_motion_graphics_template_controller_name(0) == "Fill Color"
 
-        comp.set_motion_graphics_controller_name(1, "New Controller Name")
+        comp.set_motion_graphics_controller_name(0, "New Controller Name")
         out = tmp_path / "modified.aep"
         project.save(out)
         comp2 = next(
             c for c in parse_aep(out).project.compositions if c.name == "primary"
         )
         assert (
-            comp2.get_motion_graphics_template_controller_name(1)
+            comp2.get_motion_graphics_template_controller_name(0)
             == "New Controller Name"
         )
 
@@ -1363,18 +1500,18 @@ class TestRoundtripEssentialGraphics:
         project = parse_aep(EG_SAMPLES_DIR / "multiple_controllers.aep").project
         comp = next(c for c in project.compositions if c.name == "primary")
 
-        comp.set_motion_graphics_controller_name(2, "Renamed Opacity")
+        comp.set_motion_graphics_controller_name(1, "Renamed Opacity")
         out = tmp_path / "modified.aep"
         project.save(out)
         comp2 = next(
             c for c in parse_aep(out).project.compositions if c.name == "primary"
         )
-        assert comp2.get_motion_graphics_template_controller_name(1) == "Brightness"
+        assert comp2.get_motion_graphics_template_controller_name(0) == "Brightness"
         assert (
-            comp2.get_motion_graphics_template_controller_name(2) == "Renamed Opacity"
+            comp2.get_motion_graphics_template_controller_name(1) == "Renamed Opacity"
         )
         assert (
-            comp2.get_motion_graphics_template_controller_name(3) == "Background Color"
+            comp2.get_motion_graphics_template_controller_name(2) == "Background Color"
         )
 
     def test_create_template_name(self, tmp_path: Path) -> None:

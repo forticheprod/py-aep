@@ -32,6 +32,7 @@ def parse_composition(
     _name_utf8: Utf8Chunk,
     _cmta: CmtaChunk | None,
     _item_list: ListChunk,
+    _gide: ListChunk | None,
     project: Project,
     parent_folder: FolderItem,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
@@ -45,6 +46,8 @@ def parse_composition(
         _idta: The idta chunk.
         _name_utf8: The Utf8 chunk containing the composition name.
         _cmta: The cmta chunk (None if no comment).
+        _item_list: The LIST chunk for creating new chunks.
+        _gide: The LIST chunk for guides (None if no guides).
         project: The project.
         parent_folder: The composition's parent folder.
         effect_param_defs: Project-level effect parameter definitions, used as
@@ -65,6 +68,7 @@ def parse_composition(
         _cmta=_cmta,
         _idta=_idta,
         _item_list=_item_list,
+        _gide=_gide,
         _name_utf8=_name_utf8,
         _prin=prin_chunk,
         project=project,

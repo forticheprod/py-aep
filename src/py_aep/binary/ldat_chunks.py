@@ -92,11 +92,13 @@ class Lhd3Chunk(Chunk):
 
     _prefix: bytes = bytes_field(10, default=b"\x00\xd0\x0b\xee\x00\x00\x00\x00\x00\x00", repr=False)
     count: int = u2_field()
-    _gap: bytes = bytes_field(6, repr=False)
+    _gap: bytes = bytes_field(6, default=b"\x00\x00\x00\x01\x00\x00", repr=False)
     item_size: int = u2_field()
-    _gap2: bytes = bytes_field(3, repr=False)
+    _gap2: bytes = bytes_field(3, default=b"\x00\x00\x00", repr=False)
     item_type_raw: int = u1_field()
-    _trailing: bytes = field(default=b"", repr=False)
+    _trail_version: int = u4_field(default=1, repr=False)
+    _trail_next_id: int = u4_field(default=2, repr=False)
+    _trailing: bytes = field(default=b"\x00" * 20, repr=False)
 
     @property
     def item_type(self) -> LdatItemType:
@@ -128,7 +130,12 @@ class GuideItem(FmtItem):
     position: float = f8_field()
 
 
-
+@register("gdta")
+@define
+class GdtaChunk(Chunk):
+    """Guide container data chunk (8 bytes, all zeros)."""
+    chunk_type: str = "gdta"
+    data: bytes = b"\x00\x00\x00\x00\x00\x00\x00\x00"
 
 
 # ---------------------------------------------------------------------------

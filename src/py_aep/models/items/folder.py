@@ -44,7 +44,8 @@ class FolderItem(Item):
         _idta: IdtaChunk | None,
         _name_utf8: Utf8Chunk | None,
         _cmta: CmtaChunk | None,
-        _item_list: ListChunk | None = None,
+        _item_list: ListChunk,
+        _gide: ListChunk | None,
         project: Project,
         parent_folder: FolderItem | None,
     ) -> None:
@@ -53,6 +54,7 @@ class FolderItem(Item):
             _name_utf8=_name_utf8,
             _cmta=_cmta,
             _item_list=_item_list,
+            _gide=_gide,
             project=project,
             parent_folder=parent_folder,
             type_name="Folder",

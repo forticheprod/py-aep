@@ -27,6 +27,7 @@ def parse_footage(
     _name_utf8: Utf8Chunk,
     _cmta: CmtaChunk | None,
     _item_list: ListChunk,
+    _gide: ListChunk | None,
     project: Project,
     parent_folder: FolderItem,
 ) -> FootageItem:
@@ -38,6 +39,8 @@ def parse_footage(
         _idta: The idta chunk.
         _name_utf8: The Utf8 chunk containing the item name.
         _cmta: The cmta chunk (None if no comment).
+        _item_list: The LIST chunk for creating new chunks.
+        _gide: The LIST chunk for guides (None if no guides).
         project: The project.
         parent_folder: The item's parent folder.
     """
@@ -82,6 +85,7 @@ def parse_footage(
         _name_utf8=_name_utf8,
         _cmta=_cmta,
         _item_list=_item_list,
+        _gide=_gide,
         _sspc=sspc_body,
         _opti=opti_chunk,
         project=project,
