@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -457,22 +458,23 @@ class Project:
         """All the footages in the project."""
         return [item for item in self.items.values() if isinstance(item, FootageItem)]
 
-    def save(self, path: Path) -> None:
+    def save(self, path: os.PathLike[str]) -> None:
         """
         Save the project to a new .aep file at the given path.
 
         Warning:
             This is highly experimental for now.
         """
-        if path.exists():
+        path_obj = Path(path)
+        if path_obj.exists():
             raise FileExistsError(
                 f"The file '{path}' already exists. As writing is still experimental, "
                 "overwriting is not allowed for now. Please choose a different path or "
                 "delete the existing file."
             )
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        with open(path_obj, "wb") as f:
             write_aep(f, self._rifx, self._xmp)
         self._file = str(path)
 

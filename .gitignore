@@ -129,3 +129,5 @@ samples/roundtrip/
 samples/effects/
 memories/
 tmp_*
+scripts/jsx/
+scripts/dev/

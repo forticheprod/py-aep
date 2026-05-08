@@ -2285,7 +2285,7 @@ class TestRoundtripExpressionCreate:
     def test_create_expression_on_empty(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "is_modified_false.aep").project
         layer = project.compositions[0].layers[0]
-        prop = _find_property(layer, "ADBE Rotate X")
+        prop = _find_property(layer, "ADBE Rotate Z")
         assert prop is not None
         assert prop.expression == ""
         assert prop._expression_utf8 is None
@@ -2296,7 +2296,7 @@ class TestRoundtripExpressionCreate:
         project.save(out)
 
         project2 = parse_aep(out).project
-        prop2 = _find_property(project2.compositions[0].layers[0], "ADBE Rotate X")
+        prop2 = _find_property(project2.compositions[0].layers[0], "ADBE Rotate Z")
         assert prop2.expression == "time * 90"
 
 
@@ -2727,3 +2727,72 @@ class TestEffectMetadata:
         # Composition dimensions determine the scale
         assert flare_center.value[0] <= comp.width
         assert flare_center.value[1] <= comp.height
+
+
+VERSIONS_DIR = Path(__file__).parent.parent / "samples" / "versions"
+
+
+class TestCanSetExpression:
+    """Tests for Property.can_set_expression."""
+
+    @staticmethod
+    def _get_main_comp_layer(index: int) -> Layer:
+        project = parse_project(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comp = get_comp(project, "Main_Comp")
+        return comp.layers[index]
+
+    def test_basic_av_layer_transform(self) -> None:
+        """Standard 2D AV layer transform properties are expressionable."""
+        layer = self._get_main_comp_layer(0)
+        for mn in ("ADBE Position", "ADBE Scale", "ADBE Opacity", "ADBE Rotate Z"):
+            prop = _find_property(layer, mn)
+            assert prop is not None, f"{mn} not found"
+            assert prop.can_set_expression is True, mn
+
+    def test_non_3d_layer_3d_only_props(self) -> None:
+        """3D-only transform properties are not expressionable on 2D layers."""
+        layer = self._get_main_comp_layer(0)
+        for mn in ("ADBE Orientation", "ADBE Rotate X", "ADBE Rotate Y"):
+            prop = _find_property(layer, mn)
+            assert prop is not None, f"{mn} not found"
+            assert prop.can_set_expression is False, mn
+
+    def test_3d_layer_3d_only_props(self) -> None:
+        """3D-only transform properties are expressionable on 3D layers."""
+        layer = self._get_main_comp_layer(11)
+        for mn in ("ADBE Orientation", "ADBE Rotate X", "ADBE Rotate Y"):
+            prop = _find_property(layer, mn)
+            assert prop is not None, f"{mn} not found"
+            assert prop.can_set_expression is True, mn
+
+    def test_separation_followers_always_false(self) -> None:
+        """Dimension separation followers are never expressionable."""
+        layer = self._get_main_comp_layer(0)
+        for mn in ("ADBE Position_0", "ADBE Position_1"):
+            prop = _find_property(layer, mn)
+            assert prop is not None, f"{mn} not found"
+            assert prop.can_set_expression is False, mn
+
+    def test_camera_layer(self) -> None:
+        """Camera layers cannot set expressions on Scale/Opacity."""
+        layer = self._get_main_comp_layer(15)
+        scale = _find_property(layer, "ADBE Scale")
+        opacity = _find_property(layer, "ADBE Opacity")
+        position = _find_property(layer, "ADBE Position")
+        assert scale is not None
+        assert opacity is not None
+        assert position is not None
+        assert scale.can_set_expression is False
+        assert opacity.can_set_expression is False
+        assert position.can_set_expression is True
+
+    def test_light_scale_opacity_always_false(self) -> None:
+        """All light layers cannot set expressions on Scale/Opacity."""
+        for idx in (12, 13, 14):  # ambient, spot, point
+            layer = self._get_main_comp_layer(idx)
+            for mn in ("ADBE Scale", "ADBE Opacity"):
+                prop = _find_property(layer, mn)
+                assert prop is not None, f"layer[{idx}] {mn} not found"
+                assert prop.can_set_expression is False, (
+                    f"layer[{idx}] {mn}"
+                )

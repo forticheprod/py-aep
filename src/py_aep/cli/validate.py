@@ -591,6 +591,7 @@ def compare_property(
         "matchName": "match_name",
         "enabled": "enabled",
         "canSetEnabled": "can_set_enabled",
+        "canSetExpression": "can_set_expression",
         "canVaryOverTime": "can_vary_over_time",
         "expression": "expression",
         "expressionEnabled": "expression_enabled",

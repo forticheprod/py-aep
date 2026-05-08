@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import (
     BlendingMode,
@@ -16,7 +16,8 @@ from .layer import Layer
 
 if TYPE_CHECKING:
     from ...binary.layer_chunks import LdtaChunk
-    from ..items.item import Item
+    from ..items.av_item import AVItem
+    from ..items.composition import CompItem
 
 
 def _compute_frame_blending_type(body: LdtaChunk) -> FrameBlendingType:
@@ -38,6 +39,30 @@ def _reverse_frame_blending(value: FrameBlendingType, _body: LdtaChunk) -> dict[
         "frame_blending": 1,
         "frame_blending_mode": int(value == FrameBlendingType.PIXEL_MOTION),
     }
+
+
+def _would_create_cycle(target_comp: CompItem, new_source: AVItem) -> bool:
+    """Check if using `new_source` as a layer source would create a cycle.
+
+    Walks UP from `target_comp` via `_used_in` back-references and returns
+    `True` if `new_source` is found among the ancestors, meaning the
+    replacement would create a circular reference chain.
+    """
+    if not hasattr(new_source, "layers"):
+        return False
+    visited: set[int] = set()
+    stack = [target_comp]
+    while stack:
+        comp = stack.pop()
+        if comp is new_source:
+            return True
+        comp_id = id(comp)
+        if comp_id in visited:
+            continue
+        visited.add(comp_id)
+        for ancestor in getattr(comp, "_used_in", ()):
+            stack.append(ancestor)
+    return False
 
 
 def _validate_collapse_transformation(value: bool, obj: AVLayer) -> None:
@@ -76,7 +101,7 @@ class AVLayer(Layer):
     See: https://ae-scripting.docsforadobe.dev/layer/avlayer/
     """
 
-    adjustment_layer: bool = ChunkField[bool]("_ldta", "adjustment_layer")  # type: ignore[assignment]
+    adjustment_layer = ChunkField[bool]("_ldta", "adjustment_layer")
     """When `True`, the layer is an adjustment layer. Read / Write."""
 
     audio_enabled = ChunkField[bool]("_ldta", "audio_enabled")
@@ -97,7 +122,7 @@ class AVLayer(Layer):
     """`True` if the layer's effects are active, as indicated by the
     <f> icon next to it in the user interface. Read / Write."""
 
-    environment_layer: bool = ChunkField[bool](  # type: ignore[assignment]
+    environment_layer = ChunkField[bool](
         "_ldta", "environment_layer", post_set="_on_environment_layer_set"
     )
     """`True` if this is an environment layer in a Ray-traced 3D
@@ -142,11 +167,36 @@ class AVLayer(Layer):
     allowing its characters to be animated off the plane of the text
     layer. Applies only to text layers. Read / Write."""
 
-    track_matte_type = ChunkField.enum(TrackMatteType, "_ldta", "track_matte_type")
-    """Specifies the way the track matte is applied. Read / Write."""
 
     _source_id = ChunkField[int]("_ldta", "source_id")
-    """The ID of the source item for this layer. 0 for a text layer."""
+    """The ID of the source item for this layer. 0 for a text layer. Read-only."""
+
+    @property
+    def track_matte_type(self) -> TrackMatteType:
+        """Specifies the way the track matte is applied.
+
+        Setting `TrackMatteType.NO_TRACK_MATTE` removes the track matte
+        for this layer and resets the matte layer reference.
+
+        Note:
+            This functionality was updated in After Effects 23.0.
+
+        Warning:
+            This is a legacy API. Consider using [set_track_matte][] and
+            [remove_track_matte][] instead.
+
+        Read / Write.
+        """
+        return TrackMatteType.from_binary(self._ldta.track_matte_type)
+
+    @track_matte_type.setter
+    def track_matte_type(self, value: TrackMatteType) -> None:
+        old_matte = self.track_matte_layer
+        self._ldta.track_matte_type = value.to_binary()
+        if value == TrackMatteType.NO_TRACK_MATTE and self._ldta.matte_layer_id is not None:
+            self._ldta.matte_layer_id = 0
+            if old_matte is not None:
+                self._re_enable_matte(old_matte)
 
     def _on_environment_layer_set(self) -> None:
         if self._ldta.environment_layer:
@@ -179,8 +229,7 @@ class AVLayer(Layer):
             return False
         if self.time_remap_enabled:
             return False
-        source_duration = getattr(source, "duration", 0)
-        if source_duration <= 0:
+        if source.duration <= 0:
             return False
         if self.stretch < 0:
             return False
@@ -226,23 +275,25 @@ class AVLayer(Layer):
         return self.frame_blending_type != FrameBlendingType.NO_FRAME_BLEND
 
     @property
-    def source(self) -> Item | None:
+    def source(self) -> AVItem | None:
         """The source item for this layer. `None` for a text layer. Read-only."""
+        from ..items.av_item import AVItem
+
         try:
-            return self._source_cache
+            return self._source
         except AttributeError:
-            if self._source_id == 0:
-                self._source_cache: Item | None = None
-                return None
-            result = self.containing_comp._project.items.get(self._source_id)
-            if result is not None:
-                self._source_cache = result
-            return result
+        if self._source_id == 0:
+            self._source: AVItem | None = None
+            return None
+        result = self.containing_comp._project.items.get(self._source_id)
+        if result is not None:
+            self._source = cast(AVItem, result)
+            return self._source
+        return None
 
     @source.setter
-    def source(self, value: Item) -> None:
-        self._source_id = value.id if value is not None else 0
-        self._source_cache = value
+    def source(self, value: AVItem) -> None:
+        self.replace_source(value)
 
     @property
     def has_video(self) -> bool:
@@ -253,7 +304,7 @@ class AVLayer(Layer):
         source = self.source
         if source is None:
             return True
-        return bool(getattr(source, "has_video", True))
+        return bool(source.has_video)
 
     @property
     def has_audio(self) -> bool:
@@ -261,7 +312,7 @@ class AVLayer(Layer):
         source = self.source
         if source is None:
             return False
-        return bool(getattr(source, "has_audio", False))
+        return bool(source.has_audio)
 
     @property
     def audio_active(self) -> bool:
@@ -298,9 +349,8 @@ class AVLayer(Layer):
             return False
 
         any_solo = any(
-            layer.solo
-            for layer in self.containing_comp.layers
-            if isinstance(layer, AVLayer) and layer.has_audio
+            getattr(layer, "has_audio", False)
+            for layer in self.containing_comp.solo_layers
         )
         if any_solo and not self.solo:
             return False
@@ -341,10 +391,9 @@ class AVLayer(Layer):
         non-zero duration (i.e. it is not a still image or text layer).
         Read-only.
         """
-        source = self.source
-        if source is None:
+        if self.source is None:
             return False
-        duration = getattr(source, "duration", 0)
+        duration = getattr(self.source, "duration", 0)
         return duration > 0
 
     @property
@@ -377,9 +426,8 @@ class AVLayer(Layer):
         to the containing composition's width (matches ExtendScript behavior
         for source-less layers like text and shape layers). Read-only.
         """
-        source = self.source
-        if source is not None:
-            return getattr(source, "width", 0)
+        if self.source is not None:
+            return getattr(self.source, "width", 0)
         return self.containing_comp.width
 
     @property
@@ -390,9 +438,8 @@ class AVLayer(Layer):
         to the containing composition's height (matches ExtendScript behavior
         for source-less layers like text and shape layers). Read-only.
         """
-        source = self.source
-        if source is not None:
-            return getattr(source, "height", 0)
+        if self.source is not None:
+            return getattr(self.source, "height", 0)
         return self.containing_comp.height
 
     @property
@@ -407,8 +454,8 @@ class AVLayer(Layer):
     def is_track_matte(self) -> bool:
         """`True` if this layer is being used as a track matte. Read-only."""
         return any(
-            isinstance(layer, AVLayer) and layer._matte_layer_id == self.id
-            for layer in self.containing_comp.layers
+            layer._matte_layer_id == self.id
+            for layer in self.containing_comp.av_layers
         )
 
     @property
@@ -425,9 +472,8 @@ class AVLayer(Layer):
     @property
     def auto_name(self) -> str:
         """Fall back to source name, then empty string."""
-        source = self.source
-        if source is not None:
-            return source.name
+        if self.source is not None:
+            return self.source.name
         return self._auto_name or ""
 
     @property
@@ -440,3 +486,171 @@ class AVLayer(Layer):
         have a source. Read-only.
         """
         return self.source is not None and not self.is_name_set
+
+    # ------------------------------------------------------------------
+    # Mutation methods
+    # ------------------------------------------------------------------
+
+    def _re_enable_matte(self, matte: AVLayer) -> None:
+        """Re-enable `matte` if no other layer in the comp uses it."""
+        for layer in self.containing_comp.av_layers:
+            if (
+                layer is not self
+                and layer._matte_layer_id == matte.id
+            ):
+                return
+        matte.enabled = True
+
+    def set_track_matte(
+        self,
+        track_matte_layer: AVLayer | None,
+        track_matte_type: TrackMatteType,
+    ) -> None:
+        """Sets the track matte layer and type for this layer.
+        Passing in `None` to `track_matte_layer` parameter removes
+        the track matte. See [remove_track_matte] for another way
+        of removing track matte.
+
+        Note:
+            Requires AE 23.0+ file format.
+
+        Args:
+            track_matte_layer: The layer to use as a track matte,
+                or `None` to remove the track matte.
+            track_matte_type: The [TrackMatteType][] to apply.
+                Passing `NO_TRACK_MATTE` with a non-`None` layer
+                is a no-op.
+
+        Raises:
+            AttributeError: If the file predates AE 23.0.
+            ValueError: If `track_matte_layer` belongs to a
+                different composition.
+        """
+        if (
+            track_matte_layer is not None
+            and track_matte_type == TrackMatteType.NO_TRACK_MATTE
+        ):
+            return
+
+        if self._ldta.matte_layer_id is None:
+            raise AttributeError(
+                "set_track_matte() requires AE 23.0+ file format."
+            )
+
+        if (
+            track_matte_layer is not None
+            and track_matte_layer.containing_comp is not self.containing_comp
+        ):
+            raise ValueError(
+                "track_matte_layer must belong to the same composition."
+            )
+
+        # Re-enable old matte if it is being replaced
+        old_matte = self.track_matte_layer
+        if old_matte is not None and old_matte is not track_matte_layer:
+            self._re_enable_matte(old_matte)
+
+        self._ldta.track_matte_type = track_matte_type.to_binary()
+
+        if track_matte_layer is not None:
+            self._ldta.matte_layer_id = track_matte_layer.id
+            track_matte_layer.enabled = False
+        else:
+            self._ldta.matte_layer_id = 0
+
+    def remove_track_matte(self) -> None:
+        """Remove the track matte layer reference.
+
+        The [track_matte_type][] value is preserved. To also reset
+        it, assign `TrackMatteType.NO_TRACK_MATTE` separately.
+
+        Note:
+            Requires AE 23.0+ file format.
+
+        Raises:
+            AttributeError: If the file predates AE 23.0.
+        """
+        if self._ldta.matte_layer_id is None:
+            raise AttributeError(
+                "remove_track_matte() requires AE 23.0+ file format."
+            )
+
+        old_matte = self.track_matte_layer
+        self._ldta.matte_layer_id = 0
+
+        if old_matte is not None:
+            self._re_enable_matte(old_matte)
+
+    def replace_source(
+        self, new_source: AVItem, fix_expressions: bool = False
+    ) -> None:
+        """Replace the source item for this layer.
+
+        Warning:
+            Contrary to ExtendScript, if this method is performed
+            on a null layer, the layer's `null_layer` attribute
+            changes to `False`, making the layer visible
+            in comp viewer and renders.
+
+        Args:
+            new_source: The new source [AVItem][].
+            fix_expressions: Update expressions that reference the
+                old source name. Not yet implemented.
+
+        Raises:
+            NotImplementedError: If `fix_expressions` is `True`.
+            ValueError: If the layer has no source (e.g. shape or
+                text layers), if `new_source` is not in the project,
+                if `new_source` would create a composition cycle, or
+                if the layer is a 3D model layer.
+        """
+        if fix_expressions:
+            raise NotImplementedError(
+                "fix_expressions is not yet supported."
+            )
+
+        if self.source is None:
+            raise ValueError("layer does not have a source")
+
+        # 3D model layers cannot have their source
+        # replaced - AE silently ignores the call but we raise.
+        if self._ldta.layer_type == 5:
+            raise ValueError(
+                "replace_source is not supported on 3D model layers"
+            )
+
+        comp = self.containing_comp
+        project = comp._project
+        if new_source.id not in project.items:
+            raise ValueError(
+                f"Item {new_source.name!r} (id={new_source.id}) "
+                "is not in the project."
+            )
+
+        if _would_create_cycle(comp, new_source):
+            raise ValueError(
+                f"Item {new_source.name!r} (id={new_source.id}) "
+                "can't be used as a source because it would create "
+                "a composition cycle."
+            )
+
+        old_source = self.source
+
+        # Update _used_in on old source
+        if old_source is not None and hasattr(old_source, "_used_in"):
+            for layer in comp.av_layers:
+                if (
+                    layer is not self
+                    and layer._source_id == old_source.id
+                ):
+                    break
+            else:
+                old_source._used_in.discard(comp)
+
+        self._source_id = new_source.id
+        self._source = new_source
+
+        new_source._used_in.add(comp)
+
+        if self.null_layer:
+            self._ldta.null_layer = False

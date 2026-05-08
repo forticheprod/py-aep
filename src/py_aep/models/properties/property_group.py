@@ -85,7 +85,7 @@ def _reorder_and_fill(
         elif mn in skip:
             continue
         elif isinstance(spec, _GroupSpec):
-            group = PropertyGroup.new(
+            group = PropertyGroup._new(
                 spec.match_name,
                 spec.auto_name,
                 child_depth,
@@ -95,7 +95,7 @@ def _reorder_and_fill(
             ordered.append(group)
         else:
             v, d = (value_overrides or {}).get(mn, (_USE_VALUE, _USE_VALUE))
-            prop = Property.new(
+            prop = Property._new(
                 spec,
                 child_depth,
                 parent_property=container,
@@ -161,7 +161,7 @@ class PropertyGroup(PropertyBase):
     """List of properties in this group. Read-only."""
 
     @classmethod
-    def new(
+    def _new(
         cls,
         match_name: str,
         auto_name: str,

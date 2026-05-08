@@ -94,6 +94,7 @@ def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
         _name_utf8=None,
         _cmta=None,
         _item_list=root_folder_chunk,
+        _gide=None,
         parent_folder=None,
     )
     project.items[0] = root_folder
@@ -111,8 +112,8 @@ def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
 
 def _link_layers(project: Project) -> None:
     for composition in project.compositions:
-        for layer in composition.layers:
-            if isinstance(layer, AVLayer) and layer._source_id != 0:
+        for layer in composition.av_layers:
+            if layer._source_id != 0:
                 source = project.items.get(layer._source_id)
                 if source is not None:
                     if hasattr(source, "_used_in"):
@@ -138,8 +139,8 @@ def _fix_anchor_defaults(project: Project) -> None:
             source = layer.source
             if source is None:
                 continue
-            s_w = getattr(source, "width", 0)
-            s_h = getattr(source, "height", 0)
+            s_w = source.width
+            s_h = source.height
             if s_w == comp_w and s_h == comp_h:
                 continue  # default is already correct
             anchor = layer.transform["ADBE Anchor Point"]

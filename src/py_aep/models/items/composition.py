@@ -473,7 +473,8 @@ class CompItem(AVItem):
         _cdta: CdtaChunk,
         _cmta: CmtaChunk | None,
         _idta: IdtaChunk,
-        _item_list: ListChunk | None = None,
+        _item_list: ListChunk,
+        _gide: ListChunk | None,
         _name_utf8: Utf8Chunk,
         _prin: PrinChunk,
         project: Project,
@@ -491,6 +492,7 @@ class CompItem(AVItem):
             _name_utf8=_name_utf8,
             _cmta=_cmta,
             _item_list=_item_list,
+            _gide=_gide,
             project=project,
             parent_folder=parent_folder,
             type_name="Composition",
@@ -498,6 +500,7 @@ class CompItem(AVItem):
 
         self._layers: list[Layer] = []
         self._layers_by_id: dict[int, Layer] | None = None
+        self._type_cache: dict[str, list[Any]] | None = None
         self._layer_id_to_index: dict[int, int] = {}
         self._marker_property = marker_property
         self._eg_template_name_utf8: Utf8Chunk | None = None
@@ -506,6 +509,45 @@ class CompItem(AVItem):
     def __iter__(self) -> Iterator[Layer]:
         """Return an iterator over the composition's layers."""
         return iter(self.layers)
+
+    def _build_type_cache(self) -> dict[str, list[Any]]:
+        av: list[AVLayer] = []
+        text: list[TextLayer] = []
+        shape: list[ShapeLayer] = []
+        camera: list[CameraLayer] = []
+        light: list[LightLayer] = []
+        three_d_model: list[ThreeDModelLayer] = []
+        by_id: dict[int, Layer] = {}
+        for layer in self._layers:
+            by_id[layer.id] = layer
+            if isinstance(layer, AVLayer):
+                av.append(layer)
+                if isinstance(layer, TextLayer):
+                    text.append(layer)
+                elif isinstance(layer, ShapeLayer):
+                    shape.append(layer)
+                elif isinstance(layer, ThreeDModelLayer):
+                    three_d_model.append(layer)
+            elif isinstance(layer, CameraLayer):
+                camera.append(layer)
+            elif isinstance(layer, LightLayer):
+                light.append(layer)
+        self._layers_by_id = by_id
+        cache: dict[str, list[Any]] = {
+            "av": av,
+            "text": text,
+            "shape": shape,
+            "camera": camera,
+            "light": light,
+            "three_d_model": three_d_model,
+        }
+        self._type_cache = cache
+        return cache
+
+    def _invalidate_layer_cache(self) -> None:
+        """Reset layer caches after structural mutations."""
+        self._type_cache = None
+        self._layers_by_id = None
 
     @property
     def layers(self) -> list[Layer]:
@@ -539,8 +581,7 @@ class CompItem(AVItem):
     def motion_graphics_template_name(self, value: str) -> None:
         if self._eg_template_name_utf8 is not None:
             self._eg_template_name_utf8.value = value
-        elif self._item_list is not None:
-
+        else:
             utf8_chunk = Utf8Chunk(chunk_type="Utf8", value=value)
             cps2 = ListChunk(
                 chunk_type="LIST",
@@ -578,20 +619,28 @@ class CompItem(AVItem):
         """Get the name of a single property in the Essential Graphics
         panel.
 
+        Warning:
+            Uses 0-based indexing, unlike the ExtendScript API which is
+            1-based.
+
         Args:
-            index: The 1-based index of the EGP property.
+            index: The 0-based index of the EGP property.
         """
-        return self._eg_controllers[index - 1].name
+        return self._eg_controllers[index].name
 
     def set_motion_graphics_controller_name(self, index: int, name: str) -> None:
         """Set the name of a single property in the Essential Graphics
         panel.
 
+        Warning:
+            Uses 0-based indexing, unlike the ExtendScript API which is
+            1-based.
+
         Args:
-            index: The 1-based index of the EGP property.
+            index: The 0-based index of the EGP property.
             name: The new name for the EGP property.
         """
-        self._eg_controllers[index - 1].name = name
+        self._eg_controllers[index].name = name
 
     @property
     def renderers(self) -> list[str]:
@@ -696,7 +745,8 @@ class CompItem(AVItem):
     @property
     def av_layers(self) -> list[AVLayer]:
         """A list of all [AVLayer][] objects in this composition."""
-        return [layer for layer in self.layers if isinstance(layer, AVLayer)]
+        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        return cache["av"]
 
     @property
     def composition_layers(self) -> list[AVLayer]:
@@ -746,27 +796,32 @@ class CompItem(AVItem):
     @property
     def text_layers(self) -> list[TextLayer]:
         """A list of the text layers in this composition."""
-        return [layer for layer in self.layers if isinstance(layer, TextLayer)]
+        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        return cache["text"]
 
     @property
     def shape_layers(self) -> list[ShapeLayer]:
         """A list of the shape layers in this composition."""
-        return [layer for layer in self.layers if isinstance(layer, ShapeLayer)]
+        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        return cache["shape"]
 
     @property
     def camera_layers(self) -> list[CameraLayer]:
         """A list of the camera layers in this composition."""
-        return [layer for layer in self.layers if isinstance(layer, CameraLayer)]
+        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        return cache["camera"]
 
     @property
     def light_layers(self) -> list[LightLayer]:
         """A list of the light layers in this composition."""
-        return [layer for layer in self.layers if isinstance(layer, LightLayer)]
+        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        return cache["light"]
 
     @property
     def three_d_model_layers(self) -> list[ThreeDModelLayer]:
         """A list of the 3D model layers in this composition."""
-        return [layer for layer in self.layers if isinstance(layer, ThreeDModelLayer)]
+        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        return cache["three_d_model"]
 
     @property
     def null_layers(self) -> list[Layer]:
@@ -800,10 +855,11 @@ class CompItem(AVItem):
 
     @property
     def selected_properties(self) -> list[Layer]:
-        """All selected layers in this composition.
+        """All selected layers in this composition. Read-only.
 
         Warning:
             This is not the same as ExtendScript's `selectedProperties`,
-            which returns selected properties.
-        Read-only."""
-        return [layer for layer in self.layers if layer.selected]
+            which returns selected properties. Property selection implementation
+            is insane.
+        """
+        return self.selected_layers
