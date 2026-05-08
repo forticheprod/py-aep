@@ -282,14 +282,15 @@ class AVLayer(Layer):
         try:
             return self._source
         except AttributeError:
-        if self._source_id == 0:
-            self._source: AVItem | None = None
-            return None
-        result = self.containing_comp._project.items.get(self._source_id)
-        if result is not None:
-            self._source = cast(AVItem, result)
-            return self._source
-        return None
+            if self._source_id == 0:
+                self._source: AVItem | None = None
+                return None
+            else:
+                result = self.containing_comp._project.items.get(self._source_id)
+                if result is not None:
+                    self._source = cast(AVItem, result)
+                    return self._source
+                return None
 
     @source.setter
     def source(self, value: AVItem) -> None:
