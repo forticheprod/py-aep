@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.property_chunks import TdumChunk
+    from ...binary.scalar_chunks import S4Chunk
+    from ..items.composition import CompItem
     from ..text.text_document import TextDocument
     from .keyframe import Keyframe
     from .marker import MarkerValue
@@ -351,6 +353,8 @@ class Property(PropertyBase):
         _tdum: TdumChunk | None = None,
         _tduM: TdumChunk | None = None,
         _cdat: CdatChunk | None = None,
+        _tdpi: S4Chunk | None = None,
+        _composition: CompItem | None = None,
         parent_property: PropertyGroup | None = None,
         match_name: str,
         property_depth: int,
@@ -380,6 +384,8 @@ class Property(PropertyBase):
         self._tdum = _tdum
         self._tduM = _tduM
         self._cdat = _cdat
+        self._tdpi = _tdpi
+        self._composition = _composition
 
         self._can_vary_over_time = can_vary_over_time
 
@@ -577,6 +583,11 @@ class Property(PropertyBase):
         value. If there are keyframes, returns the keyframed value at the
         current time. Otherwise, returns the static value. Read / Write.
         """
+        if self._tdpi is not None and self._composition is not None:
+            layer_id = self._tdpi.value
+            if layer_id == 0:
+                return 0
+            return self._composition._layer_id_to_index.get(layer_id, -1) + 1
         if self._value is not None:
             return self._value
         if self.keyframes:

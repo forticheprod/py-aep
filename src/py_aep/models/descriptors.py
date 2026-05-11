@@ -84,11 +84,11 @@ def _prepare_write(
     """Shared write preparation for chunk-backed descriptors.
 
     Handles materialization guard, parse-time override cleanup,
-    None-body fallback (stores in ``__dict__``), synthetic body
+    None-body fallback (stores in `__dict__`), synthetic body
     materialization, validation, and enum validation.
 
-    Returns the chunk body ready for field writes, or ``None`` if
-    the value was stored in ``obj.__dict__`` (no backing chunk).
+    Returns the chunk body ready for field writes, or `None` if
+    the value was stored in `obj.__dict__` (no backing chunk).
     """
     if not _materialization_allowed.get():
         raise RuntimeError(
@@ -246,23 +246,23 @@ class ComputedField(Generic[T]):
 
     Reads call `compute(body)` to derive a user-facing value from raw
     chunk fields.  Writes call `reverse(value, body)` which returns a
-    ``dict`` of ``{field_name: raw_value}`` pairs written back to the
+    `dict` of `{field_name: raw_value}` pairs written back to the
     chunk body.
 
     Omit `reverse` for read-only fields.
 
     Args:
         chunk_attr: Name of the model attribute holding the chunk body
-            reference (e.g. ``"_cdta"``).
+            reference (e.g. `"_cdta"`).
         compute: Callable that receives the chunk body and returns the
             user-facing value.
-        reverse: Optional callable ``(value, body) -> dict``. If
-            ``None``, the field is read-only.
-        validate: Optional callable called with ``(value, obj)``
+        reverse: Optional callable `(value, body) -> dict`. If
+            `None`, the field is read-only.
+        validate: Optional callable called with `(value, obj)`
             before writing. Must raise on invalid input.
-        default: Returned when the chunk body is ``None``. If not
-            given, accessing the field when the body is ``None``
-            raises ``AttributeError``.
+        default: Returned when the chunk body is `None`. If not
+            given, accessing the field when the body is `None`
+            raises `AttributeError`.
     """
 
     def __init__(
@@ -339,7 +339,7 @@ class ComputedField(Generic[T]):
             chunk_attr: Name of the chunk body attribute.
             compute: Callable that receives the chunk body and returns
                 the enum value.
-            reverse: Optional callable ``(value, body) -> dict``.
+            reverse: Optional callable `(value, body) -> dict`.
         """
         enum_transform = getattr(enum_cls, "from_binary", enum_cls)
         return cls(

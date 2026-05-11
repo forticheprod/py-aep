@@ -156,7 +156,7 @@ def ascii_field(n: int, **kw: Any) -> Any:
 
 
 def bool_field(**kw: Any) -> Any:
-    """1-byte boolean field (``struct.unpack("B")``, coerced to `bool`)."""
+    """1-byte boolean field (`struct.unpack("B")`, coerced to `bool`)."""
     return fmt_field("B", coerce=bool, **kw)
 
 

@@ -185,6 +185,11 @@ def _reverse_work_area_duration_frame(value: int, body: CdtaChunk) -> dict[str, 
     }
 
 
+_LAYER_BOUNDARY_TYPES = frozenset(
+    {"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO"}
+)
+
+
 class CompItem(AVItem):
     """
     The `CompItem` object represents a composition, and allows you to
@@ -501,7 +506,7 @@ class CompItem(AVItem):
         self._layers: list[Layer] = []
         self._layers_by_id: dict[int, Layer] | None = None
         self._type_cache: dict[str, list[Any]] | None = None
-        self._layer_id_to_index: dict[int, int] = {}
+        self.__layer_id_to_index: dict[int, int] | None = None
         self._marker_property = marker_property
         self._eg_template_name_utf8: Utf8Chunk | None = None
         self._eg_controllers: list[EssentialGraphicsController] = []
@@ -548,6 +553,31 @@ class CompItem(AVItem):
         """Reset layer caches after structural mutations."""
         self._type_cache = None
         self._layers_by_id = None
+        self.__layer_id_to_index = None
+
+    def _layer_block_slice(self, layer: Layer) -> tuple[int, int]:
+        """Return `(start, end)` indices of a layer's chunk block in
+        `_item_list.chunks`.
+
+        The block runs from the layer's `LIST:Layr` to the next boundary
+        chunk (another `LIST:Layr`, a view block, or a footer chunk).
+        """
+        chunks = self._item_list.chunks
+        start = chunks.index(layer._layer_list)
+        for end in range(start + 1, len(chunks)):
+            c = chunks[end]
+            if isinstance(c, ListChunk) and c.list_type in _LAYER_BOUNDARY_TYPES:
+                return start, end
+        return start, len(chunks)
+
+    def _find_first_layer_position(self) -> int:
+        """Find the insertion point for the first layer in the chunk list."""
+        for i, chunk in enumerate(self._item_list.chunks):
+            if isinstance(chunk, ListChunk) and chunk.list_type in (
+                "DLay", "SLay", "CLay", "SecL", "CIFO",
+            ):
+                return i
+        return len(self._item_list.chunks)
 
     @property
     def layers(self) -> list[Layer]:
@@ -561,6 +591,15 @@ class CompItem(AVItem):
         if self._layers_by_id is None:
             self._layers_by_id = {layer.id: layer for layer in self._layers}
         return self._layers_by_id
+
+    @property
+    def _layer_id_to_index(self) -> dict[int, int]:
+        """Map of layer ID to 0-based index."""
+        if self.__layer_id_to_index is None:
+            self.__layer_id_to_index = {
+                layer.id: idx for idx, layer in enumerate(self._layers)
+            }
+        return self.__layer_id_to_index
 
     @property
     def marker_property(self) -> Property | None:

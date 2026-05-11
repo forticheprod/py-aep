@@ -164,6 +164,7 @@ When adding new mappings:
 
 ## Testing
 - Tests use sample `.aep` files from `samples/`; most have a matching `.json` from ExtendScript
+- **Prefer existing samples** over creating new ones. Search `samples/models/` for files that already exercise the feature under test (e.g. parenting, track mattes, multiple layers). Only add a new `.aep` when no existing sample covers the needed scenario.
 - Add test cases in `tests/test_models_*.py`
 - **Always validate** parsed output against ExtendScript ground truth using `aep-validate` after any parsing change (see [CLI Tools](#cli-tools))
 - Use `aep-compare` to investigate unknown binary fields by diffing `.aep` files that differ in a single AE setting

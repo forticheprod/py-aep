@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..binary.composition_chunks import CdtaChunk
 from ..binary.item_chunks import IdtaChunk
-from ..binary.layer_chunks import LdtaChunk
 from ..binary.misc_chunks import EwotChunk, PrinChunk
 from ..binary.scalar_chunks import CmtaChunk, U1Chunk, Utf8Chunk
 from ..binary.utils import (
@@ -87,14 +86,6 @@ def parse_composition(
 
     # Parse composition's layers
     layer_sub_chunks = filter_by_list_type(chunks=child_chunks, list_type="Layr")
-
-    # Build layer_id-to-index mapping for Layer control effect properties.
-    # ExtendScript reports 1-based layer indices; the binary stores internal
-    # layer IDs (ldta.layer_id).  Pre-scan all layer chunks so the mapping
-    # is available when parsing effect properties.
-    for idx, lc in enumerate(layer_sub_chunks, 1):
-        ldta = cast("LdtaChunk", find_by_type(chunks=lc.chunks, chunk_type="ldta"))
-        composition._layer_id_to_index[ldta.layer_id] = idx
 
     for layer_chunk in layer_sub_chunks:
         layer = parse_layer(

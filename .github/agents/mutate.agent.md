@@ -165,6 +165,33 @@ uv run pytest tests/test_models_<category>.py -x
 uv run pytest 2>&1 | Select-Object -Last 40
 ```
 
+### 8. Write Inspection Scripts
+
+After implementation, write a pair of scripts for comparison in After Effects:
+
+1. **Python script** (`scripts/_tmp_<feature>_inspect.py`): parses an existing sample `.aep`, exercises each new mutation method, saves one or more modified `.aep` files to a temp directory.
+2. **JSX script** (`scripts/jsx/_tmp_<feature>_inspect.jsx`): performs the same operations on the same sample via ExtendScript, saves corresponding `.aep` files next to a temp directory.
+
+When the jsx script is run by the user, compare the output files with aep-compare and/or py-aep to confirm that everything matches as expected.
+
+Example structure:
+```python
+# scripts/_tmp_phase4_inspect.py
+"""Inspect Phase 4: duplicate, copy_to_comp, set_parent_with_jump."""
+from pathlib import Path
+from py_aep import parse
+
+SAMPLE = Path("samples/models/layer/layer_misc.aep")
+OUT_DIR = Path("scripts/_tmp_phase4_output")
+OUT_DIR.mkdir(exist_ok=True)
+
+app = parse(SAMPLE)
+comp = ...  # find comp
+comp.layers[0].duplicate()
+app.project.save(OUT_DIR / "duplicate.aep")
+# ... more operations
+```
+
 ## Output Format
 
 When implementing a mutation method, report:
