@@ -61,16 +61,12 @@ def parse_property(
     # _resolve_value.  Only extract here for non-cdat overrides.
     value = None
 
-    # For LAYER/MASK control properties, read index from tdpi/tdli chunks.
-    # tdpi stores the binary layer_id (references ldta.layer_id); convert
-    # to a 1-based layer index using the composition's mapping.
-    # tdli stores the 1-based mask index directly.
+    # For LAYER control properties, keep the tdpi chunk reference so the
+    # layer index can be resolved lazily (it changes on layer reorder).
+    # tdli stores the 1-based mask index directly and is stable.
+    tdpi: S4Chunk | None = None
     with suppress(ChunkNotFoundError):
-        layer_id = cast("S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi")).value
-        if layer_id == 0 or composition._layer_id_to_index is None:
-            value = 0
-        else:
-            value = composition._layer_id_to_index.get(layer_id, 0)
+        tdpi = cast("S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi"))
     with suppress(ChunkNotFoundError):
         value = cast("S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli")).value
 
@@ -108,6 +104,8 @@ def parse_property(
         _tdum=tdum,
         _tduM=tduM,
         _cdat=cdat,
+        _tdpi=tdpi,
+        _composition=composition,
         match_name=match_name,
         property_depth=property_depth,
         keyframes=keyframes,

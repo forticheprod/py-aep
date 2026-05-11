@@ -2778,6 +2778,12 @@ _CANSETEXPR_3D_ONLY: frozenset[str] = frozenset({
     "ADBE Light Transmission",
 })
 
+# Match names that are expressionable only on 2D layers (not 3D).
+_CANSETEXPR_2D_ONLY: frozenset[str] = frozenset({
+    "ADBE Plane Curvature",
+    "ADBE Plane Subdivision",
+})
+
 # Transform match names that are never expressionable on camera layers.
 _CAMERA_NO_EXPRESSION: frozenset[str] = frozenset({
     "ADBE Scale",

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from py_aep.enums import PropertyControlType, PropertyValueType
 from py_aep.models.properties.overrides import (
     _CAMERA_NO_EXPRESSION,
+    _CANSETEXPR_2D_ONLY,
     _CANSETEXPR_3D_ONLY,
     _CANSETEXPR_FALSE_OVERRIDES,
     _CANSETEXPR_TRUE_OVERRIDES,
@@ -120,6 +121,10 @@ def resolve_can_set_expression(prop: Property) -> bool:
     # AV/Text/Shape/3DModel: 3D-dependent properties
     if mn in _CANSETEXPR_3D_ONLY:
         return bool(layer._ldta.three_d_layer)
+
+    # Properties expressionable only on 2D layers
+    if mn in _CANSETEXPR_2D_ONLY:
+        return layer.null_layer or not bool(layer._ldta.three_d_layer)
 
     return True
 

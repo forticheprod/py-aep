@@ -265,6 +265,14 @@ def _set_transform_defaults(layer: Layer) -> None:
         transform, _TRANSFORM_SPECS, 2, value_overrides=overrides, tail_mode="none"
     )
 
+    # For null layers where opacity was already parsed from binary,
+    # override the value to 0 (matching ExtendScript behavior).
+    if isinstance(layer, AVLayer) and layer.null_layer:
+        opacity = transform.property("ADBE Opacity")
+        if opacity is not None and opacity.value == 100.0:
+            opacity._value = 0.0
+            opacity.default_value = 0.0
+
     # --- Phase 3: context-dependent naming ----------------------------------
     # ExtendScript displays "ADBE Rotate Z" as "Rotation" on 2-D layers
     # and "Z Rotation" on 3-D layers.  Camera and Light layers are always 3-D.
@@ -275,19 +283,13 @@ def _set_transform_defaults(layer: Layer) -> None:
         # _reorder_and_fill set _auto_name="Rotation" from the spec;
         # undo it so the sentinel _name_utf8 falls through to
         # MATCH_NAME_TO_AUTO_NAME -> "Z Rotation".
-        rotate_z = next(
-            (p for p in transform.properties if p.match_name == "ADBE Rotate Z"),
-            None,
-        )
+        rotate_z = transform.property("ADBE Rotate Z")
         if rotate_z is not None:
             rotate_z._auto_name = None
     else:
         # ExtendScript always reports Scale Z = 100 for 2-D layers,
         # regardless of the binary value.
-        scale_prop = next(
-            (p for p in transform.properties if p.match_name == "ADBE Scale"),
-            None,
-        )
+        scale_prop = transform.property("ADBE Scale")
         if isinstance(scale_prop, Property):
             # For parsed properties (cdat path), _resolve_value applies
             # the override; for synthesized properties (_value path),
@@ -304,10 +306,7 @@ def _set_transform_defaults(layer: Layer) -> None:
     # Camera and Light layers show "Point of Interest" instead of
     # "Anchor Point" in the Transform group.
     if isinstance(layer, (CameraLayer, LightLayer)):
-        anchor = next(
-            (p for p in transform.properties if p.match_name == "ADBE Anchor Point"),
-            None,
-        )
+        anchor = transform.property("ADBE Anchor Point")
         if anchor is not None:
             anchor._auto_name = "Point of Interest"
 

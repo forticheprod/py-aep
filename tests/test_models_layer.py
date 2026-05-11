@@ -2351,3 +2351,275 @@ class TestReplaceSource:
         # in sub_comp to point at Main_Comp would create A > B > A.
         with pytest.raises(ValueError, match="composition cycle"):
             sub_layer.replace_source(comp)
+
+
+# ---- Layer Structural Mutations (remove / move) --------------------------
+
+class TestLayerRemove:
+    """Tests for Layer.remove()."""
+
+    def test_remove_decreases_count(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        assert len(comp.layers) == 3
+        comp.layers[2].remove()
+        assert len(comp.layers) == 2
+
+    def test_remove_cleans_parent_refs(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]  # ChildLayer, parent_id=57
+        assert child._parent_id == 57
+        comp.layers[1].remove()  # Remove ParentNull (id=57)
+        assert child._parent_id == 0
+
+    def test_remove_cleans_matte_refs(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "track_matte_yes.aep")
+        comp = app.project.compositions[0]
+        matted = comp.layers[0]  # Gray Solid 2, matte_layer_id=15
+        assert matted._ldta.matte_layer_id == 15
+        comp.layers[1].remove()  # Remove matte source (id=15)
+        assert matted._ldta.matte_layer_id == 0
+
+    def test_remove_invalidates_cache(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        last_id = comp.layers[-1].id
+        _ = comp.layers_by_id  # Build cache
+        assert last_id in comp.layers_by_id
+        comp.layers[-1].remove()
+        assert last_id not in comp.layers_by_id
+
+    def test_remove_all_layers(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "track_matte_no.aep")
+        comp = app.project.compositions[0]
+        n = len(comp.layers)
+        for _ in range(n):
+            comp.layers[0].remove()
+        assert len(comp.layers) == 0
+
+    def test_remove_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        removed_id = comp.layers[-1].id
+        comp.layers[-1].remove()
+        app.project.save(tmp_path / "out.aep")
+
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = get_comp(app2.project, "crystal")
+        assert len(comp2.layers) == 2
+        assert removed_id not in [ly.id for ly in comp2.layers]
+
+    def test_remove_parent_roundtrip(self, tmp_path: Path) -> None:
+        """Remove a parent layer, save, reparse: child is unparented."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        comp.layers[1].remove()  # Remove ParentNull (id=57)
+        app.project.save(tmp_path / "out.aep")
+
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = get_comp(app2.project, "parent")
+        child = comp2.layers[0]
+        assert child._parent_id == 0
+
+    def test_remove_parent_preserves_world_position(self) -> None:
+        """Removing parent recalculates child Position to world coords."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]  # ChildLayer
+        parent = comp.layers[1]  # ParentNull
+        assert child.parent is parent
+        assert child.transform["ADBE Position"].value == [0.0, 0.0, 0.0]
+        parent_pos = parent.transform["ADBE Position"].value
+
+        parent.remove()
+
+        # Child position should now be the parent's former position
+        pos = child.transform["ADBE Position"].value
+        assert abs(pos[0] - parent_pos[0]) < 0.01
+        assert abs(pos[1] - parent_pos[1]) < 0.01
+        assert abs(pos[2] - parent_pos[2]) < 0.01
+
+
+class TestParentSetter:
+    """Tests for Layer.parent setter with transform preservation."""
+
+    def test_unparent_preserves_world_position(self) -> None:
+        """Setting parent=None recalculates child transforms."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]  # ChildLayer
+        parent = comp.layers[1]  # ParentNull
+        assert child.parent is parent
+
+        parent_pos = parent.transform["ADBE Position"].value
+        child.parent = None
+
+        pos = child.transform["ADBE Position"].value
+        assert abs(pos[0] - parent_pos[0]) < 0.01
+        assert abs(pos[1] - parent_pos[1]) < 0.01
+        assert abs(pos[2] - parent_pos[2]) < 0.01
+
+    def test_unparent_preserves_scale(self) -> None:
+        """Scale stays [100,100,100] when parent has identity scale."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]
+        child.parent = None
+        assert child.transform["ADBE Scale"].value == [100.0, 100.0, 100.0]
+
+    def test_unparent_preserves_rotation(self) -> None:
+        """Rotation stays 0 when parent has identity rotation."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]
+        child.parent = None
+        assert abs(child.transform["ADBE Rotate Z"].value) < 0.01
+
+    def test_same_parent_noop(self) -> None:
+        """Setting same parent is a no-op."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]
+        parent = comp.layers[1]
+        child.parent = parent  # Same parent, no-op
+        assert child.transform["ADBE Position"].value == [0.0, 0.0, 0.0]
+
+    def test_reparent_to_new_parent(self) -> None:
+        """Reparenting from one parent to another preserves world pos."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]  # ChildLayer parented to ParentNull
+        parent = comp.layers[1]  # ParentNull at [50, 50, 0]
+
+        # World position of child is parent pos + child local pos
+        # = [50, 50, 0] + [0, 0, 0] = [50, 50, 0]
+
+        # Unparent first, then parent to the same layer (round-trip)
+        child.parent = None
+
+        # Re-parent back: child local should become [0,0,0] again
+        child.parent = parent
+        pos_local = child.transform["ADBE Position"].value
+        assert abs(pos_local[0]) < 0.01
+        assert abs(pos_local[1]) < 0.01
+        assert abs(pos_local[2]) < 0.01
+
+    def test_unparent_roundtrip(self, tmp_path: Path) -> None:
+        """Unparent, save, reparse: transforms survive round-trip."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]
+        parent = comp.layers[1]
+        parent_pos = parent.transform["ADBE Position"].value[:]
+
+        child.parent = None
+        app.project.save(tmp_path / "out.aep")
+
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = get_comp(app2.project, "parent")
+        child2 = comp2.layers[0]
+        assert child2._parent_id == 0
+        pos = child2.transform["ADBE Position"].value
+        assert abs(pos[0] - parent_pos[0]) < 0.01
+        assert abs(pos[1] - parent_pos[1]) < 0.01
+
+
+class TestLayerMove:
+    """Tests for Layer.move_to_beginning/end/after/before."""
+
+    def test_move_to_end(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        first = comp.layers[0]
+        first_id = first.id
+        first.move_to_end()
+        assert comp.layers[-1] is first
+        assert comp.layers[-1].id == first_id
+
+    def test_move_to_beginning(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        last = comp.layers[-1]
+        last_id = last.id
+        last.move_to_beginning()
+        assert comp.layers[0] is last
+        assert comp.layers[0].id == last_id
+
+    def test_move_after(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        ids_before = [ly.id for ly in comp.layers]
+        first = comp.layers[0]
+        target = comp.layers[2]
+        first.move_after(target)
+        # [0] moved after [2]: new order is [1, 2, 0]
+        assert comp.layers[0].id == ids_before[1]
+        assert comp.layers[1].id == ids_before[2]
+        assert comp.layers[2].id == ids_before[0]
+
+    def test_move_before(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        ids_before = [ly.id for ly in comp.layers]
+        last = comp.layers[2]
+        target = comp.layers[0]
+        last.move_before(target)
+        # [2] moved before [0]: new order is [2, 0, 1]
+        assert comp.layers[0].id == ids_before[2]
+        assert comp.layers[1].id == ids_before[0]
+        assert comp.layers[2].id == ids_before[1]
+
+    def test_move_preserves_parent(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]  # ChildLayer, parent_id=57
+        parent = comp.layers[1]  # ParentNull, id=57
+        parent.move_to_beginning()
+        assert child._parent_id == 57
+
+    def test_move_preserves_matte(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "track_matte_yes.aep")
+        comp = app.project.compositions[0]
+        matted = comp.layers[0]  # Gray Solid 2, matte_layer_id=15
+        comp.layers[1].move_to_beginning()  # Move matte source
+        assert matted._ldta.matte_layer_id == 15
+
+    def test_move_same_position(self) -> None:
+        """Moving to current position is a no-op."""
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        ids_before = [ly.id for ly in comp.layers]
+        comp.layers[1].move_before(comp.layers[1])
+        assert [ly.id for ly in comp.layers] == ids_before
+
+    def test_move_wrong_comp_raises(self) -> None:
+        app = parse_aep(VERSIONS_DIR / "ae2025" / "complete.aep")
+        comps = app.project.compositions
+        if len(comps) < 2:
+            pytest.skip("Need at least 2 comps")
+        layer_a = comps[0].layers[0]
+        layer_b = comps[1].layers[0]
+        with pytest.raises(ValueError, match="same composition"):
+            layer_a.move_after(layer_b)
+
+    def test_move_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        names_before = [ly.name for ly in comp.layers]
+        comp.layers[0].move_to_end()
+        expected = names_before[1:] + [names_before[0]]
+        assert [ly.name for ly in comp.layers] == expected
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = get_comp(app2.project, "crystal")
+        assert [ly.name for ly in comp2.layers] == expected
+
+    def test_move_updates_index(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        layer = comp.layers[0]
+        assert layer.index == 0
+        layer.move_to_end()
+        assert layer.index == 2

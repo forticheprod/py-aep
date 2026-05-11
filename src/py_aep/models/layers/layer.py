@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, cast
 from py_aep.enums import AutoOrientType, Label, LayerType
 
 from ...binary.scalar_chunks import CmtaChunk
+from ...resolvers.transform import (
+    build_world_matrix,
+    decompose_transform,
+)
 from ..descriptors import ChunkField, ComputedField
 from ..properties.property import Property
 from ..properties.property_group import PropertyGroup
@@ -480,14 +484,58 @@ class Layer(PropertyGroup):
 
     @property
     def parent(self) -> Layer | None:
-        """The parent layer for layer parenting. `None` if no parent."""
+        """The parent of this layer; can be `None`.
+
+        Offset values are calculated to counterbalance any transforms above this layer
+        in the hierarchy, so that when you set the parent there is no apparent jump in
+        the layer's transform.
+
+        For example, if the new parent has a rotation of 30 degrees, the child layer is
+        assigned a rotation of -30 degrees.
+
+        To set the parent without changing the child layer's transform values, use the
+        set_parent_with_jump method.
+
+        Read / Write."""
         if self._parent_id == 0:
             return None
         return self.containing_comp.layers_by_id.get(self._parent_id)
 
     @parent.setter
     def parent(self, value: Layer | None) -> None:
+        old_parent = self.parent
+        new_parent = value
+
+        if old_parent is new_parent:
+            return
+
+        child_world = build_world_matrix(self)
+
         self._parent_id = value.id if value is not None else 0
+
+        if new_parent is None:
+            new_local = child_world
+        else:
+            new_parent_world = build_world_matrix(new_parent)
+            new_local = new_parent_world.inverse() @ child_world
+
+        # Decompose into AE transform components, keeping anchor fixed.
+        anchor = self.transform["ADBE Anchor Point"].value
+
+        new_pos, new_scale, new_rz, new_rx, new_ry = decompose_transform(
+            new_local, anchor
+        )
+
+        transform = self.transform
+        transform["ADBE Position"].value = new_pos
+        transform["ADBE Scale"].value = new_scale
+        transform["ADBE Rotate Z"].value = new_rz
+
+        # Only update 3D rotation properties if the layer is 3D.
+        is_3d = getattr(self, "three_d_layer", False)
+        if is_3d:
+            transform["ADBE Rotate X"].value = new_rx
+            transform["ADBE Rotate Y"].value = new_ry
 
     def active_at_time(self, time: float) -> bool:
         """Return whether the layer is active at the given time.
@@ -522,7 +570,121 @@ class Layer(PropertyGroup):
             setattr(self._ldta, field, v)
 
     def _set_raw_out_point(self, value: float) -> None:
-        """Write a new out_point (comp time) to the binary chunk."""
         layer_relative = (value - self.start_time) / self._stretch_factor
+        """Write a new out_point (comp time) to the binary chunk."""
         for field, v in _reverse_out_point(layer_relative, self._ldta).items():
             setattr(self._ldta, field, v)
+
+    # ------------------------------------------------------------------
+    # Structural mutations
+    # ------------------------------------------------------------------
+
+    def remove(self) -> None:
+        """Deletes this layer from the composition.
+
+        Layers that reference this layer as a parent become unparented
+        (their transforms are recalculated to preserve world-space
+        appearance).  AVLayers that use this layer as a track matte
+        lose their matte reference.
+        """
+        comp = self.containing_comp
+        removed_id = self.id
+
+        # Unparent children - triggers transform recalculation via the
+        # parent setter so the child doesn't visually jump.
+        for lyr in comp.layers:
+            if lyr is not self and lyr._parent_id == removed_id:
+                lyr.parent = None
+
+        # Clean track matte refs on AV layers
+        for lyr in comp.av_layers:
+            if lyr is not self:
+                ldta = lyr._ldta
+                if (
+                    hasattr(ldta, "matte_layer_id")
+                    and ldta.matte_layer_id == removed_id
+                ):
+                    ldta.matte_layer_id = 0
+
+        # Remove chunk block from comp's chunk list
+        start, end = comp._layer_block_slice(self)
+        del comp._item_list.chunks[start:end]
+
+        # Remove from model list and rebuild caches
+        comp._layers.remove(self)
+        comp._invalidate_layer_cache()
+
+    def move_after(self, layer: Layer) -> None:
+        """Moves this layer to a position immediately after (below)
+        the specified layer.
+
+        Args:
+            layer: The target layer in the same composition.
+        """
+        comp = self.containing_comp
+        if layer.containing_comp is not comp:
+            raise ValueError("Target layer must be in the same composition.")
+        self_idx = comp._layers.index(self)
+        target_idx = comp._layers.index(layer)
+        # After self is removed, target shifts left by 1 if self was before it
+        effective = target_idx - (1 if self_idx < target_idx else 0)
+        self._move_to(effective + 1)
+
+    def move_before(self, layer: Layer) -> None:
+        """Moves this layer to a position immediately before (above)
+        the specified layer.
+
+        Args:
+            layer: The target layer in the same composition.
+        """
+        comp = self.containing_comp
+        if layer.containing_comp is not comp:
+            raise ValueError("Target layer must be in the same composition.")
+        self_idx = comp._layers.index(self)
+        target_idx = comp._layers.index(layer)
+        effective = target_idx - (1 if self_idx < target_idx else 0)
+        self._move_to(effective)
+
+    def move_to_beginning(self) -> None:
+        """Moves this layer to the topmost position of the composition."""
+        self._move_to(0)
+
+    def move_to_end(self) -> None:
+        """Moves this layer to the bottommost position of the composition."""
+        self._move_to(len(self.containing_comp.layers))
+
+    def _move_to(self, target_index: int) -> None:
+        """Move this layer to the given model-list index.
+
+        Uses direct chunk slice extraction and reinsertion, never
+        `remove()`, so parent and track matte connections on other
+        layers are preserved.
+        """
+        comp = self.containing_comp
+
+        # Extract and remove chunk block
+        start, end = comp._layer_block_slice(self)
+        block = comp._item_list.chunks[start:end]
+        del comp._item_list.chunks[start:end]
+
+        comp._layers.remove(self)
+
+        # Clamp target index
+        target_index = min(target_index, len(comp._layers))
+
+        # Find chunk insertion point
+        if target_index < len(comp._layers):
+            chunk_idx = comp._item_list.chunks.index(
+                comp._layers[target_index]._layer_list
+            )
+        elif comp._layers:
+            _, last_end = comp._layer_block_slice(comp._layers[-1])
+            chunk_idx = last_end
+        else:
+            chunk_idx = comp._find_first_layer_position()
+
+        # Insert block and model entry
+        comp._item_list.chunks[chunk_idx:chunk_idx] = block
+        comp._layers.insert(target_index, self)
+
+        comp._invalidate_layer_cache()
