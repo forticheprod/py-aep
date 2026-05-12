@@ -1,7 +1,10 @@
 """Chunk tree mutation helpers for the binary I/O layer."""
 from __future__ import annotations
 
+from io import BytesIO
 from typing import TYPE_CHECKING
+
+from .chunk import read_chunks, write_chunk
 
 if TYPE_CHECKING:
     from typing import Callable
@@ -59,3 +62,15 @@ def _unflag_markers(
         and parent_chunks[idx + 1].chunk_type == "tdmn"
     ):
         parent_chunks[idx + 1].synthetic = False
+
+
+def clone_chunk_tree(chunk: Chunk) -> Chunk:
+    """Deep-copy a chunk tree via serialize/deserialize round-trip.
+
+    Synthetic chunks are excluded during serialization, so the clone
+    contains only real (non-synthetic) chunks.
+    """
+    buf = BytesIO()
+    size = write_chunk(buf, chunk)
+    buf.seek(0)
+    return read_chunks(buf, size)[0]

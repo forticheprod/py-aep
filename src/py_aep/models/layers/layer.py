@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import AutoOrientType, Label, LayerType
 
+from ...binary.mutations import clone_chunk_tree
 from ...binary.scalar_chunks import CmtaChunk
+from ...binary.utils import find_by_type
 from ...resolvers.transform import (
     build_world_matrix,
     decompose_transform,
 )
 from ..descriptors import ChunkField, ComputedField
 from ..properties.property import Property
+from ..properties.property_base import PropertyBase
 from ..properties.property_group import PropertyGroup
 from ..reverses import reverse_ratio
 from ..transforms import compute_ratio
@@ -26,6 +30,30 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_TRAILING_NUMBER_RE = re.compile(r"(\d+)$")
+
+
+def _increment_name(name: str, existing_names: set[str]) -> str:
+    """Find the first available incremented name.
+
+    If the name ends with a number N, try N+1, N+2, ... until a name
+    not in `existing_names` is found. Otherwise try `name 2`, `name 3`,
+    etc.
+    """
+    match = _TRAILING_NUMBER_RE.search(name)
+    if match:
+        base = name[:match.start()]
+        num = int(match.group(1)) + 1
+        num = max(2, num)  # 1 is skipped
+    else:
+        base = f"{name} "
+        num = 2
+    candidate = f"{base}{num}"
+    while candidate in existing_names:
+        num += 1
+        candidate = f"{base}{num}"
+    return candidate
 
 _reverse_start_time = reverse_ratio("start_time")
 _reverse_in_point = reverse_ratio("in_point")
@@ -228,6 +256,11 @@ class Layer(PropertyGroup):
             f"match_name={self.match_name!r}, "
             f"name={self.name!r})"
         )
+
+    @PropertyBase.name.setter  # type: ignore[attr-defined]
+    def name(self, value: str) -> None:
+        PropertyBase.name.fset(self, value)  # type: ignore[attr-defined]
+        self._ldta.layer_name = value
 
     @property  # type: ignore[override]
     def selected(self) -> bool:
@@ -527,15 +560,39 @@ class Layer(PropertyGroup):
         )
 
         transform = self.transform
-        transform["ADBE Position"].value = new_pos
-        transform["ADBE Scale"].value = new_scale
-        transform["ADBE Rotate Z"].value = new_rz
+        # Only write values that actually changed to avoid materializing
+        # synthetic properties unnecessarily.
+        if transform["ADBE Position"].value != new_pos:
+            transform["ADBE Position"].value = new_pos
+        if transform["ADBE Scale"].value != new_scale:
+            transform["ADBE Scale"].value = new_scale
+        if transform["ADBE Rotate Z"].value != new_rz:
+            transform["ADBE Rotate Z"].value = new_rz
 
         # Only update 3D rotation properties if the layer is 3D.
         is_3d = getattr(self, "three_d_layer", False)
         if is_3d:
-            transform["ADBE Rotate X"].value = new_rx
-            transform["ADBE Rotate Y"].value = new_ry
+            if transform["ADBE Rotate X"].value != new_rx:
+                transform["ADBE Rotate X"].value = new_rx
+            if transform["ADBE Rotate Y"].value != new_ry:
+                transform["ADBE Rotate Y"].value = new_ry
+
+    def set_parent_with_jump(self, new_parent: Layer | None) -> None:
+        """Sets the parent of this layer to the specified layer, without changing the
+        transform values of the child layer.
+
+        There may be an apparent jump in the rotation, translation, or scale of the
+        child layer, as this layer's transform values are combined with those of its
+        ancestors.
+
+        If you do not want the child layer to jump, set the parent attribute directly.
+        In this case, an offset is calculated and set in the child layer's transform
+        fields, to prevent the jump from occurring.
+
+        Args:
+            new_parent: The new parent layer, or `None` to unparent.
+        """
+        self._parent_id = new_parent.id if new_parent is not None else 0
 
     def active_at_time(self, time: float) -> bool:
         """Return whether the layer is active at the given time.
@@ -592,14 +649,14 @@ class Layer(PropertyGroup):
 
         # Unparent children - triggers transform recalculation via the
         # parent setter so the child doesn't visually jump.
-        for lyr in comp.layers:
-            if lyr is not self and lyr._parent_id == removed_id:
-                lyr.parent = None
+        for layer in comp.layers:
+            if layer is not self and layer._parent_id == removed_id:
+                layer.parent = None
 
         # Clean track matte refs on AV layers
-        for lyr in comp.av_layers:
-            if lyr is not self:
-                ldta = lyr._ldta
+        for layer in comp.av_layers:
+            if layer is not self:
+                ldta = layer._ldta
                 if (
                     hasattr(ldta, "matte_layer_id")
                     and ldta.matte_layer_id == removed_id
@@ -613,6 +670,81 @@ class Layer(PropertyGroup):
         # Remove from model list and rebuild caches
         comp._layers.remove(self)
         comp._invalidate_layer_cache()
+
+    def duplicate(self) -> Layer:
+        """Create a duplicate of this layer in the same composition.
+
+        The duplicate is placed directly above (before) the original
+        layer.
+
+        Returns:
+            The newly created [Layer][].
+        """
+        return self.copy_to_comp(self.containing_comp)
+
+    def copy_to_comp(self, into_comp: CompItem) -> Layer:
+        """Copy this layer into another composition.
+
+        If the target is the same as this layer's [containing_comp][], the
+        copy behaves like [duplicate][]: it is placed directly above the
+        original and preserves parent and track matte references.
+
+        If the target is a different composition, the copy is placed at the
+        top of the target layer stack and parent and track matte references
+        are cleared.
+
+        Args:
+            into_comp: The target [CompItem][].
+        Returns:
+            The newly created [Layer][] in the target composition.
+        """
+        # Circular: parsers.layer -> models.layers.av_layer -> layer
+        from ...parsers.layer import parse_layer  # noqa: PLC0415
+
+        same_comp = into_comp is self.containing_comp
+
+        # Clone the full layer block (LIST:Layr + trailing view chunks)
+        src_start, src_end = self.containing_comp._layer_block_slice(self)
+        src_block = self.containing_comp._item_list.chunks[src_start:src_end]
+        cloned_block = [clone_chunk_tree(c) for c in src_block]
+        cloned_list = cast("ListChunk", cloned_block[0])
+
+        # Patch layer ID
+        cloned_ldta = cast("LdtaChunk", find_by_type(
+            chunks=cloned_list.chunks, chunk_type="ldta",
+        ))
+        cloned_ldta.layer_id = max((lyr.id for lyr in into_comp.layers), default=0) + 1
+
+        # Determine chunk insertion point
+        if same_comp:
+            model_idx = into_comp._layers.index(self)
+            chunk_idx = src_start
+        else:
+            # Clear parent/matte when copying across compositions
+            cloned_ldta.parent_id = 0
+            cloned_ldta.matte_layer_id = 0
+            model_idx = 0
+            if into_comp.layers:
+                chunk_idx = into_comp._item_list.chunks.index(
+                    into_comp.layers[0]._layer_list
+                )
+            else:
+                chunk_idx = into_comp._find_first_layer_position()
+        into_comp._item_list.chunks[chunk_idx:chunk_idx] = cloned_block
+
+        # Re-parse cloned chunks into a model instance
+        effect_defs = into_comp._project._effect_param_defs
+        new_layer = parse_layer(cloned_list, into_comp, effect_defs)
+
+        into_comp._layers.insert(model_idx, new_layer)
+
+        # Increment user-defined name
+        if new_layer.is_name_set:
+            existing = {lyr.name for lyr in into_comp.layers}
+            new_layer.name = _increment_name(new_layer.name, existing)
+
+        into_comp._invalidate_layer_cache()
+        return new_layer
 
     def move_after(self, layer: Layer) -> None:
         """Moves this layer to a position immediately after (below)

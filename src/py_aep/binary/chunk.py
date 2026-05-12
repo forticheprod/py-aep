@@ -219,13 +219,13 @@ class ListChunk(Chunk):
         size: int,
         *,
         chunk_type: str = "LIST",
-        ctx: _ReadContext | None = None,
+        ctx: ReadContext | None = None,
         **kwargs: Any,
     ) -> ListChunk:
         if size < 4:
             raise OSError(f"{chunk_type} body too small: {size}")
         if ctx is None:
-            ctx = _ReadContext()
+            ctx = EMPTY_CTX
         list_type = read_fmt("4s", fp)[0].decode("ASCII")
         if list_type == "btdk":
             data = read_bytes(fp, size - 4)
@@ -235,7 +235,7 @@ class ListChunk(Chunk):
                 chunk_type=chunk_type,
             )
         parent_result = kwargs.get("parent_result")
-        child_ctx = _ReadContext(
+        child_ctx = ReadContext(
             parent_list_type=list_type,
             grandparent_list_type=ctx.parent_list_type,
             parent_siblings=parent_result,
@@ -284,11 +284,11 @@ class ContainerChunk(Chunk):
         size: int,
         *,
         chunk_type: str = "",
-        ctx: _ReadContext | None = None,
+        ctx: ReadContext | None = None,
         **kwargs: Any,
     ) -> ContainerChunk:
         if ctx is None:
-            ctx = _ReadContext()
+            ctx = EMPTY_CTX
         # Pass-through context (no list_type level change)
         chunks = read_chunks(fp, size, ctx=ctx)
         return cls(chunk_type=chunk_type, chunks=chunks)
@@ -313,13 +313,16 @@ class ContainerChunk(Chunk):
 # ---------------------------------------------------------------------------
 
 
-@define
-class _ReadContext:
+@define(frozen=True)
+class ReadContext:
     """Ancestor context passed through recursive chunk reading."""
 
     parent_list_type: str = ""
     grandparent_list_type: str = ""
     parent_siblings: list[Chunk] | None = field(default=None, repr=False)
+
+
+EMPTY_CTX = ReadContext()
 
 
 # ---------------------------------------------------------------------------
@@ -329,14 +332,14 @@ class _ReadContext:
 
 def _resolve_cdat_context(
     siblings: list[Chunk],
-    ctx: _ReadContext,
+    ctx: ReadContext,
 ) -> dict[str, bool]:
     return {"is_le": ctx.grandparent_list_type == "otst"}
 
 
 def _resolve_ldat_context(
     siblings: list[Chunk],
-    ctx: _ReadContext,
+    ctx: ReadContext,
 ) -> dict[str, int | bool]:
     if not siblings:
         return {}
@@ -365,7 +368,7 @@ def _resolve_ldat_context(
 
 def _resolve_tdum_context(
     siblings: list[Chunk],
-    ctx: _ReadContext,
+    ctx: ReadContext,
 ) -> dict[str, bool]:
     if len(siblings) > 2:
         tdb4: Tdb4Chunk = siblings[2]  # type: ignore[assignment]
@@ -387,7 +390,7 @@ _CONTEXT_RESOLVERS: dict[str, Callable[..., dict[str, Any]]] = {
 def _resolve_context(
     chunk_type: str,
     siblings: list[Chunk],
-    ctx: _ReadContext,
+    ctx: ReadContext,
 ) -> dict[str, Any]:
     """Compute kwargs for parameterized chunk types."""
     resolver = _CONTEXT_RESOLVERS.get(chunk_type)
@@ -447,7 +450,7 @@ def read_chunks(
     fp: IO[bytes],
     size: int,
     *,
-    ctx: _ReadContext,
+    ctx: ReadContext = EMPTY_CTX,
 ) -> list[Chunk]:
     """Read child chunks until `size` bytes are consumed."""
     end = fp.tell() + size
@@ -485,8 +488,7 @@ def read_aep(fp: IO[bytes]) -> tuple[ListChunk, str]:
     if chunk_type != "RIFX":
         raise ValueError(f"Expected RIFX, got {chunk_type!r}")
     (len_body,) = read_fmt("I", fp)
-    root_ctx = _ReadContext()
-    rifx = ListChunk.read(fp, len_body, chunk_type="RIFX", ctx=root_ctx)
+    rifx = ListChunk.read(fp, len_body, chunk_type="RIFX")
     xmp = fp.read().decode("UTF-8")
     return rifx, xmp
 
