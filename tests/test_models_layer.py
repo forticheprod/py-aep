@@ -2002,7 +2002,7 @@ class TestTransformNaming:
             parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
             "adjustmentLayer_true",
         )
-        rotate_z = next(p for p in layer.transform if p.match_name == "ADBE Rotate Z")
+        rotate_z = layer.transform["ADBE Rotate Z"]
         assert rotate_z.name == "Rotation"
 
     def test_3d_rotate_z_named_z_rotation(self) -> None:
@@ -2011,19 +2011,19 @@ class TestTransformNaming:
             parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
             "threeDLayer_true",
         )
-        rotate_z = next(p for p in layer.transform if p.match_name == "ADBE Rotate Z")
+        rotate_z = layer.transform["ADBE Rotate Z"]
         assert rotate_z.name == "Z Rotation"
 
     def test_camera_rotate_z_named_z_rotation(self) -> None:
         """Camera layers show Rotate Z as 'Z Rotation'."""
         layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
-        rotate_z = next(p for p in layer.transform if p.match_name == "ADBE Rotate Z")
+        rotate_z = layer.transform["ADBE Rotate Z"]
         assert rotate_z.name == "Z Rotation"
 
     def test_camera_anchor_named_point_of_interest(self) -> None:
         """Camera layers show Anchor Point as 'Point of Interest'."""
         layer = get_layer(parse_project(SAMPLES_DIR / "type.aep"), "type_camera")
-        anchor = next(p for p in layer.transform if p.match_name == "ADBE Anchor Point")
+        anchor = layer.transform["ADBE Anchor Point"]
         assert anchor.name == "Point of Interest"
 
     def test_light_anchor_named_point_of_interest(self) -> None:
@@ -2031,7 +2031,7 @@ class TestTransformNaming:
         layer = get_layer(
             parse_project(SAMPLES_DIR / "lightType.aep"), "lightType_PARALLEL"
         )
-        anchor = next(p for p in layer.transform if p.match_name == "ADBE Anchor Point")
+        anchor = layer.transform["ADBE Anchor Point"]
         assert anchor.name == "Point of Interest"
 
     def test_2d_anchor_named_anchor_point(self) -> None:
@@ -2040,7 +2040,7 @@ class TestTransformNaming:
             parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
             "adjustmentLayer_true",
         )
-        anchor = next(p for p in layer.transform if p.match_name == "ADBE Anchor Point")
+        anchor = layer.transform["ADBE Anchor Point"]
         assert anchor.name == "Anchor Point"
 
     def test_non_canonical_tail_preserved(self) -> None:
@@ -2623,3 +2623,266 @@ class TestLayerMove:
         assert layer.index == 0
         layer.move_to_end()
         assert layer.index == 2
+
+
+class TestIncrementName:
+    """Tests for _increment_name helper."""
+
+    def test_trailing_number(self) -> None:
+        from py_aep.models.layers.layer import _increment_name
+
+        assert _increment_name("Light 1", set()) == "Light 2"
+        assert _increment_name("Layer 99", set()) == "Layer 100"
+        assert _increment_name("abc3", set()) == "abc4"
+
+    def test_no_trailing_number(self) -> None:
+        from py_aep.models.layers.layer import _increment_name
+
+        assert _increment_name("MyLayer", set()) == "MyLayer 2"
+        assert _increment_name("Solid", set()) == "Solid 2"
+
+    def test_only_number(self) -> None:
+        from py_aep.models.layers.layer import _increment_name
+
+        assert _increment_name("42", set()) == "43"
+
+    def test_skips_existing_names(self) -> None:
+        from py_aep.models.layers.layer import _increment_name
+
+        existing = {"layer1", "layer2", "layer3"}
+        assert _increment_name("layer1", existing) == "layer4"
+
+    def test_skips_existing_no_trailing_number(self) -> None:
+        from py_aep.models.layers.layer import _increment_name
+
+        existing = {"Solid", "Solid 2", "Solid 3"}
+        assert _increment_name("Solid", existing) == "Solid 4"
+
+
+class TestSetParentWithJump:
+    """Tests for Layer.set_parent_with_jump()."""
+
+    def test_set_parent(self) -> None:
+        """Setting parent via set_parent_with_jump writes the ID."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]  # ChildLayer
+
+        # Unparent without transform compensation
+        child.set_parent_with_jump(None)
+        assert child._parent_id == 0
+        assert child.parent is None
+        # Local position should NOT change (no compensation)
+        assert child.transform["ADBE Position"].value == [0.0, 0.0, 0.0]
+
+    def test_set_parent_assigns_id(self) -> None:
+        """set_parent_with_jump sets the parent ID directly."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]
+        parent = comp.layers[1]
+        child.set_parent_with_jump(None)
+        child.set_parent_with_jump(parent)
+        assert child._parent_id == parent.id
+        assert child.parent is parent
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        """set_parent_with_jump survives save/reparse."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]
+        child.set_parent_with_jump(None)
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = get_comp(app2.project, "parent")
+        assert comp2.layers[0]._parent_id == 0
+
+
+class TestLayerDuplicate:
+    """Tests for Layer.duplicate()."""
+
+    def test_duplicate_increases_count(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        assert len(comp.layers) == 3
+        comp.layers[0].duplicate()
+        assert len(comp.layers) == 4
+
+    def test_duplicate_returns_new_layer(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        original = comp.layers[0]
+        dup = original.duplicate()
+        assert dup is not original
+        assert dup.id != original.id
+
+    def test_duplicate_placed_before_original(self) -> None:
+        """Duplicate appears above (before) the original."""
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        original = comp.layers[1]
+        original_idx = original.index
+        dup = original.duplicate()
+        assert dup.index == original_idx
+        assert original.index == original_idx + 1
+
+    def test_duplicate_preserves_name_from_source(self) -> None:
+        """Source-derived names are not modified on duplicate."""
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        original = comp.layers[1]  # mov_23_976.mov - name from source
+        assert not original.is_name_set
+        dup = original.duplicate()
+        assert dup.name == original.name
+
+    def test_duplicate_increments_user_name(self) -> None:
+        """User-defined names are incremented on duplicate."""
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        original = comp.layers[0]  # Environment Light 1 - user-defined
+        assert original.is_name_set
+        dup = original.duplicate()
+        assert dup.name == "Environment Light 2"
+
+    def test_duplicate_increments_name_no_number(self) -> None:
+        """User-defined name without trailing number gets ' 2' appended."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        parent_null = comp.layers[1]  # ParentNull - user-defined
+        assert parent_null.is_name_set
+        dup = parent_null.duplicate()
+        assert dup.name == "ParentNull 2"
+
+    def test_duplicate_preserves_parent(self) -> None:
+        """Duplicated layer keeps the same parent reference."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        comp = get_comp(app.project, "parent")
+        child = comp.layers[0]  # ChildLayer, has parent
+        assert child._parent_id != 0
+        dup = child.duplicate()
+        assert dup._parent_id == child._parent_id
+
+    def test_duplicate_preserves_matte(self) -> None:
+        """Duplicated layer keeps the track matte reference."""
+        app = parse_aep(SAMPLES_DIR / "track_matte_yes.aep")
+        comp = app.project.compositions[0]
+        matted = comp.layers[0]  # has matte_layer_id
+        assert matted._ldta.matte_layer_id != 0
+        dup = matted.duplicate()
+        assert dup._ldta.matte_layer_id == matted._ldta.matte_layer_id
+
+    def test_duplicate_unique_id(self) -> None:
+        """Each duplicate gets a unique layer ID."""
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        ids_before = {ly.id for ly in comp.layers}
+        dup1 = comp.layers[0].duplicate()
+        dup2 = comp.layers[0].duplicate()
+        all_ids = {ly.id for ly in comp.layers}
+        assert dup1.id not in ids_before
+        assert dup2.id not in ids_before
+        assert dup1.id != dup2.id
+        assert len(all_ids) == len(comp.layers)
+
+    def test_duplicate_invalidates_cache(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        _ = comp.layers_by_id  # Build cache
+        dup = comp.layers[0].duplicate()
+        assert dup.id in comp.layers_by_id
+
+    def test_duplicate_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        dup = comp.layers[0].duplicate()
+        dup_name = dup.name
+        dup_id = dup.id
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = get_comp(app2.project, "crystal")
+        assert len(comp2.layers) == 4
+        assert comp2.layers[0].name == dup_name
+        assert comp2.layers[0].id == dup_id
+
+
+class TestCopyToComp:
+    """Tests for Layer.copy_to_comp()."""
+
+    def test_copy_increases_count(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        src_comp = get_comp(app.project, "parent")
+        dst_comp = get_comp(app.project, "comment")
+        assert len(dst_comp.layers) == 1
+        src_comp.layers[0].copy_to_comp(dst_comp)
+        assert len(dst_comp.layers) == 2
+
+    def test_copy_does_not_remove_from_source(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        src_comp = get_comp(app.project, "parent")
+        dst_comp = get_comp(app.project, "comment")
+        n_before = len(src_comp.layers)
+        src_comp.layers[0].copy_to_comp(dst_comp)
+        assert len(src_comp.layers) == n_before
+
+    def test_copy_placed_at_top(self) -> None:
+        """Copied layer is at the top (index 0) of target comp."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        src_comp = get_comp(app.project, "parent")
+        dst_comp = get_comp(app.project, "comment")
+        original_name = src_comp.layers[0].name
+        src_comp.layers[0].copy_to_comp(dst_comp)
+        assert dst_comp.layers[0].name == original_name
+
+    def test_copy_clears_parent(self) -> None:
+        """Copied layer has no parent in the target comp."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        src_comp = get_comp(app.project, "parent")
+        dst_comp = get_comp(app.project, "comment")
+        child = src_comp.layers[0]  # ChildLayer, has parent
+        assert child._parent_id != 0
+        child.copy_to_comp(dst_comp)
+        assert dst_comp.layers[0]._parent_id == 0
+
+    def test_same_comp_duplicates(self) -> None:
+        """Copying to the same comp delegates to duplicate()."""
+        app = parse_aep(SAMPLES_DIR / "light_source_default.aep")
+        comp = get_comp(app.project, "crystal")
+        assert len(comp.layers) == 3
+        result = comp.layers[0].copy_to_comp(comp)
+        assert len(comp.layers) == 4
+        assert result is comp.layers[0]
+
+    def test_copy_returns_layer(self) -> None:
+        """copy_to_comp returns the newly created layer."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        src_comp = get_comp(app.project, "parent")
+        dst_comp = get_comp(app.project, "comment")
+        result = src_comp.layers[0].copy_to_comp(dst_comp)
+        assert result is dst_comp.layers[0]
+
+    def test_copy_unique_id(self) -> None:
+        """Copied layer gets an ID unique within the target comp."""
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        src_comp = get_comp(app.project, "parent")
+        dst_comp = get_comp(app.project, "comment")
+        existing_ids = {ly.id for ly in dst_comp.layers}
+        src_comp.layers[0].copy_to_comp(dst_comp)
+        new_id = dst_comp.layers[0].id
+        assert new_id not in existing_ids
+
+    def test_copy_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "layer_misc.aep")
+        src_comp = get_comp(app.project, "parent")
+        dst_comp = get_comp(app.project, "comment")
+        src_comp.layers[0].copy_to_comp(dst_comp)
+        copied_name = dst_comp.layers[0].name
+        copied_id = dst_comp.layers[0].id
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        dst2 = get_comp(app2.project, "comment")
+        assert len(dst2.layers) == 2
+        assert dst2.layers[0].name == copied_name
+        assert dst2.layers[0].id == copied_id

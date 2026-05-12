@@ -162,7 +162,7 @@ class PropertyBase:
         self._ensure_materialized()
         self._name = value
         assert self._name_utf8 is not None
-        self._name_utf8.value = value + "\0"
+        self._name_utf8.value = value
 
     @property
     def is_name_set(self) -> bool:

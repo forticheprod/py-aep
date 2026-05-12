@@ -438,10 +438,12 @@ class Project:
 
     def layer_by_id(self, layer_id: int) -> Layer:
         """Get a layer by its unique ID."""
-        layers_by_uid = {
-            layer.id: layer for comp in self.compositions for layer in comp.layers
-        }
-        return layers_by_uid[layer_id]
+        for comp in self.compositions:
+            try:
+                return comp.layers_by_id[layer_id]
+            except KeyError:
+                continue
+        raise KeyError(f"Layer with ID {layer_id} not found")
 
     @property
     def compositions(self) -> list[CompItem]:

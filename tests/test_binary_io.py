@@ -18,7 +18,7 @@ from py_aep.binary.bin_utils import (
 from py_aep.binary.chunk import (
     Chunk,
     ListChunk,
-    _ReadContext,
+    ReadContext,
     _resolve_cdat_context,
     _resolve_ldat_context,
     _resolve_tdum_context,
@@ -163,7 +163,7 @@ class TestListChunk:
         buf2 = BytesIO(raw)
         ct, lb = read_header(buf2)
         assert ct == "LIST"
-        ctx = _ReadContext()
+        ctx = ReadContext()
         restored = ListChunk.read(buf2, lb, ctx=ctx)
         assert restored.list_type == "test"
         assert len(restored.chunks) == 2
@@ -184,7 +184,7 @@ class TestListChunk:
 
         buf.seek(0)
         ct, lb = read_header(buf)
-        ctx = _ReadContext()
+        ctx = ReadContext()
         restored = ListChunk.read(buf, lb, ctx=ctx)
         assert restored.list_type == "outr"
         assert len(restored.chunks) == 1
@@ -203,7 +203,7 @@ class TestListChunk:
 
         buf.seek(0)
         ct, lb = read_header(buf)
-        ctx = _ReadContext()
+        ctx = ReadContext()
         restored = ListChunk.read(buf, lb, ctx=ctx)
         assert restored.list_type == "btdk"
         assert restored.data == raw_data
@@ -217,7 +217,7 @@ class TestListChunk:
 
         buf.seek(0)
         ct, lb = read_header(buf)
-        ctx = _ReadContext()
+        ctx = ReadContext()
         restored = ListChunk.read(buf, lb, ctx=ctx)
         assert restored.list_type == "empt"
         assert restored.chunks == []
@@ -324,7 +324,7 @@ class TestHeaderAndWriteChunk:
         total_size = buf.tell()
 
         buf.seek(0)
-        ctx = _ReadContext()
+        ctx = ReadContext()
         chunks = read_chunks(buf, total_size, ctx=ctx)
         assert len(chunks) == 2
 
@@ -333,7 +333,7 @@ class TestHeaderAndWriteChunk:
         buf = BytesIO()
         write_chunk(buf, Chunk(chunk_type="aaa\x00", data=b"\x01\x02"))
         buf.seek(0)
-        ctx = _ReadContext()
+        ctx = ReadContext()
         # Claim size is larger than actual content
         with pytest.raises(OSError, match="Short read"):
             read_chunks(buf, 100, ctx=ctx)
@@ -391,7 +391,7 @@ class TestRegistry:
 
 class TestContextResolvers:
     def test_cdat_context_otst(self) -> None:
-        ctx = _ReadContext(
+        ctx = ReadContext(
             parent_list_type="tdbs",
             grandparent_list_type="otst",
         )
@@ -399,7 +399,7 @@ class TestContextResolvers:
         assert result == {"is_le": True}
 
     def test_cdat_context_tdbs(self) -> None:
-        ctx = _ReadContext(
+        ctx = ReadContext(
             parent_list_type="tdbs",
             grandparent_list_type="tdbs",
         )
@@ -407,19 +407,19 @@ class TestContextResolvers:
         assert result == {"is_le": False}
 
     def test_ldat_context_empty_siblings(self) -> None:
-        ctx = _ReadContext()
+        ctx = ReadContext()
         result = _resolve_ldat_context([], ctx)
         assert result == {}
 
     def test_tdum_context_phase1_empty(self) -> None:
-        ctx = _ReadContext()
+        ctx = ReadContext()
         result = _resolve_tdum_context([], ctx)
         assert result == {}
 
     def test_tdum_context_with_tdb4_sibling(self) -> None:
         from py_aep.binary.property_chunks import Tdb4Chunk
 
-        ctx = _ReadContext()
+        ctx = ReadContext()
         tdb4 = Tdb4Chunk(chunk_type="tdb4")
         tdb4.color = True
         tdb4.integer = False
@@ -429,7 +429,7 @@ class TestContextResolvers:
         assert result == {"is_color": True, "is_integer": False}
 
     def test_tdum_context_with_raw_sibling(self) -> None:
-        ctx = _ReadContext()
+        ctx = ReadContext()
         siblings = [Chunk(), Chunk(), Chunk(chunk_type="tdb4", data=b"\x00")]
         result = _resolve_tdum_context(siblings, ctx)
         assert result == {}
@@ -1991,7 +1991,7 @@ class TestLdatContextResolver:
             gap2=b"\x00" * 3,
             item_type_raw=4,
         )
-        ctx = _ReadContext()
+        ctx = ReadContext()
         result = _resolve_ldat_context([lhd3], ctx)
         assert result["item_type"] == LdatItemType.one_d
         assert result["item_size"] == 48
@@ -2013,7 +2013,7 @@ class TestLdatContextResolver:
         tdb4 = Tdb4Chunk(chunk_type="tdb4")
         tdb4.is_spatial = True
         parent_siblings: list[Chunk] = [Chunk(), Chunk(), tdb4]
-        ctx = _ReadContext(
+        ctx = ReadContext(
             grandparent_list_type="tdbs",
             parent_siblings=parent_siblings,
         )
@@ -2021,7 +2021,7 @@ class TestLdatContextResolver:
         assert result.get("is_spatial") is True
 
     def test_raw_sibling_fallback(self) -> None:
-        ctx = _ReadContext()
+        ctx = ReadContext()
         result = _resolve_ldat_context(
             [Chunk(chunk_type="lhd3", data=b"\x00" * 24)], ctx
         )
