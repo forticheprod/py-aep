@@ -2403,6 +2403,221 @@ class TestRoundtripDimensionsSeparated:
         assert prop2.dimensions_separated is False
 
 
+# ---- Track A: Property Tree Structure Mutations ----
+
+
+class TestPropertyRemove:
+    """Tests for PropertyBase.remove()."""
+
+    AEP = SAMPLES_DIR / "2_gaussian.aep"
+
+    def test_remove_effect(self) -> None:
+        """Remove an effect and verify the model updates."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        assert len(layer.effects.properties) == 2
+        first_name = layer.effects.properties[0].name
+        layer.effects.properties[1].remove()
+        assert len(layer.effects.properties) == 1
+        assert layer.effects.properties[0].name == first_name
+
+    def test_remove_roundtrip(self, tmp_path: Path) -> None:
+        """Remove an effect, save, reload and verify."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        layer.effects.properties[0].remove()
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        layer2 = app2.project.compositions[0].layers[0]
+        assert layer2.effects is not None
+        assert len(layer2.effects.properties) == 1
+        assert layer2.effects.properties[0].name == "Gaussian Blur 2"
+
+    def test_remove_non_indexed_raises(self) -> None:
+        """Removing from a non-indexed group raises ValueError."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        transform = [
+            p for p in layer.properties
+            if p.match_name == "ADBE Transform Group"
+        ][0]
+        position = [
+            p for p in transform.properties
+            if p.match_name == "ADBE Position"
+        ][0]
+        with pytest.raises(ValueError, match="non-indexed"):
+            position.remove()
+
+    def test_remove_all_effects(self) -> None:
+        """Remove all effects leaves an empty parade."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        effects = layer.effects
+        assert effects is not None
+        effects.properties[1].remove()
+        effects.properties[0].remove()
+        assert len(effects.properties) == 0
+        # layer.effects returns None when parade is empty
+        assert layer.effects is None
+
+    def test_remove_all_roundtrip(self, tmp_path: Path) -> None:
+        """Remove all effects, save, reload and verify."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        effects = layer.effects
+        assert effects is not None
+        effects.properties[1].remove()
+        effects.properties[0].remove()
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        layer2 = app2.project.compositions[0].layers[0]
+        # After removing all, effects returns None (empty parade)
+        assert layer2.effects is None
+
+
+class TestPropertyMoveTo:
+    """Tests for PropertyBase.move_to()."""
+
+    AEP = SAMPLES_DIR / "2_gaussian.aep"
+
+    def test_move_to_basic(self) -> None:
+        """Swap the order of two effects."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        first_name = layer.effects.properties[0].name
+        second_name = layer.effects.properties[1].name
+        # Move second to position 0
+        layer.effects.properties[1].move_to(0)
+        assert layer.effects.properties[0].name == second_name
+        assert layer.effects.properties[1].name == first_name
+
+    def test_move_to_roundtrip(self, tmp_path: Path) -> None:
+        """Move effects around, save and reload."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        second_name = layer.effects.properties[1].name
+        layer.effects.properties[1].move_to(0)
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        layer2 = app2.project.compositions[0].layers[0]
+        assert layer2.effects is not None
+        assert layer2.effects.properties[0].name == second_name
+
+    def test_move_to_same_index(self) -> None:
+        """Moving to current position is a no-op."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        first_name = layer.effects.properties[0].name
+        layer.effects.properties[0].move_to(0)
+        assert layer.effects.properties[0].name == first_name
+
+    def test_move_to_invalid_raises(self) -> None:
+        """Invalid index raises IndexError."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        with pytest.raises(IndexError):
+            layer.effects.properties[0].move_to(5)
+
+
+class TestPropertyDuplicate:
+    """Tests for PropertyBase.duplicate()."""
+
+    AEP = SAMPLES_DIR / "2_gaussian.aep"
+
+    def test_duplicate_effect(self) -> None:
+        """Duplicate creates a new effect after the original."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        original = layer.effects.properties[0]
+        new_prop = original.duplicate()
+        assert len(layer.effects.properties) == 3
+        assert layer.effects.properties[1] is new_prop
+        assert new_prop.match_name == original.match_name
+
+    def test_duplicate_roundtrip(self, tmp_path: Path) -> None:
+        """Duplicate, save and reload."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        layer.effects.properties[0].duplicate()
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        layer2 = app2.project.compositions[0].layers[0]
+        assert layer2.effects is not None
+        assert len(layer2.effects.properties) == 3
+        # First and second should have same match name
+        assert (
+            layer2.effects.properties[0].match_name
+            == layer2.effects.properties[1].match_name
+        )
+
+    def test_duplicate_non_indexed_raises(self) -> None:
+        """Duplicating a non-indexed property raises ValueError."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        transform = [
+            p for p in layer.properties
+            if p.match_name == "ADBE Transform Group"
+        ][0]
+        position = [
+            p for p in transform.properties
+            if p.match_name == "ADBE Position"
+        ][0]
+        with pytest.raises(ValueError, match="non-indexed"):
+            position.duplicate()
+
+    def test_duplicate_preserves_values(self) -> None:
+        """Duplicated effect has the same param values."""
+        app = parse_aep(SAMPLES_DIR / "2_gaussian_20_30.aep")
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        original = layer.effects.properties[0]
+        new_prop = original.duplicate()
+        # Both should be PropertyGroups (effects)
+        assert isinstance(new_prop, PropertyGroup)
+        assert isinstance(original, PropertyGroup)
+        # Check blurriness value matches
+        orig_blur = [
+            p for p in original.properties
+            if p.match_name == "ADBE Gaussian Blur-0001"
+        ]
+        new_blur = [
+            p for p in new_prop.properties
+            if p.match_name == "ADBE Gaussian Blur-0001"
+        ]
+        if orig_blur and new_blur:
+            assert orig_blur[0].value == new_blur[0].value
+
+    def test_remove_then_duplicate(self, tmp_path: Path) -> None:
+        """Remove all, duplicate last remaining, verify clean state."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        # Remove second
+        layer.effects.properties[1].remove()
+        assert len(layer.effects.properties) == 1
+        # Duplicate remaining
+        layer.effects.properties[0].duplicate()
+        assert len(layer.effects.properties) == 2
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        layer2 = app2.project.compositions[0].layers[0]
+        assert layer2.effects is not None
+        assert len(layer2.effects.properties) == 2
+
+
 class TestRoundtripName:
     """Roundtrip: modify PropertyBase.name and verify save/reload."""
 

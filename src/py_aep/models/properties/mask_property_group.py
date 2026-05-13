@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.misc_chunks import MkifChunk
     from ...binary.property_chunks import TdsbChunk
-    from ...binary.scalar_chunks import Utf8Chunk
+    from ...binary.scalar_chunks import TdmnChunk, Utf8Chunk
     from .property import Property
 
 
@@ -96,6 +96,7 @@ class MaskPropertyGroup(PropertyGroup):
     def __init__(
         self,
         *,
+        _tdmn: TdmnChunk,
         _tdgp: ListChunk,
         _tdsb: TdsbChunk | None,
         _mkif: MkifChunk,
@@ -107,6 +108,7 @@ class MaskPropertyGroup(PropertyGroup):
         properties: list[Property | PropertyGroup],
     ) -> None:
         super().__init__(
+            _tdmn=_tdmn,
             _tdgp=_tdgp,
             _tdsb=_tdsb,
             _name_utf8=_name_utf8,

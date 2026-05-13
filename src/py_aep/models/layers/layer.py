@@ -553,7 +553,7 @@ class Layer(PropertyGroup):
             new_local = new_parent_world.inverse() @ child_world
 
         # Decompose into AE transform components, keeping anchor fixed.
-        anchor = self.transform["ADBE Anchor Point"].value
+        anchor = cast("Property", self.transform["ADBE Anchor Point"]).value
 
         new_pos, new_scale, new_rz, new_rx, new_ry = decompose_transform(
             new_local, anchor
@@ -562,20 +562,20 @@ class Layer(PropertyGroup):
         transform = self.transform
         # Only write values that actually changed to avoid materializing
         # synthetic properties unnecessarily.
-        if transform["ADBE Position"].value != new_pos:
-            transform["ADBE Position"].value = new_pos
-        if transform["ADBE Scale"].value != new_scale:
-            transform["ADBE Scale"].value = new_scale
-        if transform["ADBE Rotate Z"].value != new_rz:
-            transform["ADBE Rotate Z"].value = new_rz
+        if cast("Property", transform["ADBE Position"]).value != new_pos:
+            cast("Property", transform["ADBE Position"]).value = new_pos
+        if cast("Property", transform["ADBE Scale"]).value != new_scale:
+            cast("Property", transform["ADBE Scale"]).value = new_scale
+        if cast("Property", transform["ADBE Rotate Z"]).value != new_rz:
+            cast("Property", transform["ADBE Rotate Z"]).value = new_rz
 
         # Only update 3D rotation properties if the layer is 3D.
         is_3d = getattr(self, "three_d_layer", False)
         if is_3d:
-            if transform["ADBE Rotate X"].value != new_rx:
-                transform["ADBE Rotate X"].value = new_rx
-            if transform["ADBE Rotate Y"].value != new_ry:
-                transform["ADBE Rotate Y"].value = new_ry
+            if cast("Property", transform["ADBE Rotate X"]).value != new_rx:
+                cast("Property", transform["ADBE Rotate X"]).value = new_rx
+            if cast("Property", transform["ADBE Rotate Y"]).value != new_ry:
+                cast("Property", transform["ADBE Rotate Y"]).value = new_ry
 
     def set_parent_with_jump(self, new_parent: Layer | None) -> None:
         """Sets the parent of this layer to the specified layer, without changing the
@@ -644,6 +644,8 @@ class Layer(PropertyGroup):
         appearance).  AVLayers that use this layer as a track matte
         lose their matte reference.
         """
+        from .av_layer import _unregister_source_usage  # noqa: PLC0415
+
         comp = self.containing_comp
         removed_id = self.id
 
@@ -662,6 +664,11 @@ class Layer(PropertyGroup):
                     and ldta.matte_layer_id == removed_id
                 ):
                     ldta.matte_layer_id = 0
+
+        # Update source _used_in if this layer references a source item
+        source = getattr(self, "source", None)
+        if source is not None and hasattr(source, "_used_in"):
+            _unregister_source_usage(source, comp, exclude=self)  # type: ignore[arg-type]
 
         # Remove chunk block from comp's chunk list
         start, end = comp._layer_block_slice(self)
@@ -725,8 +732,10 @@ class Layer(PropertyGroup):
             cloned_ldta.matte_layer_id = 0
             model_idx = 0
             if into_comp.layers:
-                chunk_idx = into_comp._item_list.chunks.index(
-                    into_comp.layers[0]._layer_list
+                # Identity scan - see _layer_block_slice for why .index() is unsafe.
+                chunk_idx = next(
+                    i for i, c in enumerate(into_comp._item_list.chunks)
+                    if c is into_comp.layers[0]._layer_list
                 )
             else:
                 chunk_idx = into_comp._find_first_layer_position()
@@ -744,6 +753,12 @@ class Layer(PropertyGroup):
             new_layer.name = _increment_name(new_layer.name, existing)
 
         into_comp._invalidate_layer_cache()
+
+        # Register source _used_in for the cloned layer
+        new_source = getattr(new_layer, "source", None)
+        if new_source is not None and hasattr(new_source, "_used_in"):
+            new_source._used_in.add(into_comp)
+
         return new_layer
 
     def move_after(self, layer: Layer) -> None:
@@ -806,8 +821,10 @@ class Layer(PropertyGroup):
 
         # Find chunk insertion point
         if target_index < len(comp._layers):
-            chunk_idx = comp._item_list.chunks.index(
-                comp._layers[target_index]._layer_list
+            # Identity scan - see _layer_block_slice for why .index() is unsafe.
+            chunk_idx = next(
+                i for i, c in enumerate(comp._item_list.chunks)
+                if c is comp._layers[target_index]._layer_list
             )
         elif comp._layers:
             _, last_end = comp._layer_block_slice(comp._layers[-1])

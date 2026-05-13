@@ -19,10 +19,11 @@ Standard rotation matrices apply without sign flips.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from ..models.layers.layer import Layer
+    from ..models.properties.property import Property
 
 
 _DEG2RAD = math.pi / 180.0
@@ -268,13 +269,13 @@ def build_world_matrix(layer: Layer) -> Mat4:
 def _layer_local_matrix(layer: Layer) -> Mat4:
     """Build the local matrix for a single layer from its properties."""
     transform = layer.transform
-    position = transform["ADBE Position"].value
-    anchor = transform["ADBE Anchor Point"].value
-    scale_pct = transform["ADBE Scale"].value
-    rz = transform["ADBE Rotate Z"].value
-    orientation = transform["ADBE Orientation"].value
-    rx = transform["ADBE Rotate X"].value
-    ry = transform["ADBE Rotate Y"].value
+    position = cast("Property", transform["ADBE Position"]).value
+    anchor = cast("Property", transform["ADBE Anchor Point"]).value
+    scale_pct = cast("Property", transform["ADBE Scale"]).value
+    rz = cast("Property", transform["ADBE Rotate Z"]).value
+    orientation = cast("Property", transform["ADBE Orientation"]).value
+    rx = cast("Property", transform["ADBE Rotate X"]).value
+    ry = cast("Property", transform["ADBE Rotate Y"]).value
 
     is_3d = rx != 0.0 or ry != 0.0 or any(v != 0.0 for v in orientation)
 

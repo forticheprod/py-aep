@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ContainerChunk
     from ..binary.misc_chunks import MkifChunk
     from ..binary.property_chunks import TdsbChunk
-    from ..binary.scalar_chunks import Utf8Chunk
+    from ..binary.scalar_chunks import TdmnChunk, Utf8Chunk
     from ..models.items.composition import CompItem
     from ..models.properties.property import Property
 
@@ -127,16 +127,20 @@ def _dispatch_sspc(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse effect chunks - iterates all sspc LISTs for the match name."""
-    return [
-        parse_effect(
-            sspc_chunk=chunk,
+    tdmns = cast("list[TdmnChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    sspcs = filter_by_list_type(chunks=sub_prop_chunks, list_type="sspc")
+    results: list[Property | PropertyGroup] = []
+    for tdmn, sspc in zip(tdmns, sspcs):
+        effect = parse_effect(
+            sspc_chunk=sspc,
             group_match_name=match_name,
             property_depth=child_depth,
             effect_param_defs=effect_param_defs,
             composition=composition,
+            tdmn=tdmn,
         )
-        for chunk in filter_by_list_type(chunks=sub_prop_chunks, list_type="sspc")
-    ]
+        results.append(effect)
+    return results
 
 
 @_property_parser("tdgp")
@@ -149,33 +153,41 @@ def _dispatch_tdgp(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse property group chunks - handles masks and indexed groups."""
+    tdmns = cast("list[TdmnChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
     if match_name == "ADBE Mask Atom":
-        masks: list[Property | PropertyGroup] = [
-            _parse_mask_atom(
+        tdgps = list(filter_by_list_type(chunks=sub_prop_chunks, list_type="tdgp"))
+        mkifs = cast(
+            "list[MkifChunk]",
+            list(filter_by_type(chunks=sub_prop_chunks, chunk_type="mkif")),
+        )
+        masks: list[Property | PropertyGroup] = []
+        for i, (tdmn, tdgp_c, mkif_c) in enumerate(
+            zip(tdmns, tdgps, mkifs), 1
+        ):
+            mask = _parse_mask_atom(
                 tdgp_chunk=tdgp_c,
                 mkif_chunk=mkif_c,
                 property_depth=child_depth,
                 effect_param_defs=effect_param_defs,
                 composition=composition,
+                tdmn=tdmn,
             )
-            for tdgp_c, mkif_c in zip(
-                filter_by_list_type(chunks=sub_prop_chunks, list_type="tdgp"),
-                cast("list[MkifChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="mkif")),
-            )
-        ]
-        for i, mask in enumerate(masks, 1):
             mask._auto_name = f"Mask {i}"
+            masks.append(mask)
         return masks
-    return [
-        parse_property_group(
+    tdgps = list(filter_by_list_type(chunks=sub_prop_chunks, list_type="tdgp"))
+    results: list[Property | PropertyGroup] = []
+    for tdmn, tdgp_c in zip(tdmns, tdgps):
+        group = parse_property_group(
             tdgp_chunk=tdgp_c,
             group_match_name=match_name,
             property_depth=child_depth,
             effect_param_defs=effect_param_defs,
             composition=composition,
+            tdmn=tdmn,
         )
-        for tdgp_c in filter_by_list_type(chunks=sub_prop_chunks, list_type="tdgp")
-    ]
+        results.append(group)
+    return results
 
 
 @_property_parser("tdbs")
@@ -188,14 +200,15 @@ def _dispatch_tdbs(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse a leaf property from a tdbs chunk."""
-    return [
-        parse_property(
-            tdbs_chunk=first_chunk,
-            match_name=match_name,
-            composition=composition,
-            property_depth=child_depth,
-        )
-    ]
+    tdmn = cast("TdmnChunk", find_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    prop = parse_property(
+        tdbs_chunk=first_chunk,
+        match_name=match_name,
+        composition=composition,
+        property_depth=child_depth,
+        tdmn=tdmn,
+    )
+    return [prop]
 
 
 @_property_parser("otst")
@@ -208,14 +221,15 @@ def _dispatch_otst(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse an orientation property from an otst chunk."""
-    return [
-        parse_orientation(
-            otst_chunk=first_chunk,
-            match_name=match_name,
-            property_depth=child_depth,
-            composition=composition,
-        )
-    ]
+    tdmn = cast("TdmnChunk", find_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    prop = parse_orientation(
+        otst_chunk=first_chunk,
+        match_name=match_name,
+        property_depth=child_depth,
+        composition=composition,
+        tdmn=tdmn,
+    )
+    return [prop]
 
 
 @_property_parser("btds")
@@ -228,14 +242,15 @@ def _dispatch_btds(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse a text document property from a btds chunk."""
-    return [
-        parse_text_document(
-            btds_chunk=first_chunk,
-            match_name=match_name,
-            property_depth=child_depth,
-            composition=composition,
-        )
-    ]
+    tdmn = cast("TdmnChunk", find_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    prop = parse_text_document(
+        btds_chunk=first_chunk,
+        match_name=match_name,
+        property_depth=child_depth,
+        composition=composition,
+        tdmn=tdmn,
+    )
+    return [prop]
 
 
 @_property_parser("om-s")
@@ -248,14 +263,15 @@ def _dispatch_oms(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse a shape/mask-path property from an om-s chunk."""
-    return [
-        parse_shape(
-            oms_chunk=first_chunk,
-            match_name=match_name,
-            property_depth=child_depth,
-            composition=composition,
-        )
-    ]
+    tdmn = cast("TdmnChunk", find_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    prop = parse_shape(
+        oms_chunk=first_chunk,
+        match_name=match_name,
+        property_depth=child_depth,
+        composition=composition,
+        tdmn=tdmn,
+    )
+    return [prop]
 
 
 @_property_parser("mrst")
@@ -268,13 +284,14 @@ def _dispatch_mrst(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse markers from a mrst chunk."""
-    return [
-        parse_markers(
-            mrst_chunk=first_chunk,
-            composition=composition,
-            property_depth=child_depth,
-        )
-    ]
+    tdmn = cast("TdmnChunk", find_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    prop = parse_markers(
+        mrst_chunk=first_chunk,
+        composition=composition,
+        property_depth=child_depth,
+        tdmn=tdmn,
+    )
+    return [prop]
 
 
 @_property_parser("OvG2")
@@ -297,6 +314,7 @@ def parse_property_group(
     property_depth: int,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
+    tdmn: TdmnChunk,
 ) -> PropertyGroup:
     """
     Parse a property group.
@@ -316,6 +334,7 @@ def parse_property_group(
         effect_param_defs: Project-level effect parameter definitions, used as
             fallback when layer-level parT chunks are missing.
         composition: The parent composition.
+        tdmn: The TDMN chunk for this property group.
     """
     properties = parse_properties(
         chunks_by_match_name=get_chunks_by_match_name(tdgp_chunk),
@@ -340,6 +359,7 @@ def parse_property_group(
         name_utf8 = None
 
     prop_group = PropertyGroup(
+        _tdmn=tdmn,
         _tdgp=tdgp_chunk,
         _tdsb=group_tdsb,
         _name_utf8=name_utf8,
@@ -357,6 +377,7 @@ def _parse_mask_atom(
     property_depth: int,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
+    tdmn: TdmnChunk,
 ) -> MaskPropertyGroup:
     """Parse a mask atom into a MaskPropertyGroup.
 
@@ -371,6 +392,7 @@ def _parse_mask_atom(
         property_depth: The nesting depth of this group.
         effect_param_defs: Project-level effect parameter definitions.
         composition: The parent composition.
+        tdmn: The TDMN chunk for this mask atom.
     """
     base = parse_property_group(
         tdgp_chunk=tdgp_chunk,
@@ -378,6 +400,7 @@ def _parse_mask_atom(
         property_depth=property_depth,
         effect_param_defs=effect_param_defs,
         composition=composition,
+        tdmn=tdmn,
     )
 
     # Extract the mask shape's tdsb for the roto_bezier descriptor.
@@ -392,6 +415,7 @@ def _parse_mask_atom(
             break
 
     mask_group = MaskPropertyGroup(
+        _tdmn=tdmn,
         _tdgp=cast("ListChunk", base._tdgp),
         _tdsb=base._tdsb,
         _name_utf8=base._name_utf8,

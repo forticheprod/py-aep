@@ -30,6 +30,7 @@ from .text import parse_btdk_cos
 
 if TYPE_CHECKING:
     from ..binary.chunk import ListChunk
+    from ..binary.scalar_chunks import TdmnChunk
     from ..models.items.composition import CompItem
     from ..models.properties.property import Property
 
@@ -42,6 +43,7 @@ def parse_orientation(
     match_name: str,
     property_depth: int,
     composition: CompItem,
+    tdmn: TdmnChunk,
 ) -> Property:
     """
     Parse an orientation property.
@@ -64,6 +66,7 @@ def parse_orientation(
         match_name=match_name,
         composition=composition,
         property_depth=property_depth,
+        tdmn=tdmn,
     )
     # Orientation uses an angle dial control.  ExtendScript reports
     # propertyValueType as ThreeD_SPATIAL and isSpatial as True, even
@@ -156,6 +159,7 @@ def parse_shape(
     match_name: str,
     property_depth: int,
     composition: CompItem,
+    tdmn: TdmnChunk,
 ) -> Property:
     """Parse a shape/mask-path property from an `om-s` LIST chunk.
 
@@ -181,6 +185,7 @@ def parse_shape(
         match_name=match_name,
         composition=composition,
         property_depth=property_depth,
+        tdmn=tdmn,
     )
 
     prop._property_value_type = PropertyValueType.SHAPE
@@ -220,6 +225,7 @@ def parse_text_document(
     match_name: str,
     property_depth: int,
     composition: CompItem,
+    tdmn: TdmnChunk,
 ) -> Property:
     """
     Parse a text document property.
@@ -242,6 +248,7 @@ def parse_text_document(
         match_name=match_name,
         composition=composition,
         property_depth=property_depth,
+        tdmn=tdmn,
     )
     prop._property_value_type = PropertyValueType.TEXT_DOCUMENT
 

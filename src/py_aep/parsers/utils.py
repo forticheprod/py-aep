@@ -27,6 +27,9 @@ def get_chunks_by_match_name(
                     skip_to_next_tdmn_flag = True
                 else:
                     skip_to_next_tdmn_flag = False
+                    chunks_by_match_name.setdefault(match_name, []).append(
+                        chunk
+                    )
             elif (
                 not skip_to_next_tdmn_flag
             ) and chunk.chunk_type not in SKIP_CHUNK_TYPES:

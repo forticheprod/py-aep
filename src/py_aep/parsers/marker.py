@@ -21,6 +21,7 @@ from ..models.properties.property import Property
 from .property_value import parse_property
 
 if TYPE_CHECKING:
+    from ..binary.scalar_chunks import TdmnChunk
     from ..models.items.composition import CompItem
     from ..models.properties.keyframe import Keyframe
 
@@ -28,7 +29,8 @@ if TYPE_CHECKING:
 def parse_markers(
     mrst_chunk: ListChunk,
     composition: CompItem,
-    property_depth: int = 1,
+    property_depth: int,
+    tdmn: TdmnChunk,
 ) -> Property:
     """
     Parse markers from an MRST chunk.
@@ -47,6 +49,7 @@ def parse_markers(
         match_name="ADBE Marker",
         composition=composition,
         property_depth=property_depth,
+        tdmn=tdmn,
     )
     mrky_chunk = find_by_list_type(chunks=mrst_chunk.chunks, list_type="mrky")
     nmrd_chunks = filter_by_list_type(chunks=mrky_chunk.chunks, list_type="Nmrd")

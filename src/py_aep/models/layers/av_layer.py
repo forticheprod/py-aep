@@ -65,6 +65,23 @@ def _would_create_cycle(target_comp: CompItem, new_source: AVItem) -> bool:
     return False
 
 
+def _unregister_source_usage(
+    source: AVItem, comp: CompItem, *, exclude: AVLayer | None = None
+) -> None:
+    """Remove `comp` from `source._used_in` if no other layer still references it.
+
+    Args:
+        source: The source item to potentially unregister.
+        comp: The composition to remove from `source._used_in`.
+        exclude: A layer to skip when scanning for other users (the caller
+            itself, which is being removed or swapped out).
+    """
+    for layer in comp.av_layers:
+        if layer is not exclude and layer._source_id == source.id:
+            return
+    source._used_in.discard(comp)
+
+
 def _validate_collapse_transformation(value: bool, obj: AVLayer) -> None:
     if not getattr(obj, "can_set_collapse_transformation", True):
         raise AttributeError(
@@ -636,17 +653,8 @@ class AVLayer(Layer):
             )
 
         old_source = self.source
-
-        # Update _used_in on old source
         if old_source is not None and hasattr(old_source, "_used_in"):
-            for layer in comp.av_layers:
-                if (
-                    layer is not self
-                    and layer._source_id == old_source.id
-                ):
-                    break
-            else:
-                old_source._used_in.discard(comp)
+            _unregister_source_usage(old_source, comp, exclude=self)
 
         self._source_id = new_source.id
         self._source = new_source

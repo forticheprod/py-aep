@@ -20,6 +20,7 @@ from ..models.properties.property import Property
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk
+    from ..binary.scalar_chunks import TdmnChunk
     from ..models.items.composition import CompItem
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ def parse_property(
     match_name: str,
     composition: CompItem,
     property_depth: int,
+    tdmn: TdmnChunk,
 ) -> Property:
     """
     Parse a property.
@@ -96,6 +98,7 @@ def parse_property(
     name_utf8 = cast("Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8"))
 
     prop = Property(
+        _tdmn=tdmn,
         _tdsb=tdsb_chunk,
         _tdb4=tdb4_chunk,
         _expression_utf8=expression_utf8,

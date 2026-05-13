@@ -301,14 +301,13 @@ class Property(PropertyBase):
             _tdbs.chunks.append(_cdat)
 
         # Insert into parent's chunk tree.
-        _tdmn: TdmnChunk | None = None
+        _tdmn = TdmnChunk(
+            chunk_type="tdmn",
+            value=spec.match_name,
+            synthetic=synthetic,
+        )
         tdgp = parent_property._tdgp
         if tdgp is not None:
-            _tdmn = TdmnChunk(
-                chunk_type="tdmn",
-                value=spec.match_name,
-                synthetic=synthetic,
-            )
             tdgp.chunks.append(_tdmn)
             tdgp.chunks.append(_tdbs)
 
@@ -344,7 +343,7 @@ class Property(PropertyBase):
     def __init__(
         self,
         *,
-        _tdmn: TdmnChunk | None = None,
+        _tdmn: TdmnChunk,
         _tdsb: TdsbChunk,
         _tdb4: Tdb4Chunk,
         _expression_utf8: Utf8Chunk | None = None,
@@ -677,8 +676,7 @@ class Property(PropertyBase):
         if self.match_name == "ADBE Position":
             # Light and Camera layers always have 3D position but do not
             # expose dimensionsSeparated in ExtendScript.
-            layer = self._containing_layer
-            if layer is not None and layer._ldta.layer_type in (
+            if self._containing_layer._ldta.layer_type in (
                 1,  # light
                 2,  # camera
             ):
@@ -1023,8 +1021,6 @@ class Property(PropertyBase):
         and composition frame rate.
         """
         layer = self._containing_layer
-        if layer is None:
-            return 0
         start_time: float = layer.start_time
         if start_time == 0.0:
             return 0
@@ -1056,19 +1052,17 @@ class Property(PropertyBase):
 
         if self.match_name == "ADBE Anchor Point":
             layer = self._containing_layer
-            if layer is not None:
-                width = getattr(layer, "width", 0)
-                height = getattr(layer, "height", 0)
-                if width and height:
-                    scale = [float(width), float(height), 1.0]
+            width = getattr(layer, "width", 0)
+            height = getattr(layer, "height", 0)
+            if width and height:
+                scale = [float(width), float(height), 1.0]
         elif (
             self._property_control_type == PropertyControlType.TWO_D
             and self._is_in_effect()
         ):
             layer = self._containing_layer
-            if layer is not None:
-                comp = layer.containing_comp
-                scale = [float(comp.width), float(comp.height)]
+            comp = layer.containing_comp
+            scale = [float(comp.width), float(comp.height)]
 
         if scale is not None and self.match_name != "ADBE Anchor Point":
             # Set guard before _scale_effect_point_speeds (which accesses
