@@ -720,7 +720,11 @@ class Layer(PropertyGroup):
         cloned_ldta = cast("LdtaChunk", find_by_type(
             chunks=cloned_list.chunks, chunk_type="ldta",
         ))
-        cloned_ldta.layer_id = max((lyr.id for lyr in into_comp.layers), default=0) + 1
+        # Layer IDs are unique project-wide, not per-comp.
+        cloned_ldta.layer_id = max(
+            (lyr.id for comp in into_comp._project.compositions for lyr in comp.layers),
+            default=0,
+        ) + 1
 
         # Determine chunk insertion point
         if same_comp:
