@@ -269,7 +269,7 @@ def _set_transform_defaults(layer: Layer) -> None:
     # override the value to 0 (matching ExtendScript behavior).
     if isinstance(layer, AVLayer) and layer.null_layer:
         opacity = transform.property("ADBE Opacity")
-        if opacity is not None and opacity.value == 100.0:
+        if isinstance(opacity, Property) and opacity.value == 100.0:
             opacity._value = 0.0
             opacity.default_value = 0.0
 

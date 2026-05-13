@@ -10,7 +10,7 @@ from ...binary.property_chunks import TdsbChunk
 from ...binary.scalar_chunks import TdmnChunk, Utf8Chunk
 from .overrides import _PROPERTY_MIN_MAX
 from .property import Property
-from .property_base import _TDSN_SENTINEL, PropertyBase
+from .property_base import _INDEXED_GROUP_MATCH_NAMES, _TDSN_SENTINEL, PropertyBase
 from .specs import (
     _GROUP_CHILD_SPECS,
     _LAYER_STYLE_CHILD_SPECS,
@@ -114,13 +114,6 @@ def _reorder_and_fill(
 
     container.properties = ordered
 
-
-_INDEXED_GROUP_MATCH_NAMES: set[str] = {
-    "ADBE Effect Parade",
-    "ADBE Mask Parade",
-    "ADBE Effect Mask Parade",
-    "ADBE Text Animators",
-}
 
 
 class PropertyGroup(PropertyBase):

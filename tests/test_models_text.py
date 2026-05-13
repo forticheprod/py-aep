@@ -291,6 +291,7 @@ class TestParseTextDocument:
             match_name="ADBE Text Document",
             property_depth=0,
             composition=SimpleNamespace(),
+            tdmn=SimpleNamespace(),
         )
 
         assert result is prop
@@ -355,4 +356,5 @@ class TestParseTextDocument:
                 match_name="ADBE Text Document",
                 property_depth=0,
                 composition=SimpleNamespace(),
+                tdmn=SimpleNamespace(),
             )

@@ -15,6 +15,10 @@ Consult the ExtendScript scripting guide for method signatures, return values, a
 - Path: `C:\Users\aurore.delaunay\git\after-effects-scripting-guide\docs`
 - Match signatures and behaviors (1-based indexing becomes 0-based in Python, return types, error conditions)
 
+## Reference implementations
+- `Layer` methods: `src\py_aep\models\layers\layer.py`
+- `AVLayer` methods: `src\py_aep\models\layers\av_layer.py`
+
 ## Mutation-Specific Rules
 
 These supplement the rules in `copilot-instructions.md`.
@@ -169,8 +173,8 @@ uv run pytest 2>&1 | Select-Object -Last 40
 
 After implementation, write a pair of scripts for comparison in After Effects:
 
-1. **Python script** (`scripts/_tmp_<feature>_inspect.py`): parses an existing sample `.aep`, exercises each new mutation method, saves one or more modified `.aep` files to a temp directory.
-2. **JSX script** (`scripts/jsx/_tmp_<feature>_inspect.jsx`): performs the same operations on the same sample via ExtendScript, saves corresponding `.aep` files next to a temp directory.
+1. **JSX script** (`scripts/jsx/_tmp_<feature>_inspect.jsx`): Opens existing samples, re-save them as baseline files for the python script (to avoid noise due to re-saving), exercises each new mutation method, includes many edge-cases, saves one or more modified `.aep` files to a temp directory.
+2. **Python script** (`scripts/_tmp_<feature>_inspect.py`): open the baseline files written by the jsx script, performs the same operations via py-aep, saves output `.aep` files.
 
 When the jsx script is run by the user, compare the output files with aep-compare and/or py-aep to confirm that everything matches as expected.
 

@@ -378,6 +378,7 @@ def parse_effect(
     property_depth: int,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
+    tdmn: TdmnChunk,
 ) -> PropertyGroup:
     """
     Parse an effect.
@@ -432,6 +433,7 @@ def parse_effect(
         effect_tdsb = None
 
     effect_group = PropertyGroup(
+        _tdmn=tdmn,
         _tdgp=tdgp_chunk,
         _tdsb=effect_tdsb,
         _name_utf8=effect_name_utf8,

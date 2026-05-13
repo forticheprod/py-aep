@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import PropertyType
 
+from ...binary.mutations import clone_chunk_tree
+from ...binary.scalar_chunks import TdmnChunk
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..descriptors import ChunkField
 
@@ -12,7 +14,17 @@ from ..descriptors import ChunkField
 # user-visible name and falls back to auto_name.
 _TDSN_SENTINEL = "-_0_/-"
 
+# Match names of groups that support add/remove/move/duplicate on children.
+_INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset({
+    "ADBE Effect Parade",
+    "ADBE Mask Parade",
+    "ADBE Effect Mask Parade",
+    "ADBE Text Animators",
+    "ADBE Root Vectors Group",
+})
+
 if TYPE_CHECKING:
+    from ...binary.chunk import Chunk, ListChunk
     from ...binary.misc_chunks import EwotItem
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
@@ -58,6 +70,7 @@ class PropertyBase:
         self._match_name = match_name
         self._auto_name = auto_name
         self._property_depth = property_depth
+        self._tdmn: TdmnChunk | None = None
 
         self._ewot_entry: EwotItem | None = None
 
@@ -221,18 +234,18 @@ class PropertyBase:
         return False
 
     @property
-    def _containing_layer(self) -> Layer | None:
+    def _containing_layer(self) -> Layer:
         """Walk up the parent_property chain to find the containing layer.
 
-        Returns the Layer object (detected by having `_ldta`), or `None`
-        if the property is not attached to a layer.
+        Returns the Layer object (detected by having `_ldta`), or raises
+        a ValueError if the property is not attached to a layer.
         """
         node = self.parent_property
         while node is not None:
             if hasattr(node, "_ldta"):
                 return cast("Layer", node)
             node = node.parent_property
-        return None
+        raise ValueError("Property is not attached to a layer")
 
     def _is_in_effect(self) -> bool:
         """Check if this property is inside an effect PropertyGroup."""
@@ -256,3 +269,214 @@ class PropertyBase:
         indexed group like Effects or Masks is itself a modification).
         """
         return False
+
+    def _can_mutate(self) -> tuple[PropertyGroup, ListChunk]:
+        """Validate and return the parent group and its backing tdgp.
+
+        Only children of indexed groups (effects, masks, shape contents,
+        text animators) can be removed/moved/duplicated.
+        """
+        parent = self._parent_property
+        if parent is None:
+            raise ValueError("Cannot mutate a root property")
+        if parent.property_type != PropertyType.INDEXED_GROUP:
+            raise ValueError(
+                f"Cannot mutate property in non-indexed group "
+                f"'{parent.match_name}'"
+            )
+        # Indexed groups always have a backing tdgp.
+        return parent, cast("ListChunk", parent._tdgp)
+
+    def _backing_list_chunk(self, parent_tdgp: ListChunk) -> ListChunk:
+        """The LIST chunk in the parent's chunk list backing this property.
+
+        For regular properties this is `_tdbs`, for regular groups `_tdgp`.
+        For effects (where the model's `_tdgp` is inside a wrapping
+        `LIST:sspc`), this returns the sspc chunk.
+        """
+        chunk: ListChunk = getattr(self, "_tdbs", None) or getattr(  # type: ignore[assignment]
+            self, "_tdgp", None
+        )
+        # Identity check - attrs __eq__ is structural, so .index() / `in`
+        # would give false positives for chunks with identical fields.
+        if any(c is chunk for c in parent_tdgp.chunks):
+            return chunk
+
+        # Effect case: _tdgp is inside a LIST:sspc wrapper
+        for c in parent_tdgp.chunks:
+            if (
+                hasattr(c, "list_type")
+                and c.list_type == "sspc"  # type: ignore[attr-defined]
+                and any(inner is chunk for inner in c.chunks)  # type: ignore[attr-defined]
+            ):
+                return c  # type: ignore[return-value]
+
+        return chunk
+
+    def _find_chunk_span(self, parent_tdgp: ListChunk) -> tuple[int, int]:
+        """Find the [start, end) index span of this property's chunks.
+
+        Returns the index range covering the preceding `tdmn` chunk and
+        the backing LIST chunk. The span is suitable for slice deletion.
+        """
+        # Identity scan - attrs __eq__ makes structurally-identical TdmnChunks
+        # compare equal, so .index() would find the wrong one.
+        start = next(
+            i for i, c in enumerate(parent_tdgp.chunks) if c is self._tdmn
+        )
+        return start, start + 2
+
+    def remove(self) -> None:
+        """Remove this property from its parent group.
+
+        Only valid for children of indexed groups (effects, masks, shape
+        contents, text animators).
+
+        Raises:
+            ValueError: If this property is not in an indexed group.
+        """
+        parent, parent_tdgp = self._can_mutate()
+        start, end = self._find_chunk_span(parent_tdgp)
+        del parent_tdgp.chunks[start:end]
+        parent.properties.remove(self)  # type: ignore[arg-type]
+
+    def move_to(self, new_index: int) -> None:
+        """Move this property to a new 0-based index within its parent group.
+
+        Only valid for children of indexed groups.
+
+        Args:
+            new_index: The target 0-based position.
+
+        Raises:
+            ValueError: If this property is not in an indexed group.
+            IndexError: If `new_index` is out of range.
+        """
+        parent, parent_tdgp = self._can_mutate()
+
+        num_props = len(parent.properties)
+        if not 0 <= new_index < num_props:
+            raise IndexError(
+                f"Index {new_index} out of range [0, {num_props})"
+            )
+
+        current_index = parent.properties.index(self)  # type: ignore[arg-type]
+        if current_index == new_index:
+            return
+
+        # Extract chunk span
+        start, end = self._find_chunk_span(parent_tdgp)
+        chunk_span = parent_tdgp.chunks[start:end]
+        del parent_tdgp.chunks[start:end]
+
+        # Remove from model list
+        parent.properties.remove(self)  # type: ignore[arg-type]
+
+        # Find chunk insertion point: before the target property's span
+        if new_index >= len(parent.properties):
+            parent_tdgp.chunks.extend(chunk_span)
+            parent.properties.append(self)  # type: ignore[arg-type]
+        else:
+            target = parent.properties[new_index]
+            target_start, _ = target._find_chunk_span(parent_tdgp)
+            for i, c in enumerate(chunk_span):
+                parent_tdgp.chunks.insert(target_start + i, c)
+            parent.properties.insert(new_index, self)  # type: ignore[arg-type]
+
+    def duplicate(self) -> PropertyBase:
+        """Duplicate this property within its parent group.
+
+        The duplicate is inserted immediately after the original.
+        Only valid for children of indexed groups (see [PropertyType][]).
+
+        Returns:
+            The newly created [PropertyBase][].
+
+        Raises:
+            ValueError: If this property is not in an indexed group.
+        """
+        parent, parent_tdgp = self._can_mutate()
+
+        # Clone the backing chunk tree
+        backing = self._backing_list_chunk(parent_tdgp)
+        cloned_backing = clone_chunk_tree(backing)
+
+        # Clone the tdmn
+        cloned_tdmn = TdmnChunk(
+            chunk_type="tdmn", value=self._match_name
+        )
+
+        # Insert after original in parent's chunk list
+        _, end = self._find_chunk_span(parent_tdgp)
+        parent_tdgp.chunks.insert(end, cloned_tdmn)
+        parent_tdgp.chunks.insert(end + 1, cloned_backing)
+
+        # Re-parse the cloned chunks into a model
+        new_prop = self._parse_clone(cloned_tdmn, cloned_backing, parent)
+
+        # Insert in model list after original
+        model_idx = parent.properties.index(self)  # type: ignore[arg-type]
+        parent.properties.insert(model_idx + 1, new_prop)  # type: ignore[arg-type]
+
+        return new_prop
+
+    def _parse_clone(
+        self,
+        tdmn: TdmnChunk,
+        backing: Chunk,
+        parent: PropertyGroup,
+    ) -> PropertyBase:
+        """Re-parse cloned chunks into a model instance.
+
+        Uses the parser infrastructure to rebuild the correct model
+        hierarchy from cloned binary chunks.
+        """
+        from ...parsers.property import (  # noqa: PLC0415
+            parse_property_group,
+        )
+        from ...parsers.property_value import parse_property  # noqa: PLC0415
+
+        # Determine the composition context
+        layer = self._containing_layer
+        comp = layer.containing_comp
+
+        # Get effect param defs from the project
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]] = {}
+        project = comp._project
+        if project is not None:
+            effect_param_defs = project._effect_param_defs
+
+        list_chunk = cast("ListChunk", backing)
+        if list_chunk.list_type == "tdbs":
+            result: PropertyBase = parse_property(
+                tdbs_chunk=list_chunk,
+                match_name=self._match_name,
+                composition=comp,
+                property_depth=self._property_depth,
+                tdmn=tdmn,
+            )
+        elif list_chunk.list_type == "sspc":
+            from ...parsers.effect import parse_effect  # noqa: PLC0415
+            result = parse_effect(
+                sspc_chunk=list_chunk,
+                group_match_name=self._match_name,
+                property_depth=self._property_depth,
+                effect_param_defs=effect_param_defs,
+                composition=comp,
+                tdmn=tdmn,
+            )
+        elif list_chunk.list_type == "tdgp":
+            result = parse_property_group(
+                tdgp_chunk=list_chunk,
+                group_match_name=self._match_name,
+                property_depth=self._property_depth,
+                effect_param_defs=effect_param_defs,
+                composition=comp,
+                tdmn=tdmn,
+            )
+        else:
+            raise ValueError(
+                f"Unexpected backing chunk type '{list_chunk.list_type}'"
+            )
+        result._parent_property = parent
+        return result

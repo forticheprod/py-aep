@@ -563,7 +563,9 @@ class CompItem(AVItem):
         chunk (another `LIST:Layr`, a view block, or a footer chunk).
         """
         chunks = self._item_list.chunks
-        start = chunks.index(layer._layer_list)
+        # Identity scan - attrs __eq__ on ListChunk is structural, so two layers
+        # with identical content would fool .index() into returning the wrong position.
+        start = next(i for i, c in enumerate(chunks) if c is layer._layer_list)
         for end in range(start + 1, len(chunks)):
             c = chunks[end]
             if isinstance(c, ListChunk) and c.list_type in _LAYER_BOUNDARY_TYPES:

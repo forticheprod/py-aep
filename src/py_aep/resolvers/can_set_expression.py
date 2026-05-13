@@ -78,7 +78,7 @@ def resolve_can_set_expression(prop: Property) -> bool:
 
     if mn == "ADBE Time Remapping":
         layer = prop._containing_layer
-        return bool(layer is not None and layer.time_remap_enabled)
+        return bool(getattr(layer, "time_remap_enabled", False))
 
     if not prop.can_vary_over_time:
         return False
@@ -105,9 +105,6 @@ def resolve_can_set_expression(prop: Property) -> bool:
         return False
 
     layer = prop._containing_layer
-    if layer is None:
-        return True
-
     layer_type = layer._ldta.layer_type
 
     # Camera layers cannot set expressions on Scale/Opacity
