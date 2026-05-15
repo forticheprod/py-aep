@@ -7,6 +7,8 @@ from ..binary.layer_chunks import LdtaChunk
 from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
+    filter_by_list_type,
+    filter_by_type,
     find_by_list_type,
     find_by_type,
 )
@@ -24,7 +26,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from ..binary.chunk import ListChunk
+    from ..binary.chunk import Chunk, ListChunk
     from ..models.items.composition import CompItem
     from ..models.layers.layer import Layer
 
@@ -36,6 +38,24 @@ _LAYER_CLASSES: dict[int, type[Layer]] = {
     LayerType.SHAPE: ShapeLayer,
     LayerType.THREE_D_MODEL: ThreeDModelLayer,
 }
+
+
+def _parse_ovg2_uuids(child_chunks: list[Chunk]) -> list[str]:
+    """Extract Essential Properties override UUIDs from LIST:OvG2 chunks.
+
+    Args:
+        child_chunks: The child chunks of a layer LIST chunk.
+
+    Returns:
+        A list of UUID strings from the OvG2/CPrp/Utf8 entries.
+    """
+    uuids: list[str] = []
+    for ovg2_list in filter_by_list_type(chunks=child_chunks, list_type="OvG2"):
+        for cprp in filter_by_list_type(chunks=ovg2_list.chunks, list_type="CPrp"):
+            utf8_chunks = filter_by_type(chunks=cprp.chunks, chunk_type="Utf8")
+            if utf8_chunks:
+                uuids.append(cast("Utf8Chunk", utf8_chunks[0]).value)
+    return uuids
 
 
 def parse_layer(
@@ -86,6 +106,7 @@ def parse_layer(
         _layer_list=layer_chunk,
         containing_comp=composition,
         properties=[],
+        essential_property_uuids=_parse_ovg2_uuids(child_chunks),
     )
 
     root_tdgp_chunk = find_by_list_type(chunks=child_chunks, list_type="tdgp")

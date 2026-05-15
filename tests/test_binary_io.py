@@ -453,7 +453,7 @@ class TestFmtField:
 
         info = _struct_info(U4Chunk)
         assert info is not None
-        fmt, data_fields, trailing, encodings, optional_start, endians, items_info, coerces = info
+        fmt, data_fields, trailing, encodings, optional_start, endians, items_info, coerces, init_names, simple, expected_size = info
         assert fmt == "I"
         assert len(data_fields) == 1
         assert data_fields[0].name == "value"
@@ -463,6 +463,8 @@ class TestFmtField:
         assert endians == {}
         assert items_info is None
         assert optional_start == 1  # no optional fields
+        assert init_names == ("value",)
+        assert simple is True  # no encodings/endians/optional/items
 
     def test_struct_info_field_count_validation(self) -> None:
         from attrs import define
@@ -479,13 +481,14 @@ class TestFmtField:
 
         info = _struct_info(BadChunk)
         assert info is not None
-        fmt, data_fields, _, encodings, optional_start, endians, items_info, coerces = info
+        fmt, data_fields, _, encodings, optional_start, endians, items_info, coerces, _, simple, _ = info
         assert fmt == "IHB"
         assert len(data_fields) == 3
         assert encodings == {}
         assert endians == {}
         assert items_info is None
         assert optional_start == 3  # all required
+        assert simple is True  # no transforms, no trailing/items/optional
 
     def test_struct_info_encoding_tracked(self) -> None:
         from py_aep.binary.fmt_field import _struct_info
@@ -493,7 +496,7 @@ class TestFmtField:
 
         info = _struct_info(PrinChunk)
         assert info is not None
-        _, _, _, encodings, _, _, _, _ = info
+        _, _, _, encodings, _, _, _, _, _, simple, _ = info
         # PrinChunk has match_name (field index 1) and display_name (index 2)
         assert 1 in encodings
         assert encodings[1] == "ascii"

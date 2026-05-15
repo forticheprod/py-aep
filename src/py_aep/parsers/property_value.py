@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk, ListChunk
@@ -67,10 +66,14 @@ def parse_property(
     # layer index can be resolved lazily (it changes on layer reorder).
     # tdli stores the 1-based mask index directly and is stable.
     tdpi: S4Chunk | None = None
-    with suppress(ChunkNotFoundError):
+    try:
         tdpi = cast("S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi"))
-    with suppress(ChunkNotFoundError):
+    except ChunkNotFoundError:
+        pass
+    try:
         value = cast("S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli")).value
+    except ChunkNotFoundError:
+        pass
 
     try:
         expression_utf8 = cast("Utf8Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="Utf8"))

@@ -178,7 +178,7 @@ def to_dict(obj: Any) -> Any:
             try:
                 value = getattr(obj, name)
                 result[name] = to_dict(value)
-            except Exception:  # properties may raise on missing data
+            except (AttributeError, KeyError):  # missing chunk or field
                 pass
         return result
     return obj
@@ -605,7 +605,6 @@ def compare_property(
         "isModified": "is_modified",
         "isSeparationLeader": "is_separation_leader",
         "isSeparationFollower": "is_separation_follower",
-        "selected": "selected",
         "unitsText": "units_text",
         "separationDimension": "separation_dimension",
     }
@@ -982,7 +981,6 @@ def compare_property_group(
         "isMask": "is_mask",
         "isModified": "is_modified",
         "propertyDepth": "property_depth",
-        "selected": "selected",
         "color": "color",
         "maskFeatherFalloff": "mask_feather_falloff",
         "maskMode": "mask_mode",

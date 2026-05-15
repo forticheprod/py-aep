@@ -12,11 +12,7 @@ from ..binary.utils import (
     find_by_list_type,
     find_by_type,
 )
-from ..models.layers.av_layer import AVLayer
-from ..models.layers.shape_layer import ShapeLayer
-from ..models.layers.text_layer import TextLayer
 from ..models.project import Project
-from ..models.properties.property import Property
 from .effect import parse_effect_definitions
 from .item import parse_folder
 from .render_queue import parse_render_queue
@@ -99,8 +95,6 @@ def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
     )
     project.items[0] = root_folder
 
-    _link_layers(project)
-
     project._render_queue = parse_render_queue(root_chunks, project)
 
     with contextlib.suppress(ChunkNotFoundError):
@@ -108,47 +102,3 @@ def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
         project._active_item = project.items[fcid_chunk.value]
 
     return project
-
-
-def _link_layers(project: Project) -> None:
-    for composition in project.compositions:
-        for layer in composition.av_layers:
-            if layer._source_id != 0:
-                source = project.items.get(layer._source_id)
-                if source is not None:
-                    if hasattr(source, "_used_in"):
-                        source._used_in.add(composition)
-    _fix_anchor_defaults(project)
-
-
-def _fix_anchor_defaults(project: Project) -> None:
-    """Recompute Anchor Point defaults now that all sources are resolvable.
-
-    During initial parsing, `synthesize_layer_properties` may run before the
-    layer's source item is in `project.items`, causing the anchor default
-    to fall back to composition center.  This pass corrects those defaults.
-    """
-    for composition in project.compositions:
-        comp_w = composition.width
-        comp_h = composition.height
-        for layer in composition.layers:
-            if not isinstance(layer, AVLayer):
-                continue
-            if isinstance(layer, (TextLayer, ShapeLayer)) or layer.null_layer:
-                continue
-            source = layer.source
-            if source is None:
-                continue
-            s_w = source.width
-            s_h = source.height
-            if s_w == comp_w and s_h == comp_h:
-                continue  # default is already correct
-            anchor = layer.transform["ADBE Anchor Point"]
-            if not isinstance(anchor, Property):
-                continue
-            # AE uses a minimum 1x1 source size for anchor defaults
-            correct = [max(s_w, 1) / 2.0, max(s_h, 1) / 2.0, 0.0]
-            anchor.default_value = correct
-            # Update synthesized value (no cdat) to match
-            if anchor._cdat is None and not anchor.keyframes:
-                anchor._value = correct

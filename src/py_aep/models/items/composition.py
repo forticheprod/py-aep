@@ -2,8 +2,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, cast
 
-from ...binary.chunk import ListChunk
+from ...binary.chunk import Chunk, DeferredListChunk, ListChunk
+from ...binary.composition_chunks import CdtaChunk
+from ...binary.layer_chunks import _LDTA_SOURCE_ID_END, _LDTA_SOURCE_ID_OFFSET
+from ...binary.misc_chunks import PrinChunk
 from ...binary.scalar_chunks import CsctChunk, U4Chunk, Utf8Chunk
+from ...binary.utils import (
+    ChunkNotFoundError,
+    filter_by_list_type,
+    find_by_list_type,
+    find_by_type,
+)
 from ..descriptors import ChunkField, ComputedField
 from ..layers.av_layer import AVLayer
 from ..layers.camera_layer import CameraLayer
@@ -37,9 +46,8 @@ from .footage import FootageItem
 if TYPE_CHECKING:
     from typing import Iterator
 
-    from ...binary.composition_chunks import CdtaChunk
     from ...binary.item_chunks import IdtaChunk
-    from ...binary.misc_chunks import PrinChunk
+    from ...binary.layer_chunks import LdtaChunk
     from ...binary.scalar_chunks import CmtaChunk, U1Chunk
     from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
@@ -474,22 +482,16 @@ class CompItem(AVItem):
     def __init__(
         self,
         *,
-        _cdrp: U1Chunk | None,
-        _cdta: CdtaChunk,
+        _child_chunks: list[Chunk],
         _cmta: CmtaChunk | None,
         _idta: IdtaChunk,
         _item_list: ListChunk,
         _gide: ListChunk | None,
         _name_utf8: Utf8Chunk,
-        _prin: PrinChunk,
         project: Project,
         parent_folder: FolderItem,
-        marker_property: Property | None = None,
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     ) -> None:
-        self._cdta = _cdta
-        self._cdrp = _cdrp
-        self._prin = _prin
-
         # Skip AVItem's extra params - they're all descriptor-backed on
         # CompItem and read directly from the cdta chunk body.
         super().__init__(
@@ -507,7 +509,45 @@ class CompItem(AVItem):
         self._layers_by_id: dict[int, Layer] | None = None
         self._type_cache: dict[str, list[Any]] | None = None
         self.__layer_id_to_index: dict[int, int] | None = None
-        self._marker_property = marker_property
+
+        self._cdta = cast(
+            "CdtaChunk",
+            find_by_type(chunks=_child_chunks, chunk_type="cdta"),
+        )
+        try:
+            self._cdrp: U1Chunk | None = cast(
+                "U1Chunk",
+                find_by_type(chunks=_child_chunks, chunk_type="cdrp"),
+            )
+        except ChunkNotFoundError:
+            self._cdrp = None
+        prin_list = find_by_list_type(chunks=_child_chunks, list_type="PRin")
+        self._prin = cast(
+            "PrinChunk",
+            find_by_type(chunks=prin_list.chunks, chunk_type="prin"),
+        )
+
+        # Layer deferral: collect layer chunks and source IDs now, parse
+        # the actual Layer objects on first access via _ensure_layers_loaded.
+        layer_chunks = filter_by_list_type(
+            chunks=_child_chunks, list_type="Layr",
+        )
+        if layer_chunks:
+            self._deferred_layers: (
+                tuple[
+                    list[ListChunk],
+                    dict[str, dict[str, dict[str, Any]]],
+                ]
+                | None
+            ) = (layer_chunks, effect_param_defs)
+            self._layers_loaded = False
+        else:
+            self._deferred_layers = None
+            self._layers_loaded = True
+
+        # Deferred markers + Essential Graphics parsing.
+        self._deferred_child_chunks: list[Chunk] | None = _child_chunks
+        self._marker_property: Property | None = None
         self._eg_template_name_utf8: Utf8Chunk | None = None
         self._eg_controllers: list[EssentialGraphicsController] = []
 
@@ -515,7 +555,101 @@ class CompItem(AVItem):
         """Return an iterator over the composition's layers."""
         return iter(self.layers)
 
+    def _source_ids_for_linking(self) -> set[int]:
+        """Return source IDs for `_used_in` linking without forcing layer parse."""
+        deferred = self._deferred_layers
+        if deferred is not None:
+            source_ids: set[int] = set()
+            for lc in deferred[0]:
+                if isinstance(lc, DeferredListChunk) and lc._parsed_chunks is None:
+                    raw = lc._raw_body
+                    if len(raw) >= _LDTA_SOURCE_ID_END and raw[:4] == b"ldta":
+                        sid = int.from_bytes(
+                            raw[_LDTA_SOURCE_ID_OFFSET:_LDTA_SOURCE_ID_END], "big",
+                        )
+                        if sid != 0:
+                            source_ids.add(sid)
+                else:
+                    try:
+                        ldta = cast(
+                            "LdtaChunk",
+                            find_by_type(chunks=lc.chunks, chunk_type="ldta"),
+                        )
+                    except ChunkNotFoundError:
+                        continue
+                    if ldta.source_id != 0:
+                        source_ids.add(ldta.source_id)
+            return source_ids
+
+        return {
+            layer._source_id
+            for layer in self._layers
+            if isinstance(layer, AVLayer) and layer._source_id != 0
+        }
+
+    def _ensure_layers_loaded(self) -> None:
+        """Parse deferred `LIST:Layr` chunks on first layer access."""
+        if self._layers_loaded:
+            return
+
+        deferred = self._deferred_layers
+        assert deferred is not None
+
+        # Clear deferred state first to avoid duplicate work if any nested
+        # access re-enters this method.
+        layer_chunks, deferred_effect_param_defs = deferred
+        self._deferred_layers = None
+
+        # Deferred import avoids model<->parser import cycles.
+        from ...parsers.layer import parse_layer
+
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]]
+        if deferred_effect_param_defs:
+            effect_param_defs = deferred_effect_param_defs
+        elif self._project is not None:
+            effect_param_defs = self._project._effect_param_defs
+        else:
+            effect_param_defs = {}
+
+        parsed_layers: list[Layer] = []
+        for layer_chunk in layer_chunks:
+            parsed_layers.append(
+                parse_layer(
+                    layer_chunk=layer_chunk,
+                    composition=self,
+                    effect_param_defs=effect_param_defs,
+                )
+            )
+
+        self._layers = parsed_layers
+
+        self._layers_loaded = True
+        self._invalidate_layer_cache()
+
+    def _ensure_comp_parsed(self) -> None:
+        """Parse markers and Essential Graphics on first access."""
+        if self._deferred_child_chunks is None:
+            return
+
+        child_chunks = self._deferred_child_chunks
+        self._deferred_child_chunks = None
+
+        # Deferred imports: both parsers import from models.
+        from ...parsers.composition import _get_markers  # noqa: PLC0415
+        from ...parsers.essential_graphics import (  # noqa: PLC0415
+            parse_essential_graphics,
+        )
+
+        self._marker_property = _get_markers(
+            child_chunks=child_chunks, composition=self,
+        )
+        eg_result = parse_essential_graphics(child_chunks)
+        if eg_result is not None:
+            self._eg_template_name_utf8 = eg_result[0]
+            self._eg_controllers = list(eg_result[1])
+
     def _build_type_cache(self) -> dict[str, list[Any]]:
+
         av: list[AVLayer] = []
         text: list[TextLayer] = []
         shape: list[ShapeLayer] = []
@@ -523,7 +657,7 @@ class CompItem(AVItem):
         light: list[LightLayer] = []
         three_d_model: list[ThreeDModelLayer] = []
         by_id: dict[int, Layer] = {}
-        for layer in self._layers:
+        for layer in self.layers:
             by_id[layer.id] = layer
             if isinstance(layer, AVLayer):
                 av.append(layer)
@@ -585,13 +719,14 @@ class CompItem(AVItem):
     def layers(self) -> list[Layer]:
         """All the [Layer][] objects for layers in this composition.
         Read-only."""
+        self._ensure_layers_loaded()
         return self._layers
 
     @property
     def layers_by_id(self) -> dict[int, Layer]:
         """Map of layer ID to layer, for O(1) lookup by sibling layers."""
         if self._layers_by_id is None:
-            self._layers_by_id = {layer.id: layer for layer in self._layers}
+            self._layers_by_id = {layer.id: layer for layer in self.layers}
         return self._layers_by_id
 
     @property
@@ -599,13 +734,14 @@ class CompItem(AVItem):
         """Map of layer ID to 0-based index."""
         if self.__layer_id_to_index is None:
             self.__layer_id_to_index = {
-                layer.id: idx for idx, layer in enumerate(self._layers)
+                layer.id: idx for idx, layer in enumerate(self.layers)
             }
         return self.__layer_id_to_index
 
     @property
     def marker_property(self) -> Property | None:
         """The composition's marker property. Read-only."""
+        self._ensure_comp_parsed()
         return self._marker_property
 
     @property
@@ -614,12 +750,14 @@ class CompItem(AVItem):
         composition. The name in the Essential Graphics panel is used
         for the file name of an exported Motion Graphics template.
         Read / Write."""
+        self._ensure_comp_parsed()
         if self._eg_template_name_utf8 is None:
             return None
         return self._eg_template_name_utf8.value
 
     @motion_graphics_template_name.setter
     def motion_graphics_template_name(self, value: str) -> None:
+        self._ensure_comp_parsed()
         if self._eg_template_name_utf8 is not None:
             self._eg_template_name_utf8.value = value
         else:
@@ -645,16 +783,23 @@ class CompItem(AVItem):
             self._eg_template_name_utf8 = utf8_chunk
 
     @property
+    def essential_graphics_controllers(self) -> list[EssentialGraphicsController]:
+        """The Essential Graphics controllers for this composition.
+        Read-only."""
+        self._ensure_comp_parsed()
+        return self._eg_controllers
+
+    @property
     def motion_graphics_template_controller_count(self) -> int:
         """The number of properties in the Essential Graphics panel
         for the composition. Read-only."""
-        return len(self._eg_controllers)
+        return len(self.essential_graphics_controllers)
 
     @property
     def motion_graphics_template_controller_names(self) -> list[str]:
         """The names of all properties in the Essential Graphics panel.
         Read-only."""
-        return [ctrl.name for ctrl in self._eg_controllers]
+        return [ctrl.name for ctrl in self.essential_graphics_controllers]
 
     def get_motion_graphics_template_controller_name(self, index: int) -> str:
         """Get the name of a single property in the Essential Graphics
@@ -667,7 +812,7 @@ class CompItem(AVItem):
         Args:
             index: The 0-based index of the EGP property.
         """
-        return self._eg_controllers[index].name
+        return self.essential_graphics_controllers[index].name
 
     def set_motion_graphics_controller_name(self, index: int, name: str) -> None:
         """Set the name of a single property in the Essential Graphics
@@ -681,7 +826,7 @@ class CompItem(AVItem):
             index: The 0-based index of the EGP property.
             name: The new name for the EGP property.
         """
-        self._eg_controllers[index].name = name
+        self.essential_graphics_controllers[index].name = name
 
     @property
     def renderers(self) -> list[str]:
@@ -889,18 +1034,3 @@ class CompItem(AVItem):
         """A list of the soloed layers in this composition."""
         return [layer for layer in self.layers if layer.solo]
 
-    @property
-    def selected_layers(self) -> list[Layer]:
-        """The layers that are selected in the composition. Read-only."""
-        return [layer for layer in self.layers if layer.selected]
-
-    @property
-    def selected_properties(self) -> list[Layer]:
-        """All selected layers in this composition. Read-only.
-
-        Warning:
-            This is not the same as ExtendScript's `selectedProperties`,
-            which returns selected properties. Property selection implementation
-            is insane.
-        """
-        return self.selected_layers

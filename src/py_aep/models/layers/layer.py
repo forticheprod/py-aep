@@ -23,7 +23,6 @@ from ..transforms import compute_ratio
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.layer_chunks import LdtaChunk
-    from ...binary.misc_chunks import OtlnItem
     from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
     from ..items.composition import CompItem
     from ..properties.marker import MarkerValue
@@ -221,11 +220,17 @@ class Layer(PropertyGroup):
         _layer_list: ListChunk,
         containing_comp: CompItem,
         properties: list[Property | PropertyGroup],
+        essential_property_uuids: list[str],
     ) -> None:
         self._ldta = _ldta
         self._cmta = _cmta
         self._layer_list = _layer_list
-        self._otln_entry: OtlnItem | None = None
+        self.essential_property_uuids: list[str] = essential_property_uuids
+        """UUIDs of Essential Properties overrides on this layer.
+
+        Each UUID corresponds to an [EssentialGraphicsController][] in
+        the source composition's Essential Graphics panel.
+        """
 
         try:
             layer_type_raw = _ldta.layer_type
@@ -261,20 +266,6 @@ class Layer(PropertyGroup):
     def name(self, value: str) -> None:
         PropertyBase.name.fset(self, value)  # type: ignore[attr-defined]
         self._ldta.layer_name = value
-
-    @property  # type: ignore[override]
-    def selected(self) -> bool:
-        """When `True`, the layer is selected in the timeline. Read / Write."""
-        if self._otln_entry is not None:
-            return bool(self._otln_entry.selected)
-        return bool(self.__dict__.get("_selected", False))
-
-    @selected.setter
-    def selected(self, value: bool) -> None:
-        if self._otln_entry is not None:
-            self._otln_entry.selected = value
-        else:
-            self._selected = value
 
     @property
     def comment(self) -> str:
@@ -666,6 +657,7 @@ class Layer(PropertyGroup):
                     ldta.matte_layer_id = 0
 
         # Update source _used_in if this layer references a source item
+        comp._project._ensure_used_in_linked()
         source = getattr(self, "source", None)
         if source is not None and hasattr(source, "_used_in"):
             _unregister_source_usage(source, comp, exclude=self)  # type: ignore[arg-type]
@@ -759,6 +751,7 @@ class Layer(PropertyGroup):
         into_comp._invalidate_layer_cache()
 
         # Register source _used_in for the cloned layer
+        into_comp._project._ensure_used_in_linked()
         new_source = getattr(new_layer, "source", None)
         if new_source is not None and hasattr(new_source, "_used_in"):
             new_source._used_in.add(into_comp)

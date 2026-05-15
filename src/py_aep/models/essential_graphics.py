@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .descriptors import ChunkField
+from .validators import validate_string
 
 if TYPE_CHECKING:
     from ..binary.scalar_chunks import U4Chunk, Utf8Chunk
@@ -23,7 +24,10 @@ class EssentialGraphicsController:
     chunk and can be renamed via the `name` attribute.
     """
 
-    name = ChunkField[str]("_name_utf8", "value")
+    name = ChunkField[str](
+        "_name_utf8", "value",
+        validate=validate_string(allow_empty=False),
+    )
     """The display name of the controller. Read / Write."""
 
     controller_type = ChunkField[int]("_ctyp", "value", read_only=True)
@@ -38,12 +42,16 @@ class EssentialGraphicsController:
         *,
         _name_utf8: Utf8Chunk,
         _ctyp: U4Chunk,
+        uuid: str,
     ) -> None:
         self._name_utf8 = _name_utf8
         self._ctyp = _ctyp
+        self.uuid = uuid
+        """The unique identifier for this controller."""
 
     def __repr__(self) -> str:
         return (
             f"EssentialGraphicsController(name={self.name!r},"
-            f" type={self.controller_type})"
+            f" type={self.controller_type},"
+            f" uuid={self.uuid!r})"
         )

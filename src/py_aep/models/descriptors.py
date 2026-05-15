@@ -13,6 +13,8 @@ from contextvars import ContextVar
 from enum import IntEnum
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
 
+from .version import _get_ae_version_major
+
 if TYPE_CHECKING:
     from typing import Any, Callable, Iterator
 
@@ -159,6 +161,7 @@ class ChunkField(Generic[T]):
         validate: Callable[..., None] | None = None,
         default: Any = _SENTINEL,
         post_set: Callable[[Any], None] | str | None = None,
+        min_version: int | None = None,
     ) -> None:
         if reverse is not None and reverse_multi is not None:
             raise TypeError(
@@ -173,6 +176,7 @@ class ChunkField(Generic[T]):
         self.validate = validate
         self.default = default
         self.post_set = post_set
+        self.min_version = min_version
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.public_name = name
@@ -202,6 +206,12 @@ class ChunkField(Generic[T]):
     def __set__(self, obj: Any, value: T) -> None:
         if self.read_only:
             raise AttributeError(f"{self.public_name!r} is read-only.")
+        if self.min_version is not None:
+            if _get_ae_version_major(obj) < self.min_version:
+                raise AttributeError(
+                    f"{self.public_name!r} requires AE"
+                    f" {self.min_version}+ file format."
+                )
         body = _prepare_write(
             obj, self.chunk_attr, self.public_name,
             value, self.validate, self.transform,
@@ -274,6 +284,7 @@ class ComputedField(Generic[T]):
         validate: Callable[..., None] | None = None,
         default: Any = _SENTINEL,
         enum_transform: Callable[..., Any] | None = None,
+        min_version: int | None = None,
     ) -> None:
         self.chunk_attr = chunk_attr
         self.compute = compute
@@ -281,6 +292,7 @@ class ComputedField(Generic[T]):
         self.validate = validate
         self.default = default
         self.enum_transform = enum_transform
+        self.min_version = min_version
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.public_name = name
@@ -310,6 +322,12 @@ class ComputedField(Generic[T]):
     def __set__(self, obj: Any, value: T) -> None:
         if self.reverse_fn is None:
             raise AttributeError(f"{self.public_name!r} is read-only.")
+        if self.min_version is not None:
+            if _get_ae_version_major(obj) < self.min_version:
+                raise AttributeError(
+                    f"{self.public_name!r} requires AE"
+                    f" {self.min_version}+ file format."
+                )
         body = _prepare_write(
             obj, self.chunk_attr, self.public_name,
             value, self.validate, self.enum_transform,

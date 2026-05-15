@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from typing import IO, Any, Callable, Iterator
 
     from .ldat_chunks import Lhd3Chunk
-    from .property_chunks import Tdb4Chunk
 
 # ---------------------------------------------------------------------------
 # Chunk base (also serves as fallback for unregistered types)
@@ -59,9 +58,25 @@ class Chunk:
         if info is None:
             data = read_bytes(fp, size)
             return cls(chunk_type=chunk_type, data=data)
-        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces = info
+        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces, init_names, simple, expected = info
         mixed_endian = bool(endians)
-        expected = struct.calcsize(">" + fmt) if fmt else 0
+
+        if simple and size >= expected:
+            # Fast path: no string encodings, endian overrides, optional
+            # fields, or items. dict(zip()) replaces the _decode_fields
+            # Python loop. Coerces (e.g. bool_field) and trailing bytes
+            # are handled inline.
+            kw: dict[str, Any] = dict(zip(init_names, read_fmt(fmt, fp)))
+            kw["chunk_type"] = chunk_type
+            for i, crc in coerces.items():
+                name = init_names[i]
+                kw[name] = crc(kw[name])
+            trailing_size = size - expected
+            if trailing_field and trailing_size > 0:
+                kw[_init_name(trailing_field.name)] = read_bytes(
+                    fp, trailing_size
+                )
+            return cls(**kw)
 
         if mixed_endian:
             # Per-field read: each field may have its own endian prefix
@@ -113,31 +128,31 @@ class Chunk:
                 values.append(None)
             items_start = size  # no trailing/items in the optional-fields slow path
 
-        kw: dict[str, Any] = {"chunk_type": chunk_type}
-        kw.update(_decode_fields(data_fields, values, encodings, coerces))
+        kw2: dict[str, Any] = {"chunk_type": chunk_type}
+        kw2.update(_decode_fields(data_fields, values, encodings, coerces, init_names))
         if items_info is not None:
             items_name, item_cls, item_size = items_info
             items_bytes = size - items_start
             count = items_bytes // item_size
             fmt_cls = cast("type[FmtItem]", item_cls)
-            kw[items_name] = [
+            kw2[items_name] = [
                 fmt_cls.frombytes(fp.read(item_size))
                 for _ in range(count)
             ]
             rest = items_bytes - count * item_size
             if trailing_field and rest > 0:
-                kw[_init_name(trailing_field.name)] = read_bytes(fp, rest)
+                kw2[_init_name(trailing_field.name)] = read_bytes(fp, rest)
         elif trailing_field and size > items_start:
-            kw[_init_name(trailing_field.name)] = read_bytes(
+            kw2[_init_name(trailing_field.name)] = read_bytes(
                 fp, size - items_start
             )
-        return cls(**kw)
+        return cls(**kw2)
 
     def write(self, fp: IO[bytes]) -> int:
         info = _struct_info(type(self))  # type: ignore[arg-type]
         if info is None:
             return write_bytes(fp, self.data)
-        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces = info
+        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces, _init_names, _simple, _expected = info
         mixed_endian = bool(endians)
 
         # Find last non-None optional field to determine write boundary
@@ -220,6 +235,7 @@ class ListChunk(Chunk):
         *,
         chunk_type: str = "LIST",
         ctx: ReadContext | None = None,
+        defer_list_types: frozenset[str] | None = None,
         **kwargs: Any,
     ) -> ListChunk:
         if size < 4:
@@ -240,7 +256,18 @@ class ListChunk(Chunk):
             grandparent_list_type=ctx.parent_list_type,
             parent_siblings=parent_result,
         )
-        chunks = read_chunks(fp, size - 4, ctx=child_ctx)
+        if defer_list_types and list_type in defer_list_types:
+            raw_body = fp.read(size - 4)
+            return DeferredListChunk(
+                chunk_type=chunk_type,
+                list_type=list_type,
+                raw_body=raw_body,
+                raw_ctx=child_ctx,
+            )
+        chunks = read_chunks(
+            fp, size - 4, ctx=child_ctx,
+            defer_list_types=defer_list_types,
+        )
         return cls(
             list_type=list_type,
             chunks=chunks,
@@ -259,6 +286,66 @@ class ListChunk(Chunk):
             written += write_bytes(fp, self.data)
         else:
             for chunk in self.chunks:
+                if chunk.synthetic:
+                    continue
+                written += write_chunk(fp, chunk)
+        return written
+
+
+class DeferredListChunk(ListChunk):
+    """A LIST chunk whose children are parsed lazily from stored raw bytes.
+
+    Inherits from `ListChunk` so all isinstance checks pass. The `chunks`
+    property triggers parsing on first access. If the chunks are never
+    accessed, `write()` writes the raw bytes directly (no parse needed).
+    """
+
+    __slots__ = ("_raw_body", "_raw_ctx", "_parsed_chunks")
+
+    _raw_body: bytes
+    _raw_ctx: ReadContext | None
+    _parsed_chunks: list[Chunk] | None
+
+    def __init__(
+        self,
+        *,
+        chunk_type: str = "LIST",
+        list_type: str = "",
+        raw_body: bytes = b"",
+        raw_ctx: ReadContext | None = None,
+    ) -> None:
+        object.__setattr__(self, "chunk_type", chunk_type)
+        object.__setattr__(self, "list_type", list_type)
+        object.__setattr__(self, "data", b"")
+        object.__setattr__(self, "synthetic", False)
+        object.__setattr__(self, "_raw_body", raw_body)
+        object.__setattr__(self, "_raw_ctx", raw_ctx)
+        object.__setattr__(self, "_parsed_chunks", None)
+
+    @property  # type: ignore[override]
+    def chunks(self) -> list[Chunk]:
+        parsed = self._parsed_chunks
+        if parsed is None:
+            body = self._raw_body
+            ctx = self._raw_ctx or EMPTY_CTX
+            parsed = read_chunks(BytesIO(body), len(body), ctx=ctx)
+            object.__setattr__(self, "_parsed_chunks", parsed)
+            object.__setattr__(self, "_raw_body", b"")
+            object.__setattr__(self, "_raw_ctx", None)
+        return parsed
+
+    @chunks.setter
+    def chunks(self, value: list[Chunk]) -> None:
+        object.__setattr__(self, "_parsed_chunks", value)
+        object.__setattr__(self, "_raw_body", b"")
+
+    def write(self, fp: IO[bytes]) -> int:
+        written = write_bytes(fp, self.list_type.encode("ASCII"))
+        if self._parsed_chunks is None:
+            # Never accessed - write raw bytes directly (fast path).
+            written += write_bytes(fp, self._raw_body)
+        else:
+            for chunk in self._parsed_chunks:
                 if chunk.synthetic:
                     continue
                 written += write_chunk(fp, chunk)
@@ -289,8 +376,9 @@ class ContainerChunk(Chunk):
     ) -> ContainerChunk:
         if ctx is None:
             ctx = EMPTY_CTX
+        defer = kwargs.get("defer_list_types")
         # Pass-through context (no list_type level change)
-        chunks = read_chunks(fp, size, ctx=ctx)
+        chunks = read_chunks(fp, size, ctx=ctx, defer_list_types=defer)
         return cls(chunk_type=chunk_type, chunks=chunks)
 
     def __iter__(self) -> Iterator[Chunk]:
@@ -313,13 +401,20 @@ class ContainerChunk(Chunk):
 # ---------------------------------------------------------------------------
 
 
-@define(frozen=True)
 class ReadContext:
     """Ancestor context passed through recursive chunk reading."""
 
-    parent_list_type: str = ""
-    grandparent_list_type: str = ""
-    parent_siblings: list[Chunk] | None = field(default=None, repr=False)
+    __slots__ = ("parent_list_type", "grandparent_list_type", "parent_siblings")
+
+    def __init__(
+        self,
+        parent_list_type: str = "",
+        grandparent_list_type: str = "",
+        parent_siblings: list[Chunk] | None = None,
+    ) -> None:
+        self.parent_list_type = parent_list_type
+        self.grandparent_list_type = grandparent_list_type
+        self.parent_siblings = parent_siblings
 
 
 EMPTY_CTX = ReadContext()
@@ -358,11 +453,9 @@ def _resolve_ldat_context(
         and ctx.parent_siblings is not None
         and len(ctx.parent_siblings) > 2
     ):
-        tdb4_sibling: Tdb4Chunk = ctx.parent_siblings[2]  # type: ignore[assignment]
-        try:
+        tdb4_sibling = ctx.parent_siblings[2]
+        if hasattr(tdb4_sibling, "is_spatial"):
             result["is_spatial"] = tdb4_sibling.is_spatial
-        except AttributeError:
-            pass
     return result
 
 
@@ -371,11 +464,9 @@ def _resolve_tdum_context(
     ctx: ReadContext,
 ) -> dict[str, bool]:
     if len(siblings) > 2:
-        tdb4: Tdb4Chunk = siblings[2]  # type: ignore[assignment]
-        try:
+        tdb4 = siblings[2]
+        if hasattr(tdb4, "color") and hasattr(tdb4, "integer"):
             return {"is_color": tdb4.color, "is_integer": tdb4.integer}
-        except AttributeError:
-            pass
     return {}
 
 
@@ -451,26 +542,33 @@ def read_chunks(
     size: int,
     *,
     ctx: ReadContext = EMPTY_CTX,
+    defer_list_types: frozenset[str] | None = None,
 ) -> list[Chunk]:
     """Read child chunks until `size` bytes are consumed."""
     end = fp.tell() + size
     result: list[Chunk] = []
-    while fp.tell() < end:
+    pos = end - size
+    while pos < end:
         chunk_type, len_body = read_header(fp)
         cls = CHUNK_TYPES.get(chunk_type, Chunk)
-        kwargs = _resolve_context(chunk_type, result, ctx)
+
+        resolver = _CONTEXT_RESOLVERS.get(chunk_type)
+        ctx_kw = resolver(result, ctx) if resolver else {}
         chunk = cls.read(
             fp, len_body, chunk_type=chunk_type, ctx=ctx,
-            parent_result=result, **kwargs,
+            parent_result=result,
+            defer_list_types=defer_list_types,
+            **ctx_kw,
         )
         result.append(chunk)
 
         # Consume pad byte if len_body is odd
         read_pad(fp, len_body)
+        pos += 8 + len_body + (len_body & 1)
 
-    if fp.tell() != end:
+    if pos != end:
         raise OSError(
-            f"Chunk reader drifted: expected offset {end}, got {fp.tell()}"
+            f"Chunk reader drifted: expected offset {end}, got {pos}"
         )
 
     return result
@@ -481,14 +579,22 @@ def read_chunks(
 # ---------------------------------------------------------------------------
 
 
-def read_aep(fp: IO[bytes]) -> tuple[ListChunk, str]:
+
+def read_aep(
+    fp: IO[bytes],
+    *,
+    defer_list_types: frozenset[str] | None = None,
+) -> tuple[ListChunk, str]:
     """Read an AEP file: RIFX root chunk + trailing XMP packet."""
     raw_type = read_bytes(fp, 4)
     chunk_type = raw_type.decode("ASCII")
     if chunk_type != "RIFX":
         raise ValueError(f"Expected RIFX, got {chunk_type!r}")
     (len_body,) = read_fmt("I", fp)
-    rifx = ListChunk.read(fp, len_body, chunk_type="RIFX")
+    rifx = ListChunk.read(
+        fp, len_body, chunk_type="RIFX",
+        defer_list_types=defer_list_types,
+    )
     xmp = fp.read().decode("UTF-8")
     return rifx, xmp
 

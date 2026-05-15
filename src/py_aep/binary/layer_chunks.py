@@ -12,6 +12,7 @@ from .chunk import Chunk
 from .fmt_field import (
     bool_field,
     bytes_field,
+    f8_field,
     s4_field,
     str_field,
     u1_field,
@@ -20,6 +21,10 @@ from .fmt_field import (
 )
 from .registry import register
 
+# Offset of source_id (u4 big-endian) within a LIST:Layr raw body:
+# chunk_type "ldta" (4) + body_size (4) + 40 bytes into ldta body = 48.
+_LDTA_SOURCE_ID_OFFSET = 48
+_LDTA_SOURCE_ID_END = 52
 
 @register("ldta")
 @define
@@ -74,7 +79,12 @@ class LdtaChunk(Chunk):
     _reserved_68: bytes = bytes_field(3, repr=False)
     track_matte_type: int = u1_field()
     stretch_divisor: int = u4_field(default=1)
-    _reserved_70: bytes = bytes_field(19, repr=False)
+    _reserved_70: bytes = bytes_field(7, repr=False)
+    _ae26_flag: int = u1_field(default=0)
+    """Byte 151: AE 26+ boolean flag (zero in earlier versions)."""
+    _ae26_float: float = f8_field(default=0.0)
+    """Bytes 152-159: AE 26+ float64 value (zero in earlier versions)."""
+    _reserved_70b: bytes = bytes_field(3, repr=False)
     layer_type: int = u1_field()
     parent_id: int = u4_field()
     _reserved_88: bytes = bytes_field(3, repr=False)

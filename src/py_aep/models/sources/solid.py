@@ -18,8 +18,13 @@ def _compute_color(body: OptiChunk) -> list[float]:
     return cast("list[float]", pack_values(body, "color_r", "color_g", "color_b"))
 
 
-def _reverse_color(value: list[float], _body: OptiChunk) -> dict[str, Any]:
-    return unpack_values("color_r", "color_g", "color_b")(value, _body)
+def _reverse_color(value: list[float], body: OptiChunk) -> dict[str, Any]:
+    # AE only generates the solid name on creation ("Red Solid") and
+    # "Replace Footage > Solid...".  Changing color alone does not
+    # update the name.  When we implement solid creation, use
+    # solid_color_name() from resolvers.solid and append a numeric
+    # suffix to ensure project-wide item name uniqueness.
+    return unpack_values("color_r", "color_g", "color_b")(value, body)
 
 
 class SolidSource(FootageSource):

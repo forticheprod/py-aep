@@ -14,6 +14,7 @@ from ...binary.utils import (
 )
 from ..descriptors import ChunkField
 from ..guide import Guide
+from ..validators import validate_string
 
 if TYPE_CHECKING:
     from ...binary.item_chunks import IdtaChunk
@@ -50,6 +51,7 @@ class Item:
     name = ChunkField[str](
         "_name_utf8",
         "value",
+        validate=validate_string(allow_empty=False),
     )
     """The name of the item, as shown in the Project panel.
     Read / Write."""
@@ -73,7 +75,6 @@ class Item:
         self._gide = _gide
         self._project = project
         self._parent_folder = parent_folder
-        self._selected = False
         self._type_name = type_name
         self._guides: list[Guide] = []
 
@@ -128,7 +129,7 @@ class Item:
             Item selection is not stored in the `.aep` binary format; it is a
             runtime-only state. Parsed projects always report `False`.
         """
-        return self._selected
+        return False
 
     @property
     def type_name(self) -> str:

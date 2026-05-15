@@ -29,9 +29,13 @@ def _parse_controller(cctl_chunk: ListChunk) -> EssentialGraphicsController:
 
     ctyp = cast("U4Chunk", find_by_type(chunks=cctl_chunk.chunks, chunk_type="CTyp"))
 
+    uuid_chunks = filter_by_type(chunks=cctl_chunk.chunks, chunk_type="Utf8")
+    uuid = cast("Utf8Chunk", uuid_chunks[0]).value if uuid_chunks else ""
+
     return EssentialGraphicsController(
         _name_utf8=name_utf8,
         _ctyp=ctyp,
+        uuid=uuid,
     )
 
 

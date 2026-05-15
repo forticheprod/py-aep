@@ -446,41 +446,6 @@ class TestEffectProperties:
         assert blurriness_1 is not None
         assert blurriness_1.value == 30.0
 
-    def test_effect_selected_first(self) -> None:
-        """First Gaussian Blur effect is selected."""
-        project = parse_project(SAMPLES_DIR / "2_gaussian_first_selected.aep")
-        layer = get_first_layer(project)
-        assert layer.effects is not None
-        assert len(layer.effects.properties) == 2
-        assert layer.effects.properties[0].selected is True
-        assert layer.effects.properties[1].selected is False
-
-    def test_effect_selected_second(self) -> None:
-        """Second Gaussian Blur effect is selected."""
-        project = parse_project(SAMPLES_DIR / "2_gaussian_second_selected.aep")
-        layer = get_first_layer(project)
-        assert layer.effects is not None
-        assert len(layer.effects.properties) == 2
-        assert layer.effects.properties[0].selected is False
-        assert layer.effects.properties[1].selected is True
-
-    def test_effect_selected_default(self) -> None:
-        """No effects are selected in the default sample."""
-        project = parse_project(SAMPLES_DIR / "2_gaussian.aep")
-        layer = get_first_layer(project)
-        assert layer.effects is not None
-        assert len(layer.effects.properties) == 2
-        assert layer.effects.properties[0].selected is False
-        assert layer.effects.properties[1].selected is False
-
-    def test_property_selected_default_false(self) -> None:
-        """Non-effect properties default to selected=False."""
-        layer = get_layer(
-            parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
-        )
-        opacity = _find_property(layer, "ADBE Opacity")
-        assert opacity is not None
-        assert opacity.selected is False
 
     def test_layer_index_value(self) -> None:
         """LAYER_INDEX effect property reads layer index from tdpi chunk.

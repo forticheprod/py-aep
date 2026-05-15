@@ -452,7 +452,7 @@ def _compute_auto_spatial_tangents(
 
     for i in range(n):
         kf = keyframes[i]
-        is_auto = getattr(kf, "spatial_auto_bezier", False)
+        is_auto = kf.spatial_auto_bezier
         out_tan = kf.out_spatial_tangent
         in_tan = kf.in_spatial_tangent
 
@@ -521,7 +521,7 @@ def _compute_auto_temporal_ease(
 
     for i in range(n):
         kf = keyframes[i]
-        is_auto = getattr(kf, "temporal_auto_bezier", False)
+        is_auto = kf.temporal_auto_bezier
         out_e = kf.out_temporal_ease[0] if kf.out_temporal_ease else None
         in_e = kf.in_temporal_ease[0] if kf.in_temporal_ease else None
 
@@ -802,14 +802,14 @@ def interpolate_keyframes(
     auto_ease: list[tuple[float, float, float, float]] | None
 
     has_auto_spatial = is_spatial and any(
-        getattr(kf, "spatial_auto_bezier", False) for kf in keyframes
+        kf.spatial_auto_bezier for kf in keyframes
     )
     auto_tangents = (
         _compute_auto_spatial_tangents(keyframes) if has_auto_spatial else None
     )
 
     has_auto_temporal = any(
-        getattr(kf, "temporal_auto_bezier", False) for kf in keyframes
+        kf.temporal_auto_bezier for kf in keyframes
     )
     auto_ease = _compute_auto_temporal_ease(keyframes) if has_auto_temporal else None
 

@@ -267,13 +267,20 @@ class Property(PropertyBase):
             can_vary = not no_value
 
         _tdsb = TdsbChunk(synthetic=synthetic)
-        _tdb4 = Tdb4Chunk(synthetic=synthetic, dimensions=spec.dimensions)
-        _tdb4.is_spatial = spec.is_spatial
-        _tdb4.can_vary_over_time = can_vary
-        _tdb4.color = spec.color
-        _tdb4.no_value = no_value
-        _tdb4.vector = spec.dimensions > 1
-        _tdb4.integer = spec.integer
+        _tdb4 = Tdb4Chunk(
+            synthetic=synthetic,
+            dimensions=spec.dimensions,
+            # Set backing integer fields directly instead of going through
+            # BitField descriptors (avoids 6 getattr/setattr pairs per call).
+            spatial_static_flags=1 | (0x08 if spec.is_spatial else 0),
+            cvot_flags=0x02 if can_vary else 0,
+            no_value_flags=0x01 if no_value else 0,
+            type_flags=(
+                (0x01 if spec.color else 0)
+                | (0x04 if spec.integer else 0)
+                | (0x08 if spec.dimensions > 1 else 0)
+            ),
+        )
 
         display = spec.auto_name or _TDSN_SENTINEL
         name_utf8 = Utf8Chunk(

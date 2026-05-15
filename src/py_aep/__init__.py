@@ -316,9 +316,11 @@ def parse(aep_file_path: str | os.PathLike[str]) -> Application:
     from .parsers.application import parse_app
     from .parsers.project import parse_project
 
+    _DEFERRED_LIST_TYPES = frozenset({"Layr"})
+
     file_path = os.fspath(aep_file_path)
     with _suppress_materialization():
         with open(file_path, "rb") as f:
-            rifx, xmp = read_aep(f)
+            rifx, xmp = read_aep(f, defer_list_types=_DEFERRED_LIST_TYPES)
         project = parse_project(rifx, xmp, file_path)
         return parse_app(rifx, project)

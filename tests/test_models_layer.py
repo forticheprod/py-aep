@@ -1973,7 +1973,9 @@ class TestLayerStylesEnabled:
             p for p in layer.properties if p.match_name == "ADBE Layer Styles"
         )
         assert isinstance(layer_styles, PropertyGroup)
+        assert layer_styles._deferred_ae_major is not None
         assert layer_styles.enabled is False
+        assert layer_styles._deferred_ae_major is not None
 
         # Blend Options mirrors the parent
         blend_options = next(
@@ -1981,6 +1983,7 @@ class TestLayerStylesEnabled:
             for p in layer_styles.properties
             if p.match_name == "ADBE Blend Options Group"
         )
+        assert layer_styles._deferred_ae_major is None
         assert isinstance(blend_options, PropertyGroup)
         assert blend_options.enabled is False
 
@@ -2148,7 +2151,7 @@ class TestSetTrackMatte:
         comp = app.project.compositions[0]
         layer = comp.layers[0]
 
-        with pytest.raises(AttributeError, match="AE 23.0"):
+        with pytest.raises(AttributeError, match="AE 23"):
             layer.set_track_matte(layer, TrackMatteType.ALPHA)
 
     def test_wrong_comp_raises(self) -> None:
@@ -2207,7 +2210,7 @@ class TestRemoveTrackMatte:
         """Files older than AE 23 raise AttributeError."""
         app = parse_aep(VERSIONS_DIR / "ae2022" / "complete.aep")
         comp = app.project.compositions[0]
-        with pytest.raises(AttributeError, match="AE 23.0"):
+        with pytest.raises(AttributeError, match="AE 23"):
             comp.layers[0].remove_track_matte()
 
 

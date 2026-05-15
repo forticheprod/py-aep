@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ListChunk
 from ..binary.item_chunks import IdtaChunk
 from ..binary.ldat_chunks import LdatChunk, Lhd3Chunk
-from ..binary.misc_chunks import OtlnChunk
 from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
@@ -23,7 +21,6 @@ from .view import parse_viewers
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk
-    from ..binary.misc_chunks import OtlnItem
     from ..models.items.composition import CompItem
     from ..models.items.footage import FootageItem
     from ..models.project import Project
@@ -33,7 +30,6 @@ def parse_item(
     item_chunk: ListChunk,
     project: Project,
     parent_folder: FolderItem,
-    otln_entries: list[OtlnItem] | None = None,
 ) -> CompItem | FolderItem | FootageItem:
     """
     Parse an item (composition, footage or folder).
@@ -42,8 +38,6 @@ def parse_item(
         item_chunk: The LIST chunk to parse.
         project: The project.
         parent_folder: The parent folder.
-        otln_entries: Otln entries for this composition (from the
-            associated LIST:FEE chunk). `None` for non-compositions.
     """
     child_chunks = item_chunk.chunks
 
@@ -100,7 +94,6 @@ def parse_item(
             project=project,
             parent_folder=parent_folder,
             effect_param_defs=project._effect_param_defs,
-            otln_entries=otln_entries,
         )
 
     else:
@@ -153,53 +146,18 @@ def parse_folder(
     else:
         sfdr_chunk = find_by_list_type(chunks=child_chunks, list_type="Sfdr")
         folder_chunks = sfdr_chunk.chunks
-    otln_map = _build_otln_map(folder_chunks)
     child_item_chunks = filter_by_list_type(chunks=folder_chunks, list_type="Item")
     for child_item_chunk in child_item_chunks:
-        idta = cast("IdtaChunk", find_by_type(chunks=child_item_chunk.chunks, chunk_type="idta"))
         child_item = parse_item(
             item_chunk=child_item_chunk,
             project=project,
             parent_folder=folder,
-            otln_entries=otln_map.get(idta.item_id),
         )
         folder.items.append(child_item)
 
     folder._viewers = parse_viewers(folder_chunks, folder.items)
 
     return folder
-
-
-def _build_otln_map(
-    folder_chunks: list[Chunk],
-) -> dict[int, list[OtlnItem]]:
-    """Build a mapping of composition item ID to otln entries.
-
-    Each LIST:FEE immediately follows its composition's LIST:Item in
-    the folder chunk list. The otln chunk inside FEE stores per-entry
-    collapsed and selected flags for the composition's timeline outline.
-    """
-    otln_map: dict[int, list[OtlnItem]] = {}
-    last_comp_id: int | None = None
-    for chunk in folder_chunks:
-        if not isinstance(chunk, ListChunk):
-            continue
-        if chunk.list_type == "Item":
-            idta = cast("IdtaChunk", find_by_type(chunks=chunk.chunks, chunk_type="idta"))
-            if idta.item_type == ItemType.COMPOSITION:
-                last_comp_id = idta.item_id
-            else:
-                last_comp_id = None
-        elif chunk.list_type == "FEE " and last_comp_id is not None:
-            with suppress(ChunkNotFoundError):
-                otln_chunk = cast("OtlnChunk", find_by_type(
-                    chunks=chunk.chunks, chunk_type="otln"
-                ))
-                otln_map[last_comp_id] = otln_chunk.items
-            last_comp_id = None
-    return otln_map
-
-
 def _parse_guides(child_chunks: list[Chunk]) -> list[Guide]:
     """Parse composition guides from the LIST:Gide chunk.
 

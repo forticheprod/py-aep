@@ -32,6 +32,7 @@ class _PropSpec(NamedTuple):
     max_value: float | None = None
     default_value: Any = _USE_VALUE
     can_vary_over_time: bool | None = None
+    min_major: int | None = None
 
 
 class _GroupSpec(NamedTuple):
@@ -39,6 +40,7 @@ class _GroupSpec(NamedTuple):
 
     match_name: str
     auto_name: str
+    min_major: int | None = None
 
 
 # Color min/max bounds used by Layer Styles and Material Shadow Color.
@@ -614,6 +616,16 @@ _TEXT_MORE_OPTIONS_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=29,
         can_vary_over_time=False,
+    ),
+    _PropSpec(
+        "ADBE Text Variable Font Spacing",
+        "Variable Font Spacing",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=3,
+        can_vary_over_time=False,
+        min_major=26,
     ),
 ]
 
@@ -2143,6 +2155,23 @@ _LAYER_STYLE_CHILD_SPECS: dict[str, list[_PropSpec]] = {
     "patternFill/enabled": _PATTERN_OVERLAY_SPECS,
     "frameFX/enabled": _STROKE_SPECS,
 }
+
+# Canonical children of "ADBE Layer Styles" (Blending Options + 10 styles).
+_LAYER_STYLES_SPECS: list[_GroupSpec] = [
+    _GroupSpec("ADBE Blend Options Group", "Blending Options"),
+    _GroupSpec("dropShadow/enabled", "Drop Shadow"),
+    _GroupSpec("innerShadow/enabled", "Inner Shadow"),
+    _GroupSpec("outerGlow/enabled", "Outer Glow"),
+    _GroupSpec("innerGlow/enabled", "Inner Glow"),
+    _GroupSpec("bevelEmboss/enabled", "Bevel and Emboss"),
+    _GroupSpec("chromeFX/enabled", "Satin"),
+    _GroupSpec("solidFill/enabled", "Color Overlay"),
+    _GroupSpec("gradientFill/enabled", "Gradient Overlay"),
+    _GroupSpec("patternFill/enabled", "Pattern Overlay"),
+    _GroupSpec("frameFX/enabled", "Stroke"),
+]
+
+_GROUP_CHILD_SPECS["ADBE Layer Styles"] = _LAYER_STYLES_SPECS
 
 
 # ---------------------------------------------------------------------------

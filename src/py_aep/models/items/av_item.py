@@ -114,4 +114,5 @@ class AVItem(Item):
     @property
     def used_in(self) -> list[CompItem]:
         """All the compositions that use this AVItem."""
+        self._project._ensure_used_in_linked()
         return list(self._used_in)

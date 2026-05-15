@@ -77,12 +77,12 @@ even though After Effects displays a unit string in the UI.
 
 ### Property.canSetExpression
 
-`Property.canSetExpression` is not implemented. This attribute indicates
-whether an expression can be assigned to the property. Analysis of the binary
-format shows that this value is not stored in the `.aep` file. It is determined
-at runtime by After Effects based on context such as the layer type (camera,
-light, etc.), whether the layer is 3D, whether position dimensions are
-separated, and the light type.
+`Property.can_set_expression` is implemented as a pure-logic resolver. This
+value is not stored in the `.aep` file - After Effects determines it at runtime
+based on context such as the layer type (camera, light, etc.), whether the
+layer is 3D, whether position dimensions are separated, and the light type.
+py_aep replicates this logic using match-name override tables and layer
+context inspection, validated against ExtendScript ground truth.
 
 ### Property.canVaryOverTime
 
@@ -128,9 +128,17 @@ information is stored in the binary format but not yet extracted.
 ## Essential Properties
 
 Essential Property override values on precomp layers are parsed as regular
-properties under the `"Essential Properties"` group. However, the UUID
-linkage between overrides and their source controller definitions
-(`LIST:OvG2`) is not resolved. The following attributes are not parsed:
+properties under the `"Essential Properties"` group. The UUID linkage between
+overrides and their source controller definitions is now partially exposed:
+
+- `Layer.essential_property_uuids` contains the UUIDs of `LIST:OvG2`
+  overrides on a precomp layer.
+- `EssentialGraphicsController.uuid` contains the controller's identity UUID
+  from the `LIST:CCtl` definition.
+- Consumers can match UUIDs to link overrides to controllers, but py_aep does
+  not perform this resolution automatically.
+
+The following attributes are not parsed:
 
 - `Property.essentialPropertySource`
 - `Property.alternateSource`
@@ -148,7 +156,7 @@ The following ExtendScript classes do not exist in py_aep:
 | `CharacterRange` | Text engine range object (AE 24.6+) |
 | `ComposedLineRange` | Text engine range object (AE 24.6+) |
 | `ParagraphRange` | Text engine range object (AE 24.6+) |
-| `ItemCollection` | Use `project.items` (Python list) instead |
+| `ItemCollection` | Use `project.items` (Python dict[int, Item]) instead |
 | `LayerCollection` | Use `comp.layers` (Python list) instead |
 | `Settings` | Application settings - methods only, not stored in `.aep` |
 | `Preferences` | Application preferences - methods only, not stored in `.aep` |

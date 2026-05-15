@@ -12,6 +12,7 @@ from py_aep.enums import (
 
 from ..descriptors import ChunkField, ComputedField
 from ..properties.property import Property
+from ..version import requires_version
 from .layer import Layer
 
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ def _would_create_cycle(target_comp: CompItem, new_source: AVItem) -> bool:
         if comp_id in visited:
             continue
         visited.add(comp_id)
-        for ancestor in getattr(comp, "_used_in", ()):
+        for ancestor in comp.used_in:
             stack.append(ancestor)
     return False
 
@@ -83,7 +84,7 @@ def _unregister_source_usage(
 
 
 def _validate_collapse_transformation(value: bool, obj: AVLayer) -> None:
-    if not getattr(obj, "can_set_collapse_transformation", True):
+    if not obj.can_set_collapse_transformation:
         raise AttributeError(
             "'collapse_transformation' is read-only when"
             " 'can_set_collapse_transformation' is False."
@@ -278,7 +279,8 @@ class AVLayer(Layer):
         raw = float(self.start_time + raw_out_point * self._stretch_factor)
         if not self._should_clamp_times():
             return raw
-        source_duration = getattr(self.source, "duration", 0)
+        assert self.source is not None  # _should_clamp_times guards
+        source_duration = self.source.duration
         max_out = float(self.start_time + source_duration * self._stretch_factor)
         return min(raw, max_out)
 
@@ -411,8 +413,7 @@ class AVLayer(Layer):
         """
         if self.source is None:
             return False
-        duration = getattr(self.source, "duration", 0)
-        return duration > 0
+        return self.source.duration > 0  # type: ignore[no-any-return]
 
     @property
     def time_remap_enabled(self) -> bool:
@@ -445,7 +446,7 @@ class AVLayer(Layer):
         for source-less layers like text and shape layers). Read-only.
         """
         if self.source is not None:
-            return getattr(self.source, "width", 0)
+            return self.source.width  # type: ignore[no-any-return]
         return self.containing_comp.width
 
     @property
@@ -457,7 +458,7 @@ class AVLayer(Layer):
         for source-less layers like text and shape layers). Read-only.
         """
         if self.source is not None:
-            return getattr(self.source, "height", 0)
+            return self.source.height  # type: ignore[no-any-return]
         return self.containing_comp.height
 
     @property
@@ -471,20 +472,42 @@ class AVLayer(Layer):
     @property
     def is_track_matte(self) -> bool:
         """`True` if this layer is being used as a track matte. Read-only."""
-        return any(
+        # AE 23+: explicit ID-based references
+        if any(
             layer._matte_layer_id == self.id
             for layer in self.containing_comp.av_layers
-        )
+        ):
+            return True
+        # Pre-2023 positional fallback: layer below has has_track_matte
+        layers = self.containing_comp.layers
+        idx = self.index
+        if idx + 1 < len(layers):
+            below = layers[idx + 1]
+            if (
+                isinstance(below, AVLayer)
+                and below._matte_layer_id == 0
+                and below.has_track_matte
+            ):
+                return True
+        return False
 
     @property
     def track_matte_layer(self) -> AVLayer | None:
         """The track matte layer for this layer. Returns `None` if this layer has no
         track matte layer. Read-only."""
-        if self._matte_layer_id == 0:
-            return None
-        layer = self.containing_comp.layers_by_id.get(self._matte_layer_id)
-        if isinstance(layer, AVLayer):
-            return layer
+        # AE 23+: explicit ID-based lookup
+        if self._matte_layer_id != 0:
+            layer = self.containing_comp.layers_by_id.get(
+                self._matte_layer_id
+            )
+            return layer  # type: ignore[return-value]
+        # Pre-2023 positional fallback: matte is the layer directly above
+        if self.has_track_matte:
+            idx = self.index
+            if idx > 0:
+                layers = self.containing_comp.layers
+                above = layers[idx - 1]
+                return above  # type: ignore[return-value]
         return None
 
     @property
@@ -519,6 +542,7 @@ class AVLayer(Layer):
                 return
         matte.enabled = True
 
+    @requires_version(23)
     def set_track_matte(
         self,
         track_matte_layer: AVLayer | None,
@@ -550,11 +574,6 @@ class AVLayer(Layer):
         ):
             return
 
-        if self._ldta.matte_layer_id is None:
-            raise AttributeError(
-                "set_track_matte() requires AE 23.0+ file format."
-            )
-
         if (
             track_matte_layer is not None
             and track_matte_layer.containing_comp is not self.containing_comp
@@ -576,6 +595,7 @@ class AVLayer(Layer):
         else:
             self._ldta.matte_layer_id = 0
 
+    @requires_version(23)
     def remove_track_matte(self) -> None:
         """Remove the track matte layer reference.
 
@@ -588,10 +608,6 @@ class AVLayer(Layer):
         Raises:
             AttributeError: If the file predates AE 23.0.
         """
-        if self._ldta.matte_layer_id is None:
-            raise AttributeError(
-                "remove_track_matte() requires AE 23.0+ file format."
-            )
 
         old_matte = self.track_matte_layer
         self._ldta.matte_layer_id = 0

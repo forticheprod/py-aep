@@ -30,7 +30,7 @@ Note:
 
 | Class | Status | Missing |
 |-------|--------|---------|
-| Item | 🚧 | `dynamicLinkGUID` |
+| Item | 🚧 | `dynamicLinkGUID`, `selected` |
 | AVItem | 🚧 | `isMediaReplacementCompatible`, `proxySource`, `useProxy` |
 | CompItem | 🚧 | `selectedProperties` |
 | FolderItem | ✅ | |
@@ -54,7 +54,7 @@ Note:
 
 | Class | Status | Missing |
 |-------|--------|---------|
-| PropertyBase | ✅ | |
+| PropertyBase | 🚧 | `selected` |
 | PropertyGroup | ✅ | |
 | Property | 🚧 | `alternateSource`, `canSetAlternateSource`, `canSetExpression`, `essentialPropertySource`, `selectedKeys`, `valueText` |
 | MaskPropertyGroup | ✅ | |

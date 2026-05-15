@@ -4,26 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import get_comp, parse_project
+from conftest import get_comp
 
 from py_aep import parse as parse_aep
 from py_aep.enums import Label
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "item"
 COMP_SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "composition"
-
-
-class TestItemSelected:
-    """Tests for Item.selected attribute.
-
-    Item selection is not stored in the .aep binary format; it is a
-    runtime-only property. All items should report selected=False.
-    """
-
-    def test_selected_empty(self) -> None:
-        project = parse_project(SAMPLES_DIR / "selection_empty.aep")
-        for item in project.items.values():
-            assert item.selected is False
 
 
 class TestRoundtripItemLabel:

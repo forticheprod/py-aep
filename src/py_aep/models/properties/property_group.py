@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Literal
 
-    from .specs import _GroupSpec, _PropSpec
+    from .specs import _PropSpec
 
 
 def _reorder_and_fill(
@@ -33,6 +33,7 @@ def _reorder_and_fill(
     skip: frozenset[str] = frozenset(),
     value_overrides: dict[str, tuple[Any, Any]] | None = None,
     tail_mode: Literal["none", "groups", "all"] = "groups",
+    ae_major: int,
 ) -> None:
     """Reorder *container.properties* according to *specs*, synthesizing missing entries.
 
@@ -84,6 +85,8 @@ def _reorder_and_fill(
             ordered.append(child)
         elif mn in skip:
             continue
+        elif spec.min_major is not None and spec.min_major > ae_major:
+            continue
         elif isinstance(spec, _GroupSpec):
             group = PropertyGroup._new(
                 spec.match_name,
@@ -114,6 +117,47 @@ def _reorder_and_fill(
 
     container.properties = ordered
 
+
+def _apply_bounds(prop: Property) -> None:
+    """Apply min/max override from `_PROPERTY_MIN_MAX` if one exists."""
+    bounds = _PROPERTY_MIN_MAX.get(prop.match_name)
+    if bounds is not None:
+        prop._min_value_fallback = bounds[0]
+        prop._max_value_fallback = bounds[1]
+
+
+def _derive_layer_styles_enabled(
+    group: PropertyGroup,
+    ae_major: int,
+    *,
+    synthesize_subgroups: bool,
+) -> None:
+    """Derive the collapsed `enabled` state for Layer Styles.
+
+    ExtendScript reports the Layer Styles group as disabled when no
+    individual style is enabled, and Blend Options mirrors the parent.
+    Synthesized (not in binary) style groups default to disabled.
+    """
+    any_style_enabled = False
+    blend_options: PropertyGroup | None = None
+    for child in group.properties:
+        if not isinstance(child, PropertyGroup):
+            continue
+        child_specs = _LAYER_STYLE_CHILD_SPECS.get(child.match_name)
+        if child_specs is not None and synthesize_subgroups:
+            _reorder_and_fill(
+                child, child_specs, child.property_depth + 1, ae_major=ae_major
+            )
+        if child.match_name == "ADBE Blend Options Group":
+            blend_options = child
+        elif child._tdsb is not None and child._tdsb.synthetic:
+            child.__dict__["enabled"] = False
+        elif child.enabled:
+            any_style_enabled = True
+    # Avoid mutating chunk fields (preserves round-trip)
+    group.__dict__["enabled"] = any_style_enabled
+    if blend_options is not None:
+        blend_options.__dict__["enabled"] = any_style_enabled
 
 
 class PropertyGroup(PropertyBase):
@@ -150,8 +194,7 @@ class PropertyGroup(PropertyBase):
     See: https://ae-scripting.docsforadobe.dev/property/propertygroup/
     """
 
-    properties: list[Property | PropertyGroup]
-    """List of properties in this group. Read-only."""
+    _properties: list[Property | PropertyGroup]
 
     @classmethod
     def _new(
@@ -239,11 +282,9 @@ class PropertyGroup(PropertyBase):
         self._tdmn = _tdmn
         self._tdgp = _tdgp
         self._fnam_utf8 = _fnam_utf8
+        self._deferred_ae_major: int | None = None
 
         self.properties = properties
-
-        for child in self.properties:
-            child._parent_property = self
 
         if match_name in _INDEXED_GROUP_MATCH_NAMES:
             self._property_type = PropertyType.INDEXED_GROUP
@@ -291,6 +332,47 @@ class PropertyGroup(PropertyBase):
                     c.synthetic = False
                     break
 
+    def _ensure_children_synthesized(self) -> None:
+        """Run deferred child synthesis exactly once, on first access."""
+        ae_major = self._deferred_ae_major
+        if ae_major is None:
+            return
+        self._deferred_ae_major = None
+        self._run_deferred_synthesis(ae_major)
+
+    def _run_deferred_synthesis(self, ae_major: int) -> None:
+        """Perform full child synthesis for this group.
+
+        Looks up child specs for the group's match name, reorders/fills
+        children, and defers synthesis on child groups recursively.
+        """
+        specs = _GROUP_CHILD_SPECS.get(self.match_name)
+        if specs is not None:
+            _reorder_and_fill(
+                self, specs, self.property_depth + 1, ae_major=ae_major
+            )
+
+        if self.match_name == "ADBE Layer Styles":
+            _derive_layer_styles_enabled(self, ae_major, synthesize_subgroups=True)
+
+        for child in self._properties:
+            if isinstance(child, PropertyGroup):
+                child._deferred_ae_major = ae_major
+            elif isinstance(child, Property):
+                _apply_bounds(child)
+
+    @property
+    def properties(self) -> list[Property | PropertyGroup]:
+        """List of properties in this group. Read-only."""
+        self._ensure_children_synthesized()
+        return self._properties
+
+    @properties.setter
+    def properties(self, properties: list[Property | PropertyGroup]) -> None:
+        self._properties = properties
+        for child in self._properties:
+            child._parent_property = self
+
     def __iter__(self) -> Iterator[Property | PropertyGroup]:
         """Return an iterator over the properties in this group."""
         return iter(self.properties)
@@ -319,7 +401,7 @@ class PropertyGroup(PropertyBase):
         # Avoid infinite recursion during __init__ (before
         # `properties` has been set on the instance).
         try:
-            object.__getattribute__(self, "properties")
+            object.__getattribute__(self, "_properties")
         except AttributeError:
             raise AttributeError(name) from None
         try:
@@ -395,57 +477,6 @@ class PropertyGroup(PropertyBase):
         Args:
             key: An `int` index or a `str` display name / match name.
         """
+        # NOTE This property needs to be defined last to avoid ghosting the
+        # @property decorator
         return self[key]
-
-    def _apply_min_max_bounds(self) -> None:
-        """Set `min_value`/`max_value` on properties with known bounds.
-
-        Walks all children recursively and applies overrides from
-        `_PROPERTY_MIN_MAX` unconditionally.  Uses fallback fields
-        so the binary tdum/tduM chunks are not mutated.
-        """
-        for child in self.properties:
-            if isinstance(child, Property):
-                bounds = _PROPERTY_MIN_MAX.get(child.match_name)
-                if bounds is not None:
-                    child._min_value_fallback = bounds[0]
-                    child._max_value_fallback = bounds[1]
-            elif isinstance(child, PropertyGroup):
-                child._apply_min_max_bounds()
-
-    def _synthesize_children(self) -> None:
-        """Synthesize missing children in this standard property group.
-
-        Uses `_reorder_and_fill` for groups with known canonical children,
-        or a specialized handler for layer styles.  For Layer Styles, also
-        derives the collapsed `enabled` state: ExtendScript reports the
-        group as disabled when no individual style is enabled, and Blend
-        Options mirrors the parent.
-        """
-        specs = _GROUP_CHILD_SPECS.get(self.match_name)
-        if specs is not None:
-            _reorder_and_fill(self, specs, self.property_depth + 1)
-            # Don't return: recurse into preserved sub-groups below.
-
-        if self.match_name == "ADBE Layer Styles":
-            any_style_enabled = False
-            blend_options: PropertyGroup | None = None
-            for child in self.properties:
-                if not isinstance(child, PropertyGroup):
-                    continue
-                child_specs = _LAYER_STYLE_CHILD_SPECS.get(child.match_name)
-                if child_specs is not None:
-                    _reorder_and_fill(child, child_specs, child.property_depth + 1)
-                # Blend Options mirrors the parent; skip for the check
-                if child.match_name == "ADBE Blend Options Group":
-                    blend_options = child
-                elif child.enabled:
-                    any_style_enabled = True
-            # Avoid mutating chunk fields (preserves round-trip)
-            self.__dict__["enabled"] = any_style_enabled
-            if blend_options is not None:
-                blend_options.__dict__["enabled"] = any_style_enabled
-
-        for child in self.properties:
-            if isinstance(child, PropertyGroup):
-                child._synthesize_children()

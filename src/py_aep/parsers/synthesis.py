@@ -29,12 +29,14 @@ from ..models.layers.camera_layer import CameraLayer
 from ..models.layers.light_layer import LightLayer
 from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
-from ..models.properties.overrides import _PROPERTY_MIN_MAX
 from ..models.properties.property import Property
-from ..models.properties.property_group import PropertyGroup, _reorder_and_fill
+from ..models.properties.property_group import (
+    PropertyGroup,
+    _apply_bounds,
+    _derive_layer_styles_enabled,
+    _reorder_and_fill,
+)
 from ..models.properties.specs import (
-    _GROUP_CHILD_SPECS,
-    _LAYER_STYLE_CHILD_SPECS,
     _REGULAR_AV_ONLY_GROUPS,
     _SHAPE_ONLY_GROUPS,
     _TEXT_ONLY_GROUPS,
@@ -42,6 +44,7 @@ from ..models.properties.specs import (
     _TRANSFORM_FIXED_DEFAULTS,
     _TRANSFORM_SPECS,
 )
+from ..models.version import _get_ae_version_major
 
 if TYPE_CHECKING:
     from ..models.layers.layer import Layer
@@ -52,63 +55,20 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _apply_bounds(prop: Property) -> None:
-    """Apply min/max override from `_PROPERTY_MIN_MAX` if one exists."""
-    bounds = _PROPERTY_MIN_MAX.get(prop.match_name)
-    if bounds is not None:
-        prop._min_value_fallback = bounds[0]
-        prop._max_value_fallback = bounds[1]
+def synthesize_children(group: PropertyGroup, ae_major: int) -> None:
+    """Register deferred child synthesis for a group.
 
-
-def synthesize_children(group: PropertyGroup) -> None:
-    """Synthesize missing children and apply min/max bounds in one pass.
-
-    For groups with known canonical children (`_GROUP_CHILD_SPECS`),
-    reorders and fills via `_reorder_and_fill`.  For Layer Styles,
-    also derives the collapsed `enabled` state.
-
-    After synthesis, applies `_PROPERTY_MIN_MAX` overrides to all leaf
-    `Property` children and recurses into child `PropertyGroup` nodes.
-    This replaces the former separate `_apply_min_max_bounds` walk.
+    Child groups and leaf min/max bounds are synthesized when the group's
+    `properties` are first accessed. Layer Styles keeps its collapsed
+    `enabled` state eagerly derived to preserve existing behavior.
     """
-    specs = _GROUP_CHILD_SPECS.get(group.match_name)
-    if specs is not None:
-        _reorder_and_fill(group, specs, group.property_depth + 1)
-        # Don't return: recurse into preserved sub-groups below.
-
     if group.match_name == "ADBE Layer Styles":
-        _derive_layer_styles_enabled(group)
-
-    for child in group.properties:
-        if isinstance(child, PropertyGroup):
-            synthesize_children(child)
-        elif isinstance(child, Property):
-            _apply_bounds(child)
-
-
-def _derive_layer_styles_enabled(group: PropertyGroup) -> None:
-    """Derive the collapsed `enabled` state for Layer Styles.
-
-    ExtendScript reports the Layer Styles group as disabled when no
-    individual style is enabled, and Blend Options mirrors the parent.
-    """
-    any_style_enabled = False
-    blend_options: PropertyGroup | None = None
-    for child in group.properties:
-        if not isinstance(child, PropertyGroup):
-            continue
-        child_specs = _LAYER_STYLE_CHILD_SPECS.get(child.match_name)
-        if child_specs is not None:
-            _reorder_and_fill(child, child_specs, child.property_depth + 1)
-        # Blend Options mirrors the parent; skip for the check
-        if child.match_name == "ADBE Blend Options Group":
-            blend_options = child
-        elif child.enabled:
-            any_style_enabled = True
-    # Avoid mutating chunk fields (preserves round-trip)
-    group.__dict__["enabled"] = any_style_enabled
-    if blend_options is not None:
-        blend_options.__dict__["enabled"] = any_style_enabled
+        _derive_layer_styles_enabled(
+            group,
+            ae_major,
+            synthesize_subgroups=False,
+        )
+    group._deferred_ae_major = ae_major
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +76,7 @@ def _derive_layer_styles_enabled(group: PropertyGroup) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _synthesize_missing_top_level_groups(layer: Layer) -> None:
+def _synthesize_missing_top_level_groups(layer: Layer, ae_major: int) -> None:
     """Add missing top-level property groups expected by ExtendScript.
 
     ExtendScript always reports a fixed set of top-level property groups
@@ -139,7 +99,7 @@ def _synthesize_missing_top_level_groups(layer: Layer) -> None:
     else:
         skip_groups = _TEXT_ONLY_GROUPS | _SHAPE_ONLY_GROUPS
 
-    _reorder_and_fill(layer, _TOP_LEVEL_SPECS, 1, skip=skip_groups, tail_mode="all")
+    _reorder_and_fill(layer, _TOP_LEVEL_SPECS, 1, skip=skip_groups, tail_mode="all", ae_major=ae_major)
 
     # Post-processing: Layer Sets elided flag and depth fixup.
     canonical_mns = {s.match_name for s in _TOP_LEVEL_SPECS}
@@ -155,7 +115,7 @@ def _synthesize_missing_top_level_groups(layer: Layer) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _set_transform_defaults(layer: Layer) -> None:
+def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
     """Assign defaults and synthesize missing transform properties.
 
     After Effects always exposes twelve transform properties via ExtendScript
@@ -262,7 +222,8 @@ def _set_transform_defaults(layer: Layer) -> None:
         overrides[mn] = (value, default)
 
     _reorder_and_fill(
-        transform, _TRANSFORM_SPECS, 2, value_overrides=overrides, tail_mode="none"
+        transform, _TRANSFORM_SPECS, 2, value_overrides=overrides, tail_mode="none",
+        ae_major=ae_major,
     )
 
     # For null layers where opacity was already parsed from binary,
@@ -333,17 +294,19 @@ def synthesize_layer_properties(layer: Layer) -> None:
     Args:
         layer: The layer whose property tree should be finalized.
     """
-    _set_transform_defaults(layer)
+    ae_major: int = _get_ae_version_major(layer)
+
+    _set_transform_defaults(layer, ae_major)
 
     # --- Synthesize missing top-level groups --------------------------------
-    _synthesize_missing_top_level_groups(layer)
+    _synthesize_missing_top_level_groups(layer, ae_major)
 
     # --- Synthesize children & apply min/max (single recursive pass) --------
     for group in layer.properties:
         if isinstance(group, PropertyGroup):
             if group.match_name == "ADBE Transform Group":
                 continue  # already handled by _set_transform_defaults
-            synthesize_children(group)
+            synthesize_children(group, ae_major=ae_major)
         elif isinstance(group, Property):
             _apply_bounds(group)
             # Time Remap max defaults to 0 when no _tduM chunk provides the

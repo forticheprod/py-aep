@@ -553,6 +553,51 @@ class TestCompItemLayerFiltering:
         assert comp.file_layers == []
 
 
+class TestCompItemLazyLayerParsing:
+    """Tests for deferred composition layer parsing."""
+
+    def test_layers_parsed_on_first_access(self) -> None:
+        comp = get_comp(parse_aep(LAYER_SAMPLES_DIR / "type.aep").project, "type_text")
+
+        assert comp._layers_loaded is False
+        assert comp._deferred_layers is not None
+        assert len(comp._deferred_layers[0]) == 1
+
+        # Non-layer attributes should not trigger layer parsing.
+        _ = comp.width
+        assert comp._layers_loaded is False
+
+        layers = comp.layers
+        assert comp._layers_loaded is True
+        assert len(layers) == 1
+        assert comp._deferred_layers is None
+
+    def test_markers_are_eager_without_loading_layers(self) -> None:
+        comp = get_comp(parse_aep(LAYER_SAMPLES_DIR / "type.aep").project, "type_text")
+
+        assert comp._layers_loaded is False
+
+        markers = comp.markers
+        assert markers == []
+
+        # Reading comp markers must not force regular layer parsing.
+        assert comp._layers_loaded is False
+
+    def test_source_used_in_linking_without_layer_parse(self) -> None:
+        project = parse_aep(FOOTAGE_SAMPLES_DIR / "footage_not_missing.aep").project
+        comp = project.compositions[0]
+
+        assert comp._layers_loaded is False
+        assert comp._deferred_layers is not None
+
+        # Trigger lazy linking via used_in - source IDs are extracted
+        # on-demand from DeferredListChunk raw bytes.
+        footage_items = [it for it in project.items.values() if hasattr(it, "_used_in")]
+        linked = [it for it in footage_items if comp in it.used_in]
+        assert linked
+        assert comp._layers_loaded is False
+
+
 class TestRoundtripBgColor:
     """Roundtrip tests for CompItem.bg_color."""
 
@@ -1457,8 +1502,9 @@ class TestEssentialGraphics:
         for sample, expected_type in type_samples.items():
             project = parse_project(EG_SAMPLES_DIR / f"{sample}.aep")
             comp = next(c for c in project.compositions if c.name == "primary")
-            assert comp._eg_controllers, f"{sample}: no controllers"
-            ctrl = comp._eg_controllers[0]
+            ctrls = comp.essential_graphics_controllers
+            assert ctrls, f"{sample}: no controllers"
+            ctrl = ctrls[0]
             assert ctrl.controller_type == expected_type, (
                 f"{sample}: expected type {expected_type}, got {ctrl.controller_type}"
             )
@@ -1533,6 +1579,8 @@ class TestRoundtripEssentialGraphics:
         is None creates a new CIF3 chunk structure in memory."""
         project = parse_aep(EG_SAMPLES_DIR / "base.aep").project
         comp = next(c for c in project.compositions if c.name == "main")
+        # Force deferred EG parsing, then clear to simulate from-scratch.
+        comp._ensure_comp_parsed()
         comp._eg_template_name_utf8 = None
         assert comp.motion_graphics_template_name is None
 

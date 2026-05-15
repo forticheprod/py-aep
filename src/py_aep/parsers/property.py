@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ListChunk
@@ -409,9 +408,11 @@ def _parse_mask_atom(
     mask_shape_chunks = chunks_by_mn.get("ADBE Mask Shape", [])
     for chunk in mask_shape_chunks:
         if isinstance(chunk, ListChunk) and chunk.list_type == "om-s":
-            with suppress(ChunkNotFoundError):
+            try:
                 tdbs = find_by_list_type(chunks=chunk.chunks, list_type="tdbs")
                 mask_shape_tdsb = cast("TdsbChunk", find_by_type(chunks=tdbs.chunks, chunk_type="tdsb"))
+            except ChunkNotFoundError:
+                pass
             break
 
     mask_group = MaskPropertyGroup(

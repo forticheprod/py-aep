@@ -25,7 +25,6 @@ _INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset({
 
 if TYPE_CHECKING:
     from ...binary.chunk import Chunk, ListChunk
-    from ...binary.misc_chunks import EwotItem
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from ..layers.layer import Layer
@@ -72,10 +71,7 @@ class PropertyBase:
         self._property_depth = property_depth
         self._tdmn: TdmnChunk | None = None
 
-        self._ewot_entry: EwotItem | None = None
-
         self._name: str | None = None
-        self._selected = False
 
         self._elided = False
         self._is_effect = False
@@ -93,17 +89,13 @@ class PropertyBase:
 
     @property
     def selected(self) -> bool:
-        """When `True`, the property is selected. Read / Write."""
-        if self._ewot_entry is not None:
-            return bool(self._ewot_entry.selected)
-        return bool(self.__dict__.get("_selected", False))
+        """When `True`, the property is selected. Read / Write.
 
-    @selected.setter
-    def selected(self, value: bool) -> None:
-        if self._ewot_entry is not None:
-            self._ewot_entry.selected = value
-        else:
-            self._selected = value
+        Note:
+            Property selection is stored in the `.aep` binary format but very complex.
+            Parsed projects report `False` for now.
+        """
+        return False
 
     @property
     def match_name(self) -> str:

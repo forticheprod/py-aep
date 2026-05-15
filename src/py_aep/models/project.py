@@ -28,6 +28,7 @@ from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
 from .validators import validate_number, validate_one_of
+from .version import requires_version
 
 if TYPE_CHECKING:
     from typing import ClassVar, Iterator
@@ -254,6 +255,7 @@ class Project:
         self._render_queue = render_queue
         self._active_item: Item | None = None
         self._effect_param_defs: dict[str, dict[str, dict[str, Any]]] = {}
+        self._used_in_linked = False
 
     def __repr__(self) -> str:
         return f"Project(file={self._file!r})"
@@ -261,6 +263,21 @@ class Project:
     def __iter__(self) -> Iterator[Item]:
         """Return an iterator over the project's items."""
         return iter(self.items.values())
+
+    def _ensure_used_in_linked(self) -> None:
+        """Populate `AVItem._used_in` sets on first access.
+
+        Deferred until the first `used_in` read or mutation that
+        needs the back-references for correctness (e.g. cycle detection).
+        """
+        if self._used_in_linked:
+            return
+        self._used_in_linked = True
+        for composition in self.compositions:
+            for source_id in composition._source_ids_for_linking():
+                source = self.items.get(source_id)
+                if source is not None and hasattr(source, "_used_in"):
+                    source._used_in.add(composition)
 
     @property
     def file(self) -> str:
@@ -392,6 +409,7 @@ class Project:
         return ColorManagementSystem(int(settings["colorManagementSystem"]))
 
     @color_management_system.setter
+    @requires_version(24)
     def color_management_system(self, value: ColorManagementSystem | int) -> None:
         if not isinstance(value, (ColorManagementSystem, int)):
             raise TypeError(f"expected a ColorManagementSystem member, got {value!r}")
@@ -405,6 +423,7 @@ class Project:
         return LutInterpolationMethod(int(settings["lutInterpolationMethod"]))
 
     @lut_interpolation_method.setter
+    @requires_version(24)
     def lut_interpolation_method(self, value: LutInterpolationMethod | int) -> None:
         if not isinstance(value, (LutInterpolationMethod, int)):
             raise TypeError(f"expected a LutInterpolationMethod member, got {value!r}")
@@ -418,6 +437,7 @@ class Project:
         return str(settings["ocioConfigurationFile"])
 
     @ocio_configuration_file.setter
+    @requires_version(24)
     def ocio_configuration_file(self, value: str) -> None:
         self._update_cms_setting("ocioConfigurationFile", value)
 

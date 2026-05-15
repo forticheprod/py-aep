@@ -19,7 +19,7 @@ After Effects files (.aep) are mostly binary files, encoded in RIFX format. This
 * Modifying most properties and saving to a new .aep file
 
 ### Limited support
-* Essential graphics: controllers and overrides can be accessed but are not linked together
+* Essential graphics: controllers and override UUIDs are exposed but automatic resolution between them is not implemented
 * Output Module settings: switching to another format (e.g. mov -> OpenEXR) is not possible yet
 * Footage source: the file path cannot be changed yet
 * Properties that are synthesized by After Effects at runtime and not stored in the binary are supported but some might be missing or inaccurate

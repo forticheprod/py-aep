@@ -115,3 +115,30 @@ def validate_one_of(
             raise TypeError(f"expected a number, got {type(value).__name__}") from None
 
     return _validator
+
+
+def validate_string(
+    *,
+    allow_empty: bool = True,
+    max_length: int | None = None,
+) -> Callable[[object, Any], None]:
+    """Return a validator that checks a string value.
+
+    Args:
+        allow_empty: When `False`, reject empty strings.
+        max_length: Maximum allowed character count.
+    """
+
+    def _validator(value: object, instance: Any = None) -> None:
+        if not isinstance(value, str):
+            raise TypeError(
+                f"expected a string, got {type(value).__name__}"
+            )
+        if not allow_empty and not value:
+            raise ValueError("must not be empty")
+        if max_length is not None and len(value) > max_length:
+            raise ValueError(
+                f"must be at most {max_length} characters, got {len(value)}"
+            )
+
+    return _validator

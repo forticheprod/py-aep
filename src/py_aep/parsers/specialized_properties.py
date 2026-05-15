@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import logging
-from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from ..binary.ldat_chunks import LdatChunk
@@ -92,12 +91,14 @@ def parse_orientation(
     # otst.  The standard _parse_keyframes() reads from tdbs which only has 1D
     # orientation data, so we override each keyframe's value with the full 3D
     # otda data.
-    with suppress(ChunkNotFoundError):
+    try:
         otky_chunk = find_by_list_type(chunks=otst_chunk.chunks, list_type="otky")
         otda_chunks = cast("list[OtdaChunk]", filter_by_type(chunks=otky_chunk.chunks, chunk_type="otda"))
         for idx, kf in enumerate(prop.keyframes):
             if idx < len(otda_chunks):
                 kf.value = list(otda_chunks[idx].values)
+    except ChunkNotFoundError:
+        pass
 
     return prop
 

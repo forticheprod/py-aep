@@ -172,13 +172,16 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     dict[int, str],
     tuple[str, type, int] | None,
     dict[int, type],
+    tuple[str, ...],
+    bool,
+    int,
 ] | None:
     """Derive struct layout metadata for a chunk class.
 
-    Returns an 8-tuple `(fmt, data_fields, trailing, encodings,
-    optional_start, endians, items_info, coerces)` or `None` for
-    raw-bytes chunks that have neither `fmt_field` nor `items_field`
-    fields.
+    Returns an 11-tuple `(fmt, data_fields, trailing, encodings,
+    optional_start, endians, items_info, coerces, init_names, simple,
+    expected_size)` or `None` for raw-bytes chunks that have neither
+    `fmt_field` nor `items_field` fields.
 
     - `encodings`: field-index -> encoding name.
     - `optional_start`: index of first optional field.
@@ -186,6 +189,11 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
       non-empty triggers per-field I/O in `Chunk.read()` / `Chunk.write()`.
     - `items_info`: `(init_param_name, item_cls, item_size)` or `None`.
     - `coerces`: field-index -> type callable (e.g. `bool`).
+    - `simple`: `True` when the chunk has no string encodings, endian
+      overrides, optional fields, or items, so `_decode_fields` can be
+      replaced with `dict(zip(init_names, values))` plus inline coerce
+      and trailing-bytes handling.
+    - `expected_size`: pre-computed `struct.calcsize('>' + fmt)`.
     """
     from .chunk import Chunk
 
@@ -256,7 +264,19 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     else:
         combined = ""
 
-    return combined, tuple(data_fields), trailing, encodings, optional_start, endians, items_info, coerces
+    init_names = tuple(_init_name(f.name) for f in data_fields)
+    # Simple chunks have no string encodings, endian overrides, optional
+    # fields, or items. Coerces (e.g. bool) and trailing fields are handled
+    # inline in the fast path.
+    simple = (
+        not encodings
+        and not endians
+        and items_info is None
+        and optional_start == len(data_fields)
+    )
+    expected_size = struct.calcsize(">" + combined) if combined else 0
+
+    return combined, tuple(data_fields), trailing, encodings, optional_start, endians, items_info, coerces, init_names, simple, expected_size
 
 
 def _init_name(name: str) -> str:
@@ -273,6 +293,7 @@ def _decode_fields(
     values: list[Any],
     encodings: dict[int, str],
     coerces: dict[int, type],
+    init_names: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Decode raw struct values into init keyword arguments.
 
@@ -289,7 +310,7 @@ def _decode_fields(
         crc = coerces.get(i)
         if crc is not None and value is not None:
             value = crc(value)
-        kw[_init_name(fld.name)] = value
+        kw[init_names[i] if init_names is not None else _init_name(fld.name)] = value
     return kw
 
 
@@ -326,7 +347,7 @@ class FmtItem:
         info = _struct_info(cls)  # type: ignore[arg-type]
         if info is None:
             raise TypeError(f"{cls.__name__} has no fmt_field metadata")
-        fmt, data_fields, _, encodings, _, endians, _, coerces = info
+        fmt, data_fields, _, encodings, _, endians, _, coerces, init_names, simple, expected = info
         if endians:
             values: list[Any] = []
             pos = 0
@@ -338,8 +359,14 @@ class FmtItem:
                 values.append(v)
                 pos += f_size
         else:
-            values = list(struct.unpack(">" + fmt, data[: struct.calcsize(">" + fmt)]))
-        kw = _decode_fields(data_fields, values, encodings, coerces)
+            values = list(struct.unpack(">" + fmt, data[:expected]))
+        if simple:
+            kw = dict(zip(init_names, values))
+            for i, crc in coerces.items():
+                name = init_names[i]
+                kw[name] = crc(kw[name])
+        else:
+            kw = _decode_fields(data_fields, values, encodings, coerces, init_names)
         return cls(**kw)
 
     def tobytes(self) -> bytes:
@@ -347,7 +374,7 @@ class FmtItem:
         info = _struct_info(type(self))  # type: ignore[arg-type]
         if info is None:
             raise TypeError(f"{type(self).__name__} has no fmt_field metadata")
-        fmt, data_fields, _, encodings, _, endians, _, coerces = info
+        fmt, data_fields, _, encodings, _, endians, _, coerces, _, _simple, _ = info
         if endians:
             parts: list[bytes] = []
             for i, f in enumerate(data_fields):

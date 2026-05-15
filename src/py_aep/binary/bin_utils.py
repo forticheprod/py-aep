@@ -13,6 +13,15 @@ if TYPE_CHECKING:
     from typing import IO, Any
 
 _HEADER_STRUCT = struct.Struct(">4sI")
+_STRUCT_CACHE: dict[str, struct.Struct] = {}
+
+
+def _get_struct(full_fmt: str) -> struct.Struct:
+    """Return a cached `struct.Struct` for `full_fmt`."""
+    s = _STRUCT_CACHE.get(full_fmt)
+    if s is None:
+        s = _STRUCT_CACHE[full_fmt] = struct.Struct(full_fmt)
+    return s
 
 
 def read_fmt(fmt: str, fp: IO[bytes], endian: str = ">") -> tuple[Any, ...]:
@@ -24,14 +33,13 @@ def read_fmt(fmt: str, fp: IO[bytes], endian: str = ">") -> tuple[Any, ...]:
     Raises:
         IOError: If fewer bytes are available than the format requires.
     """
-    full_fmt = endian + fmt
-    size = struct.calcsize(full_fmt)
-    data = fp.read(size)
-    if len(data) < size:
+    s = _get_struct(endian + fmt)
+    data = fp.read(s.size)
+    if len(data) < s.size:
         raise OSError(
-            f"Short read: expected {size} bytes, got {len(data)}"
+            f"Short read: expected {s.size} bytes, got {len(data)}"
         )
-    return struct.unpack(full_fmt, data)
+    return s.unpack(data)
 
 
 def write_fmt(fp: IO[bytes], fmt: str, *args: Any, endian: str = ">") -> int:
@@ -39,8 +47,7 @@ def write_fmt(fp: IO[bytes], fmt: str, *args: Any, endian: str = ">") -> int:
 
     Returns bytes written.
     """
-    full_fmt = endian + fmt
-    data = struct.pack(full_fmt, *args)
+    data = _get_struct(endian + fmt).pack(*args)
     fp.write(data)
     return len(data)
 

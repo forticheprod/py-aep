@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk
@@ -588,7 +587,7 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
     if extractor is not None:
         extractor(pard_chunk, result)
 
-    with suppress(ChunkNotFoundError):
+    try:
         pdnm_chunk = cast("ContainerChunk", find_by_type(chunks=parameter_chunks, chunk_type="pdnm"))
         # pdnm is a ContainerChunk with a Utf8 child
         utf8_chunk = cast("Utf8Chunk", find_by_type(chunks=pdnm_chunk.chunks, chunk_type="Utf8"))
@@ -597,6 +596,8 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
             result["property_parameters"] = pdnm_data.split("|")
         elif pdnm_data:
             result["name"] = pdnm_data
+    except ChunkNotFoundError:
+        pass
 
     return result
 
