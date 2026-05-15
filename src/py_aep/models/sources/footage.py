@@ -76,6 +76,28 @@ def _reverse_premul_color(
     )
 
 
+def _compute_duration(body: SspcChunk) -> float:
+    """Total duration in seconds (with conform and loop)."""
+    source_duration = body.duration_dividend / body.duration_divisor
+    conform = _compute_conform_frame_rate(body)
+    if conform != 0:
+        native = compute_fractional(
+            body, "native_frame_rate_integer", "native_frame_rate_fractional",
+        )
+        conform_factor = native / conform
+    else:
+        conform_factor = 1.0
+    return source_duration * conform_factor * body.loop
+
+
+def _compute_frame_duration(body: SspcChunk) -> int:
+    return int(_compute_duration(body) * _compute_display_frame_rate(body))
+
+
+def _compute_pixel_aspect(body: SspcChunk) -> float:
+    return compute_ratio(body, "pixel_ratio_dividend", "pixel_ratio_divisor")
+
+
 class FootageSource:
     """
     The `FootageSource` object holds information describing the source of some
@@ -184,6 +206,21 @@ class FootageSource:
         "_sspc", "native_frame_rate", read_only=True
     )
     """The native frame rate of the footage. Read-only."""
+
+    _width = ChunkField[int]("_sspc", "width", read_only=True)
+    _height = ChunkField[int]("_sspc", "height", read_only=True)
+    _duration = ComputedField[float]("_sspc", compute=_compute_duration)
+    _frame_duration = ComputedField[int]("_sspc", compute=_compute_frame_duration)
+    _pixel_aspect = ComputedField[float]("_sspc", compute=_compute_pixel_aspect)
+    _footage_missing = ChunkField[bool](
+        "_sspc", "footage_missing_at_save", read_only=True,
+    )
+    _start_frame = ChunkField[int]("_sspc", "start_frame", read_only=True)
+    _end_frame = ChunkField[int]("_sspc", "end_frame", read_only=True)
+
+    @property
+    def _has_audio(self) -> bool:
+        return self._sspc.audio_sample_rate > 0
 
     def __init__(
         self,

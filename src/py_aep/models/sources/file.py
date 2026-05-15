@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, cast
 
 from ...binary.footage_chunks import PsdOptiChunk
@@ -187,3 +187,65 @@ class FileSource(FootageSource):
             }
         else:
             self._file_attributes = {}
+
+    def _resolve_name(self, raw_name: str) -> str:
+        """Resolve the display name for a file-type footage item.
+
+        AE stores the full file path in the Utf8 chunk but displays only
+        the filename. Builds sequence names (e.g. `render.[0001-0700].exr`)
+        when appropriate.
+        """
+        # Strip to basename so the item name matches AE's UI.
+        item_name = raw_name
+        if item_name and ("/" in item_name or "\\" in item_name):
+            item_name = ""
+
+        if not item_name:
+            if self._duration != 0 and self._target_is_folder:
+                item_name = self._build_sequence_name()
+            if not item_name:
+                # PureWindowsPath handles both / and \ separators,
+                # unlike PurePosixPath which only splits on /.
+                basename = PureWindowsPath(self._file).name
+                psd_group = getattr(self._opti, "psd_group_name", "")
+                if psd_group:
+                    item_name = f"{psd_group}/{basename}"
+                else:
+                    item_name = basename
+
+        return item_name
+
+    def _build_sequence_name(self) -> str:
+        """Build the display name for an image sequence.
+
+        Returns the pattern `prefix[start_frame-end_frame]extension`,
+        for example `render.[0001-0700].exr`. The prefix and extension are
+        stored as two consecutive Utf8 chunks immediately before the opti
+        chunk inside the Pin LIST.
+        """
+        start_frame = self._sspc.start_frame
+        end_frame = self._sspc.end_frame
+        if UNDEFINED_FRAME in (start_frame, end_frame):
+            return ""
+
+        try:
+            utf8_before_opti = find_chunks_before(
+                chunks=self._pin.chunks,
+                chunk_type="Utf8",
+                before_type="opti",
+            )
+        except ChunkNotFoundError:
+            utf8_before_opti = []
+
+        if len(utf8_before_opti) < 2:
+            return ""
+
+        prefix = cast("Utf8Chunk", utf8_before_opti[-2]).value
+        extension = cast("Utf8Chunk", utf8_before_opti[-1]).value
+
+        if not prefix and not extension:
+            return ""
+
+        frame_padding = self._sspc.frame_padding
+        frame_range = f"[{start_frame:0{frame_padding}d}-{end_frame:0{frame_padding}d}]"
+        return f"{prefix}{frame_range}{extension}"

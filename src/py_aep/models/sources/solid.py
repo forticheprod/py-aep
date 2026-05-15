@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, cast
 
+from ...binary.footage_chunks import SoliOptiChunk
 from ..descriptors import ComputedField
 from ..reverses import unpack_values
 from ..transforms import pack_values
@@ -67,3 +68,6 @@ class SolidSource(FootageSource):
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)
         self._opti = _opti
+
+    def _resolve_name(self, raw_name: str) -> str:
+        return str(cast("SoliOptiChunk", self._opti).solid_name)

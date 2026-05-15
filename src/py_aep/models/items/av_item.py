@@ -112,7 +112,7 @@ class AVItem(Item):
 
         In a [CompItem][], the value is linked to the composition.
         In a [FootageItem][py_aep.models.items.footage.FootageItem],
-        the value is linked to the `main_source` object.
+        the value is linked to the `main_source` or `proxy_source` object.
         """
         return False
 
@@ -132,8 +132,8 @@ class AVItem(Item):
     def time(self) -> float:
         """The current time of the item when it is being previewed directly
         from the Project panel. This value is a number of seconds. It is an
-        error to set this value for a [FootageItem][] whose `main_source`
-        is still (`item.main_source.is_still is True`)."""
+        error to set this value for a [FootageItem][] whose `main_source` or
+        `proxy_source` is still."""
         return 0.0
 
     @property

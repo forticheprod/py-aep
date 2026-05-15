@@ -42,7 +42,9 @@ def parse_source(
     asset_type = getattr(opti_chunk, "asset_type", "")
 
     if not asset_type and hasattr(opti_chunk, "placeholder_name"):
-        return PlaceholderSource(_sspc=sspc_chunk, _clrs=clrs, _linl=linl)
+        return PlaceholderSource(
+            _sspc=sspc_chunk, _opti=opti_chunk, _clrs=clrs, _linl=linl,
+        )
     if asset_type.startswith("Soli"):
         return SolidSource(
             _sspc=sspc_chunk, _opti=opti_chunk, _clrs=clrs, _linl=linl

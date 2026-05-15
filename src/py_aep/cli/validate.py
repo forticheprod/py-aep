@@ -349,6 +349,46 @@ def _compare_guides(
         )
 
 
+def _compare_proxy_source(
+    expected_item: dict[str, Any],
+    parsed_item: dict[str, Any],
+    path: str,
+    result: ValidationResult,
+) -> None:
+    """Compare proxySource on an AVItem (comp or footage)."""
+    exp_proxy = expected_item.get("proxySource")
+    parsed_proxy = parsed_item.get("proxy_source")
+    if exp_proxy and parsed_proxy:
+        proxy_path = f"{path}.proxySource"
+        source_mappings = {
+            "alphaMode": "alpha_mode",
+            "displayFrameRate": "display_frame_rate",
+            "fieldSeparationType": "field_separation_type",
+            "hasAlpha": "has_alpha",
+            "highQualityFieldSeparation": "high_quality_field_separation",
+            "invertAlpha": "invert_alpha",
+            "isStill": "is_still",
+            "loop": "loop",
+            "nativeFrameRate": "native_frame_rate",
+            "premulColor": "premul_color",
+            "removePulldown": "remove_pulldown",
+            "color": "color",
+        }
+        _compare_fields(
+            exp_proxy,
+            parsed_proxy,
+            source_mappings,
+            proxy_path,
+            "footage",
+            result,
+            class_name="FootageSource",
+        )
+    elif exp_proxy and not parsed_proxy:
+        result.add_diff(f"{path}.proxySource", "present", "None", "footage")
+    elif not exp_proxy and parsed_proxy:
+        result.add_diff(f"{path}.proxySource", "None", "present", "footage")
+
+
 def _compare_children_by_match_name(
     expected_props: list[dict[str, Any]],
     parsed_props: list[dict[str, Any]],
@@ -1111,6 +1151,9 @@ def compare_comp_item(
         result,
     )
 
+    # Compare proxySource
+    _compare_proxy_source(expected_item, parsed_comp, path, result)
+
 
 def compare_folder_hierarchy(
     expected_items: list[dict[str, Any]],
@@ -1223,17 +1266,12 @@ def compare_footage_item(
         exp_cfr = exp_source.get("conformFrameRate")
         parsed_cfr = parsed_source.get("conform_frame_rate", 0)
         if exp_cfr is not None:
-            if parsed_cfr != 0:
-                if not compare_values(exp_cfr, parsed_cfr):
-                    result.add_diff(
-                        f"{source_path}.conformFrameRate",
-                        exp_cfr,
-                        parsed_cfr,
-                        "footage",
-                    )
-            else:
+            if not compare_values(exp_cfr, parsed_cfr):
+                # When parsed conform is 0, AE may report native_frame_rate
                 native = parsed_source.get("native_frame_rate", 0)
-                if not compare_values(exp_cfr, native):
+                if parsed_cfr == 0 and compare_values(exp_cfr, native):
+                    pass  # AE reported native rate as conform rate
+                else:
                     result.add_diff(
                         f"{source_path}.conformFrameRate",
                         exp_cfr,
@@ -1274,6 +1312,9 @@ def compare_footage_item(
                     parsed_missing,
                     "footage",
                 )
+
+    # Compare proxySource
+    _compare_proxy_source(expected_item, parsed_item, path, result)
 
 
 def compare_settings(

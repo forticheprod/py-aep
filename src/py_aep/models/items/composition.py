@@ -398,8 +398,7 @@ class CompItem(AVItem):
     )
     """The current time of the item when it is being previewed directly from
     the Project panel. This value is a number of seconds. It is an error to set
-    this value for a [FootageItem][] whose `main_source` is still
-    (`item.main_source.is_still is True`). Read / Write."""
+    this value for a [FootageItem][] whose `main_source` is still. Read / Write."""
 
     frame_time = ComputedField[int](
         "_cdta",

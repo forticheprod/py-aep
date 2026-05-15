@@ -37,7 +37,6 @@ var AepExport = AepExport || {};
         "parent": true,
         "parentFolder": true,
         "parentProperty": true,
-        "proxySource": true,
         "rootFolder": true,
         "selectedLayers": true,
         "selectedProperties": true,
@@ -518,6 +517,19 @@ var AepExport = AepExport || {};
         var guides = exportGuides(item);
         if (guides.length > 0) {
             result.guides = guides;
+        }
+
+        // Export proxySource (AVItem attribute, available on CompItem and FootageItem)
+        if (item instanceof CompItem || item instanceof FootageItem) {
+            try {
+                if (item.proxySource) {
+                    result.proxySource = exportFootageSource(item.proxySource);
+                } else {
+                    result.proxySource = null;
+                }
+            } catch (e) {
+                result.proxySource = null;
+            }
         }
 
         // Get parent folder reference

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from ...binary.footage_chunks import PlaceholderOptiChunk
 from .footage import FootageSource
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
-    from ...binary.footage_chunks import SspcChunk
+    from ...binary.footage_chunks import OptiChunk, SspcChunk
     from ...binary.scalar_chunks import U1Chunk
 
 
@@ -38,7 +39,12 @@ class PlaceholderSource(FootageSource):
         self,
         *,
         _sspc: SspcChunk,
+        _opti: OptiChunk,
         _linl: U1Chunk | None = None,
         _clrs: ListChunk | None = None,
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)
+        self._opti = _opti
+
+    def _resolve_name(self, raw_name: str) -> str:
+        return cast("PlaceholderOptiChunk", self._opti).placeholder_name
