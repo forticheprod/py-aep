@@ -321,6 +321,46 @@ class RenderSettingsItem(FmtItem):
 
     queue_item_notify = BitField("_flag_byte", 2)
 
+    # -- Computed properties -----------------------------------------------
+
+    _TIME_DIVISOR = 10000
+
+    @property
+    def frame_rate(self) -> float:
+        """Assembled frame rate (integer + fractional/65536)."""
+        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
+
+    @frame_rate.setter
+    def frame_rate(self, value: float) -> None:
+        self.frame_rate_integer = int(value)
+        self.frame_rate_fractional = round((value - int(value)) * 65536)
+
+    @property
+    def time_span_start(self) -> float:
+        """Time span start in seconds (dividend / divisor)."""
+        if self.time_span_start_divisor == 0:
+            return 0.0
+        return self.time_span_start_dividend / self.time_span_start_divisor
+
+    @time_span_start.setter
+    def time_span_start(self, value: float) -> None:
+        divisor = self.time_span_start_divisor or self._TIME_DIVISOR
+        self.time_span_start_dividend = round(value * divisor)
+        self.time_span_start_divisor = divisor
+
+    @property
+    def time_span_duration(self) -> float:
+        """Time span duration in seconds (dividend / divisor)."""
+        if self.time_span_duration_divisor == 0:
+            return 0.0
+        return self.time_span_duration_dividend / self.time_span_duration_divisor
+
+    @time_span_duration.setter
+    def time_span_duration(self, value: float) -> None:
+        divisor = self.time_span_duration_divisor or self._TIME_DIVISOR
+        self.time_span_duration_dividend = round(value * divisor)
+        self.time_span_duration_divisor = divisor
+
 # ---------------------------------------------------------------------------
 # Output module settings ldat item (128 bytes per item)
 # ---------------------------------------------------------------------------

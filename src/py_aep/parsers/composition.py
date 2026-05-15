@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..binary.utils import find_by_list_type
+from ..binary.utils import filter_by_list_type, find_by_list_type
 from ..models.items.composition import CompItem
 from .layer import parse_layer
+from .source import parse_source
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ListChunk
@@ -41,6 +42,9 @@ def parse_composition(
         effect_param_defs: Project-level effect parameter definitions, used as
             fallback when layer-level parT chunks are missing.
     """
+    pin_chunks = filter_by_list_type(chunks=child_chunks, list_type="Pin ")
+    proxy_source = parse_source(pin_chunks[0]) if pin_chunks else None
+
     return CompItem(
         _child_chunks=child_chunks,
         _cmta=_cmta,
@@ -51,6 +55,7 @@ def parse_composition(
         project=project,
         parent_folder=parent_folder,
         effect_param_defs=effect_param_defs,
+        proxy_source=proxy_source,
     )
 
 

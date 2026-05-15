@@ -11,8 +11,8 @@ from ...enums import (
 )
 from ...enums.mappings import map_media_color_space
 from ..descriptors import ChunkField, ComputedField
-from ..reverses import denormalize_values, reverse_fractional, unpack_values
-from ..transforms import compute_fractional, normalize_values, pack_values
+from ..reverses import denormalize_values, unpack_values
+from ..transforms import normalize_values, pack_values
 from ..validators import validate_number, validate_sequence
 
 if TYPE_CHECKING:
@@ -45,20 +45,12 @@ def _compute_field_separation_type(body: SspcChunk) -> FieldSeparationType:
 
 
 def _compute_conform_frame_rate(body: SspcChunk) -> float:
-    return compute_fractional(
-        body, "conform_frame_rate_integer", "conform_frame_rate_fractional",
-    )
+    return body.conform_frame_rate
 
 
 def _compute_display_frame_rate(body: SspcChunk) -> float:
-    conform = _compute_conform_frame_rate(body)
-    base = (
-        conform
-        if conform != 0
-        else compute_fractional(
-            body, "native_frame_rate_integer", "native_frame_rate_fractional",
-        )
-    )
+    conform = body.conform_frame_rate
+    base = conform if conform != 0 else body.native_frame_rate
     return base * (0.8 if body.remove_pulldown != 0 else 1.0)
 
 
@@ -164,12 +156,9 @@ class FootageSource:
     Note:
         Not exposed in ExtendScript."""
 
-    conform_frame_rate = ComputedField[float](
+    conform_frame_rate = ChunkField[float](
         "_sspc",
-        compute=_compute_conform_frame_rate,
-        reverse=reverse_fractional(
-            "conform_frame_rate_integer", "conform_frame_rate_fractional"
-        ),
+        "conform_frame_rate",
         validate=validate_number(min=0.0, max=999.0),
     )
     """A frame rate to use instead of the `native_frame_rate` value. If
@@ -191,11 +180,8 @@ class FootageSource:
     [PulldownPhase.OFF][py_aep.enums.PulldownPhase] by default.
     Read / Write."""
 
-    native_frame_rate = ComputedField[float](
-        "_sspc",
-        compute=lambda body: compute_fractional(
-            body, "native_frame_rate_integer", "native_frame_rate_fractional",
-        ),
+    native_frame_rate = ChunkField[float](
+        "_sspc", "native_frame_rate", read_only=True
     )
     """The native frame rate of the footage. Read-only."""
 
@@ -251,4 +237,4 @@ class FootageSource:
     def is_still(self) -> bool:
         """When `True` the footage is still; When `False`, it has a
         time-based component. Read-only."""
-        return bool(self._sspc.duration_dividend == 0)
+        return self._sspc.duration == 0

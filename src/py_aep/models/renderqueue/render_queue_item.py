@@ -27,7 +27,6 @@ from ...binary.scalar_chunks import Utf8Chunk
 from ..descriptors import (
     ChunkField,
 )
-from ..transforms import compute_fractional, compute_ratio
 from .settings import (
     SettingsView,
     settings_to_number,
@@ -55,26 +54,18 @@ def _start_time_from_binary(value: int) -> datetime | None:
 
 
 def _compute_ldat_frame_rate(body: RenderSettingsItem) -> float:
-    """Compute render-settings frame rate from integer/fractional fields."""
-    return compute_fractional(body, "frame_rate_integer", "frame_rate_fractional")
+    """Compute render-settings frame rate from assembled property."""
+    return body.frame_rate
 
 
 def _compute_ldat_time_span_start(body: RenderSettingsItem) -> float:
-    """Compute time-span start in seconds from dividend/divisor fields."""
-    if body.time_span_start_divisor == 0:
-        return 0.0
-    return compute_ratio(body, "time_span_start_dividend", "time_span_start_divisor")
+    """Compute time-span start in seconds from assembled property."""
+    return body.time_span_start
 
 
 def _compute_ldat_time_span_duration(body: RenderSettingsItem) -> float:
-    """Compute time-span duration in seconds from dividend/divisor fields."""
-    if body.time_span_duration_divisor == 0:
-        return 0.0
-    return compute_ratio(
-        body,
-        "time_span_duration_dividend",
-        "time_span_duration_divisor",
-    )
+    """Compute time-span duration in seconds from assembled property."""
+    return body.time_span_duration
 
 
 # ---------------------------------------------------------------------------
@@ -422,8 +413,7 @@ class RenderQueueItem:
             raise ValueError(
                 f"Frame rate must be less than or equal to 999, got {fval}"
             )
-        self._ldat.frame_rate_integer = int(fval)
-        self._ldat.frame_rate_fractional = round((fval - int(fval)) * 65536)
+        self._ldat.frame_rate = fval
 
     @property
     def _comp_frame_rate(self) -> float:
@@ -484,16 +474,14 @@ class RenderQueueItem:
     def _set_time_span(
         self,
         value: float | int,
-        dividend_field: str,
-        divisor_field: str,
+        field: str,
         is_frames: bool = False,
     ) -> None:
         """Write a time span value, switching to CUSTOM.
 
         Args:
             value: Time in seconds, or frame count if `is_frames` is True.
-            dividend_field: Name of the dividend field on `_ldat`.
-            divisor_field: Name of the divisor field on `_ldat`.
+            field: Either "start" or "duration".
             is_frames: When True, `value` is a frame count and is converted
                 to seconds via the composition frame rate before writing.
 
@@ -501,19 +489,17 @@ class RenderQueueItem:
             ValueError: If `value` is negative for start fields, or
                 non-positive for duration fields.
         """
-        is_duration = "duration" in dividend_field
+        is_duration = field == "duration"
         if is_duration and value <= 0:
             raise ValueError(f"Duration must be positive, got {value}")
         if not is_duration and value < 0:
             raise ValueError(f"Start time must be non-negative, got {value}")
         self._ldat.time_span_source = int(TimeSpanSource.CUSTOM)
-        divisor = getattr(self._ldat, divisor_field)
-        if divisor == 0:
-            divisor = self._ldat.frame_rate_integer or round(self.comp.frame_rate)
-            setattr(self._ldat, divisor_field, divisor)
-        if is_frames:
-            value = value / self.comp.frame_rate
-        setattr(self._ldat, dividend_field, round(value * divisor))
+        seconds = value / self.comp.frame_rate if is_frames else float(value)
+        if field == "start":
+            self._ldat.time_span_start = seconds
+        else:
+            self._ldat.time_span_duration = seconds
 
     @property
     def time_span_start(self) -> float:
@@ -527,11 +513,7 @@ class RenderQueueItem:
 
     @time_span_start.setter
     def time_span_start(self, value: float) -> None:
-        self._set_time_span(
-            value=value,
-            dividend_field="time_span_start_dividend",
-            divisor_field="time_span_start_divisor",
-        )
+        self._set_time_span(value, "start")
 
     @property
     def time_span_duration(self) -> float:
@@ -546,11 +528,7 @@ class RenderQueueItem:
 
     @time_span_duration.setter
     def time_span_duration(self, value: float) -> None:
-        self._set_time_span(
-            value=value,
-            dividend_field="time_span_duration_dividend",
-            divisor_field="time_span_duration_divisor",
-        )
+        self._set_time_span(value, "duration")
 
     @property
     def time_span_start_frame(self) -> int:
@@ -563,12 +541,7 @@ class RenderQueueItem:
 
     @time_span_start_frame.setter
     def time_span_start_frame(self, value: int) -> None:
-        self._set_time_span(
-            value=value,
-            dividend_field="time_span_start_dividend",
-            divisor_field="time_span_start_divisor",
-            is_frames=True,
-        )
+        self._set_time_span(value, "start", is_frames=True)
 
     @property
     def time_span_duration_frames(self) -> int:
@@ -582,12 +555,7 @@ class RenderQueueItem:
 
     @time_span_duration_frames.setter
     def time_span_duration_frames(self, value: int) -> None:
-        self._set_time_span(
-            value=value,
-            dividend_field="time_span_duration_dividend",
-            divisor_field="time_span_duration_divisor",
-            is_frames=True,
-        )
+        self._set_time_span(value, "duration", is_frames=True)
 
     @property
     def time_span_end(self) -> float:

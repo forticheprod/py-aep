@@ -39,6 +39,7 @@ class _FakeParent:
         self.body = child
         child._parent = self  # type: ignore[attr-defined]
 
+
 # ---------------------------------------------------------------------------
 # ChunkField contract tests
 # ---------------------------------------------------------------------------
@@ -151,8 +152,6 @@ class TestChunkFieldReverseInstanceField:
             _materialization_allowed.reset(token)
         assert body.frame_rate_dividend == 24000
         assert body.frame_rate_divisor == 1000
-
-
 
 
 class TestChunkFieldDirectWrite:

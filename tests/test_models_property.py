@@ -446,7 +446,6 @@ class TestEffectProperties:
         assert blurriness_1 is not None
         assert blurriness_1.value == 30.0
 
-
     def test_layer_index_value(self) -> None:
         """LAYER_INDEX effect property reads layer index from tdpi chunk.
 
@@ -2406,13 +2405,11 @@ class TestPropertyRemove:
         app = parse_aep(self.AEP)
         layer = app.project.compositions[0].layers[0]
         transform = [
-            p for p in layer.properties
-            if p.match_name == "ADBE Transform Group"
+            p for p in layer.properties if p.match_name == "ADBE Transform Group"
         ][0]
-        position = [
-            p for p in transform.properties
-            if p.match_name == "ADBE Position"
-        ][0]
+        position = [p for p in transform.properties if p.match_name == "ADBE Position"][
+            0
+        ]
         with pytest.raises(ValueError, match="non-indexed"):
             position.remove()
 
@@ -2532,13 +2529,11 @@ class TestPropertyDuplicate:
         app = parse_aep(self.AEP)
         layer = app.project.compositions[0].layers[0]
         transform = [
-            p for p in layer.properties
-            if p.match_name == "ADBE Transform Group"
+            p for p in layer.properties if p.match_name == "ADBE Transform Group"
         ][0]
-        position = [
-            p for p in transform.properties
-            if p.match_name == "ADBE Position"
-        ][0]
+        position = [p for p in transform.properties if p.match_name == "ADBE Position"][
+            0
+        ]
         with pytest.raises(ValueError, match="non-indexed"):
             position.duplicate()
 
@@ -2554,12 +2549,10 @@ class TestPropertyDuplicate:
         assert isinstance(original, PropertyGroup)
         # Check blurriness value matches
         orig_blur = [
-            p for p in original.properties
-            if p.match_name == "ADBE Gaussian Blur-0001"
+            p for p in original.properties if p.match_name == "ADBE Gaussian Blur-0001"
         ]
         new_blur = [
-            p for p in new_prop.properties
-            if p.match_name == "ADBE Gaussian Blur-0001"
+            p for p in new_prop.properties if p.match_name == "ADBE Gaussian Blur-0001"
         ]
         if orig_blur and new_blur:
             assert orig_blur[0].value == new_blur[0].value
@@ -2973,6 +2966,4 @@ class TestCanSetExpression:
             for mn in ("ADBE Scale", "ADBE Opacity"):
                 prop = _find_property(layer, mn)
                 assert prop is not None, f"layer[{idx}] {mn} not found"
-                assert prop.can_set_expression is False, (
-                    f"layer[{idx}] {mn}"
-                )
+                assert prop.can_set_expression is False, f"layer[{idx}] {mn}"

@@ -30,6 +30,7 @@ _DEG2RAD = math.pi / 180.0
 _RAD2DEG = 180.0 / math.pi
 _EPSILON = 1e-10
 
+
 class Mat4:
     """4x4 matrix stored row-major: ``m[row][col]``."""
 
@@ -62,12 +63,14 @@ class Mat4:
     @classmethod
     def identity(cls) -> Mat4:
         """Return a 4x4 identity matrix."""
-        return cls([
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ])
+        return cls(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
 
     def inverse(self) -> Mat4:
         """Compute the inverse using cofactor expansion.
@@ -98,32 +101,34 @@ class Mat4:
 
         inv_det = 1.0 / det
 
-        return Mat4([
+        return Mat4(
             [
-                (s[5] * c5 - s[6] * c4 + s[7] * c3) * inv_det,
-                (-s[1] * c5 + s[2] * c4 - s[3] * c3) * inv_det,
-                (s[13] * s5 - s[14] * s4 + s[15] * s3) * inv_det,
-                (-s[9] * s5 + s[10] * s4 - s[11] * s3) * inv_det,
-            ],
-            [
-                (-s[4] * c5 + s[6] * c2 - s[7] * c1) * inv_det,
-                (s[0] * c5 - s[2] * c2 + s[3] * c1) * inv_det,
-                (-s[12] * s5 + s[14] * s2 - s[15] * s1) * inv_det,
-                (s[8] * s5 - s[10] * s2 + s[11] * s1) * inv_det,
-            ],
-            [
-                (s[4] * c4 - s[5] * c2 + s[7] * c0) * inv_det,
-                (-s[0] * c4 + s[1] * c2 - s[3] * c0) * inv_det,
-                (s[12] * s4 - s[13] * s2 + s[15] * s0) * inv_det,
-                (-s[8] * s4 + s[9] * s2 - s[11] * s0) * inv_det,
-            ],
-            [
-                (-s[4] * c3 + s[5] * c1 - s[6] * c0) * inv_det,
-                (s[0] * c3 - s[1] * c1 + s[2] * c0) * inv_det,
-                (-s[12] * s3 + s[13] * s1 - s[14] * s0) * inv_det,
-                (s[8] * s3 - s[9] * s1 + s[10] * s0) * inv_det,
-            ],
-        ])
+                [
+                    (s[5] * c5 - s[6] * c4 + s[7] * c3) * inv_det,
+                    (-s[1] * c5 + s[2] * c4 - s[3] * c3) * inv_det,
+                    (s[13] * s5 - s[14] * s4 + s[15] * s3) * inv_det,
+                    (-s[9] * s5 + s[10] * s4 - s[11] * s3) * inv_det,
+                ],
+                [
+                    (-s[4] * c5 + s[6] * c2 - s[7] * c1) * inv_det,
+                    (s[0] * c5 - s[2] * c2 + s[3] * c1) * inv_det,
+                    (-s[12] * s5 + s[14] * s2 - s[15] * s1) * inv_det,
+                    (s[8] * s5 - s[10] * s2 + s[11] * s1) * inv_det,
+                ],
+                [
+                    (s[4] * c4 - s[5] * c2 + s[7] * c0) * inv_det,
+                    (-s[0] * c4 + s[1] * c2 - s[3] * c0) * inv_det,
+                    (s[12] * s4 - s[13] * s2 + s[15] * s0) * inv_det,
+                    (-s[8] * s4 + s[9] * s2 - s[11] * s0) * inv_det,
+                ],
+                [
+                    (-s[4] * c3 + s[5] * c1 - s[6] * c0) * inv_det,
+                    (s[0] * c3 - s[1] * c1 + s[2] * c0) * inv_det,
+                    (-s[12] * s3 + s[13] * s1 - s[14] * s0) * inv_det,
+                    (s[8] * s3 - s[9] * s1 + s[10] * s0) * inv_det,
+                ],
+            ]
+        )
 
     def __repr__(self) -> str:
         return f"Mat4({self._rows})"
@@ -132,6 +137,7 @@ class Mat4:
 # ------------------------------------------------------------------
 # Elementary transform matrices
 # ------------------------------------------------------------------
+
 
 def _translation(x: float, y: float, z: float) -> Mat4:
     m = Mat4.identity()
@@ -185,6 +191,7 @@ def _rotate_z(deg: float) -> Mat4:
 # ------------------------------------------------------------------
 # AE local transform matrix
 # ------------------------------------------------------------------
+
 
 def build_local_matrix(
     position: list[float],
@@ -246,6 +253,7 @@ def build_local_matrix(
 # World matrix (walks parent chain)
 # ------------------------------------------------------------------
 
+
 def build_world_matrix(layer: Layer) -> Mat4:
     """Build the world transform matrix by composing the parent chain.
 
@@ -293,6 +301,7 @@ def _layer_local_matrix(layer: Layer) -> Mat4:
 # ------------------------------------------------------------------
 # Matrix decomposition
 # ------------------------------------------------------------------
+
 
 def _vec3_norm(v: list[float]) -> float:
     return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])

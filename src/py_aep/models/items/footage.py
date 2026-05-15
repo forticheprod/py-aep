@@ -139,6 +139,7 @@ class FootageItem(AVItem):
         project: Project,
         parent_folder: FolderItem,
         main_source: FileSource | SolidSource | PlaceholderSource,
+        proxy_source: FileSource | SolidSource | PlaceholderSource | None,
     ) -> None:
         super().__init__(
             _idta=_idta,
@@ -149,6 +150,7 @@ class FootageItem(AVItem):
             project=project,
             parent_folder=parent_folder,
             type_name="Footage",
+            proxy_source=proxy_source,
         )
         self._sspc = _sspc
         self._opti = _opti

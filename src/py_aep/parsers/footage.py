@@ -4,16 +4,16 @@ from typing import TYPE_CHECKING, cast
 
 from ..binary.footage_chunks import OptiChunk, SspcChunk
 from ..binary.item_chunks import IdtaChunk
-from ..binary.scalar_chunks import CmtaChunk, U1Chunk, Utf8Chunk
+from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
 from ..binary.utils import (
-    ChunkNotFoundError,
-    find_by_list_type,
+    filter_by_list_type,
     find_by_type,
 )
 from ..models.items.footage import FootageItem
 from ..models.sources.file import FileSource
 from ..models.sources.placeholder import PlaceholderSource
 from ..models.sources.solid import SolidSource
+from .source import parse_source
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ListChunk
@@ -44,41 +44,17 @@ def parse_footage(
         project: The project.
         parent_folder: The item's parent folder.
     """
-    pin_chunk = find_by_list_type(chunks=child_chunks, list_type="Pin ")
+    pin_chunks = filter_by_list_type(chunks=child_chunks, list_type="Pin ")
+    pin_chunk = pin_chunks[0]
 
     pin_child_chunks = pin_chunk.chunks
     sspc_chunk = cast("SspcChunk", find_by_type(chunks=pin_child_chunks, chunk_type="sspc"))
     opti_chunk = cast("OptiChunk", find_by_type(chunks=pin_child_chunks, chunk_type="opti"))
 
-    # Extract CLRS color management chunks (optional)
-    try:
-        clrs = find_by_list_type(chunks=pin_child_chunks, list_type="CLRS")
-        try:
-            linl: U1Chunk | None = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
-        except ChunkNotFoundError:
-            linl = None
-    except ChunkNotFoundError:
-        clrs = None
-        linl = None
-
-    asset_type = getattr(opti_chunk, "asset_type", "")
-    sspc_body = sspc_chunk
-
-    main_source: FileSource | SolidSource | PlaceholderSource
-    if not asset_type and hasattr(opti_chunk, "placeholder_name"):
-        main_source = PlaceholderSource(_sspc=sspc_body, _clrs=clrs, _linl=linl)
-    elif asset_type.startswith("Soli"):
-        main_source = SolidSource(
-            _sspc=sspc_body, _opti=opti_chunk, _clrs=clrs, _linl=linl
-        )
-    else:
-        main_source = FileSource(
-            _pin=pin_chunk,
-            _sspc=sspc_body,
-            _opti=opti_chunk,
-            _linl=linl,
-            _clrs=clrs,
-        )
+    main_source = parse_source(pin_chunk)
+    proxy_source: FileSource | SolidSource | PlaceholderSource | None = (
+        parse_source(pin_chunks[1]) if len(pin_chunks) > 1 else None
+    )
 
     return FootageItem(
         _idta=_idta,
@@ -86,9 +62,10 @@ def parse_footage(
         _cmta=_cmta,
         _item_list=_item_list,
         _gide=_gide,
-        _sspc=sspc_body,
+        _sspc=sspc_chunk,
         _opti=opti_chunk,
         project=project,
         parent_folder=parent_folder,
         main_source=main_source,
+        proxy_source=proxy_source,
     )

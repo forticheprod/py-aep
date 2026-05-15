@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
+from ..descriptors import ChunkField
 from .item import Item
 
 if TYPE_CHECKING:
@@ -9,10 +10,19 @@ if TYPE_CHECKING:
     from ...binary.item_chunks import IdtaChunk
     from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
     from ..project import Project
+    from ..sources.file import FileSource
+    from ..sources.placeholder import PlaceholderSource
+    from ..sources.solid import SolidSource
     from ..viewer.viewer import Viewer
     from .composition import CompItem
     from .folder import FolderItem
 
+
+def _validate_use_proxy(value: bool, obj: AVItem) -> None:
+    if obj.proxy_source is None and value:
+        raise AttributeError(
+            "Cannot set use_proxy to True when there is no proxy source."
+        )
 
 class AVItem(Item):
     """
@@ -32,23 +42,30 @@ class AVItem(Item):
     See: https://ae-scripting.docsforadobe.dev/item/avitem/
     """
 
-    duration: Any
+    duration: float
     """The duration of the item in seconds. Still footages have a duration of 0. Read-only."""
 
-    frame_duration: Any
+    frame_duration: int
     """The duration of the item in frames. Still footages have a duration of 0. Read-only."""
 
-    frame_rate: Any
+    frame_rate: float
     """The frame rate of the item in frames-per-second. Read-only."""
 
-    height: Any
+    height: int
     """The height of the item in pixels. Read-only."""
 
-    pixel_aspect: Any
+    pixel_aspect: float
     """The pixel aspect ratio of the item (1.0 is square). Read-only."""
 
-    width: Any
+    width: int
     """The width of the item in pixels. Read-only."""
+
+    use_proxy = ChunkField[bool]("_idta", "use_proxy", validate=_validate_use_proxy)
+    """When `True`, a proxy is used for the item. Read / Write.
+
+    It is set to `True` by all the `set_proxy` methods, and to `False` by
+    the `set_proxy_to_none()` method.
+    """
 
     def __init__(
         self,
@@ -61,6 +78,7 @@ class AVItem(Item):
         project: Project,
         parent_folder: FolderItem,
         type_name: str,
+        proxy_source: FileSource | SolidSource | PlaceholderSource | None,
     ) -> None:
         super().__init__(
             _idta=_idta,
@@ -72,11 +90,24 @@ class AVItem(Item):
             parent_folder=parent_folder,
             type_name=type_name,
         )
+        self._proxy_source = proxy_source
         self._used_in: set[CompItem] = set()
         self._viewer: Viewer | None = None
 
     @property
-    def has_audio(self) -> Any:
+    def proxy_source(
+        self,
+    ) -> FileSource | SolidSource | PlaceholderSource | None:
+        """The [FootageSource][] being used as a proxy. Read-only.
+
+        To change it, call any of the `AVItem` methods that change the proxy
+        source: `set_proxy()`, `set_proxy_with_sequence()`,
+        `set_proxy_with_solid()`, or `set_proxy_with_placeholder()`.
+        """
+        return self._proxy_source
+
+    @property
+    def has_audio(self) -> bool:
         """When `True`, the AVItem has an audio component.
 
         In a [CompItem][], the value is linked to the composition.
@@ -95,10 +126,10 @@ class AVItem(Item):
         the value depends on the footage source (e.g. audio-only files
         return `False`).
         """
-        return cast(bool, self.width > 0 and self.height > 0)
+        return self.width > 0 and self.height > 0
 
     @property
-    def time(self) -> Any:
+    def time(self) -> float:
         """The current time of the item when it is being previewed directly
         from the Project panel. This value is a number of seconds. It is an
         error to set this value for a [FootageItem][] whose `main_source`
@@ -106,7 +137,7 @@ class AVItem(Item):
         return 0.0
 
     @property
-    def frame_time(self) -> Any:
+    def frame_time(self) -> int:
         """The current time of the item when it is being previewed directly
         from the Project panel. This value is a number of frames."""
         return 0

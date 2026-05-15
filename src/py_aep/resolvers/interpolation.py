@@ -801,16 +801,12 @@ def interpolate_keyframes(
     auto_tangents: list[tuple[list[float] | None, list[float] | None]] | None
     auto_ease: list[tuple[float, float, float, float]] | None
 
-    has_auto_spatial = is_spatial and any(
-        kf.spatial_auto_bezier for kf in keyframes
-    )
+    has_auto_spatial = is_spatial and any(kf.spatial_auto_bezier for kf in keyframes)
     auto_tangents = (
         _compute_auto_spatial_tangents(keyframes) if has_auto_spatial else None
     )
 
-    has_auto_temporal = any(
-        kf.temporal_auto_bezier for kf in keyframes
-    )
+    has_auto_temporal = any(kf.temporal_auto_bezier for kf in keyframes)
     auto_ease = _compute_auto_temporal_ease(keyframes) if has_auto_temporal else None
 
     # BEZIER

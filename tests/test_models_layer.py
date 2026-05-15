@@ -2225,9 +2225,7 @@ class TestReplaceSource:
         old_source = layer.source
         # Pick any other footage item as new source
         new_source = next(
-            item
-            for item in app.project.footages
-            if item is not old_source
+            item for item in app.project.footages if item is not old_source
         )
 
         layer.replace_source(new_source)
@@ -2241,9 +2239,7 @@ class TestReplaceSource:
         comp = get_comp(app.project, "Main_Comp")
         layer = comp.layers[0]
         new_source = next(
-            item
-            for item in app.project.footages
-            if item is not layer.source
+            item for item in app.project.footages if item is not layer.source
         )
         new_id = new_source.id
 
@@ -2357,6 +2353,7 @@ class TestReplaceSource:
 
 
 # ---- Layer Structural Mutations (remove / move) --------------------------
+
 
 class TestLayerRemove:
     """Tests for Layer.remove()."""

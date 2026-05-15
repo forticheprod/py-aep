@@ -1,4 +1,5 @@
 """Tests for binary I/O foundation."""
+
 from __future__ import annotations
 
 from io import BytesIO
@@ -175,7 +176,7 @@ class TestListChunk:
     def test_list_nested(self) -> None:
         inner = ListChunk(
             list_type="innr",
-            chunks=[Chunk(chunk_type="leaf", data=b"\xAA\xBB")],
+            chunks=[Chunk(chunk_type="leaf", data=b"\xaa\xbb")],
         )
         outer = ListChunk(list_type="outr", chunks=[inner])
 
@@ -192,7 +193,7 @@ class TestListChunk:
         assert isinstance(inner_r, ListChunk)
         assert inner_r.list_type == "innr"
         assert len(inner_r.chunks) == 1
-        assert inner_r.chunks[0].data == b"\xAA\xBB"
+        assert inner_r.chunks[0].data == b"\xaa\xbb"
 
     def test_list_btdk_binary_data(self) -> None:
         raw_data = b"\x00\x01\x02\x03\x04\x05\x06\x07"
@@ -373,7 +374,7 @@ class TestRegistry:
                 pass
 
             buf = BytesIO()
-            write_chunk(buf, Chunk(chunk_type="disp", data=b"\xAA"))
+            write_chunk(buf, Chunk(chunk_type="disp", data=b"\xaa"))
 
             buf.seek(0)
             ct, lb = read_header(buf)
@@ -453,7 +454,19 @@ class TestFmtField:
 
         info = _struct_info(U4Chunk)
         assert info is not None
-        fmt, data_fields, trailing, encodings, optional_start, endians, items_info, coerces, init_names, simple, expected_size = info
+        (
+            fmt,
+            data_fields,
+            trailing,
+            encodings,
+            optional_start,
+            endians,
+            items_info,
+            coerces,
+            init_names,
+            simple,
+            expected_size,
+        ) = info
         assert fmt == "I"
         assert len(data_fields) == 1
         assert data_fields[0].name == "value"
@@ -481,7 +494,19 @@ class TestFmtField:
 
         info = _struct_info(BadChunk)
         assert info is not None
-        fmt, data_fields, _, encodings, optional_start, endians, items_info, coerces, _, simple, _ = info
+        (
+            fmt,
+            data_fields,
+            _,
+            encodings,
+            optional_start,
+            endians,
+            items_info,
+            coerces,
+            _,
+            simple,
+            _,
+        ) = info
         assert fmt == "IHB"
         assert len(data_fields) == 3
         assert encodings == {}
@@ -738,13 +763,13 @@ class TestTdsbChunk:
     def test_with_trailing(self) -> None:
         from py_aep.binary.property_chunks import TdsbChunk
 
-        raw = b"\x01\x00\x00\x01\xAA\xBB"
+        raw = b"\x01\x00\x00\x01\xaa\xbb"
         buf = BytesIO(raw)
         chunk = TdsbChunk.read(buf, 6, chunk_type="tdsb")
         assert isinstance(chunk, TdsbChunk)
         assert chunk.roto_bezier == 1
         assert chunk.enabled is True
-        assert chunk._trailing == b"\xAA\xBB"
+        assert chunk._trailing == b"\xaa\xbb"
         out = BytesIO()
         chunk.write(out)
         assert out.getvalue() == raw
@@ -782,7 +807,11 @@ class TestTdb4Chunk:
             b"\x00" * 5,  # pad2
             0x02,  # can_vary_over_time(bit1)=1
             b"\x00" * 4,  # pad3
-            0.0001, 1.777778, 1.0, 1.0, 1.0,  # floats
+            0.0001,
+            1.777778,
+            1.0,
+            1.0,
+            1.0,  # floats
             0,  # pad4
             0x00,  # no_value=0
             0,  # pad5
@@ -994,10 +1023,22 @@ class TestFth5Chunk:
         from py_aep.binary.misc_chunks import FeatherPointItem, Fth5Chunk
 
         pts = [
-            FeatherPointItem(seg_loc=1, interp_raw=0, rel_seg_loc=0.5,
-                             radius=10.0, corner_angle=45.0, tension=0.5),
-            FeatherPointItem(seg_loc=2, interp_raw=2, rel_seg_loc=0.75,
-                             radius=-5.0, corner_angle=0.0, tension=1.0),
+            FeatherPointItem(
+                seg_loc=1,
+                interp_raw=0,
+                rel_seg_loc=0.5,
+                radius=10.0,
+                corner_angle=45.0,
+                tension=0.5,
+            ),
+            FeatherPointItem(
+                seg_loc=2,
+                interp_raw=2,
+                rel_seg_loc=0.75,
+                radius=-5.0,
+                corner_angle=0.0,
+                tension=1.0,
+            ),
         ]
         chunk = Fth5Chunk(chunk_type="fth5", points=pts)
         buf = BytesIO()
@@ -1131,8 +1172,7 @@ class TestOptiChunk:
         name = "MyPlaceholder"
         name_bytes = name.encode("windows-1252")
         trailing = b"\x00" * 20
-        data = (b"\x00" * 4 + struct.pack(">H", 2) + b"\x00" * 4
-                + name_bytes + trailing)
+        data = b"\x00" * 4 + struct.pack(">H", 2) + b"\x00" * 4 + name_bytes + trailing
 
         buf = BytesIO(data)
         chunk = OptiChunk.read(buf, len(data), chunk_type="opti")
@@ -1190,7 +1230,10 @@ class TestRoptChunk:
         from py_aep.binary.render_chunks import JpegRoptChunk, RoptChunk
 
         chunk = JpegRoptChunk(
-            chunk_type="Ropt", quality=80, format_type=1, scans=3,
+            chunk_type="Ropt",
+            quality=80,
+            format_type=1,
+            scans=3,
         )
         buf = BytesIO()
         chunk.write(buf)
@@ -1224,7 +1267,9 @@ class TestRoptChunk:
         from py_aep.binary.render_chunks import RoptChunk, TargaRoptChunk
 
         chunk = TargaRoptChunk(
-            chunk_type="Ropt", bits_per_pixel=32, rle_compression=1,
+            chunk_type="Ropt",
+            bits_per_pixel=32,
+            rle_compression=1,
         )
         buf = BytesIO()
         chunk.write(buf)
@@ -1270,8 +1315,7 @@ class TestRoptChunk:
 
 class TestPardChunk:
     @staticmethod
-    def _build_pard(control_type: int, body: bytes,
-                    name: str = "Test") -> bytes:
+    def _build_pard(control_type: int, body: bytes, name: str = "Test") -> bytes:
         """Build a raw pard body with standard 56-byte header + body."""
         import struct
 
@@ -1287,10 +1331,12 @@ class TestPardChunk:
 
         from py_aep.binary.misc_chunks import ColorPardChunk, PardChunk
 
-        body = (struct.pack(">4B", 255, 0, 0, 255)
-                + struct.pack(">4B", 128, 128, 128, 255)
-                + b"\x00" * 64
-                + struct.pack(">4B", 255, 255, 255, 255))
+        body = (
+            struct.pack(">4B", 255, 0, 0, 255)
+            + struct.pack(">4B", 128, 128, 128, 255)
+            + b"\x00" * 64
+            + struct.pack(">4B", 255, 255, 255, 255)
+        )
         data = self._build_pard(5, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
@@ -1309,11 +1355,13 @@ class TestPardChunk:
 
         from py_aep.binary.misc_chunks import PardChunk, ScalarPardChunk
 
-        body = (struct.pack(">i", 50)
-                + b"\x00" * 72
-                + struct.pack(">h", 0)
-                + b"\x00" * 2
-                + struct.pack(">h", 100))
+        body = (
+            struct.pack(">i", 50)
+            + b"\x00" * 72
+            + struct.pack(">h", 0)
+            + b"\x00" * 2
+            + struct.pack(">h", 100)
+        )
         data = self._build_pard(2, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
@@ -1382,9 +1430,7 @@ class TestPardChunk:
 
         from py_aep.binary.misc_chunks import PardChunk, SliderPardChunk
 
-        body = (struct.pack(">d", 50.0)
-                + b"\x00" * 52
-                + struct.pack(">f", 100.0))
+        body = struct.pack(">d", 50.0) + b"\x00" * 52 + struct.pack(">f", 100.0)
         data = self._build_pard(10, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
@@ -1621,9 +1667,7 @@ class TestKfNoValue:
 
         from py_aep.binary.ldat_chunks import KfNoValue
 
-        data = struct.pack(
-            ">Qddddd", 42, 1.0, 2.0, 33.3, 4.0, 66.6
-        )
+        data = struct.pack(">Qddddd", 42, 1.0, 2.0, 33.3, 4.0, 66.6)
         kf = KfNoValue.frombytes(data)
         assert kf.in_speed == pytest.approx(2.0)
         assert kf.in_influence == pytest.approx(33.3)
@@ -1866,9 +1910,7 @@ class TestLdatChunk:
             LdatItemType,
         )
 
-        items_data = struct.pack(">IId", 1, 0, 50.0) + struct.pack(
-            ">IId", 2, 0, 100.0
-        )
+        items_data = struct.pack(">IId", 1, 0, 50.0) + struct.pack(">IId", 2, 0, 100.0)
         buf = BytesIO(items_data)
         chunk = LdatChunk.read(
             buf,
@@ -1898,10 +1940,7 @@ class TestLdatChunk:
 
         # Build one item: 8B header + 40B payload = 48B
         header = (
-            b"\x00"
-            + struct.pack(">h", 15)
-            + b"\x00"
-            + struct.pack(">BBBB", 2, 2, 0, 0)
+            b"\x00" + struct.pack(">h", 15) + b"\x00" + struct.pack(">BBBB", 2, 2, 0, 0)
         )
         payload = struct.pack(">ddddd", 100.0, 1.0, 33.3, 2.0, 66.6)
         item_data = header + payload
@@ -2173,7 +2212,9 @@ class TestMutationHelpers:
 
         chunks: list[Chunk] = []
         toggle_flag_chunk(
-            chunks, "lnrb", True,
+            chunks,
+            "lnrb",
+            True,
             factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
         )
         assert len(chunks) == 1
@@ -2184,7 +2225,9 @@ class TestMutationHelpers:
 
         chunks: list[Chunk] = [Chunk(chunk_type="lnrb", data=b"\x01")]
         toggle_flag_chunk(
-            chunks, "lnrb", False,
+            chunks,
+            "lnrb",
+            False,
             factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
         )
         assert len(chunks) == 0
@@ -2194,7 +2237,9 @@ class TestMutationHelpers:
 
         chunks: list[Chunk] = [Chunk(chunk_type="lnrb", data=b"\x01")]
         toggle_flag_chunk(
-            chunks, "lnrb", True,
+            chunks,
+            "lnrb",
+            True,
             factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
         )
         assert len(chunks) == 1
@@ -2204,7 +2249,9 @@ class TestMutationHelpers:
 
         chunks: list[Chunk] = []
         toggle_flag_chunk(
-            chunks, "lnrb", False,
+            chunks,
+            "lnrb",
+            False,
             factory=lambda: Chunk(chunk_type="lnrb", data=b"\x01"),
         )
         assert len(chunks) == 0

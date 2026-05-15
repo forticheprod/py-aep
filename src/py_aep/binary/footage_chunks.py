@@ -134,6 +134,46 @@ class SspcChunk(Chunk):
     invert_alpha = BitField("_alpha_flags", 1)
     premultiplied = BitField("_alpha_flags", 0)
 
+    # -- Computed properties -----------------------------------------------
+
+    _TIME_DIVISOR = 10000
+    _PIXEL_DIVISOR = 100000
+
+    @property
+    def native_frame_rate(self) -> float:
+        """Native frame rate (integer + fractional/65536)."""
+        return (
+            self.native_frame_rate_integer
+            + self.native_frame_rate_fractional / 65536.0
+        )
+
+    @property
+    def conform_frame_rate(self) -> float:
+        """Conform frame rate (integer + fractional/65536). 0 = no conform."""
+        return (
+            self.conform_frame_rate_integer
+            + self.conform_frame_rate_fractional / 65536.0
+        )
+
+    @conform_frame_rate.setter
+    def conform_frame_rate(self, value: float) -> None:
+        self.conform_frame_rate_integer = int(value)
+        self.conform_frame_rate_fractional = round((value - int(value)) * 65536)
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds (dividend / divisor)."""
+        if self.duration_divisor == 0:
+            return 0.0
+        return self.duration_dividend / self.duration_divisor
+
+    @property
+    def pixel_aspect(self) -> float:
+        """Pixel aspect ratio (dividend / divisor)."""
+        if self.pixel_ratio_divisor == 0:
+            return 1.0
+        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
+
 # ---------------------------------------------------------------------------
 # opti - footage asset info (variant dispatch by asset_type)
 # ---------------------------------------------------------------------------

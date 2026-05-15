@@ -476,7 +476,9 @@ class TestRoundtripFeetFramesFilmType:
         project2 = parse_aep(out).project
 
         assert project2.feet_frames_film_type == FeetFramesFilmType.MM16
-        assert project2._nhed.feet_frames_film_type == project2._nnhd.feet_frames_film_type
+        assert (
+            project2._nhed.feet_frames_film_type == project2._nnhd.feet_frames_film_type
+        )
 
     def test_set_mm35(self, tmp_path: Path) -> None:
         """Set to MM16 then back to MM35 via chained roundtrip."""
@@ -616,7 +618,10 @@ class TestRoundtripFramesUseFeetFrames:
         project2 = parse_aep(out).project
 
         assert project2.frames_use_feet_frames is True
-        assert project2._nhed.frames_use_feet_frames == project2._nnhd.frames_use_feet_frames
+        assert (
+            project2._nhed.frames_use_feet_frames
+            == project2._nnhd.frames_use_feet_frames
+        )
 
     def test_disable(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "framesUseFeetFrames_true.aep").project
@@ -629,7 +634,10 @@ class TestRoundtripFramesUseFeetFrames:
         project2 = parse_aep(out).project
 
         assert project2.frames_use_feet_frames is False
-        assert project2._nhed.frames_use_feet_frames == project2._nnhd.frames_use_feet_frames
+        assert (
+            project2._nhed.frames_use_feet_frames
+            == project2._nnhd.frames_use_feet_frames
+        )
 
 
 class TestRoundtripTimeDisplayType:

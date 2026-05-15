@@ -123,6 +123,52 @@ class LdtaChunk(Chunk):
     audio_enabled = BitField("_layer_flags_2", 1)
     enabled = BitField("_layer_flags_2", 0)
 
+    # -- Computed properties -----------------------------------------------
+
+    _TIME_DIVISOR = 10000
+
+    @property
+    def start_time(self) -> float:
+        """Start time in seconds (dividend / divisor)."""
+        return self.start_time_dividend / self.start_time_divisor
+
+    @start_time.setter
+    def start_time(self, value: float) -> None:
+        self.start_time_dividend = round(value * self._TIME_DIVISOR)
+        self.start_time_divisor = self._TIME_DIVISOR
+
+    @property
+    def in_point(self) -> float:
+        """In point in seconds (dividend / divisor)."""
+        return self.in_point_dividend / self.in_point_divisor
+
+    @in_point.setter
+    def in_point(self, value: float) -> None:
+        self.in_point_dividend = round(value * self._TIME_DIVISOR)
+        self.in_point_divisor = self._TIME_DIVISOR
+
+    @property
+    def out_point(self) -> float:
+        """Out point in seconds (dividend / divisor)."""
+        return self.out_point_dividend / self.out_point_divisor
+
+    @out_point.setter
+    def out_point(self, value: float) -> None:
+        self.out_point_dividend = round(value * self._TIME_DIVISOR)
+        self.out_point_divisor = self._TIME_DIVISOR
+
+    @property
+    def stretch(self) -> float:
+        """Stretch percentage (dividend / divisor * 100). 100 = no stretch."""
+        if self.stretch_divisor == 0:
+            return 100.0
+        return self.stretch_dividend / self.stretch_divisor * 100.0
+
+    @stretch.setter
+    def stretch(self, value: float) -> None:
+        self.stretch_dividend = round(value * self._TIME_DIVISOR)
+        self.stretch_divisor = self._TIME_DIVISOR * 100
+
 
 
 

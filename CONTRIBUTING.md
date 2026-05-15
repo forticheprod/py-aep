@@ -47,9 +47,9 @@ py_aep transforms binary .aep files into typed Python objects through a three-st
 - `src/py_aep/enums/` - Enumerations matching ExtendScript values
 - `src/py_aep/resolvers/` - Business logic for computing derived values
 - `src/py_aep/cos/` - COS (PDF-like) format parser for embedded text data
-- `src/py_aep/validators.py` - Field validators for model attributes
-- `src/py_aep/reverses.py` - Generic reverse transform factories
-- `src/py_aep/transforms.py` - Generic forward transform factories
+- `src/py_aep/models/validators.py` - Field validators for model attributes
+- `src/py_aep/models/reverses.py` - Generic reverse transform factories
+- `src/py_aep/models/transforms.py` - Generic forward transform factories
 
 ### Key Concepts
 
@@ -57,10 +57,10 @@ py_aep transforms binary .aep files into typed Python objects through a three-st
 
 **LIST chunks**: Special chunks that contain other chunks. They have a `list_type` field (e.g., `"Layr"` for layers).
 
-**Chunk data access**: Chunk attributes live on `chunk.body`, not on the chunk itself:
+**Chunk data access**: Chunk attributes live directly on the chunk:
 ```python
-chunk.body.list_type     # the list_type of a LIST chunk
-cdta_chunk.body.time_scale  # a typed body field
+chunk.list_type          # the list_type of a LIST chunk
+cdta_chunk.time_scale    # a typed field on the chunk
 ```
 
 **Chunk navigation**: Use helper functions from `binary/utils.py`:
@@ -622,10 +622,10 @@ class CdtaChunk(Chunk):
 
 #### 3. Wire to Model
 
-Use `ChunkField.bool`:
+Use `ChunkField[bool]`:
 
 ```python
-motion_blur = ChunkField.bool("_cdta", "motion_blur")
+motion_blur = ChunkField[bool]("_cdta", "motion_blur")
 """When `True`, motion blur is enabled for the composition. Read / Write."""
 ```
 
@@ -695,6 +695,16 @@ Test samples should be minimal and focused:
 - **Cross-references**: Use mkdocstrings syntax `[ClassName][]` or `[text][fully.qualified.path]` to link to other classes in docstrings. Do **not** use Sphinx-style `:class:` / `:func:` notation.
 - **No `struct` module in model code**: All binary decoding is in `binary/` chunk classes
 - **No em dashes or en dashes**: Use regular dashes (`-`)
+
+### Avoiding Code Slop
+
+- **No identity casts**: don't `int(x)` when x is already int, `str(x)` when x is already str, `bool(x == y)` when `==` already returns bool
+- **No redundant exception tuples**: `except (SpecificError, Exception)` - `Exception` already catches everything
+- **Only catch what can be raised**: don't add `try/except` "just in case"
+- **No silent `except Exception: pass`** without a comment explaining why
+- **No dead defaults**: `getattr(obj, "attr", 0)` when the attribute always exists is misleading - access directly
+- **Comments explain WHY, not WHAT**: `# Convert None to 0 for pre-v23 files` is useful; `# Get the chunk` is not
+- **No docstrings that restate the function name or signature**
 
 ### Linting and Type Checking
 

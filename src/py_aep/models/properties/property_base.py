@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import PropertyType
 
+from ...binary.chunk import ListChunk
 from ...binary.mutations import clone_chunk_tree
 from ...binary.scalar_chunks import TdmnChunk
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
@@ -15,27 +16,28 @@ from ..descriptors import ChunkField
 _TDSN_SENTINEL = "-_0_/-"
 
 # Match names of groups that support add/remove/move/duplicate on children.
-_INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset({
-    "ADBE Effect Parade",
-    "ADBE Mask Parade",
-    "ADBE Effect Mask Parade",
-    "ADBE Text Animators",
-    "ADBE Root Vectors Group",
-})
+_INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset(
+    {
+        "ADBE Effect Parade",
+        "ADBE Mask Parade",
+        "ADBE Effect Mask Parade",
+        "ADBE Text Animators",
+        "ADBE Root Vectors Group",
+    }
+)
 
 if TYPE_CHECKING:
-    from ...binary.chunk import Chunk, ListChunk
+    from ...binary.chunk import Chunk
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from ..layers.layer import Layer
+    from .property import Property
     from .property_group import PropertyGroup
 
 
 def _validate_enabled(value: bool, obj: PropertyBase) -> None:
     if not obj.can_set_enabled:
-        raise AttributeError(
-            "'enabled' is read-only when 'can_set_enabled' is False."
-        )
+        raise AttributeError("'enabled' is read-only when 'can_set_enabled' is False.")
 
 
 class PropertyBase:
@@ -50,7 +52,10 @@ class PropertyBase:
     """
 
     enabled = ChunkField[bool](
-        "_tdsb", "enabled", default=True, validate=_validate_enabled,
+        "_tdsb",
+        "enabled",
+        default=True,
+        validate=_validate_enabled,
     )
     """Corresponds to the setting of the eyeball icon. Read / Write."""
 
@@ -198,7 +203,9 @@ class PropertyBase:
         """
         if self.property_depth == 0 or self.parent_property is None:
             return None
-        return self.parent_property.properties.index(self)  # type: ignore[arg-type]
+        return self.parent_property.properties.index(
+            cast("Property | PropertyGroup", self)
+        )
 
     @property
     def can_set_enabled(self) -> bool:
@@ -273,8 +280,7 @@ class PropertyBase:
             raise ValueError("Cannot mutate a root property")
         if parent.property_type != PropertyType.INDEXED_GROUP:
             raise ValueError(
-                f"Cannot mutate property in non-indexed group "
-                f"'{parent.match_name}'"
+                f"Cannot mutate property in non-indexed group '{parent.match_name}'"
             )
         # Indexed groups always have a backing tdgp.
         return parent, cast("ListChunk", parent._tdgp)
@@ -286,9 +292,10 @@ class PropertyBase:
         For effects (where the model's `_tdgp` is inside a wrapping
         `LIST:sspc`), this returns the sspc chunk.
         """
-        chunk: ListChunk = getattr(self, "_tdbs", None) or getattr(  # type: ignore[assignment]
+        chunk: ListChunk | None = getattr(self, "_tdbs", None) or getattr(
             self, "_tdgp", None
         )
+        assert chunk is not None
         # Identity check - attrs __eq__ is structural, so .index() / `in`
         # would give false positives for chunks with identical fields.
         if any(c is chunk for c in parent_tdgp.chunks):
@@ -297,11 +304,11 @@ class PropertyBase:
         # Effect case: _tdgp is inside a LIST:sspc wrapper
         for c in parent_tdgp.chunks:
             if (
-                hasattr(c, "list_type")
-                and c.list_type == "sspc"  # type: ignore[attr-defined]
-                and any(inner is chunk for inner in c.chunks)  # type: ignore[attr-defined]
+                isinstance(c, ListChunk)
+                and c.list_type == "sspc"
+                and any(inner is chunk for inner in c.chunks)
             ):
-                return c  # type: ignore[return-value]
+                return c
 
         return chunk
 
@@ -313,9 +320,7 @@ class PropertyBase:
         """
         # Identity scan - attrs __eq__ makes structurally-identical TdmnChunks
         # compare equal, so .index() would find the wrong one.
-        start = next(
-            i for i, c in enumerate(parent_tdgp.chunks) if c is self._tdmn
-        )
+        start = next(i for i, c in enumerate(parent_tdgp.chunks) if c is self._tdmn)
         return start, start + 2
 
     def remove(self) -> None:
@@ -330,7 +335,7 @@ class PropertyBase:
         parent, parent_tdgp = self._can_mutate()
         start, end = self._find_chunk_span(parent_tdgp)
         del parent_tdgp.chunks[start:end]
-        parent.properties.remove(self)  # type: ignore[arg-type]
+        parent.properties.remove(cast("Property | PropertyGroup", self))
 
     def move_to(self, new_index: int) -> None:
         """Move this property to a new 0-based index within its parent group.
@@ -348,11 +353,10 @@ class PropertyBase:
 
         num_props = len(parent.properties)
         if not 0 <= new_index < num_props:
-            raise IndexError(
-                f"Index {new_index} out of range [0, {num_props})"
-            )
+            raise IndexError(f"Index {new_index} out of range [0, {num_props})")
 
-        current_index = parent.properties.index(self)  # type: ignore[arg-type]
+        child = cast("Property | PropertyGroup", self)
+        current_index = parent.properties.index(child)
         if current_index == new_index:
             return
 
@@ -362,18 +366,18 @@ class PropertyBase:
         del parent_tdgp.chunks[start:end]
 
         # Remove from model list
-        parent.properties.remove(self)  # type: ignore[arg-type]
+        parent.properties.remove(child)
 
         # Find chunk insertion point: before the target property's span
         if new_index >= len(parent.properties):
             parent_tdgp.chunks.extend(chunk_span)
-            parent.properties.append(self)  # type: ignore[arg-type]
+            parent.properties.append(child)
         else:
             target = parent.properties[new_index]
             target_start, _ = target._find_chunk_span(parent_tdgp)
             for i, c in enumerate(chunk_span):
                 parent_tdgp.chunks.insert(target_start + i, c)
-            parent.properties.insert(new_index, self)  # type: ignore[arg-type]
+            parent.properties.insert(new_index, child)
 
     def duplicate(self) -> PropertyBase:
         """Duplicate this property within its parent group.
@@ -394,9 +398,7 @@ class PropertyBase:
         cloned_backing = clone_chunk_tree(backing)
 
         # Clone the tdmn
-        cloned_tdmn = TdmnChunk(
-            chunk_type="tdmn", value=self._match_name
-        )
+        cloned_tdmn = TdmnChunk(chunk_type="tdmn", value=self._match_name)
 
         # Insert after original in parent's chunk list
         _, end = self._find_chunk_span(parent_tdgp)
@@ -407,8 +409,10 @@ class PropertyBase:
         new_prop = self._parse_clone(cloned_tdmn, cloned_backing, parent)
 
         # Insert in model list after original
-        model_idx = parent.properties.index(self)  # type: ignore[arg-type]
-        parent.properties.insert(model_idx + 1, new_prop)  # type: ignore[arg-type]
+        model_idx = parent.properties.index(cast("Property | PropertyGroup", self))
+        parent.properties.insert(
+            model_idx + 1, cast("Property | PropertyGroup", new_prop)
+        )
 
         return new_prop
 
@@ -449,6 +453,7 @@ class PropertyBase:
             )
         elif list_chunk.list_type == "sspc":
             from ...parsers.effect import parse_effect  # noqa: PLC0415
+
             result = parse_effect(
                 sspc_chunk=list_chunk,
                 group_match_name=self._match_name,
@@ -467,8 +472,6 @@ class PropertyBase:
                 tdmn=tdmn,
             )
         else:
-            raise ValueError(
-                f"Unexpected backing chunk type '{list_chunk.list_type}'"
-            )
+            raise ValueError(f"Unexpected backing chunk type '{list_chunk.list_type}'")
         result._parent_property = parent
         return result

@@ -17,8 +17,6 @@ from ..descriptors import ChunkField, ComputedField
 from ..properties.property import Property
 from ..properties.property_base import PropertyBase
 from ..properties.property_group import PropertyGroup
-from ..reverses import reverse_ratio
-from ..transforms import compute_ratio
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
@@ -54,11 +52,6 @@ def _increment_name(name: str, existing_names: set[str]) -> str:
         candidate = f"{base}{num}"
     return candidate
 
-_reverse_start_time = reverse_ratio("start_time")
-_reverse_in_point = reverse_ratio("in_point")
-_reverse_out_point = reverse_ratio("out_point")
-
-
 def _reverse_auto_orient(value: AutoOrientType, _body: LdtaChunk) -> dict[str, int]:
     """Decompose AutoOrientType into individual ldta bit flags."""
     return {
@@ -84,33 +77,7 @@ def _compute_auto_orient(body: LdtaChunk) -> AutoOrientType:
     return AutoOrientType.NO_AUTO_ORIENT
 
 
-def _reverse_stretch(value: float, _body: LdtaChunk) -> dict[str, int]:
-    """Decompose stretch (percentage) into dividend/divisor."""
-    _TIME_DIVISOR = 10000
-    if value == 0:
-        return {"stretch_dividend": 0, "stretch_divisor": 0}
-    return {
-        "stretch_dividend": round(value * _TIME_DIVISOR / 100.0),
-        "stretch_divisor": _TIME_DIVISOR,
-    }
 
-
-def _compute_start_time(body: LdtaChunk) -> float:
-    return compute_ratio(body, "start_time_dividend", "start_time_divisor")
-
-
-def _compute_raw_in_point(body: LdtaChunk) -> float:
-    return compute_ratio(body, "in_point_dividend", "in_point_divisor")
-
-
-def _compute_raw_out_point(body: LdtaChunk) -> float:
-    return compute_ratio(body, "out_point_dividend", "out_point_divisor")
-
-
-def _compute_stretch(body: LdtaChunk) -> float:
-    if body.stretch_divisor == 0:
-        return 0.0
-    return body.stretch_dividend * 100.0 / body.stretch_divisor
 
 
 class Layer(PropertyGroup):
@@ -180,19 +147,11 @@ class Layer(PropertyGroup):
     solo = ChunkField[bool]("_ldta", "solo")
     """When `True`, the layer is soloed. Read / Write."""
 
-    start_time = ComputedField[float](
-        "_ldta",
-        compute=_compute_start_time,
-        reverse=_reverse_start_time,
-    )
+    start_time = ChunkField[float]("_ldta", "start_time")
     """The start time of the layer, expressed in composition time (seconds).
     Read / Write."""
 
-    stretch = ComputedField[float](
-        "_ldta",
-        compute=_compute_stretch,
-        reverse=_reverse_stretch,
-    )
+    stretch = ChunkField[float]("_ldta", "stretch")
     """The layer's time stretch, expressed as a percentage. A value of 100
     means no stretch. Values between 0 and 1 are set to 1, and values
     between -1 and 0 (not including 0) are set to -1. Read / Write."""
@@ -317,8 +276,7 @@ class Layer(PropertyGroup):
     def in_point(self) -> float:
         """The "in" point of the layer, expressed in composition time
         (seconds). Read / Write."""
-        raw_in_point = _compute_raw_in_point(self._ldta)
-        return float(self.start_time + raw_in_point * self._stretch_factor)
+        return float(self.start_time + self._ldta.in_point * self._stretch_factor)
 
     @in_point.setter
     def in_point(self, value: float) -> None:
@@ -328,8 +286,7 @@ class Layer(PropertyGroup):
     def out_point(self) -> float:
         """The "out" point of the layer, expressed in composition time
         (seconds). Read / Write."""
-        raw_out_point = _compute_raw_out_point(self._ldta)
-        return float(self.start_time + raw_out_point * self._stretch_factor)
+        return float(self.start_time + self._ldta.out_point * self._stretch_factor)
 
     @out_point.setter
     def out_point(self, value: float) -> None:
@@ -614,14 +571,12 @@ class Layer(PropertyGroup):
     def _set_raw_in_point(self, value: float) -> None:
         """Write a new in_point (comp time) to the binary chunk."""
         layer_relative = (value - self.start_time) / self._stretch_factor
-        for field, v in _reverse_in_point(layer_relative, self._ldta).items():
-            setattr(self._ldta, field, v)
+        self._ldta.in_point = layer_relative
 
     def _set_raw_out_point(self, value: float) -> None:
-        layer_relative = (value - self.start_time) / self._stretch_factor
         """Write a new out_point (comp time) to the binary chunk."""
-        for field, v in _reverse_out_point(layer_relative, self._ldta).items():
-            setattr(self._ldta, field, v)
+        layer_relative = (value - self.start_time) / self._stretch_factor
+        self._ldta.out_point = layer_relative
 
     # ------------------------------------------------------------------
     # Structural mutations

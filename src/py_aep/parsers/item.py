@@ -158,6 +158,8 @@ def parse_folder(
     folder._viewers = parse_viewers(folder_chunks, folder.items)
 
     return folder
+
+
 def _parse_guides(child_chunks: list[Chunk]) -> list[Guide]:
     """Parse composition guides from the LIST:Gide chunk.
 

@@ -29,7 +29,7 @@ Read these files to understand the patterns. They are the source of truth - this
 ### 1. Gather context
 - Read the **model** file, its **parser**, and the **chunk type**.
 - Check ExtendScript docs (`C:\Users\aurore.delaunay\git\after-effects-scripting-guide\docs`) for read-only vs read/write.
-- If the parser discards chunk bodies (extracts primitives), plan to refactor it to pass `chunk.body` to the constructor.
+- If the parser discards chunks (extracts primitives), plan to refactor it to pass chunks to the constructor.
 
 ### 2. Categorize each field
 

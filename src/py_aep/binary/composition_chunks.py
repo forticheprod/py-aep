@@ -120,6 +120,74 @@ class CdtaChunk(Chunk):
 
     # -- Computed properties -----------------------------------------------
 
+    _TIME_DIVISOR = 10000
+    _PIXEL_DIVISOR = 100000
+
+    @property
+    def frame_rate(self) -> float:
+        """Assembled frame rate (integer + fractional/65536)."""
+        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
+
+    @frame_rate.setter
+    def frame_rate(self, value: float) -> None:
+        self.frame_rate_integer = int(value)
+        self.frame_rate_fractional = round((value - int(value)) * 65536)
+
+    @property
+    def time_scale(self) -> float:
+        """Assembled time scale (integer + fractional/256)."""
+        return self.time_scale_integer + self.time_scale_fractional / 256.0
+
+    @property
+    def pixel_aspect(self) -> float:
+        """Pixel aspect ratio (dividend / divisor)."""
+        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
+
+    @pixel_aspect.setter
+    def pixel_aspect(self, value: float) -> None:
+        self.pixel_ratio_dividend = round(value * self._PIXEL_DIVISOR)
+        self.pixel_ratio_divisor = self._PIXEL_DIVISOR
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds (dividend / divisor)."""
+        return self.duration_dividend / self.duration_divisor
+
+    @duration.setter
+    def duration(self, value: float) -> None:
+        self.duration_dividend = round(value * self._TIME_DIVISOR)
+        self.duration_divisor = self._TIME_DIVISOR
+
+    @property
+    def display_start_time(self) -> float:
+        """Display start time in seconds (dividend / divisor)."""
+        return self.display_start_time_dividend / self.display_start_time_divisor
+
+    @display_start_time.setter
+    def display_start_time(self, value: float) -> None:
+        self.display_start_time_dividend = round(value * self._TIME_DIVISOR)
+        self.display_start_time_divisor = self._TIME_DIVISOR
+
+    @property
+    def work_area_start(self) -> float:
+        """Work area start in seconds (dividend / divisor)."""
+        return self.work_area_start_dividend / self.work_area_start_divisor
+
+    @work_area_start.setter
+    def work_area_start(self, value: float) -> None:
+        self.work_area_start_dividend = round(value * self._TIME_DIVISOR)
+        self.work_area_start_divisor = self._TIME_DIVISOR
+
+    @property
+    def time_seconds(self) -> float:
+        """Current time indicator in seconds (dividend / divisor)."""
+        return self.time_dividend / self.time_divisor
+
+    @time_seconds.setter
+    def time_seconds(self, value: float) -> None:
+        self.time_dividend = round(value * self._TIME_DIVISOR)
+        self.time_divisor = self._TIME_DIVISOR
+
     @property
     def work_area_end_absolute(self) -> float:
         """Absolute work area end in seconds."""

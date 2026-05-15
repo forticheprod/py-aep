@@ -36,7 +36,11 @@ class IdtaChunk(Chunk):
     item_id: int = u4_field()
     """Unique item identifier within the project."""
 
-    _flags_14: bytes = bytes_field(4, repr=False)
+    _flags_14: bytes = bytes_field(2, repr=False)
+    use_proxy: bool = bool_field()
+    """When `True`, a proxy source is active for this item."""
+
+    _flags_17: bytes = bytes_field(1, repr=False)
     _reserved_18: bytes = bytes_field(34, repr=False)
     label: int = u1_field()
     """Label color index."""

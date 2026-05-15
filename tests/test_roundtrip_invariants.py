@@ -139,9 +139,7 @@ class TestSynthesizedPropertyInvisibility:
         layer = get_first_layer(app.project)
 
         # Verify synthesized properties exist in the model
-        blur = _find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = _find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         assert blur is not None
         assert blur.value is not None
 
@@ -182,9 +180,7 @@ class TestMaterializationLifecycle:
         """Setting value materializes the property into the chunk tree."""
         app = parse_aep(PROPERTY_DIR / "2_gaussian.aep")
         layer = get_first_layer(app.project)
-        blur = _find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = _find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
 
         blur.value = 42.0
 
@@ -193,18 +189,14 @@ class TestMaterializationLifecycle:
 
         app2 = parse_aep(out)
         layer2 = get_first_layer(app2.project)
-        blur2 = _find_synthesized_effect_prop(
-            layer2, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur2 = _find_synthesized_effect_prop(layer2, 0, "ADBE Gaussian Blur 2-0001")
         assert blur2.value == 42.0
 
     def test_materialize_on_enabled_write(self, tmp_path: Path) -> None:
         """Setting enabled materializes the property into the chunk tree."""
         app = parse_aep(PROPERTY_DIR / "2_gaussian.aep")
         layer = get_first_layer(app.project)
-        blur = _find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = _find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         assert blur.enabled is True
 
         blur.enabled = False
@@ -214,18 +206,14 @@ class TestMaterializationLifecycle:
 
         app2 = parse_aep(out)
         layer2 = get_first_layer(app2.project)
-        blur2 = _find_synthesized_effect_prop(
-            layer2, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur2 = _find_synthesized_effect_prop(layer2, 0, "ADBE Gaussian Blur 2-0001")
         assert blur2.enabled is False
 
     def test_materialize_on_name_write(self, tmp_path: Path) -> None:
         """Setting name materializes the property into the chunk tree."""
         app = parse_aep(PROPERTY_DIR / "2_gaussian.aep")
         layer = get_first_layer(app.project)
-        blur = _find_synthesized_effect_prop(
-            layer, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur = _find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
 
         blur.name = "Custom Blur Name"
 
@@ -234,9 +222,7 @@ class TestMaterializationLifecycle:
 
         app2 = parse_aep(out)
         layer2 = get_first_layer(app2.project)
-        blur2 = _find_synthesized_effect_prop(
-            layer2, 0, "ADBE Gaussian Blur 2-0001"
-        )
+        blur2 = _find_synthesized_effect_prop(layer2, 0, "ADBE Gaussian Blur 2-0001")
         assert blur2.name == "Custom Blur Name"
 
 
@@ -306,9 +292,7 @@ class TestParameterizedBodyRoundtrip:
         original_bytes = aep_path.read_bytes()
 
         app = parse_aep(aep_path)
-        layer = get_layer(
-            app.project, "keyframe_spatial_bezier_arc"
-        )
+        layer = get_layer(app.project, "keyframe_spatial_bezier_arc")
         position = _find_property(layer, "ADBE Position")
         assert position is not None
         assert position.is_spatial is True

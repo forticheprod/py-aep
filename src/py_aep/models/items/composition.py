@@ -22,17 +22,13 @@ from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
 from ..reverses import (
     denormalize_values,
-    reverse_fractional,
     reverse_frame_ticks,
-    reverse_ratio,
     unpack_values,
 )
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
 from ..transforms import (
-    compute_fractional,
-    compute_ratio,
     normalize_values,
     pack_values,
 )
@@ -70,18 +66,9 @@ _RENDERER_EXTENDSCRIPT_TO_BINARY: dict[str, str] = {
 }
 
 
-_reverse_frame_rate = reverse_fractional("frame_rate_integer", "frame_rate_fractional")
-_reverse_pixel_aspect = reverse_ratio("pixel_ratio")
-_reverse_display_start_time = reverse_ratio("display_start_time")
 _reverse_display_start_frame = reverse_frame_ticks("display_start_time")
-_reverse_duration = reverse_ratio("duration")
 _reverse_frame_duration = reverse_frame_ticks("duration")
-_reverse_work_area_start = reverse_ratio("work_area_start")
 _reverse_work_area_start_frame = reverse_frame_ticks("work_area_start")
-
-
-def _compute_frame_rate(body: CdtaChunk) -> float:
-    return compute_fractional(body, "frame_rate_integer", "frame_rate_fractional")
 
 
 def _compute_bg_color(body: CdtaChunk) -> list[float]:
@@ -113,68 +100,36 @@ def _reverse_resolution_factor(value: list[int], _body: CdtaChunk) -> dict[str, 
 
 
 def _compute_work_area_duration(body: CdtaChunk) -> float:
-    work_start = body.work_area_start_dividend / body.work_area_start_divisor
     if body.work_area_end_dividend == 0xFFFFFFFF:
-        return body.duration_dividend / body.duration_divisor - work_start
-    return body.work_area_end_dividend / body.work_area_end_divisor - work_start
-
-
-def _compute_duration(body: CdtaChunk) -> float:
-    return compute_ratio(body, "duration_dividend", "duration_divisor")
+        return body.duration - body.work_area_start
+    return body.work_area_end_dividend / body.work_area_end_divisor - body.work_area_start
 
 
 def _compute_frame_duration(body: CdtaChunk) -> int:
-    return int(_compute_duration(body) * _compute_frame_rate(body))
-
-
-def _compute_pixel_aspect(body: CdtaChunk) -> float:
-    return compute_ratio(body, "pixel_ratio_dividend", "pixel_ratio_divisor")
-
-
-def _compute_time_scale(body: CdtaChunk) -> float:
-    return compute_fractional(
-        body, "time_scale_integer", "time_scale_fractional", scale=256,
-    )
-
-
-def _compute_display_start_time(body: CdtaChunk) -> float:
-    return compute_ratio(
-        body, "display_start_time_dividend", "display_start_time_divisor",
-    )
+    return int(body.duration * body.frame_rate)
 
 
 def _compute_display_start_frame(body: CdtaChunk) -> int:
-    return int(_compute_display_start_time(body) * _compute_frame_rate(body))
-
-
-def _compute_time(body: CdtaChunk) -> float:
-    return compute_ratio(body, "time_dividend", "time_divisor")
+    return int(body.display_start_time * body.frame_rate)
 
 
 def _compute_frame_time(body: CdtaChunk) -> int:
-    return int(_compute_time(body) * _compute_frame_rate(body))
-
-
-def _compute_work_area_start(body: CdtaChunk) -> float:
-    return compute_ratio(
-        body, "work_area_start_dividend", "work_area_start_divisor",
-    )
+    return int(body.time_seconds * body.frame_rate)
 
 
 def _compute_work_area_start_frame(body: CdtaChunk) -> int:
-    return int(_compute_work_area_start(body) * _compute_frame_rate(body))
+    return int(body.work_area_start * body.frame_rate)
 
 
 def _compute_work_area_duration_frame(body: CdtaChunk) -> int:
-    return int(_compute_work_area_duration(body) * _compute_frame_rate(body))
+    return int(_compute_work_area_duration(body) * body.frame_rate)
 
 
 def _reverse_work_area_duration(value: float, body: CdtaChunk) -> dict[str, int]:
     """Reverse work area duration: sets work_area_end = work_area_start + value."""
     _DIVISOR = 10000
-    work_start = body.work_area_start_dividend / body.work_area_start_divisor
     return {
-        "work_area_end_dividend": round((work_start + value) * _DIVISOR),
+        "work_area_end_dividend": round((body.work_area_start + value) * _DIVISOR),
         "work_area_end_divisor": _DIVISOR,
     }
 
@@ -182,13 +137,11 @@ def _reverse_work_area_duration(value: float, body: CdtaChunk) -> dict[str, int]
 def _reverse_work_area_duration_frame(value: int, body: CdtaChunk) -> dict[str, int]:
     """Reverse work area duration in frames: converts to seconds then sets end."""
     _DIVISOR = 10000
-    work_start = body.work_area_start_dividend / body.work_area_start_divisor
-    frame_rate = compute_fractional(
-        body, "frame_rate_integer", "frame_rate_fractional",
-    )
-    duration_seconds = value / frame_rate
+    duration_seconds = value / body.frame_rate
     return {
-        "work_area_end_dividend": round((work_start + duration_seconds) * _DIVISOR),
+        "work_area_end_dividend": round(
+            (body.work_area_start + duration_seconds) * _DIVISOR
+        ),
         "work_area_end_divisor": _DIVISOR,
     }
 
@@ -335,19 +288,13 @@ class CompItem(AVItem):
     Samples Per Frame setting in the Advanced tab of the Composition
     Settings dialog box. Read / Write."""
 
-    frame_rate = ComputedField[float](
-        "_cdta",
-        compute=_compute_frame_rate,
-        reverse=_reverse_frame_rate,
-        validate=validate_number(min=1.0, max=999.0),
+    frame_rate = ChunkField[float](
+        "_cdta", "frame_rate", validate=validate_number(min=1.0, max=999.0)
     )
     """The frame rate of the item in frames-per-second. Read / Write."""
 
-    duration = ComputedField[float](
-        "_cdta",
-        compute=_compute_duration,
-        reverse=_reverse_duration,
-        validate=validate_number(min=0.0, max=10800.0),
+    duration = ChunkField[float](
+        "_cdta", "duration", validate=validate_number(min=0.0, max=10800.0)
     )
     """The duration of the item in seconds. Read / Write."""
 
@@ -363,22 +310,18 @@ class CompItem(AVItem):
     )
     """The duration of the item in frames. Read / Write."""
 
-    pixel_aspect = ComputedField[float](
-        "_cdta",
-        compute=_compute_pixel_aspect,
-        reverse=_reverse_pixel_aspect,
-        validate=validate_number(min=0.01, max=100.0),
+    pixel_aspect = ChunkField[float](
+        "_cdta", "pixel_aspect", validate=validate_number(min=0.01, max=100.0)
     )
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
 
-    time_scale = ComputedField[float]("_cdta", compute=_compute_time_scale)
+    time_scale = ChunkField[float]("_cdta", "time_scale", read_only=True)
     """The time scale, used as a divisor for keyframe time values. Read-only."""
 
-    display_start_time = ComputedField[float](
+    display_start_time = ChunkField[float](
         "_cdta",
-        compute=_compute_display_start_time,
-        reverse=_reverse_display_start_time,
-        validate=validate_number(min=-10800.0, max=86340.0),
+        "display_start_time",
+        validate=validate_number(min=-10800.0, max=86339.0),
     )
     """The time set as the beginning of the composition, in seconds. This
     is the equivalent of the Start Timecode or Start Frame setting in the
@@ -390,16 +333,15 @@ class CompItem(AVItem):
         reverse=_reverse_display_start_frame,
         validate=validate_number(
             min=lambda self: int(-10800.0 * self.frame_rate),
-            max=lambda self: int(86340.0 * self.frame_rate),
+            max=lambda self: int(86339.0 * self.frame_rate),
             integer=True,
         ),
     )
     """The frame value of the beginning of the composition. Read / Write."""
 
-    work_area_start = ComputedField[float](
+    work_area_start = ChunkField[float](
         "_cdta",
-        compute=_compute_work_area_start,
-        reverse=_reverse_work_area_start,
+        "work_area_start",
         validate=validate_number(
             min=0.0,
             max=lambda self: self.duration - 1 / self.frame_rate,
@@ -444,10 +386,9 @@ class CompItem(AVItem):
     )
     """The work area duration in frames. Read / Write."""
 
-    time = ComputedField[float](
+    time = ChunkField[float](
         "_cdta",
-        compute=_compute_time,
-        reverse=reverse_ratio("time"),
+        "time_seconds",
         validate=validate_number(
             min=lambda self: self.display_start_time,
             max=lambda self: (
@@ -491,6 +432,7 @@ class CompItem(AVItem):
         project: Project,
         parent_folder: FolderItem,
         effect_param_defs: dict[str, dict[str, dict[str, Any]]],
+        proxy_source: FileSource | SolidSource | PlaceholderSource | None,
     ) -> None:
         # Skip AVItem's extra params - they're all descriptor-backed on
         # CompItem and read directly from the cdta chunk body.
@@ -503,6 +445,7 @@ class CompItem(AVItem):
             project=project,
             parent_folder=parent_folder,
             type_name="Composition",
+            proxy_source=proxy_source,
         )
 
         self._layers: list[Layer] = []

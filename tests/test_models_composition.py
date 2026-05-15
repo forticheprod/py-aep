@@ -919,7 +919,7 @@ class TestRoundtripDisplayStartTime:
         comp = get_comp(
             parse_project(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10"
         )
-        with pytest.raises(ValueError, match="must be <= 86340.0"):
+        with pytest.raises(ValueError, match="must be <= 86339.0"):
             comp.display_start_time = 86341.0
 
 
