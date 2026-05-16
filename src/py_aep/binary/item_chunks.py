@@ -37,8 +37,7 @@ class IdtaChunk(Chunk):
     """Unique item identifier within the project."""
 
     _flags_14: bytes = bytes_field(2, repr=False)
-    use_proxy: bool = bool_field()
-    """When `True`, a proxy source is active for this item."""
+    _proxy_flags: int = u1_field(repr=False)
 
     _flags_17: bytes = bytes_field(1, repr=False)
     _reserved_18: bytes = bytes_field(34, repr=False)
@@ -47,6 +46,8 @@ class IdtaChunk(Chunk):
 
     _trailing: bytes = field(default=b"", repr=False)
 
+    # -- BitField descriptors (not attrs fields) ---------------------------
+    use_proxy = BitField("_proxy_flags", 0)
 
 # ---------------------------------------------------------------------------
 # head - file header / version (28 bytes)

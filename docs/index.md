@@ -88,7 +88,7 @@ The library provides classes that mirror After Effects' object model:
 - `Item`, `AVItem`, `FolderItem`, `CompItem`, `FootageItem`: Project items
 - `AVLayer`, `TextLayer`, `ShapeLayer`, `ThreeDModelLayer`, `CameraLayer`, `LightLayer`: Layer types
 - `PropertyBase`, `Property`, `PropertyGroup`, `MaskPropertyGroup`: Layer properties
-- `Keyframe`, `KeyframeEase`, `MarkerValue`, `Shape`, `FeatherPoint`: Animation and property value data
+- `Keyframe`, `KeyframeEase`, `MarkerValue`, `Shape`, `FeatherPoint`, `Gradient`: Animation and property value data
 - `Guide`: Composition ruler guide
 - `FootageSource`, `FileSource`, `SolidSource`, `PlaceholderSource`: Footage sources
 - `TextDocument`, `FontObject`: Text layer data

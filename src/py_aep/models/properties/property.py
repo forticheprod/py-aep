@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Union, cast
 
 from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
@@ -30,11 +30,18 @@ if TYPE_CHECKING:
     from ...binary.scalar_chunks import S4Chunk
     from ..items.composition import CompItem
     from ..text.text_document import TextDocument
+    from .gradient import Gradient
     from .keyframe import Keyframe
     from .marker import MarkerValue
     from .property_group import PropertyGroup
     from .shape import Shape
     from .specs import _PropSpec
+
+    _ValueType = Union[
+        list[float], float, int,
+        Gradient, MarkerValue, Shape, TextDocument,
+        None,
+    ]
 
 logger = logging.getLogger(__name__)
 
@@ -588,6 +595,10 @@ class Property(PropertyBase):
         `expression_enabled` is `True`, returns the evaluated expression
         value. If there are keyframes, returns the keyframed value at the
         current time. Otherwise, returns the static value. Read / Write.
+
+        The type depends on `property_value_type`:
+        `list[float]`, `float`, `int`, [Gradient][], [MarkerValue][],
+        [Shape][], [TextDocument][], or `None`.
         """
         if self._tdpi is not None and self._composition is not None:
             layer_id = self._tdpi.value

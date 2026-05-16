@@ -23,7 +23,12 @@ from .marker import parse_markers
 from .property_value import (
     parse_property,
 )
-from .specialized_properties import parse_orientation, parse_shape, parse_text_document
+from .specialized_properties import (
+    parse_gradient,
+    parse_orientation,
+    parse_shape,
+    parse_text_document,
+)
 from .utils import (
     get_chunks_by_match_name,
 )
@@ -265,6 +270,27 @@ def _dispatch_oms(
     tdmn = cast("TdmnChunk", find_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
     prop = parse_shape(
         oms_chunk=first_chunk,
+        match_name=match_name,
+        property_depth=child_depth,
+        composition=composition,
+        tdmn=tdmn,
+    )
+    return [prop]
+
+
+@_property_parser("GCst")
+def _dispatch_gcst(
+    match_name: str,
+    sub_prop_chunks: list[Chunk],
+    first_chunk: ListChunk,
+    child_depth: int,
+    effect_param_defs: dict[str, dict[str, dict[str, Any]]],
+    composition: CompItem,
+) -> list[Property | PropertyGroup]:
+    """Parse a gradient color property from a GCst chunk."""
+    tdmn = cast("TdmnChunk", find_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    prop = parse_gradient(
+        gcst_chunk=first_chunk,
         match_name=match_name,
         property_depth=child_depth,
         composition=composition,

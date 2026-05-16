@@ -256,6 +256,26 @@ ExtendScript exposes as plain integers or doesn't expose at all:
 - Font enums: `CTFontTechnology`, `CTFontType`, `CTScript`
 - Text enums: `ComposerEngine`, `BoxAutoFitPolicy`, `LineOrientation`, etc.
 
+## Gradient Colors
+
+ExtendScript reports gradient color properties (`ADBE Vector Grad Colors`)
+with `propertyValueType = NO_VALUE` and provides no `.value` accessor.
+py_aep parses the underlying XML stored in the binary and exposes it as a
+`Gradient` object on `Property.value`:
+
+```python
+gfill = contents.property("ADBE Vector Graphic - G-Fill")
+colors = gfill.property("ADBE Vector Grad Colors")
+gradient = colors.value  # Gradient instance
+
+for stop in gradient.color_stops:
+    print(stop.offset, stop.color)  # (red, green, blue) tuple
+
+for stop in gradient.alpha_stops:
+    print(stop.offset, stop.alpha)
+```
+
+
 ## Output Module Format Options
 
 ExtendScript provides no access to format-specific render settings. py_aep

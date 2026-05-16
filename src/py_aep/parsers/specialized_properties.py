@@ -1,4 +1,4 @@
-"""Orientation, shape, and text document property parsers."""
+"""Orientation, shape, text document, and gradient property parsers."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from ..enums import (
     PropertyValueType,
 )
 from ..models.properties.shape import FeatherPoint, Shape
+from .gradient import parse_gradient_xml
 from .property_value import (
     parse_property,
 )
@@ -29,7 +30,7 @@ from .text import parse_btdk_cos
 
 if TYPE_CHECKING:
     from ..binary.chunk import ListChunk
-    from ..binary.scalar_chunks import TdmnChunk
+    from ..binary.scalar_chunks import TdmnChunk, Utf8Chunk
     from ..models.items.composition import CompItem
     from ..models.properties.property import Property
 
@@ -279,5 +280,62 @@ def parse_text_document(
                 kf._value = doc
         else:
             prop.value = text_documents[0]
+
+    return prop
+
+
+def parse_gradient(
+    gcst_chunk: ListChunk,
+    match_name: str,
+    property_depth: int,
+    composition: CompItem,
+    tdmn: TdmnChunk,
+) -> Property:
+    """Parse a gradient color property from a GCst chunk.
+
+    The GCst chunk contains:
+    - LIST:tdbs with base property metadata
+    - LIST:GCky with Utf8 chunks containing gradient XML per keyframe
+
+    Args:
+        gcst_chunk: The GCst LIST chunk to parse.
+        match_name: The match name identifier for this property.
+        property_depth: The nesting depth of this property.
+        composition: The parent composition.
+        tdmn: The tdmn chunk for this property.
+    """
+    tdbs_chunk = find_by_list_type(chunks=gcst_chunk.chunks, list_type="tdbs")
+    prop = parse_property(
+        tdbs_chunk=tdbs_chunk,
+        match_name=match_name,
+        composition=composition,
+        property_depth=property_depth,
+        tdmn=tdmn,
+    )
+
+    try:
+        gcky_chunk = find_by_list_type(
+            chunks=gcst_chunk.chunks,
+            list_type="GCky",
+        )
+    except ChunkNotFoundError:
+        return prop
+
+    utf8_chunks = cast(
+        "list[Utf8Chunk]",
+        filter_by_type(chunks=gcky_chunk.chunks, chunk_type="Utf8"),
+    )
+    gradient_values = []
+    for utf8 in utf8_chunks:
+        gdata = parse_gradient_xml(utf8)
+        if gdata is not None:
+            gradient_values.append(gdata)
+
+    if gradient_values:
+        if prop.keyframes:
+            for kf, gdata in zip(prop.keyframes, gradient_values):
+                kf._value = gdata
+        else:
+            prop.value = gradient_values[0]
 
     return prop

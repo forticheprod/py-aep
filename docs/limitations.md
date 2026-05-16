@@ -120,11 +120,6 @@ Other color management settings (`color_management_system`,
 `compensate_for_scene_referred_profiles`) remain read/write as they do not
 depend on embedded ICC data.
 
-## Proxy Sources
-
-`AVItem.proxySource` and `AVItem.useProxy` are not parsed. Proxy footage
-information is stored in the binary format but not yet extracted.
-
 ## Essential Properties
 
 Essential Property override values on precomp layers are parsed as regular

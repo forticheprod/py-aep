@@ -1,5 +1,6 @@
 """Property models."""
 
+from .gradient import Gradient, GradientAlphaStop, GradientColorStop
 from .keyframe import Keyframe
 from .keyframe_ease import KeyframeEase
 from .marker import MarkerValue
@@ -11,6 +12,9 @@ from .shape import FeatherPoint, Shape
 
 __all__ = [
     "FeatherPoint",
+    "GradientAlphaStop",
+    "Gradient",
+    "GradientColorStop",
     "Keyframe",
     "KeyframeEase",
     "MarkerValue",

@@ -60,7 +60,9 @@ class AVItem(Item):
     width: int
     """The width of the item in pixels. Read-only."""
 
-    use_proxy = ChunkField[bool]("_idta", "use_proxy", validate=_validate_use_proxy)
+    use_proxy = ChunkField[bool](
+        "_idta", "use_proxy", validate=_validate_use_proxy,
+    )
     """When `True`, a proxy is used for the item. Read / Write.
 
     It is set to `True` by all the `set_proxy` methods, and to `False` by

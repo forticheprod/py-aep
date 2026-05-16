@@ -42,6 +42,7 @@ nav = [
             { "Mask Property Group" = "api/properties/mask_property_group.md" },
             { "Keyframe" = "api/properties/keyframe.md" },
             { "Keyframe Ease" = "api/properties/keyframe_ease.md" },
+            { "Gradient" = "api/properties/gradient.md" },
             { "Marker" = "api/properties/marker.md" },
             { "Shape" = "api/properties/shape.md" },
         ] },

@@ -10,13 +10,14 @@ from ..descriptors import ChunkField
 if TYPE_CHECKING:
     from ...binary.ldat_chunks import LdatItem
     from ..text.text_document import TextDocument
+    from .gradient import Gradient
     from .keyframe_ease import KeyframeEase
     from .marker import MarkerValue
     from .property import Property
     from .shape import Shape
 
     _ValueType = Union[
-        list[float], float, MarkerValue, Shape, TextDocument, None
+        list[float], float, Gradient, MarkerValue, Shape, TextDocument, None
     ]
 
 
@@ -102,7 +103,14 @@ class Keyframe:
         self._out_temporal_ease: list[KeyframeEase] | None = None
 
         self._value: (
-            list[float] | float | MarkerValue | Shape | TextDocument | None | object
+            list[float]
+            | float
+            | Gradient
+            | MarkerValue
+            | Shape
+            | TextDocument
+            | None
+            | object
         ) = _VALUE_FROM_CHUNK
 
     def _bind_property(self, prop: Property) -> None:
@@ -248,7 +256,7 @@ class Keyframe:
     @property
     def value(
         self,
-    ) -> list[float] | float | MarkerValue | Shape | TextDocument | None:
+    ) -> list[float] | float | Gradient | MarkerValue | Shape | TextDocument | None:
         """
         The value of the keyframe. For a 1D property (e.g. Opacity, Rotation),
         this is a single `float`. For a multi-dimensional property (e.g.
@@ -269,7 +277,7 @@ class Keyframe:
     @value.setter
     def value(
         self,
-        value: list[float] | float | MarkerValue | Shape | TextDocument | None,
+        value: list[float] | float | Gradient | MarkerValue | Shape | TextDocument | None,
     ) -> None:
         if self._property is not None and isinstance(value, (int, float, list)):
             value = self._property._unresolve_value(value)

@@ -698,35 +698,135 @@ _VECTOR_STAR_SPECS: list[_PropSpec] = [
     ),
 ]
 
+# Shared vector property specs used across Fill, G-Fill, G-Stroke, Stroke,
+# and Group lists.
+_VECTOR_BLEND_MODE = _PropSpec(
+    "ADBE Vector Blend Mode",
+    "Blend Mode",
+    1.0,
+    PropertyValueType.OneD,
+    min_value=1,
+    max_value=29,
+    can_vary_over_time=False,
+)
+_VECTOR_COMPOSITE_ORDER = _PropSpec(
+    "ADBE Vector Composite Order",
+    "Composite",
+    1.0,
+    PropertyValueType.OneD,
+    min_value=1,
+    max_value=2,
+    can_vary_over_time=False,
+)
+_VECTOR_FILL_RULE = _PropSpec(
+    "ADBE Vector Fill Rule",
+    "Fill Rule",
+    1.0,
+    PropertyValueType.OneD,
+    min_value=1,
+    max_value=2,
+    can_vary_over_time=False,
+)
+_VECTOR_FILL_OPACITY = _PropSpec(
+    "ADBE Vector Fill Opacity",
+    "Opacity",
+    100.0,
+    PropertyValueType.OneD,
+    min_value=0,
+    max_value=100,
+)
+_VECTOR_GRAD_TYPE = _PropSpec(
+    "ADBE Vector Grad Type",
+    "Type",
+    1.0,
+    PropertyValueType.OneD,
+    min_value=1,
+    max_value=2,
+    can_vary_over_time=False,
+)
+_VECTOR_GRAD_START_PT = _PropSpec(
+    "ADBE Vector Grad Start Pt",
+    "Start Point",
+    [0.0, 0.0],
+    PropertyValueType.TwoD_SPATIAL,
+    dimensions=2,
+    is_spatial=True,
+)
+_VECTOR_GRAD_END_PT = _PropSpec(
+    "ADBE Vector Grad End Pt",
+    "End Point",
+    [100.0, 0.0],
+    PropertyValueType.TwoD_SPATIAL,
+    dimensions=2,
+    is_spatial=True,
+)
+_VECTOR_GRAD_HILITE_LENGTH = _PropSpec(
+    "ADBE Vector Grad HiLite Length",
+    "Highlight Length",
+    0.0,
+    PropertyValueType.OneD,
+    min_value=-100,
+    max_value=100,
+)
+_VECTOR_GRAD_HILITE_ANGLE = _PropSpec(
+    "ADBE Vector Grad HiLite Angle",
+    "Highlight Angle",
+    0.0,
+    PropertyValueType.OneD,
+)
+_VECTOR_GRAD_COLORS = _PropSpec(
+    "ADBE Vector Grad Colors",
+    "Colors",
+    None,
+    PropertyValueType.NO_VALUE,
+    is_spatial=True,
+)
+_VECTOR_STROKE_OPACITY = _PropSpec(
+    "ADBE Vector Stroke Opacity",
+    "Opacity",
+    100.0,
+    PropertyValueType.OneD,
+    min_value=0,
+    max_value=100,
+)
+_VECTOR_STROKE_WIDTH = _PropSpec(
+    "ADBE Vector Stroke Width",
+    "Stroke Width",
+    2.0,
+    PropertyValueType.OneD,
+    min_value=0,
+)
+_VECTOR_STROKE_LINE_CAP = _PropSpec(
+    "ADBE Vector Stroke Line Cap",
+    "Line Cap",
+    1.0,
+    PropertyValueType.OneD,
+    min_value=1,
+    max_value=3,
+    can_vary_over_time=False,
+)
+_VECTOR_STROKE_LINE_JOIN = _PropSpec(
+    "ADBE Vector Stroke Line Join",
+    "Line Join",
+    1.0,
+    PropertyValueType.OneD,
+    min_value=1,
+    max_value=3,
+    can_vary_over_time=False,
+)
+_VECTOR_STROKE_MITER_LIMIT = _PropSpec(
+    "ADBE Vector Stroke Miter Limit",
+    "Miter Limit",
+    4.0,
+    PropertyValueType.OneD,
+    min_value=1,
+)
+
 # Canonical children of "ADBE Vector Graphic - Fill".
 _VECTOR_FILL_SPECS: list[_PropSpec] = [
-    _PropSpec(
-        "ADBE Vector Blend Mode",
-        "Blend Mode",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=29,
-        can_vary_over_time=False,
-    ),
-    _PropSpec(
-        "ADBE Vector Composite Order",
-        "Composite",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=2,
-        can_vary_over_time=False,
-    ),
-    _PropSpec(
-        "ADBE Vector Fill Rule",
-        "Fill Rule",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=2,
-        can_vary_over_time=False,
-    ),
+    _VECTOR_BLEND_MODE,
+    _VECTOR_COMPOSITE_ORDER,
+    _VECTOR_FILL_RULE,
     _PropSpec(
         "ADBE Vector Fill Color",
         "Color",
@@ -738,36 +838,47 @@ _VECTOR_FILL_SPECS: list[_PropSpec] = [
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
-        "ADBE Vector Fill Opacity",
-        "Opacity",
-        100.0,
-        PropertyValueType.OneD,
-        min_value=0,
-        max_value=100,
-    ),
+    _VECTOR_FILL_OPACITY,
+]
+
+# Canonical children of "ADBE Vector Graphic - G-Fill".
+_VECTOR_G_FILL_SPECS: list[_PropSpec] = [
+    _VECTOR_BLEND_MODE,
+    _VECTOR_COMPOSITE_ORDER,
+    _VECTOR_FILL_RULE,
+    _VECTOR_GRAD_TYPE,
+    _VECTOR_GRAD_START_PT,
+    _VECTOR_GRAD_END_PT,
+    _VECTOR_GRAD_HILITE_LENGTH,
+    _VECTOR_GRAD_HILITE_ANGLE,
+    _VECTOR_GRAD_COLORS,
+    _VECTOR_FILL_OPACITY,
+]
+
+# Canonical children of "ADBE Vector Graphic - G-Stroke".
+_VECTOR_G_STROKE_SPECS: list[_PropSpec | _GroupSpec] = [
+    _VECTOR_BLEND_MODE,
+    _VECTOR_COMPOSITE_ORDER,
+    _VECTOR_GRAD_TYPE,
+    _VECTOR_GRAD_START_PT,
+    _VECTOR_GRAD_END_PT,
+    _VECTOR_GRAD_HILITE_LENGTH,
+    _VECTOR_GRAD_HILITE_ANGLE,
+    _VECTOR_GRAD_COLORS,
+    _VECTOR_STROKE_OPACITY,
+    _VECTOR_STROKE_WIDTH,
+    _VECTOR_STROKE_LINE_CAP,
+    _VECTOR_STROKE_LINE_JOIN,
+    _VECTOR_STROKE_MITER_LIMIT,
+    _GroupSpec("ADBE Vector Stroke Dashes", "Dashes"),
+    _GroupSpec("ADBE Vector Stroke Taper", "Taper"),
+    _GroupSpec("ADBE Vector Stroke Wave", "Wave"),
 ]
 
 # Canonical children of "ADBE Vector Graphic - Stroke".
 _VECTOR_STROKE_SPECS: list[_PropSpec] = [
-    _PropSpec(
-        "ADBE Vector Blend Mode",
-        "Blend Mode",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=29,
-        can_vary_over_time=False,
-    ),
-    _PropSpec(
-        "ADBE Vector Composite Order",
-        "Composite",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=2,
-        can_vary_over_time=False,
-    ),
+    _VECTOR_BLEND_MODE,
+    _VECTOR_COMPOSITE_ORDER,
     _PropSpec(
         "ADBE Vector Stroke Color",
         "Color",
@@ -779,46 +890,11 @@ _VECTOR_STROKE_SPECS: list[_PropSpec] = [
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
-        "ADBE Vector Stroke Opacity",
-        "Opacity",
-        100.0,
-        PropertyValueType.OneD,
-        min_value=0,
-        max_value=100,
-    ),
-    _PropSpec(
-        "ADBE Vector Stroke Width",
-        "Stroke Width",
-        2.0,
-        PropertyValueType.OneD,
-        min_value=0,
-    ),
-    _PropSpec(
-        "ADBE Vector Stroke Line Cap",
-        "Line Cap",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=3,
-        can_vary_over_time=False,
-    ),
-    _PropSpec(
-        "ADBE Vector Stroke Line Join",
-        "Line Join",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=3,
-        can_vary_over_time=False,
-    ),
-    _PropSpec(
-        "ADBE Vector Stroke Miter Limit",
-        "Miter Limit",
-        4.0,
-        PropertyValueType.OneD,
-        min_value=1,
-    ),
+    _VECTOR_STROKE_OPACITY,
+    _VECTOR_STROKE_WIDTH,
+    _VECTOR_STROKE_LINE_CAP,
+    _VECTOR_STROKE_LINE_JOIN,
+    _VECTOR_STROKE_MITER_LIMIT,
 ]
 
 # Canonical children of "ADBE Vector Stroke Dashes".
@@ -991,15 +1067,7 @@ _VECTOR_STROKE_WAVE_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Group" (shape group container).
 _VECTOR_GROUP_SPECS: list[_PropSpec] = [
-    _PropSpec(
-        "ADBE Vector Blend Mode",
-        "Blend Mode",
-        1.0,
-        PropertyValueType.OneD,
-        min_value=1,
-        max_value=29,
-        can_vary_over_time=False,
-    ),
+    _VECTOR_BLEND_MODE,
 ]
 
 # Canonical children of "ADBE Vector Transform Group".
@@ -1403,6 +1471,8 @@ _GROUP_CHILD_SPECS: dict[str, Sequence[_PropSpec | _GroupSpec]] = {
     "ADBE Text More Options": _TEXT_MORE_OPTIONS_SPECS,
     "ADBE Vector Shape - Star": _VECTOR_STAR_SPECS,
     "ADBE Vector Graphic - Fill": _VECTOR_FILL_SPECS,
+    "ADBE Vector Graphic - G-Fill": _VECTOR_G_FILL_SPECS,
+    "ADBE Vector Graphic - G-Stroke": _VECTOR_G_STROKE_SPECS,
     "ADBE Vector Graphic - Stroke": _VECTOR_STROKE_SPECS,
     "ADBE Vector Stroke Dashes": _VECTOR_STROKE_DASHES_SPECS,
     "ADBE Vector Stroke Taper": _VECTOR_STROKE_TAPER_SPECS,
