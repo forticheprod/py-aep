@@ -211,6 +211,9 @@ class AVLayer(Layer):
 
     @track_matte_type.setter
     def track_matte_type(self, value: TrackMatteType) -> None:
+        if not isinstance(value, (TrackMatteType, int)):
+            raise ValueError("track_matte_type must be a TrackMatteType enum value.")
+
         old_matte = self.track_matte_layer
         self._ldta.track_matte_type = value.to_binary()
         if (
@@ -272,6 +275,8 @@ class AVLayer(Layer):
 
     @in_point.setter
     def in_point(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("in_point must be a number.")
         self._set_raw_in_point(value)
 
     @property
@@ -291,6 +296,8 @@ class AVLayer(Layer):
 
     @out_point.setter
     def out_point(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("out_point must be a number.")
         self._set_raw_out_point(value)
 
     @property
@@ -315,10 +322,6 @@ class AVLayer(Layer):
                     self._source = cast(AVItem, result)
                     return self._source
                 return None
-
-    @source.setter
-    def source(self, value: AVItem) -> None:
-        self.replace_source(value)
 
     @property
     def has_video(self) -> bool:
@@ -367,6 +370,9 @@ class AVLayer(Layer):
         Args:
             time: The time in seconds.
         """
+        if not isinstance(time, (int, float)):
+            raise ValueError("time must be a number.")
+
         if not self.has_audio:
             return False
 
@@ -440,7 +446,7 @@ class AVLayer(Layer):
             )
         prop = self["ADBE Time Remapping"]
         if isinstance(prop, Property):
-            prop._animated = value
+            prop._animated = bool(value)
 
     @property
     def width(self) -> int:
@@ -570,6 +576,10 @@ class AVLayer(Layer):
             ValueError: If `track_matte_layer` belongs to a
                 different composition.
         """
+        if not isinstance(track_matte_type, TrackMatteType):
+            raise ValueError("track_matte_type must be a TrackMatteType enum value.")
+        if track_matte_layer is not None and not isinstance(track_matte_layer, AVLayer):
+            raise ValueError("track_matte_layer must be an AVLayer or None.")
         if (
             track_matte_layer is not None
             and track_matte_type == TrackMatteType.NO_TRACK_MATTE
@@ -646,6 +656,9 @@ class AVLayer(Layer):
         # replaced - AE silently ignores the call but we raise.
         if self._ldta.layer_type == 5:
             raise ValueError("replace_source is not supported on 3D model layers")
+
+        if not isinstance(new_source, AVItem):
+            raise ValueError("new_source must be an AVItem.")
 
         comp = self.containing_comp
         project = comp._project

@@ -1,4 +1,5 @@
 """Chunk tree mutation helpers for the binary I/O layer."""
+
 from __future__ import annotations
 
 from io import BytesIO
@@ -47,7 +48,7 @@ def _unflag_markers(
     parent_chunks: list[Chunk],
     target: ListChunk,
 ) -> None:
-    """Clear the `synthetic` flag on tdmn chunks adjacent to *target*."""
+    """Clear the `synthetic` flag on tdmn chunks adjacent to `target`."""
     idx = None
     for i, c in enumerate(parent_chunks):
         if c is target:
@@ -57,10 +58,7 @@ def _unflag_markers(
         return
     if idx > 0 and parent_chunks[idx - 1].chunk_type == "tdmn":
         parent_chunks[idx - 1].synthetic = False
-    if (
-        idx + 1 < len(parent_chunks)
-        and parent_chunks[idx + 1].chunk_type == "tdmn"
-    ):
+    if idx + 1 < len(parent_chunks) and parent_chunks[idx + 1].chunk_type == "tdmn":
         parent_chunks[idx + 1].synthetic = False
 
 

@@ -61,7 +61,7 @@ def _space(buf: io.BytesIO) -> None:
 
 
 def _write_value(buf: io.BytesIO, value: Any, *, top_level: bool = False) -> None:
-    """Dispatch *value* to the appropriate serialization handler."""
+    """Dispatch `value` to the appropriate serialization handler."""
     if isinstance(value, dict):
         if top_level:
             _write_dict_content(buf, value)

@@ -6,9 +6,19 @@ from py_aep.enums import PropertyType
 
 from ...binary.chunk import ListChunk
 from ...binary.mutations import clone_chunk_tree
-from ...binary.scalar_chunks import TdmnChunk
+from ...binary.property_chunks import TdmnChunk
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..descriptors import ChunkField
+from ..validators import validate_string
+
+if TYPE_CHECKING:
+    from ...binary.chunk import Chunk
+    from ...binary.property_chunks import TdsbChunk
+    from ...binary.scalar_chunks import Utf8Chunk
+    from ..layers.layer import Layer
+    from .property import Property
+    from .property_group import PropertyGroup
+
 
 # Sentinel value used as the tdsn display name for synthesized properties.
 # When this exact string appears as the tdsn value, the property has no
@@ -26,13 +36,8 @@ _INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset(
     }
 )
 
-if TYPE_CHECKING:
-    from ...binary.chunk import Chunk
-    from ...binary.property_chunks import TdsbChunk
-    from ...binary.scalar_chunks import Utf8Chunk
-    from ..layers.layer import Layer
-    from .property import Property
-    from .property_group import PropertyGroup
+
+_validate_name = validate_string(allow_empty=False)
 
 
 def _validate_enabled(value: bool, obj: PropertyBase) -> None:
@@ -169,6 +174,8 @@ class PropertyBase:
 
     @name.setter
     def name(self, value: str) -> None:
+        _validate_name(value, self)
+
         self._ensure_materialized()
         self._name = value
         assert self._name_utf8 is not None

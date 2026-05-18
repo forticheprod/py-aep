@@ -9,8 +9,8 @@ from .av_item import AVItem
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
-    from ...binary.item_chunks import IdtaChunk
-    from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
+    from ...binary.item_chunks import CmtaChunk, IdtaChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from ..project import Project
     from .folder import FolderItem
 

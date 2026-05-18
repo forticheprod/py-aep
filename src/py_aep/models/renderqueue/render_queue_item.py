@@ -328,7 +328,7 @@ class RenderQueueItem:
             raise ValueError("Comment must be a string")
         if self._rcom_utf8 is not None:
             self._rcom_utf8.value = value
-        else:
+        elif value:
             utf8_chunk = Utf8Chunk(chunk_type="Utf8", value=value)
             rcom_chunk = ContainerChunk(
                 chunk_type="RCom",
@@ -389,6 +389,8 @@ class RenderQueueItem:
     def _resolution(self, value: list[int]) -> None:
         if len(value) != 2:
             raise ValueError(f"Resolution must be [x, y], got {len(value)} elements")
+        if not all(isinstance(v, int) for v in value):
+            raise ValueError("Resolution divisors must be integers")
         x, y = round(value[0]), round(value[1])
         if x <= 0 or y <= 0:
             raise ValueError(f"Resolution divisors must be positive, got [{x}, {y}]")
@@ -404,6 +406,8 @@ class RenderQueueItem:
 
     @_use_this_frame_rate.setter
     def _use_this_frame_rate(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("Frame rate must be a number")
         fval = float(value)
         if fval < 0.1:
             raise ValueError(
@@ -437,13 +441,11 @@ class RenderQueueItem:
 
     @settings.setter
     def settings(self, value: dict[str, Any]) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("Settings must be a dictionary of key-value pairs")
         view = self.settings
         for k, v in value.items():
-            if k in view:
-                try:
-                    view[k] = v
-                except AttributeError:
-                    pass
+            view[k] = v
 
     def _resolved_time_span(self) -> tuple[float, float]:
         """Return (start, duration) in seconds based on time span source."""
@@ -571,6 +573,8 @@ class RenderQueueItem:
 
     @time_span_end.setter
     def time_span_end(self, value: float) -> None:
+        if not isinstance(value, (int, float)) or value < 0:
+            raise ValueError("End time must be a non-negative number")
         self.time_span_duration = value - self.time_span_start
 
     @property
@@ -586,6 +590,8 @@ class RenderQueueItem:
 
     @time_span_end_frame.setter
     def time_span_end_frame(self, value: int) -> None:
+        if not isinstance(value, int) or value < 0:
+            raise ValueError("End frame must be a non-negative integer")
         self.time_span_duration_frames = value - self.time_span_start_frame
 
     @property
@@ -622,36 +628,3 @@ class RenderQueueItem:
             format: The output format.
         """
         return self.get_settings(format)[key]
-
-    def set_setting(self, key: str, value: Any) -> None:
-        """Set a single render setting.
-
-        Accepts enum members, int values, or string labels.
-
-        Args:
-            key: The setting key (e.g. `"Quality"`, `"Frame Rate"`).
-            value: The value to set.
-
-        Raises:
-            KeyError: If the key is unknown.
-            AttributeError: If the key is read-only.
-            ValueError: If the value cannot be coerced to the expected type.
-        """
-        self.settings[key] = value
-
-    def set_settings(self, settings: dict[str, Any]) -> None:
-        """Set multiple render settings at once.
-
-        Accepts enum members, int values, or string labels.
-
-        Args:
-            settings: Dict of setting keys to values.
-
-        Raises:
-            KeyError: If any key is unknown.
-            AttributeError: If any key is read-only.
-            ValueError: If any value cannot be coerced.
-        """
-        live = self.settings
-        for key, value in settings.items():
-            live[key] = value

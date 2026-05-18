@@ -44,9 +44,9 @@ def _suppress_materialization() -> Iterator[None]:
 def _validate_enum(
     transform: Callable[..., Any] | None, value: Any, public_name: str
 ) -> None:
-    """Raise `ValueError` if *value* is not a valid IntEnum member.
+    """Raise `ValueError` if `value` is not a valid IntEnum member.
 
-    When *transform* points to an IntEnum subclass (via `from_binary`
+    When `transform` points to an IntEnum subclass (via `from_binary`
     classmethod or direct class reference), non-member values are
     rejected: raw ints must appear in the enum's value map; any other
     type must already be an instance of the enum.

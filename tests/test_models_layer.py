@@ -2061,10 +2061,6 @@ class TestTransformNaming:
         )
 
 
-# ------------------------------------------------------------------ #
-# Phase 2: Mutation methods                                          #
-# ------------------------------------------------------------------ #
-
 VERSIONS_DIR = Path(__file__).parent.parent / "samples" / "versions"
 
 

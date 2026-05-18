@@ -16,6 +16,7 @@ from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import bool_field, bytes_field, f8_field, u1_field, u2_field
 from .registry import register
+from .scalar_chunks import _StringChunkBase
 
 if TYPE_CHECKING:
     from typing import IO, Any
@@ -282,3 +283,28 @@ class OtdaChunk(Chunk):
         if self._trailing:
             written += write_bytes(fp, self._trailing)
         return written
+
+
+# ---------------------------------------------------------------------------
+# tdmn - match name (40 bytes, null-padded)
+# ---------------------------------------------------------------------------
+
+
+@register("tdmn")
+@define
+class TdmnChunk(_StringChunkBase):
+    """Fixed-width 40-byte null-padded match name chunk."""
+
+    _ENCODING = "UTF-8"
+
+    @classmethod
+    def read(
+        cls, fp: IO[bytes], size: int, *, chunk_type: str = "", **kw: Any
+    ) -> TdmnChunk:
+        raw = read_bytes(fp, size)
+        return cls(chunk_type=chunk_type, value=raw.rstrip(b"\x00").decode("UTF-8"))
+
+    def write(self, fp: IO[bytes]) -> int:
+        encoded = self.value.encode("UTF-8")[:40]
+        padded = encoded.ljust(40, b"\x00")
+        return write_bytes(fp, padded)

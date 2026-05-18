@@ -224,9 +224,20 @@ class Keyframe:
         return None
 
     @in_spatial_tangent.setter
-    def in_spatial_tangent(self, value: list[float] | None) -> None:
+    def in_spatial_tangent(self, value: list[float]) -> None:
+        if value is None or self.in_spatial_tangent is None:
+            return
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("in_spatial_tangent must be a list of floats")
+        if not all(isinstance(v, (int, float)) for v in value):
+            raise ValueError("in_spatial_tangent must be a list of floats")
+        if len(value) != len(self.in_spatial_tangent):
+            raise ValueError(
+                f"in_spatial_tangent must have length {len(self.in_spatial_tangent)}"
+            )
+
         kf_data = self._ldat_item.kf_data
-        if value is not None and hasattr(kf_data, "in_spatial_tangents"):
+        if hasattr(kf_data, "in_spatial_tangents"):
             kf_data.in_spatial_tangents = value
 
     @property
@@ -249,6 +260,16 @@ class Keyframe:
 
     @out_spatial_tangent.setter
     def out_spatial_tangent(self, value: list[float] | None) -> None:
+        if value is None or self.out_spatial_tangent is None:
+            return
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("out_spatial_tangent must be a list of floats")
+        if not all(isinstance(v, (int, float)) for v in value):
+            raise ValueError("out_spatial_tangent must be a list of floats")
+        if len(value) != len(self.out_spatial_tangent):
+            raise ValueError(
+                f"out_spatial_tangent must have length {len(self.out_spatial_tangent)}"
+            )
         kf_data = self._ldat_item.kf_data
         if value is not None and hasattr(kf_data, "out_spatial_tangents"):
             kf_data.out_spatial_tangents = value
@@ -279,6 +300,8 @@ class Keyframe:
         self,
         value: list[float] | float | Gradient | MarkerValue | Shape | TextDocument | None,
     ) -> None:
+        if not isinstance(value, (int, float, list, Gradient, MarkerValue, Shape, TextDocument, type(None))):
+            raise ValueError("value must be a float, list of floats, Gradient, MarkerValue, Shape, TextDocument, or None")
         if self._property is not None and isinstance(value, (int, float, list)):
             value = self._property._unresolve_value(value)
         self._value = value
@@ -301,6 +324,10 @@ class Keyframe:
 
     @in_temporal_ease.setter
     def in_temporal_ease(self, value: list[KeyframeEase]) -> None:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("in_temporal_ease must be a list of KeyframeEase objects")
+        if not all(isinstance(e, KeyframeEase) for e in value):
+            raise ValueError("in_temporal_ease must be a list of KeyframeEase objects")
         self._in_temporal_ease = value
 
     @property
@@ -321,6 +348,10 @@ class Keyframe:
 
     @out_temporal_ease.setter
     def out_temporal_ease(self, value: list[KeyframeEase]) -> None:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("out_temporal_ease must be a list of KeyframeEase objects")
+        if not all(isinstance(e, KeyframeEase) for e in value):
+            raise ValueError("out_temporal_ease must be a list of KeyframeEase objects")
         self._out_temporal_ease = value
 
     def _resolve_ease(
@@ -399,7 +430,7 @@ class Keyframe:
 
     @spatial_auto_bezier.setter
     def spatial_auto_bezier(self, value: bool) -> None:
-        self._ldat_item.kf_data.spatial_auto_bezier = int(value)
+        self._ldat_item.kf_data.spatial_auto_bezier = value
 
     @property
     def spatial_continuous(self) -> bool:
@@ -412,7 +443,7 @@ class Keyframe:
 
     @spatial_continuous.setter
     def spatial_continuous(self, value: bool) -> None:
-        self._ldat_item.kf_data.spatial_continuous = int(value)
+        self._ldat_item.kf_data.spatial_continuous = value
 
     @property
     def frame_time(self) -> int:
@@ -429,6 +460,8 @@ class Keyframe:
 
     @frame_time.setter
     def frame_time(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise ValueError("frame_time must be an integer")
         offset = self._property._frame_offset if self._property is not None else 0
         self._ldat_item.time_raw = round((value - offset) * self._time_scale)
 
@@ -439,6 +472,8 @@ class Keyframe:
 
     @time.setter
     def time(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("time must be a number")
         self.frame_time = round(value * self._frame_rate)
 
 

@@ -20,10 +20,10 @@ if TYPE_CHECKING:
 def parse_source(
     pin_chunk: ListChunk,
 ) -> FileSource | SolidSource | PlaceholderSource:
-    """Parse a ``LIST:Pin`` chunk into a footage source.
+    """Parse a `LIST:Pin` chunk into a footage source.
 
     Args:
-        pin_chunk: A ``LIST:Pin`` chunk containing sspc + opti sub-chunks.
+        pin_chunk: A `LIST:Pin` chunk containing sspc + opti sub-chunks.
     """
     pin_child_chunks = pin_chunk.chunks
     sspc_chunk = cast("SspcChunk", find_by_type(chunks=pin_child_chunks, chunk_type="sspc"))

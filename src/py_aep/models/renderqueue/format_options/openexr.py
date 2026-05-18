@@ -65,13 +65,14 @@ class OpenExrFormatOptions:
         The DWA compression level. Only meaningful when `compression` is
         `OpenExrCompression.DWAA` or `OpenExrCompression.DWAB`.
         Stored as a little-endian `f4` in the Ropt body. Defaults to
-        `45.0` in After Effects. Read / Write.
+        `45.0`. Read / Write.
         """
         if self.compression in (OpenExrCompression.DWAA, OpenExrCompression.DWAB):
             return self._body.dwa_compression_level
         return None
 
     @dwa_compression_level.setter
-    def dwa_compression_level(self, value: float | None) -> None:
-        if value is not None:
+    def dwa_compression_level(self, value: float) -> None:
+        if not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError("DWA compression level must be a positive number")
             self._body.dwa_compression_level = value

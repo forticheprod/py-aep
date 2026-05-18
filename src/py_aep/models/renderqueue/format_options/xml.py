@@ -253,8 +253,10 @@ class XmlFormatOptions:
 
     @frame_rate.setter
     def frame_rate(self, value: float | None) -> None:
-        if value is None or value <= 0:
+        if value is None:
             return
+        if not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError("Frame rate must be a positive number")
         ticks = round(_ADOBE_TICKS_PER_SECOND / value)
         self._set_param("ADBEVideoFPS", str(ticks))
 

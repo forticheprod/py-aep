@@ -21,7 +21,7 @@ from ..models.properties.property import Property
 from .property_value import parse_property
 
 if TYPE_CHECKING:
-    from ..binary.scalar_chunks import TdmnChunk
+    from ..binary.property_chunks import TdmnChunk
     from ..models.items.composition import CompItem
     from ..models.properties.keyframe import Keyframe
 

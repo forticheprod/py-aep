@@ -6,8 +6,8 @@ from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyType
 
 from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.property_chunks import TdsbChunk
-from ...binary.scalar_chunks import TdmnChunk, Utf8Chunk
+from ...binary.property_chunks import TdmnChunk, TdsbChunk
+from ...binary.scalar_chunks import Utf8Chunk
 from .overrides import _PROPERTY_MIN_MAX
 from .property import Property
 from .property_base import _INDEXED_GROUP_MATCH_NAMES, _TDSN_SENTINEL, PropertyBase
@@ -25,6 +25,57 @@ if TYPE_CHECKING:
     from .specs import _PropSpec
 
 
+# Match names that can be added to specific indexed groups via add_property().
+_ADDABLE_MASK_MATCH_NAMES: frozenset[str] = frozenset({"ADBE Mask Atom"})
+
+_ADDABLE_TEXT_ANIMATOR_MATCH_NAMES: frozenset[str] = frozenset({"ADBE Text Animator"})
+
+# Shape elements that can be added to a Root Vectors Group (Contents).
+_ADDABLE_SHAPE_MATCH_NAMES: frozenset[str] = frozenset(
+    {
+        "ADBE Vector Group",
+        "ADBE Vector Shape - Rect",
+        "ADBE Vector Shape - Ellipse",
+        "ADBE Vector Shape - Star",
+        "ADBE Vector Shape - Group",
+        "ADBE Vector Graphic - Fill",
+        "ADBE Vector Graphic - Stroke",
+        "ADBE Vector Graphic - G-Fill",
+        "ADBE Vector Graphic - G-Stroke",
+        "ADBE Vector Filter - Merge",
+        "ADBE Vector Filter - Offset",
+        "ADBE Vector Filter - PB",
+        "ADBE Vector Filter - Repeater",
+        "ADBE Vector Filter - RC",
+        "ADBE Vector Filter - Trim",
+        "ADBE Vector Filter - Twist",
+        "ADBE Vector Filter - Roughen",
+        "ADBE Vector Filter - Wiggler",
+        "ADBE Vector Filter - Zigzag",
+    }
+)
+
+# Reverse lookup: display name -> match name for addable items.
+_ADDABLE_DISPLAY_TO_MATCH: dict[str, str] = {}
+for _mn in (
+    _ADDABLE_MASK_MATCH_NAMES
+    | _ADDABLE_TEXT_ANIMATOR_MATCH_NAMES
+    | _ADDABLE_SHAPE_MATCH_NAMES
+):
+    _auto = MATCH_NAME_TO_AUTO_NAME.get(_mn)
+    if _auto is not None:
+        _ADDABLE_DISPLAY_TO_MATCH[_auto] = _mn
+del _mn, _auto
+
+# Per-group addable sets, keyed by parent match name.
+_ADDABLE_BY_GROUP: dict[str, frozenset[str]] = {
+    "ADBE Mask Parade": _ADDABLE_MASK_MATCH_NAMES,
+    "ADBE Effect Mask Parade": _ADDABLE_MASK_MATCH_NAMES,
+    "ADBE Text Animators": _ADDABLE_TEXT_ANIMATOR_MATCH_NAMES,
+    "ADBE Root Vectors Group": _ADDABLE_SHAPE_MATCH_NAMES,
+}
+
+
 def _reorder_and_fill(
     container: PropertyGroup,
     specs: Sequence[_PropSpec | _GroupSpec],
@@ -35,16 +86,16 @@ def _reorder_and_fill(
     tail_mode: Literal["none", "groups", "all"] = "groups",
     ae_major: int,
 ) -> None:
-    """Reorder *container.properties* according to *specs*, synthesizing missing entries.
+    """Reorder `container.properties` according to `specs`, synthesizing missing entries.
 
-    Existing children whose match name appears in *specs* are preserved in
+    Existing children whose match name appears in `specs` are preserved in
     canonical order. Missing children are created via `Property.synthesized`
     (for `_PropSpec`) or as empty `PropertyGroup` instances (for `_GroupSpec`).
 
     Args:
         container: Object whose `.properties` list is reordered/filled.
             Also set as `parent_property` on synthesized children.
-        specs: Full canonical spec list (NOT pre-filtered by *skip*).
+        specs: Full canonical spec list (NOT pre-filtered by `skip`).
         child_depth: `property_depth` for synthesized children.
         skip: Match names to skip synthesis for.  Checked only when the
             match name is **not** already in the container - existing
@@ -218,14 +269,11 @@ class PropertyGroup(PropertyBase):
         """
         _tdsb = TdsbChunk(synthetic=synthetic)
         display = auto_name or _TDSN_SENTINEL
-        name_utf8 = Utf8Chunk(
-            chunk_type="Utf8", value=display, synthetic=synthetic
-        )
+        name_utf8 = Utf8Chunk(chunk_type="Utf8", value=display, synthetic=synthetic)
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
         )
         _tdgp = ListChunk(
-            chunk_type="LIST",
             list_type="tdgp",
             chunks=[_tdsb, tdsn],
             synthetic=synthetic,
@@ -348,9 +396,7 @@ class PropertyGroup(PropertyBase):
         """
         specs = _GROUP_CHILD_SPECS.get(self.match_name)
         if specs is not None:
-            _reorder_and_fill(
-                self, specs, self.property_depth + 1, ae_major=ae_major
-            )
+            _reorder_and_fill(self, specs, self.property_depth + 1, ae_major=ae_major)
 
         if self.match_name == "ADBE Layer Styles":
             _derive_layer_styles_enabled(self, ae_major, synthesize_subgroups=True)
@@ -430,7 +476,7 @@ class PropertyGroup(PropertyBase):
         Raises:
             KeyError: If the string key does not match any child.
             IndexError: If the integer index is out of range.
-            TypeError: If *key* is neither `int` nor `str`.
+            TypeError: If `key` is neither `int` nor `str`.
         """
         if isinstance(key, int):
             return self.properties[key]
@@ -467,6 +513,37 @@ class PropertyGroup(PropertyBase):
         Equivalent to ExtendScript `PropertyGroup.numProperties`.
         """
         return len(self.properties)
+
+    def can_add_property(self, name: str) -> bool:
+        """Check whether a property with the given name can be added.
+
+        Returns `True` if this group is an indexed group and `name` is
+        a valid match name or display name for the group type. For
+        the Effect Parade, any non-empty string is accepted (actual
+        effect availability is validated at add time).
+
+        Args:
+            name: A match name or display name to check.
+        """
+        if self.property_type != PropertyType.INDEXED_GROUP:
+            return False
+        if not name:
+            return False
+
+        # Effect Parade: accept any name - validation deferred to add_property().
+        if self.match_name == "ADBE Effect Parade":
+            return True
+
+        allowed = _ADDABLE_BY_GROUP.get(self.match_name)
+        if allowed is None:
+            return False
+
+        if name in allowed:
+            return True
+
+        # Try display name -> match name reverse lookup.
+        resolved = _ADDABLE_DISPLAY_TO_MATCH.get(name)
+        return resolved is not None and resolved in allowed
 
     def property(self, key: int | str) -> Property | PropertyGroup:
         """Look up a child property by index or name.

@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk
 from ..binary.misc_chunks import PardChunk
-from ..binary.property_chunks import TdsbChunk
-from ..binary.scalar_chunks import TdmnChunk, Utf8Chunk
+from ..binary.property_chunks import TdmnChunk, TdsbChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,

@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import AutoOrientType, Label, LayerType
 
+from ...binary.item_chunks import CmtaChunk
 from ...binary.mutations import clone_chunk_tree
-from ...binary.scalar_chunks import CmtaChunk
 from ...binary.utils import find_by_type
 from ...resolvers.transform import (
     build_world_matrix,
@@ -20,8 +20,9 @@ from ..properties.property_group import PropertyGroup
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
+    from ...binary.item_chunks import CmtaChunk
     from ...binary.layer_chunks import LdtaChunk
-    from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from ..items.composition import CompItem
     from ..properties.marker import MarkerValue
 
@@ -235,13 +236,15 @@ class Layer(PropertyGroup):
 
     @comment.setter
     def comment(self, value: str) -> None:
-        if self._cmta is None:
+        if not isinstance(value, str):
+            raise ValueError("comment must be a string")
+        if self._cmta is not None:
+            self._cmta.value = value
+        elif value:
             chunk = CmtaChunk(chunk_type="cmta")
             chunk.value = value
             self._layer_list.chunks.append(chunk)
             self._cmta = chunk
-        else:
-            self._cmta.value = value
 
     @property
     def containing_comp(self) -> CompItem:
@@ -280,6 +283,8 @@ class Layer(PropertyGroup):
 
     @in_point.setter
     def in_point(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("in_point must be a number")
         self._set_raw_in_point(value)
 
     @property
@@ -290,6 +295,8 @@ class Layer(PropertyGroup):
 
     @out_point.setter
     def out_point(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("out_point must be a number")
         self._set_raw_out_point(value)
 
     @property
@@ -300,6 +307,8 @@ class Layer(PropertyGroup):
 
     @frame_in_point.setter
     def frame_in_point(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise ValueError("frame_in_point must be an integer")
         self.in_point = value / self.containing_comp.frame_rate
 
     @property
@@ -310,6 +319,8 @@ class Layer(PropertyGroup):
 
     @frame_out_point.setter
     def frame_out_point(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise ValueError("frame_out_point must be an integer")
         self.out_point = value / self.containing_comp.frame_rate
 
     @property
@@ -320,6 +331,8 @@ class Layer(PropertyGroup):
 
     @frame_start_time.setter
     def frame_start_time(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise ValueError("frame_start_time must be an integer")
         self.start_time = value / self.containing_comp.frame_rate
 
     @property
@@ -484,6 +497,8 @@ class Layer(PropertyGroup):
 
     @parent.setter
     def parent(self, value: Layer | None) -> None:
+        if value is not None and not isinstance(value, Layer):
+            raise ValueError("parent must be a Layer or None")
         old_parent = self.parent
         new_parent = value
 
@@ -550,7 +565,7 @@ class Layer(PropertyGroup):
         1. The layer must be `enabled`.
         2. No other layer in the [containing_comp][] may be soloed unless
            this layer is also [solo][].
-        3. *time* must fall between [in_point][] (inclusive) and
+        3. `time` must fall between [in_point][] (inclusive) and
            [out_point][] (exclusive).
 
         Args:
@@ -655,6 +670,9 @@ class Layer(PropertyGroup):
         # Circular: parsers.layer -> models.layers.av_layer -> layer
         from ...parsers.layer import parse_layer  # noqa: PLC0415
 
+        if not isinstance(into_comp, CompItem):
+            raise ValueError("Target composition must be a CompItem.")
+
         same_comp = into_comp is self.containing_comp
 
         # Clone the full layer block (LIST:Layr + trailing view chunks)
@@ -668,10 +686,7 @@ class Layer(PropertyGroup):
             chunks=cloned_list.chunks, chunk_type="ldta",
         ))
         # Layer IDs are unique project-wide, not per-comp.
-        cloned_ldta.layer_id = max(
-            (lyr.id for comp in into_comp._project.compositions for lyr in comp.layers),
-            default=0,
-        ) + 1
+        cloned_ldta.layer_id = into_comp._project._allocate_layer_id()
 
         # Determine chunk insertion point
         if same_comp:
@@ -720,6 +735,9 @@ class Layer(PropertyGroup):
         Args:
             layer: The target layer in the same composition.
         """
+        if not isinstance(layer, Layer):
+            raise ValueError("Target must be a Layer.")
+
         comp = self.containing_comp
         if layer.containing_comp is not comp:
             raise ValueError("Target layer must be in the same composition.")
@@ -736,6 +754,9 @@ class Layer(PropertyGroup):
         Args:
             layer: The target layer in the same composition.
         """
+        if not isinstance(layer, Layer):
+            raise ValueError("Target must be a Layer.")
+
         comp = self.containing_comp
         if layer.containing_comp is not comp:
             raise ValueError("Target layer must be in the same composition.")
@@ -759,6 +780,9 @@ class Layer(PropertyGroup):
         `remove()`, so parent and track matte connections on other
         layers are preserved.
         """
+        if not isinstance(target_index, int):
+            raise ValueError("Target index must be an integer.")
+
         comp = self.containing_comp
 
         # Extract and remove chunk block

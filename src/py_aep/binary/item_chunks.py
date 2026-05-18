@@ -50,6 +50,35 @@ class IdtaChunk(Chunk):
     use_proxy = BitField("_proxy_flags", 0)
 
 # ---------------------------------------------------------------------------
+# iide - item ID echo (4 bytes, little-endian u32)
+# ---------------------------------------------------------------------------
+
+
+@register("iide")
+@define
+class IideChunk(Chunk):
+    """Item ID echo chunk (4 bytes, little-endian u32)."""
+
+    chunk_type: str = "iide"
+    value: int = u4_field(endian="<")
+    _trailing: bytes = field(default=b"", repr=False)
+
+
+# ---------------------------------------------------------------------------
+# idpc - item project context (8 bytes)
+# ---------------------------------------------------------------------------
+
+
+@register("idpc")
+@define
+class IdpcChunk(Chunk):
+    """Item project context chunk (8 bytes)."""
+
+    chunk_type: str = "idpc"
+    data: bytes = b"\x00" * 8
+
+
+# ---------------------------------------------------------------------------
 # head - file header / version (28 bytes)
 # ---------------------------------------------------------------------------
 #
@@ -232,3 +261,30 @@ class NnhdChunk(Chunk):
     @property
     def display_start_frame(self) -> int:
         return self.frames_count_type % 2
+
+
+# ---------------------------------------------------------------------------
+# cmta - item comment (variable-length, null-terminated UTF-8)
+# ---------------------------------------------------------------------------
+
+
+@register("cmta")
+@define
+class CmtaChunk(Chunk):
+    """Comment chunk: null-terminated UTF-8, CRLF line endings.
+
+    `data` holds the raw bytes (roundtrip-safe). The `value` property
+    decodes to normalised text (LF, no null). Setting `value` encodes
+    back with CRLF and a double-null terminator, matching AE's convention.
+    """
+
+    @property
+    def value(self) -> str:
+        """Decoded comment text, LF line endings, no trailing null."""
+        return self.data.decode("UTF-8").split("\x00")[0].replace("\r\n", "\n")
+
+    @value.setter
+    def value(self, text: str) -> None:
+        # AE always writes a double-null terminator inside the chunk data.
+        encoded = (text.replace("\n", "\r\n") + "\x00\x00").encode("UTF-8")
+        object.__setattr__(self, "data", encoded)

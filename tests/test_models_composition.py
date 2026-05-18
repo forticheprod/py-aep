@@ -659,8 +659,8 @@ class TestRoundtripFrameRate:
 
     def test_frame_rate_validation_rejects_too_high(self) -> None:
         comp = get_comp(parse_project(SAMPLES_DIR / "frameRate.aep"), "frameRate_30")
-        with pytest.raises(ValueError, match="must be <= 999.0"):
-            comp.frame_rate = 1000.0
+        with pytest.raises(ValueError, match="must be <= 99.0"):
+            comp.frame_rate = 100.0
 
 
 class TestRoundtripPixelAspect:
@@ -1502,7 +1502,7 @@ class TestEssentialGraphics:
         for sample, expected_type in type_samples.items():
             project = parse_project(EG_SAMPLES_DIR / f"{sample}.aep")
             comp = next(c for c in project.compositions if c.name == "primary")
-            ctrls = comp.essential_graphics_controllers
+            ctrls = comp.motion_graphics_controllers
             assert ctrls, f"{sample}: no controllers"
             ctrl = ctrls[0]
             assert ctrl.controller_type == expected_type, (

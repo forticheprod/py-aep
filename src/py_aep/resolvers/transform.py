@@ -9,7 +9,7 @@ transform pipeline.  Pure Python with no external dependencies.
     3D:  T(pos) * Rx(ox)*Ry(oy)*Rz(oz) * Rx(rx)*Ry(ry)*Rz(rz)
          * S(scale) * T(-anchor)
 
-where ``o{x,y,z}`` are Orientation angles and ``r{x,y,z}`` are
+where `o{x,y,z}` are Orientation angles and `r{x,y,z}` are
 per-axis Rotation angles, all in degrees.
 
 Coordinate system: left-handed, Y-down (X right, Y down, Z into screen).
@@ -32,7 +32,7 @@ _EPSILON = 1e-10
 
 
 class Mat4:
-    """4x4 matrix stored row-major: ``m[row][col]``."""
+    """4x4 matrix stored row-major: `m[row][col]`."""
 
     __slots__ = ("_rows",)
 
@@ -206,11 +206,11 @@ def build_local_matrix(
     """Build the local transform matrix for an AE layer.
 
     Args:
-        position: ``[x, y, z]`` position in pixels.
-        anchor: ``[x, y, z]`` anchor point in pixels.
-        scale_pct: ``[sx, sy, sz]`` scale as percentages (100 = 1x).
+        position: `[x, y, z]` position in pixels.
+        anchor: `[x, y, z]` anchor point in pixels.
+        scale_pct: `[sx, sy, sz]` scale as percentages (100 = 1x).
         rotation_z: Z-axis rotation in degrees.
-        orientation: ``[ox, oy, oz]`` orientation angles in degrees
+        orientation: `[ox, oy, oz]` orientation angles in degrees
             (3D layers only).
         rotate_x: X-axis rotation in degrees (3D layers only).
         rotate_y: Y-axis rotation in degrees (3D layers only).
@@ -322,20 +322,20 @@ def decompose_transform(
 ) -> tuple[list[float], list[float], float, float, float]:
     """Decompose a 4x4 matrix into AE transform components.
 
-    Given a matrix ``M`` and a fixed anchor point, extracts the
-    Position, Scale, and Rotation values that would produce ``M``
+    Given a matrix `M` and a fixed anchor point, extracts the
+    Position, Scale, and Rotation values that would produce `M`
     via `build_local_matrix`.
 
-    Orientation is assumed to be ``[0, 0, 0]`` - i.e. any orientation
+    Orientation is assumed to be `[0, 0, 0]` - i.e. any orientation
     contribution must already be factored out before calling this.
 
     Args:
         matrix: The 4x4 transform matrix to decompose.
-        anchor: ``[ax, ay, az]`` anchor point (held constant).
+        anchor: `[ax, ay, az]` anchor point (held constant).
 
     Returns:
-        A tuple of ``(position, scale_pct, rotation_z, rotate_x,
-        rotate_y)`` where *scale_pct* is in percentage units (100 = 1x).
+        A tuple of `(position, scale_pct, rotation_z, rotate_x,
+        rotate_y)` where `scale_pct` is in percentage units (100 = 1x).
     """
     ax = anchor[0]
     ay = anchor[1]

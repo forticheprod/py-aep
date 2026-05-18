@@ -872,3 +872,47 @@ class TestIdempotency:
         roundtrip_bytes = out.read_bytes()
 
         assert original_bytes == roundtrip_bytes
+
+
+LAYER_SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "layer"
+
+
+class TestAllocateItemId:
+    """Tests for Project._allocate_item_id()."""
+
+    def test_first_call_returns_max_plus_one(self) -> None:
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        expected = max(project.items.keys()) + 1
+        assert project._allocate_item_id() == expected
+
+    def test_successive_calls_increment(self) -> None:
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        first = project._allocate_item_id()
+        assert project._allocate_item_id() == first + 1
+        assert project._allocate_item_id() == first + 2
+
+    def test_empty_project_returns_one(self) -> None:
+        """ID 0 is reserved for the root folder; first allocation is 1."""
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        # Simulate empty items dict
+        project._items = {0: project._items[0]}
+        project._max_item_id = -1  # reset lazy cache
+        assert project._allocate_item_id() == 1
+
+
+class TestAllocateLayerId:
+    """Tests for Project._allocate_layer_id()."""
+
+    def test_first_call_returns_max_plus_one(self) -> None:
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        max_layer = max(
+            (lyr.id for comp in project.compositions for lyr in comp.layers),
+            default=0,
+        )
+        assert project._allocate_layer_id() == max_layer + 1
+
+    def test_successive_calls_increment(self) -> None:
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        first = project._allocate_layer_id()
+        assert project._allocate_layer_id() == first + 1
+        assert project._allocate_layer_id() == first + 2

@@ -65,6 +65,8 @@ class KeyframeEase:
 
     @speed.setter
     def speed(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("speed must be a number")
         if self._kf_data is None:
             self._speed = value
             return
@@ -89,6 +91,8 @@ class KeyframeEase:
 
     @influence.setter
     def influence(self, value: float) -> None:
+        if not isinstance(value, (int, float)):
+            raise ValueError("influence must be a number")
         if value < 0.1 or value > 100.0:
             raise ValueError(f"influence must be between 0.1 and 100.0, got {value}")
         if self._kf_data is None:

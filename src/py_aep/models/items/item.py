@@ -5,10 +5,12 @@ from typing import TYPE_CHECKING, cast
 from py_aep.enums import Label
 
 from ...binary.chunk import ListChunk
+from ...binary.item_chunks import CmtaChunk
 from ...binary.ldat_chunks import GdtaChunk, LdatChunk, LdatItemType, Lhd3Chunk
-from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
+from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
+    block_slice,
     find_by_list_type,
     find_by_type,
 )
@@ -99,9 +101,11 @@ class Item:
 
     @comment.setter
     def comment(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError("comment must be a string")
         if self._cmta is not None:
             self._cmta.value = value
-        else:
+        elif value:
             chunk = CmtaChunk(chunk_type="cmta")
             chunk.value = value
             self._item_list.chunks.append(chunk)
@@ -209,12 +213,10 @@ class Item:
                 item_type_raw=2,
             )
             self._inner = ListChunk(
-                chunk_type="LIST",
                 list_type="list",
                 chunks=[self._lhd3, self._ldat],
             )
             self._gide = ListChunk(
-                chunk_type="LIST",
                 list_type="Gide",
                 chunks=[GdtaChunk(), self._inner],
             )
@@ -232,3 +234,37 @@ class Item:
         self._lhd3 = None
         self._ldat = None
         self._inner = None
+
+    def remove(self) -> None:
+        """Remove this item from the project.
+
+        Subclasses add their own cleanup before calling `super().remove()`:
+
+        - [FolderItem][] removes children recursively.
+        - [AVItem][] removes layers that reference this item as their source
+          and cleans up viewer references.
+        - [CompItem][] removes render-queue items targeting this composition.
+
+        Raises:
+            ValueError: If this is the root folder.
+        """
+        # Remove from parent folder's binary chunks
+        self._remove_from_parent_chunks()
+
+        # Remove from model collections
+        assert self._parent_folder is not None
+        self._parent_folder.items.remove(self)
+        del self._project.items[self.id]
+
+    #: list_types that mark the start of the next item block.
+    _ITEM_BOUNDARY_LIST_TYPES: frozenset[str] = frozenset({"Item"})
+
+    def _remove_from_parent_chunks(self) -> None:
+        """Remove this item's LIST:Item and trailing view-data chunks."""
+        parent = self._parent_folder
+        assert parent is not None
+        container = parent._get_children_container()
+        start, end = block_slice(
+            container, self._item_list, self._ITEM_BOUNDARY_LIST_TYPES,
+        )
+        del container[start:end]

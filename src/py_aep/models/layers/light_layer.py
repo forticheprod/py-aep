@@ -69,6 +69,8 @@ class LightLayer(Layer):
             self._light_source_id = 0
             return
 
+        if not isinstance(value, Layer):
+            raise ValueError("light_source must be a Layer or None")
         if isinstance(value, AVLayer) and value.three_d_layer:
             raise ValueError(
                 "Invalid light source specified: 3D layers cannot be used as a light source."

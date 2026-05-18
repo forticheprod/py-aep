@@ -136,6 +136,11 @@ class MarkerValue:
 
     @params.setter
     def params(self, value: dict[str, str]) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("params must be a dictionary of string key-value pairs")
+        for key, val in value.items():
+            if not isinstance(key, str) or not isinstance(val, str):
+                raise ValueError("params must be a dictionary of string key-value pairs")
         bodies = self._param_utf8s
         idx = 0
         for key, val in value.items():
@@ -153,6 +158,8 @@ class MarkerValue:
 
     @frame_time.setter
     def frame_time(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise ValueError("frame_time must be an integer")
         if self._keyframe is not None:
             self._keyframe.frame_time = value
         else:

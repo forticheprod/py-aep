@@ -3,6 +3,7 @@
 from .application import Application
 from .essential_graphics import EssentialGraphicsController
 from .guide import Guide
+from .import_options import ImportOptions
 from .items.av_item import AVItem
 from .items.composition import CompItem
 from .items.folder import FolderItem
@@ -62,6 +63,7 @@ __all__ = [
     "FootageItem",
     "FootageSource",
     "Guide",
+    "ImportOptions",
     "Item",
     "JpegFormatOptions",
     "Keyframe",

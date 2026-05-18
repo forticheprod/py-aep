@@ -7,8 +7,8 @@ from .item import Item
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
-    from ...binary.item_chunks import IdtaChunk
-    from ...binary.scalar_chunks import CmtaChunk, Utf8Chunk
+    from ...binary.item_chunks import CmtaChunk, IdtaChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from ..project import Project
     from ..sources.file import FileSource
     from ..sources.placeholder import PlaceholderSource
@@ -95,6 +95,19 @@ class AVItem(Item):
         self._proxy_source = proxy_source
         self._used_in: set[CompItem] = set()
         self._viewer: Viewer | None = None
+
+    def remove(self) -> None:
+        """Remove this AV item, its referencing layers, and viewer."""
+        item_id = self.id
+        for comp in self.used_in:
+            for layer in list(comp.av_layers):
+                if layer._source_id == item_id:
+                    layer.remove()
+        if self._viewer is not None:
+            assert self._parent_folder is not None
+            self._parent_folder._viewers.remove(self._viewer)
+            self._viewer = None
+        super().remove()
 
     @property
     def proxy_source(

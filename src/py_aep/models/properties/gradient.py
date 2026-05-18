@@ -51,7 +51,7 @@ class GradientColorStop:
     midpoint = _GradientField()
     """Interpolation midpoint to next stop (0.0 to 1.0)."""
     color = _GradientField()
-    """RGB color as ``(red, green, blue)`` with values 0.0 to 1.0."""
+    """RGB color as `(red, green, blue)` with values 0.0 to 1.0."""
 
     def __init__(
         self,
@@ -150,6 +150,8 @@ class Gradient:
     def color_stops(
         self, value: list[GradientColorStop] | tuple[GradientColorStop, ...],
     ) -> None:
+        if not all(isinstance(stop, GradientColorStop) for stop in value):
+            raise ValueError("All color stops must be GradientColorStop instances")
         for stop in self._color_stops:
             stop._gradient = None
         self._color_stops = tuple(value)
@@ -166,6 +168,8 @@ class Gradient:
     def alpha_stops(
         self, value: list[GradientAlphaStop] | tuple[GradientAlphaStop, ...],
     ) -> None:
+        if not all(isinstance(stop, GradientAlphaStop) for stop in value):
+            raise ValueError("All alpha stops must be GradientAlphaStop instances")
         for stop in self._alpha_stops:
             stop._gradient = None
         self._alpha_stops = tuple(value)
@@ -182,6 +186,8 @@ class Gradient:
 
     def remove_color_stop(self, stop: int) -> None:
         """Remove a color stop by index."""
+        if not isinstance(stop, int):
+            raise ValueError("stop index must be an integer")
         self._color_stops[stop]._gradient = None
         self._color_stops = tuple(s for i, s in enumerate(self._color_stops) if i != stop)
         self._serialize()
@@ -195,6 +201,8 @@ class Gradient:
 
     def remove_alpha_stop(self, stop: int) -> None:
         """Remove an alpha stop by index."""
+        if not isinstance(stop, int):
+            raise ValueError("stop index must be an integer")
         self._alpha_stops[stop]._gradient = None
         self._alpha_stops = tuple(s for i, s in enumerate(self._alpha_stops) if i != stop)
         self._serialize()

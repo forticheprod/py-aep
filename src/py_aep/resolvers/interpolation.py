@@ -727,7 +727,7 @@ def interpolate_keyframes(
     keyframes: list[Keyframe],
     is_spatial: bool,
 ) -> list[float] | float | None:
-    """Compute the interpolated value at *time* from a keyframe list.
+    """Compute the interpolated value at `time` from a keyframe list.
 
     Uses lottie-web's algorithms:
     - BezierEasing for temporal ease (normalized unit-square bezier)

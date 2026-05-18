@@ -150,9 +150,9 @@ class CosField(Generic[T]):
     ) -> CosField[T]:
         """Create a CosField for enum-backed fields.
 
-        When *map* is provided, it is used as the lookup table (COS int
+        When `map` is provided, it is used as the lookup table (COS int
         value -> enum member).  Otherwise a direct `enum_cls(value)`
-        call is attempted.  *reverse_map* inverts the mapping; if not
+        call is attempted.  `reverse_map` inverts the mapping; if not
         given, `int(value)` is used.
         """
         if map is not None:

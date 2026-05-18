@@ -12,8 +12,8 @@ from .property_group import PropertyGroup
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.misc_chunks import MkifChunk
-    from ...binary.property_chunks import TdsbChunk
-    from ...binary.scalar_chunks import TdmnChunk, Utf8Chunk
+    from ...binary.property_chunks import TdmnChunk, TdsbChunk
+    from ...binary.scalar_chunks import Utf8Chunk
     from .property import Property
 
 

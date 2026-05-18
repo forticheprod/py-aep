@@ -63,7 +63,7 @@ class U1Chunk(Chunk):
     _trailing: bytes = field(default=b"", repr=False)
 
 
-@register("fivc")
+@register("fivc", "fipc")
 @define
 class U2Chunk(Chunk):
     """Unsigned 2-byte integer chunk."""
@@ -75,22 +75,13 @@ class U2Chunk(Chunk):
 @register(
     "CapL", "CcCt", "CCId", "CLId", "CprC", "CTyp", "StVS",
     "parn", "fovi", "fivi", "fcid",
+    "fvdv", "ftts", "fifl",
 )
 @define
 class U4Chunk(Chunk):
     """Unsigned 4-byte integer chunk."""
 
     value: int = u4_field()
-    _trailing: bytes = field(default=b"", repr=False)
-
-
-@register("CsCt")
-@define
-class CsctChunk(Chunk):
-    """CpS2 entry count chunk."""
-
-    chunk_type: str = "CsCt"
-    value: int = u4_field(default=0x01000000)
     _trailing: bytes = field(default=b"", repr=False)
 
 
@@ -108,7 +99,7 @@ class S4Chunk(Chunk):
 # ---------------------------------------------------------------------------
 
 
-@register("Smax", "Smin", "adfr")
+@register("Smax", "Smin", "adfr", "ppSn")
 @define
 class F8Chunk(Chunk):
     """8-byte double-precision float chunk."""
@@ -128,48 +119,6 @@ class Utf8Chunk(_StringChunkBase):
     """Variable-length UTF-8 string chunk."""
 
     _ENCODING = "UTF-8"
-
-
-@register("tdmn")
-@define
-class TdmnChunk(_StringChunkBase):
-    """Fixed-width 40-byte null-padded match name chunk."""
-
-    _ENCODING = "UTF-8"
-
-    @classmethod
-    def read(
-        cls, fp: IO[bytes], size: int, *, chunk_type: str = "", **kw: Any
-    ) -> TdmnChunk:
-        raw = read_bytes(fp, size)
-        return cls(chunk_type=chunk_type, value=raw.rstrip(b"\x00").decode("UTF-8"))
-
-    def write(self, fp: IO[bytes]) -> int:
-        encoded = self.value.encode("UTF-8")[:40]
-        padded = encoded.ljust(40, b"\x00")
-        return write_bytes(fp, padded)
-
-
-@register("cmta")
-@define
-class CmtaChunk(Chunk):
-    """Comment chunk: null-terminated UTF-8, CRLF line endings.
-
-    `data` holds the raw bytes (roundtrip-safe). The `value` property
-    decodes to normalised text (LF, no null). Setting `value` encodes
-    back with CRLF and a double-null terminator, matching AE's convention.
-    """
-
-    @property
-    def value(self) -> str:
-        """Decoded comment text, LF line endings, no trailing null."""
-        return self.data.decode("UTF-8").split("\x00")[0].replace("\r\n", "\n")
-
-    @value.setter
-    def value(self, text: str) -> None:
-        # AE always writes a double-null terminator inside the chunk data.
-        encoded = (text.replace("\n", "\r\n") + "\x00\x00").encode("UTF-8")
-        object.__setattr__(self, "data", encoded)
 
 
 @register("fitt")

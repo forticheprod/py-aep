@@ -6,7 +6,7 @@ interpretation.
 """
 from __future__ import annotations
 
-from attrs import define
+from attrs import define, field
 
 from .bitfield import BitField
 from .chunk import Chunk
@@ -50,13 +50,13 @@ class CdtaChunk(Chunk):
 
     # -- Time / work area / duration (bytes 20-51) -------------------------
     time_dividend: int = s4_field()
-    time_divisor: int = u4_field()
+    time_divisor: int = u4_field(default=10000)
     work_area_start_dividend: int = u4_field()
-    work_area_start_divisor: int = u4_field()
-    work_area_end_dividend: int = u4_field()
-    work_area_end_divisor: int = u4_field()
+    work_area_start_divisor: int = u4_field(default=10000)
+    work_area_end_dividend: int = u4_field(default=0xFFFFFFFF)
+    work_area_end_divisor: int = u4_field(default=10000)
     duration_dividend: int = u4_field()
-    duration_divisor: int = u4_field()
+    duration_divisor: int = u4_field(default=10000)
 
     # -- Background color (bytes 52-54) ------------------------------------
     bg_color_r: int = u1_field()
@@ -79,7 +79,7 @@ class CdtaChunk(Chunk):
 
     # -- Pixel ratio (bytes 144-155) ---------------------------------------
     pixel_ratio_dividend: int = u4_field(default=1)
-    pixel_ratio_divisor: int = u4_field(default=1)
+    pixel_ratio_divisor: int = u4_field(default=100000)
     _reserved_98: bytes = bytes_field(4, repr=False)
 
     # -- Frame rate (bytes 156-163) ----------------------------------------
@@ -93,7 +93,7 @@ class CdtaChunk(Chunk):
     display_start_time_dividend: int = s4_field()
     """Signed. Negative = timeline starts before frame 0."""
 
-    display_start_time_divisor: int = u4_field()
+    display_start_time_divisor: int = u4_field(default=10000)
 
     # -- Shutter (bytes 172-187) -------------------------------------------
     _reserved_ac: bytes = bytes_field(2, repr=False)
@@ -213,6 +213,21 @@ class CdtaChunk(Chunk):
             duration = self.duration_dividend / self.duration_divisor
             return (display_start_time + duration) * frame_rate
         return self.work_area_end_absolute * frame_rate
+
+
+# ---------------------------------------------------------------------------
+# CsCt - CpS2 entry count
+# ---------------------------------------------------------------------------
+
+
+@register("CsCt")
+@define
+class CsctChunk(Chunk):
+    """CpS2 entry count chunk."""
+
+    chunk_type: str = "CsCt"
+    value: int = u4_field(default=0x01000000)
+    _trailing: bytes = field(default=b"", repr=False)
 
 
 

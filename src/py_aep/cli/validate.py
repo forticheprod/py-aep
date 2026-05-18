@@ -277,8 +277,8 @@ def _compare_fields(
 ) -> None:
     """Compare mapped fields between expected and parsed dicts.
 
-    For each mapping entry, looks up the expected JSON key in *expected*
-    and the corresponding parsed key in *parsed*, skipping undefined values,
+    For each mapping entry, looks up the expected JSON key in `expected`
+    and the corresponding parsed key in `parsed`, skipping undefined values,
     and records a diff when they don't match.
     """
     for exp_key, parsed_key in mappings.items():

@@ -206,8 +206,8 @@ def parse_btdk_cos(
         btdk_body: The btdk chunk body for COS write-back.
 
     Returns:
-        A tuple `(text_documents, fonts)` where *text_documents* is a
-        list of [TextDocument][] (one per keyframe) and *fonts* is
+        A tuple `(text_documents, fonts)` where `text_documents` is a
+        list of [TextDocument][] (one per keyframe) and `fonts` is
         the list of [FontObject][] referenced by the documents.
     """
     fonts = parse_fonts(cos_data)

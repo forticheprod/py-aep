@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 
     from ..binary.chunk import Chunk, ContainerChunk
     from ..binary.misc_chunks import MkifChunk
-    from ..binary.property_chunks import TdsbChunk
-    from ..binary.scalar_chunks import TdmnChunk, Utf8Chunk
+    from ..binary.property_chunks import TdmnChunk, TdsbChunk
+    from ..binary.scalar_chunks import Utf8Chunk
     from ..models.items.composition import CompItem
     from ..models.properties.property import Property
 

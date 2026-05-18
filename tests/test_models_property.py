@@ -450,7 +450,7 @@ class TestEffectProperties:
         """LAYER_INDEX effect property reads layer index from tdpi chunk.
 
         The S_BlurDirectional effect's "Matte from Layer" parameter has
-        property_value_type LAYER_INDEX.  When no layer is selected the
+        property_value_type LAYER_INDEX. When no layer is selected the
         value is 0.
         """
         project = parse_project(BUGS_DIR / "29.97_fps_time_scale_3.125.aep")
@@ -2967,3 +2967,89 @@ class TestCanSetExpression:
                 prop = _find_property(layer, mn)
                 assert prop is not None, f"layer[{idx}] {mn} not found"
                 assert prop.can_set_expression is False, f"layer[{idx}] {mn}"
+
+
+PROPERTY_SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "property"
+
+
+class TestCanAddProperty:
+    """Tests for PropertyGroup.can_add_property()."""
+
+    def test_non_indexed_group_returns_false(self) -> None:
+        """Transform group is a NAMED_GROUP, not INDEXED_GROUP."""
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        comp = get_comp(project, "type_null")
+        layer = comp.layers[0]
+        transform = layer.transform
+        assert transform.property_type == PropertyType.NAMED_GROUP
+        assert transform.can_add_property("anything") is False
+
+    def test_empty_name_returns_false(self) -> None:
+        project = parse_project(PROPERTY_SAMPLES_DIR / "effects.aep")
+        comp = project.compositions[0]
+        layer = comp.layers[0]
+        effect_parade = layer.effects
+        assert effect_parade.can_add_property("") is False
+
+    def test_effect_parade_accepts_any_name(self) -> None:
+        """Effect Parade is indexed and should accept any non-empty name."""
+        project = parse_project(PROPERTY_SAMPLES_DIR / "effects.aep")
+        comp = project.compositions[0]
+        layer = comp.layers[0]
+        effect_parade = layer.effects
+        assert effect_parade.match_name == "ADBE Effect Parade"
+        assert effect_parade.property_type == PropertyType.INDEXED_GROUP
+        assert effect_parade.can_add_property("ADBE Gaussian Blur 2") is True
+        assert effect_parade.can_add_property("Some Custom Effect") is True
+
+    def test_mask_parade_accepts_mask_atom(self) -> None:
+        project = parse_project(PROPERTY_SAMPLES_DIR / "mask.aep")
+        comp = project.compositions[0]
+        layer = comp.layers[0]
+        mask_parade = layer.masks
+        if mask_parade is None:
+            pytest.skip("No mask parade found")
+        assert mask_parade.match_name == "ADBE Mask Parade"
+        assert mask_parade.can_add_property("ADBE Mask Atom") is True
+
+    def test_mask_parade_rejects_other_names(self) -> None:
+        project = parse_project(PROPERTY_SAMPLES_DIR / "mask.aep")
+        comp = project.compositions[0]
+        layer = comp.layers[0]
+        mask_parade = layer.masks
+        if mask_parade is None:
+            pytest.skip("No mask parade found")
+        assert mask_parade.can_add_property("ADBE Position") is False
+        assert mask_parade.can_add_property("ADBE Effect Parade") is False
+
+    def test_shape_group_accepts_shape_names(self) -> None:
+        """Root Vectors Group should accept valid shape match names."""
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        comp = get_comp(project, "type_shape")
+        layer = comp.layers[0]
+        contents = None
+        for prop in layer.properties:
+            if prop.match_name == "ADBE Root Vectors Group":
+                contents = prop
+                break
+        if contents is None:
+            pytest.skip("No Root Vectors Group found")
+        assert contents.can_add_property("ADBE Vector Shape - Rect") is True
+        assert contents.can_add_property("ADBE Vector Shape - Ellipse") is True
+        assert contents.can_add_property("ADBE Vector Graphic - Fill") is True
+        assert contents.can_add_property("ADBE Vector Group") is True
+        assert contents.can_add_property("ADBE Vector Filter - Trim") is True
+
+    def test_shape_group_rejects_invalid_names(self) -> None:
+        project = parse_project(LAYER_SAMPLES_DIR / "type.aep")
+        comp = get_comp(project, "type_shape")
+        layer = comp.layers[0]
+        contents = None
+        for prop in layer.properties:
+            if prop.match_name == "ADBE Root Vectors Group":
+                contents = prop
+                break
+        if contents is None:
+            pytest.skip("No Root Vectors Group found")
+        assert contents.can_add_property("ADBE Position") is False
+        assert contents.can_add_property("ADBE Mask Atom") is False

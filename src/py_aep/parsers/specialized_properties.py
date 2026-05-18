@@ -30,7 +30,8 @@ from .text import parse_btdk_cos
 
 if TYPE_CHECKING:
     from ..binary.chunk import ListChunk
-    from ..binary.scalar_chunks import TdmnChunk, Utf8Chunk
+    from ..binary.property_chunks import TdmnChunk
+    from ..binary.scalar_chunks import Utf8Chunk
     from ..models.items.composition import CompItem
     from ..models.properties.property import Property
 

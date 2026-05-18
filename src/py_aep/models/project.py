@@ -256,6 +256,8 @@ class Project:
         self._active_item: Item | None = None
         self._effect_param_defs: dict[str, dict[str, dict[str, Any]]] = {}
         self._used_in_linked = False
+        self._max_item_id = -1   # lazily computed on first allocation
+        self._max_layer_id = -1  # lazily computed on first allocation
 
     def __repr__(self) -> str:
         return f"Project(file={self._file!r})"
@@ -354,13 +356,13 @@ class Project:
             self._exen_utf8.value = value
         else:
             utf8 = Utf8Chunk(chunk_type="Utf8", value=value)
-            exen = ListChunk(chunk_type="LIST", list_type="ExEn", chunks=[utf8])
+            exen = ListChunk(list_type="ExEn", chunks=[utf8])
             self._rifx.chunks.append(exen)
             self._exen_utf8 = utf8
 
     @property
     def effect_names(self) -> list[str]:
-        """The names of all effects used in the project."""
+        """The names of all effects used in the project. Read-only."""
         return _get_effect_names(self._root_chunks)
 
     @property
@@ -439,6 +441,10 @@ class Project:
     @ocio_configuration_file.setter
     @requires_version(24)
     def ocio_configuration_file(self, value: str) -> None:
+        if isinstance(value, os.PathLike):
+            value = str(value)
+        if not isinstance(value, str):
+            raise TypeError(f"ocio_configuration_file must be a string or Path, got {value!r}")
         self._update_cms_setting("ocioConfigurationFile", value)
 
     @property
@@ -499,6 +505,27 @@ class Project:
         with open(path_obj, "wb") as f:
             write_aep(f, self._rifx, self._xmp)
         self._file = str(path)
+
+    def _allocate_item_id(self) -> int:
+        """Return the next unique item ID and update the counter.
+
+        ID 0 is reserved for the root folder, so the minimum returned
+        value is 1.
+        """
+        if self._max_item_id == -1:
+            self._max_item_id = max(self._items.keys(), default=0)
+        self._max_item_id += 1
+        return self._max_item_id
+
+    def _allocate_layer_id(self) -> int:
+        """Return the next unique layer ID and update the counter."""
+        if self._max_layer_id == -1:
+            self._max_layer_id = max(
+                (lyr.id for comp in self.compositions for lyr in comp.layers),
+                default=0,
+            )
+        self._max_layer_id += 1
+        return self._max_layer_id
 
     _CMS_DEFAULTS: ClassVar[dict[str, int | str]] = {
         "colorManagementSystem": 0,

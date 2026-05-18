@@ -30,6 +30,7 @@ from ...resolvers.output import (
     resolve_time_span,
 )
 from ..descriptors import ChunkField
+from ..items.composition import CompItem
 from ..transforms import strip_null
 from ..validators import validate_number
 from .format_options import (
@@ -56,7 +57,6 @@ if TYPE_CHECKING:
         RouuChunk,
     )
     from ...binary.scalar_chunks import Utf8Chunk
-    from ..items.composition import CompItem
     from ..project import Project
     from .render_queue_item import RenderQueueItem
 
@@ -371,11 +371,19 @@ class OutputModule:
         """
         comp_id = self._om_ldat.post_render_target_comp_id or None
         if (
-            self.post_render_action in (PostRenderAction.NONE, PostRenderAction.IMPORT)
-            or comp_id is None
+            comp_id is None
+            or self.post_render_action in (PostRenderAction.NONE, PostRenderAction.IMPORT)
         ):
             return self._parent_rqi.comp
         return cast("CompItem", self._project.items[comp_id])
+
+    @post_render_target_comp.setter
+    def post_render_target_comp(self, comp: CompItem) -> None:
+        if not isinstance(comp, CompItem):
+            raise ValueError("post_render_target_comp must be a CompItem")
+        if comp.id not in self._project.items:
+            raise ValueError("post_render_target_comp must be an item in the project")
+        self._om_ldat.post_render_target_comp_id = comp.id
 
     @property
     def settings(self) -> SettingsView:
@@ -526,10 +534,11 @@ class OutputModule:
 
     @_starting_number.setter
     def _starting_number(self, value: int) -> None:
-        v = int(value)
-        if v < 0 or v > 9999999:
-            raise ValueError(f"Starting number must be between 0 and 9999999, got {v}")
-        self._roou.starting_number = v
+        if not isinstance(value, int):
+            raise ValueError("Starting number must be an integer")
+        if value < 0 or value > 9999999:
+            raise ValueError(f"Starting number must be between 0 and 9999999, got {value}")
+        self._roou.starting_number = value
 
     @property
     def _resize_to(self) -> list[int]:
@@ -538,10 +547,14 @@ class OutputModule:
 
     @_resize_to.setter
     def _resize_to(self, value: list[int]) -> None:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("Resize dimensions must be a list of [width, height]")
         if len(value) != 2:
             raise ValueError(
                 f"Resize must be [width, height], got {len(value)} elements"
             )
+        if not all(isinstance(v, int) for v in value):
+            raise ValueError("Resize dimensions must be integers")
         w, h = int(value[0]), int(value[1])
         if not (1 <= w <= 30000 and 1 <= h <= 30000):
             raise ValueError(
@@ -637,6 +650,8 @@ class OutputModule:
 
     @file_template.setter
     def file_template(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError("File template must be a string")
         if self._is_folder:
             path_sep = "\\" if "\\" in value else "/"
             last_sep = value.rfind(path_sep)

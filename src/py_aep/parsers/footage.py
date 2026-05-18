@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..binary.item_chunks import IdtaChunk
-from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
+from ..binary.item_chunks import CmtaChunk, IdtaChunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import filter_by_list_type
 from ..models.items.footage import FootageItem
 from ..models.sources.file import FileSource

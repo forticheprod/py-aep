@@ -40,13 +40,13 @@ def solid_color_name(r: float, g: float, b: float) -> str:
     """Derive the base solid name from an RGB color.
 
     After Effects names solids by their perceived color category.
-    Returns the base name (e.g. ``"Red Solid"``) without a trailing
+    Returns the base name (e.g. `"Red Solid"`) without a trailing
     number suffix; the caller is responsible for disambiguation.
 
     Args:
-        r: Red channel in ``[0.0, 1.0]``.
-        g: Green channel in ``[0.0, 1.0]``.
-        b: Blue channel in ``[0.0, 1.0]``.
+        r: Red channel in `[0.0, 1.0]`.
+        g: Green channel in `[0.0, 1.0]`.
+        b: Blue channel in `[0.0, 1.0]`.
     """
     h_raw, s_raw, v_raw = colorsys.rgb_to_hsv(r, g, b)
     h = h_raw * 360.0

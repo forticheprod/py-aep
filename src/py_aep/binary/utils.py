@@ -58,10 +58,43 @@ def filter_by_list_type(chunks: list[Chunk], list_type: str) -> list[ListChunk]:
     ]
 
 
-def _find_anchor_index(chunks: list[Chunk], anchor_type: str) -> int:
-    """Return the index of the first chunk matching *anchor_type*.
+def block_slice(
+    chunks: list[Chunk],
+    target: Chunk,
+    boundary_list_types: frozenset[str],
+) -> tuple[int, int]:
+    """Return `(start, end)` indices of a contiguous block starting at `target`.
 
-    *anchor_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    Scans forward from `target` until a `ListChunk` whose `list_type` is
+    in `boundary_list_types`, or the end of the list.  Uses identity
+    comparison (`is`) to locate `target`.
+
+    Args:
+        chunks: The chunk list to search.
+        target: The chunk that starts the block (matched by identity).
+        boundary_list_types: `list_type` values that mark the beginning of
+            the next block.
+
+    Raises:
+        ValueError: If `target` is not found in `chunks`.
+    """
+    start = next(
+        (i for i, c in enumerate(chunks) if c is target),
+        None,
+    )
+    if start is None:
+        raise ValueError("target chunk not found in chunk list")
+    for end in range(start + 1, len(chunks)):
+        c = chunks[end]
+        if isinstance(c, ListChunk) and c.list_type in boundary_list_types:
+            return start, end
+    return start, len(chunks)
+
+
+def _find_anchor_index(chunks: list[Chunk], anchor_type: str) -> int:
+    """Return the index of the first chunk matching `anchor_type`.
+
+    `anchor_type` can be a plain chunk type (e.g. `"opti"`) or a LIST type
     prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
 
     Raises:
@@ -87,14 +120,14 @@ def find_chunks_before(
 ) -> list[Chunk]:
     """Return consecutive chunks of `chunk_type` immediately before `before_type`.
 
-    Scans *chunks* for the first occurrence of *before_type*, then collects the
-    uninterrupted run of *chunk_type* chunks that directly precede it.
+    Scans `chunks` for the first occurrence of `before_type`, then collects the
+    uninterrupted run of `chunk_type` chunks that directly precede it.
 
-    *before_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    `before_type` can be a plain chunk type (e.g. `"opti"`) or a LIST type
     prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
 
     Raises:
-        ChunkNotFoundError: If no chunk with *before_type* is found.
+        ChunkNotFoundError: If no chunk with `before_type` is found.
     """
     anchor = _find_anchor_index(chunks, before_type)
     result: list[Chunk] = []
@@ -113,14 +146,14 @@ def find_chunks_after(
 ) -> list[Chunk]:
     """Return consecutive chunks of `chunk_type` immediately after `after_type`.
 
-    Scans *chunks* for the first occurrence of *after_type*, then collects the
-    uninterrupted run of *chunk_type* chunks that directly follow it.
+    Scans `chunks` for the first occurrence of `after_type`, then collects the
+    uninterrupted run of `chunk_type` chunks that directly follow it.
 
-    *after_type* can be a plain chunk type (e.g. `"opti"`) or a LIST type
+    `after_type` can be a plain chunk type (e.g. `"opti"`) or a LIST type
     prefixed with `"LIST:"` (e.g. `"LIST:Als2"`).
 
     Raises:
-        ChunkNotFoundError: If no chunk with *after_type* is found.
+        ChunkNotFoundError: If no chunk with `after_type` is found.
     """
     anchor = _find_anchor_index(chunks, after_type)
     result: list[Chunk] = []
@@ -137,7 +170,7 @@ def group_chunks(
     start_type: str,
     end_type: str,
 ) -> list[list[Chunk]]:
-    """Split *chunks* into groups bounded by *start_type* ... *end_type* (inclusive).
+    """Split `chunks` into groups bounded by `start_type` ... `end_type` (inclusive).
 
     Chunks that fall outside any group are ignored.
     """
@@ -158,9 +191,9 @@ def split_on_type(
     chunks: list[Chunk],
     chunk_type: str,
 ) -> list[list[Chunk]]:
-    """Split *chunks* into groups starting at each occurrence of *chunk_type*.
+    """Split `chunks` into groups starting at each occurrence of `chunk_type`.
 
-    Every time a chunk with *chunk_type* is encountered a new group begins.
+    Every time a chunk with `chunk_type` is encountered a new group begins.
     Chunks that appear before the first occurrence are discarded.
     """
     groups: list[list[Chunk]] = []
@@ -254,7 +287,7 @@ def recursive_find(
 ) -> list[Chunk]:
     """Recursively search the chunk tree for matching chunks.
 
-    At least one of *chunk_type* or *list_type* must be given.
+    At least one of `chunk_type` or `list_type` must be given.
 
     Returns:
         All matching chunks across the entire tree, in DFS order.

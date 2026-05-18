@@ -93,7 +93,7 @@ class PngFormatOptions:
 
     @include_hdr10_metadata.setter
     def include_hdr10_metadata(self, value: bool) -> None:
-        self._hdr10_meta["colorMetadataPresent"] = value
+        self._hdr10_meta["colorMetadataPresent"] = bool(value)
         self._sync_hdr10()
 
     @property
@@ -110,6 +110,8 @@ class PngFormatOptions:
 
     @color_primaries.setter
     def color_primaries(self, value: Hdr10ColorPrimaries) -> None:
+        if not isinstance(value, (Hdr10ColorPrimaries, int)):
+            raise ValueError("Color primaries must be an instance of Hdr10ColorPrimaries or int")
         self._hdr10_meta["displayPrimaries"] = int(value)
         self._sync_hdr10()
 
@@ -128,6 +130,8 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("minLuminance", None)
         else:
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError("Minimum luminance must be a non-negative number")
             self._hdr10_meta["minLuminance"] = value
         self._sync_hdr10()
 
@@ -146,6 +150,8 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("maxLuminance", None)
         else:
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError("Maximum luminance must be a non-negative number")
             self._hdr10_meta["maxLuminance"] = value
         self._sync_hdr10()
 
@@ -164,6 +170,8 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("maxContentLightLevel", None)
         else:
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError("Maximum content light level must be a non-negative number")
             self._hdr10_meta["maxContentLightLevel"] = value
         self._sync_hdr10()
 
@@ -182,5 +190,7 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("maxFrameAverageLightLevel", None)
         else:
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError("Maximum frame average light level must be a non-negative number")
             self._hdr10_meta["maxFrameAverageLightLevel"] = value
         self._sync_hdr10()

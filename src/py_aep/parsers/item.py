@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ListChunk
-from ..binary.item_chunks import IdtaChunk
+from ..binary.item_chunks import CmtaChunk, IdtaChunk
 from ..binary.ldat_chunks import LdatChunk, Lhd3Chunk
-from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,

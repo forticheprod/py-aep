@@ -67,6 +67,8 @@ class Viewer:
 
     @active_view_index.setter
     def active_view_index(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise ValueError("active_view_index must be an integer")
         if self._views and not 0 <= value < len(self._views):
             msg = (
                 f"active_view_index must be between 0 and "

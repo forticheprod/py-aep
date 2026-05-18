@@ -146,7 +146,6 @@ The following ExtendScript classes do not exist in py_aep:
 | Class | Reason |
 |-------|--------|
 | `System` | OS/machine info - not stored in `.aep` |
-| `ImportOptions` | Import dialog settings - not stored in `.aep` |
 | `FontsObject` | Runtime collection of installed fonts |
 | `CharacterRange` | Text engine range object (AE 24.6+) |
 | `ComposedLineRange` | Text engine range object (AE 24.6+) |

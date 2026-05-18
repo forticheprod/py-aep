@@ -199,8 +199,8 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
                 prop.default_value = default
 
     # --- Phase 2: synthesize missing properties & reorder -------------------
-    # Match names whose synthesized *value* is 0.0 (inactive separation
-    # followers) while their *default* comes from spatial_defaults.
+    # Match names whose synthesized `value` is 0.0 (inactive separation
+    # followers) while their `default` comes from spatial_defaults.
     _INACTIVE_FOLLOWER_VALUE: dict[str, float] = {
         "ADBE Position_0": 0.0,
         "ADBE Position_1": 0.0,

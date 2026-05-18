@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, List, cast
 
 from ...binary.chunk import Chunk, DeferredListChunk, ListChunk
-from ...binary.composition_chunks import CdtaChunk
+from ...binary.composition_chunks import CdtaChunk, CsctChunk
+from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.layer_chunks import _LDTA_SOURCE_ID_END, _LDTA_SOURCE_ID_OFFSET
-from ...binary.misc_chunks import PrinChunk
-from ...binary.scalar_chunks import CsctChunk, U4Chunk, Utf8Chunk
+from ...binary.misc_chunks import PrdaChunk, PrinChunk
+from ...binary.scalar_chunks import F8Chunk, U1Chunk, U2Chunk, U4Chunk, Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
+    block_slice,
     filter_by_list_type,
     find_by_list_type,
     find_by_type,
@@ -42,9 +44,8 @@ from .footage import FootageItem
 if TYPE_CHECKING:
     from typing import Iterator
 
-    from ...binary.item_chunks import IdtaChunk
+    from ...binary.item_chunks import CmtaChunk
     from ...binary.layer_chunks import LdtaChunk
-    from ...binary.scalar_chunks import CmtaChunk, U1Chunk
     from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
     from ..project import Project
@@ -94,9 +95,7 @@ def _compute_resolution_factor(body: CdtaChunk) -> list[int]:
 
 
 def _reverse_resolution_factor(value: list[int], _body: CdtaChunk) -> dict[str, Any]:
-    return unpack_values("resolution_factor_h", "resolution_factor_v")(
-        value, _body
-    )
+    return unpack_values("resolution_factor_h", "resolution_factor_v")(value, _body)
 
 
 def _compute_work_area_duration(body: CdtaChunk) -> float:
@@ -146,9 +145,14 @@ def _reverse_work_area_duration_frame(value: int, body: CdtaChunk) -> dict[str, 
     }
 
 
-_LAYER_BOUNDARY_TYPES = frozenset(
-    {"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO"}
-)
+_LAYER_BOUNDARY_TYPES = frozenset({"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO"})
+
+# Shared validators reused by both the CompItem descriptors and CompItem._new
+_validate_width = validate_number(min=4, max=30000, integer=True)
+_validate_height = validate_number(min=4, max=30000, integer=True)
+_validate_pixel_aspect = validate_number(min=0.01, max=100.0)
+_validate_duration = validate_number(min=0.0, max=10800.0)
+_validate_frame_rate = validate_number(min=1.0, max=99.0)
 
 
 class CompItem(AVItem):
@@ -219,18 +223,10 @@ class CompItem(AVItem):
     Resolution When Nested" option in the Advanced tab of the Composition
     Settings dialog box. Read / Write."""
 
-    width = ChunkField[int](
-        "_cdta",
-        "width",
-        validate=validate_number(min=4, max=30000, integer=True),
-    )
+    width = ChunkField[int]("_cdta", "width", validate=_validate_width)
     """The width of the item in pixels. Read / Write."""
 
-    height = ChunkField[int](
-        "_cdta",
-        "height",
-        validate=validate_number(min=4, max=30000, integer=True),
-    )
+    height = ChunkField[int]("_cdta", "height", validate=_validate_height)
     """The height of the item in pixels. Read / Write."""
 
     shutter_angle = ChunkField[int](
@@ -419,6 +415,95 @@ class CompItem(AVItem):
     """When `True`, timecode is displayed in drop-frame format. Only
     applicable when `frameRate` is 29.97 or 59.94. Read / Write."""
 
+    @classmethod
+    def _new(
+        cls,
+        name: str,
+        width: int,
+        height: int,
+        pixel_aspect: float,
+        duration: float,
+        frame_rate: float,
+        *,
+        project: Project,
+        parent_folder: FolderItem,
+    ) -> CompItem:
+        """Create a new empty composition.
+
+        Args:
+            name: The name of the new composition.
+            width: The width in pixels.
+            height: The height in pixels.
+            pixel_aspect: The pixel aspect ratio (1.0 for square pixels).
+            duration: The duration in seconds.
+            frame_rate: The frame rate in frames per second.
+            project: The project that owns this composition.
+            parent_folder: The folder that will contain this composition.
+        """
+        _validate_width(width, None)
+        _validate_height(height, None)
+        _validate_pixel_aspect(pixel_aspect, None)
+        _validate_duration(duration, None)
+        _validate_frame_rate(frame_rate, None)
+
+        _RATIO_DIVISOR = 100000
+
+        new_id = project._allocate_item_id()
+
+        iide = IideChunk(value=new_id)
+        idpc = IdpcChunk()
+        idta = IdtaChunk(item_type=4, item_id=new_id)
+        name_utf8 = Utf8Chunk(chunk_type="Utf8", value=name)
+
+        cdta = CdtaChunk()
+        cdta.width = width
+        cdta.height = height
+        cdta.frame_rate_integer = int(frame_rate)
+        cdta.frame_rate_fractional = round((frame_rate - int(frame_rate)) * 65536)
+        cdta.duration_dividend = round(duration * cdta.duration_divisor)
+        cdta.pixel_ratio_dividend = round(pixel_aspect * _RATIO_DIVISOR)
+        cdta.internal_timebase = round(frame_rate * 256 * 4)
+
+        prin_list = ListChunk(
+            list_type="PRin", chunks=[PrinChunk(), PrdaChunk()],
+        )
+
+        item_list = ListChunk(
+            list_type="Item",
+            chunks=[iide, idpc, idta, name_utf8, cdta, prin_list],
+        )
+
+        # View data chunks that AE expects after every comp's LIST:Item
+        fee = ListChunk(
+            list_type="FEE ",
+            chunks=[F8Chunk(chunk_type="ppSn")],
+        )
+        view_data: list[Chunk] = [
+            fee,
+            U4Chunk(chunk_type="fvdv", value=3),
+            U1Chunk(chunk_type="fiop"),
+            U4Chunk(chunk_type="ftts"),
+            U1Chunk(chunk_type="foac"),
+            U1Chunk(chunk_type="fiac"),
+            U2Chunk(chunk_type="fipc"),
+            U4Chunk(chunk_type="fifl"),
+        ]
+
+        comp = cls(
+            _child_chunks=item_list.chunks,
+            _cmta=None,
+            _idta=idta,
+            _item_list=item_list,
+            _gide=None,
+            _name_utf8=name_utf8,
+            project=project,
+            parent_folder=parent_folder,
+            effect_param_defs=project._effect_param_defs,
+            proxy_source=None,
+        )
+        comp._view_data = view_data
+        return comp
+
     def __init__(
         self,
         *,
@@ -472,7 +557,8 @@ class CompItem(AVItem):
         # Layer deferral: collect layer chunks and source IDs now, parse
         # the actual Layer objects on first access via _ensure_layers_loaded.
         layer_chunks = filter_by_list_type(
-            chunks=_child_chunks, list_type="Layr",
+            chunks=_child_chunks,
+            list_type="Layr",
         )
         if layer_chunks:
             self._deferred_layers: (
@@ -492,10 +578,25 @@ class CompItem(AVItem):
         self._marker_property: Property | None = None
         self._eg_template_name_utf8: Utf8Chunk | None = None
         self._eg_controllers: list[EssentialGraphicsController] = []
+        self._view_data: list[Chunk] = []
 
     def __iter__(self) -> Iterator[Layer]:
         """Return an iterator over the composition's layers."""
         return iter(self.layers)
+
+    def remove(self) -> None:
+        """Remove this composition, including any render-queue items targeting it."""
+        rq = self._project.render_queue
+        assert rq is not None
+        comp_id = self.id
+        for rqi in list(rq.items):
+            if rqi.comp is self:
+                rq.items.remove(rqi)
+                continue
+            for om in rqi.output_modules:
+                if om._om_ldat.post_render_target_comp_id == comp_id:
+                    om._om_ldat.post_render_target_comp_id = 0
+        super().remove()
 
     def _source_ids_for_linking(self) -> set[int]:
         """Return source IDs for `_used_in` linking without forcing layer parse."""
@@ -507,7 +608,8 @@ class CompItem(AVItem):
                     raw = lc._raw_body
                     if len(raw) >= _LDTA_SOURCE_ID_END and raw[:4] == b"ldta":
                         sid = int.from_bytes(
-                            raw[_LDTA_SOURCE_ID_OFFSET:_LDTA_SOURCE_ID_END], "big",
+                            raw[_LDTA_SOURCE_ID_OFFSET:_LDTA_SOURCE_ID_END],
+                            "big",
                         )
                         if sid != 0:
                             source_ids.add(sid)
@@ -583,7 +685,8 @@ class CompItem(AVItem):
         )
 
         self._marker_property = _get_markers(
-            child_chunks=child_chunks, composition=self,
+            child_chunks=child_chunks,
+            composition=self,
         )
         eg_result = parse_essential_graphics(child_chunks)
         if eg_result is not None:
@@ -638,21 +741,21 @@ class CompItem(AVItem):
         The block runs from the layer's `LIST:Layr` to the next boundary
         chunk (another `LIST:Layr`, a view block, or a footer chunk).
         """
-        chunks = self._item_list.chunks
-        # Identity scan - attrs __eq__ on ListChunk is structural, so two layers
-        # with identical content would fool .index() into returning the wrong position.
-        start = next(i for i, c in enumerate(chunks) if c is layer._layer_list)
-        for end in range(start + 1, len(chunks)):
-            c = chunks[end]
-            if isinstance(c, ListChunk) and c.list_type in _LAYER_BOUNDARY_TYPES:
-                return start, end
-        return start, len(chunks)
+        return block_slice(
+            self._item_list.chunks,
+            layer._layer_list,
+            _LAYER_BOUNDARY_TYPES,
+        )
 
     def _find_first_layer_position(self) -> int:
         """Find the insertion point for the first layer in the chunk list."""
         for i, chunk in enumerate(self._item_list.chunks):
             if isinstance(chunk, ListChunk) and chunk.list_type in (
-                "DLay", "SLay", "CLay", "SecL", "CIFO",
+                "DLay",
+                "SLay",
+                "CLay",
+                "SecL",
+                "CIFO",
             ):
                 return i
         return len(self._item_list.chunks)
@@ -699,13 +802,15 @@ class CompItem(AVItem):
 
     @motion_graphics_template_name.setter
     def motion_graphics_template_name(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError("motion_graphics_template_name must be a string")
+
         self._ensure_comp_parsed()
         if self._eg_template_name_utf8 is not None:
             self._eg_template_name_utf8.value = value
         else:
             utf8_chunk = Utf8Chunk(chunk_type="Utf8", value=value)
             cps2 = ListChunk(
-                chunk_type="LIST",
                 list_type="CpS2",
                 chunks=[
                     CsctChunk(),
@@ -714,7 +819,6 @@ class CompItem(AVItem):
                 ],
             )
             cif3 = ListChunk(
-                chunk_type="LIST",
                 list_type="CIF3",
                 chunks=[
                     cps2,
@@ -725,7 +829,7 @@ class CompItem(AVItem):
             self._eg_template_name_utf8 = utf8_chunk
 
     @property
-    def essential_graphics_controllers(self) -> list[EssentialGraphicsController]:
+    def motion_graphics_controllers(self) -> list[EssentialGraphicsController]:
         """The Essential Graphics controllers for this composition.
         Read-only."""
         self._ensure_comp_parsed()
@@ -735,40 +839,13 @@ class CompItem(AVItem):
     def motion_graphics_template_controller_count(self) -> int:
         """The number of properties in the Essential Graphics panel
         for the composition. Read-only."""
-        return len(self.essential_graphics_controllers)
+        return len(self.motion_graphics_controllers)
 
     @property
     def motion_graphics_template_controller_names(self) -> list[str]:
         """The names of all properties in the Essential Graphics panel.
         Read-only."""
-        return [ctrl.name for ctrl in self.essential_graphics_controllers]
-
-    def get_motion_graphics_template_controller_name(self, index: int) -> str:
-        """Get the name of a single property in the Essential Graphics
-        panel.
-
-        Warning:
-            Uses 0-based indexing, unlike the ExtendScript API which is
-            1-based.
-
-        Args:
-            index: The 0-based index of the EGP property.
-        """
-        return self.essential_graphics_controllers[index].name
-
-    def set_motion_graphics_controller_name(self, index: int, name: str) -> None:
-        """Set the name of a single property in the Essential Graphics
-        panel.
-
-        Warning:
-            Uses 0-based indexing, unlike the ExtendScript API which is
-            1-based.
-
-        Args:
-            index: The 0-based index of the EGP property.
-            name: The new name for the EGP property.
-        """
-        self.essential_graphics_controllers[index].name = name
+        return [ctrl.name for ctrl in self.motion_graphics_controllers]
 
     @property
     def renderers(self) -> list[str]:
@@ -873,7 +950,11 @@ class CompItem(AVItem):
     @property
     def av_layers(self) -> list[AVLayer]:
         """A list of all [AVLayer][] objects in this composition."""
-        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        cache = (
+            self._type_cache
+            if self._type_cache is not None
+            else self._build_type_cache()
+        )
         return cache["av"]
 
     @property
@@ -924,31 +1005,51 @@ class CompItem(AVItem):
     @property
     def text_layers(self) -> list[TextLayer]:
         """A list of the text layers in this composition."""
-        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        cache = (
+            self._type_cache
+            if self._type_cache is not None
+            else self._build_type_cache()
+        )
         return cache["text"]
 
     @property
     def shape_layers(self) -> list[ShapeLayer]:
         """A list of the shape layers in this composition."""
-        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        cache = (
+            self._type_cache
+            if self._type_cache is not None
+            else self._build_type_cache()
+        )
         return cache["shape"]
 
     @property
     def camera_layers(self) -> list[CameraLayer]:
         """A list of the camera layers in this composition."""
-        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        cache = (
+            self._type_cache
+            if self._type_cache is not None
+            else self._build_type_cache()
+        )
         return cache["camera"]
 
     @property
     def light_layers(self) -> list[LightLayer]:
         """A list of the light layers in this composition."""
-        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        cache = (
+            self._type_cache
+            if self._type_cache is not None
+            else self._build_type_cache()
+        )
         return cache["light"]
 
     @property
     def three_d_model_layers(self) -> list[ThreeDModelLayer]:
         """A list of the 3D model layers in this composition."""
-        cache = self._type_cache if self._type_cache is not None else self._build_type_cache()
+        cache = (
+            self._type_cache
+            if self._type_cache is not None
+            else self._build_type_cache()
+        )
         return cache["three_d_model"]
 
     @property
@@ -975,4 +1076,3 @@ class CompItem(AVItem):
     def solo_layers(self) -> list[Layer]:
         """A list of the soloed layers in this composition."""
         return [layer for layer in self.layers if layer.solo]
-

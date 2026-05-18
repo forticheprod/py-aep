@@ -203,6 +203,10 @@ class Shape:
     def vertices(self, value: list[list[float]]) -> None:
         if self._points is None or self._shph is None:
             return
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("vertices must be a list of [x,y] pairs")
+        if not all(isinstance(pt, (list, tuple)) and len(pt) == 2 for pt in value):
+            raise ValueError("each vertex must be a list of two floats [x, y]")
         coords = value
         if self._is_mask and self._comp_size is not None:
             w, h = self._comp_size
@@ -243,6 +247,10 @@ class Shape:
     def in_tangents(self, value: list[list[float]]) -> None:
         if self._points is None or self._shph is None:
             return
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("in_tangents must be a list of [x,y] pairs")
+        if not all(isinstance(pt, (list, tuple)) and len(pt) == 2 for pt in value):
+            raise ValueError("each in_tangent must be a list of two floats [x, y]")
         tangents = value
         if self._is_mask and self._comp_size is not None:
             w, h = self._comp_size
@@ -285,6 +293,10 @@ class Shape:
     def out_tangents(self, value: list[list[float]]) -> None:
         if self._points is None or self._shph is None:
             return
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("out_tangents must be a list of [x,y] pairs")
+        if not all(isinstance(pt, (list, tuple)) and len(pt) == 2 for pt in value):
+            raise ValueError("each out_tangent must be a list of two floats [x, y]")
         tangents = value
         if self._is_mask and self._comp_size is not None:
             w, h = self._comp_size
@@ -310,4 +322,4 @@ class Shape:
         if self._shph is not None:
             self._shph.open = not value
         else:
-            self._closed_fallback = value
+            self._closed_fallback = bool(value)

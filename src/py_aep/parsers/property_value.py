@@ -19,7 +19,7 @@ from ..models.properties.property import Property
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk
-    from ..binary.scalar_chunks import TdmnChunk
+    from ..binary.property_chunks import TdmnChunk
     from ..models.items.composition import CompItem
 
 logger = logging.getLogger(__name__)

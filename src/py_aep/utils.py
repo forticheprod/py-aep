@@ -12,7 +12,7 @@ R = TypeVar("R")
 def deprecated(message: str) -> Callable[..., Any]:
     """Decorator that marks a function as deprecated.
 
-    Emits a `DeprecationWarning` with *message* each time the decorated
+    Emits a `DeprecationWarning` with `message` each time the decorated
     function is called.
 
     Args:

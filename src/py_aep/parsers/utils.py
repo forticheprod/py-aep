@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from ..binary.scalar_chunks import TdmnChunk
+from ..binary.property_chunks import TdmnChunk
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ListChunk

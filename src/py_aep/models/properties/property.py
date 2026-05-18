@@ -9,8 +9,8 @@ from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
 from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk
-from ...binary.scalar_chunks import TdmnChunk, Utf8Chunk
+from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdmnChunk, TdsbChunk
+from ...binary.scalar_chunks import Utf8Chunk
 from ...data.units import UNITS_TEXT_MAP
 from ..descriptors import ChunkField
 from ..validators import validate_number, validate_sequence
@@ -297,7 +297,6 @@ class Property(PropertyBase):
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
         )
         _tdbs = ListChunk(
-            chunk_type="LIST",
             list_type="tdbs",
             chunks=[_tdsb, tdsn, _tdb4],
             synthetic=synthetic,
@@ -615,10 +614,10 @@ class Property(PropertyBase):
 
     @value.setter
     def value(self, value: Any) -> None:
-        self._ensure_materialized()
         _validate_value(self, value)
-        self._value = value
+        self._ensure_materialized()
         self._write_cdat(value)
+        self._value = value
 
     @property
     def min_value(self) -> Any:
@@ -705,11 +704,11 @@ class Property(PropertyBase):
 
     @dimensions_separated.setter
     def dimensions_separated(self, value: bool) -> None:
-        self._ensure_materialized()
-        self._dimensions_separated = value
         if self.match_name == _SEPARATION_LEADER:
+            self._ensure_materialized()
             assert self._tdsb is not None
             self._tdsb.dimensions_separated = value
+            self._dimensions_separated = bool(value)
 
     @property
     def expression(self) -> str:
@@ -728,16 +727,19 @@ class Property(PropertyBase):
     def expression(self, value: str) -> None:
         if value and not self.can_set_expression:
             raise AttributeError(
-                f"Expression cannot be set on property {self.match_name!r}"
+                f"expression cannot be set on property {self.match_name!r}"
             )
-        self._ensure_materialized()
-        self._expression = value
-        if self._expression_utf8 is None:
+        if not isinstance(value, str):
+            raise ValueError("expression must be a string")
+        if self._expression_utf8 is not None:
+            self._ensure_materialized()
+            self._expression_utf8.value = value
+        elif value:
+            self._ensure_materialized()
             chunk = Utf8Chunk(chunk_type="Utf8", value=value)
             self._tdbs.chunks.append(chunk)
             self._expression_utf8 = chunk
-        else:
-            self._expression_utf8.value = value
+        self._expression = value
 
     @property
     def expression_enabled(self) -> bool:
@@ -754,9 +756,8 @@ class Property(PropertyBase):
     @expression_enabled.setter
     def expression_enabled(self, value: bool) -> None:
         self._ensure_materialized()
-        self._expression_enabled = value
-        if not self._tdb4.synthetic:
-            self._tdb4.expression_disabled = not value
+        self._expression_enabled = bool(value)
+        self._tdb4.expression_disabled = not value
 
     @property
     def can_set_expression(self) -> bool:
@@ -1017,7 +1018,7 @@ class Property(PropertyBase):
                 the parser).
 
         Raises:
-            NotImplementedError: If *pre_expression* is `False`,
+            NotImplementedError: If `pre_expression` is `False`,
                 because the parser cannot evaluate expressions.
         """
         if not pre_expression:
@@ -1094,6 +1095,8 @@ class Property(PropertyBase):
 
     @_effect_scale.setter
     def _effect_scale(self, value: list[float] | None) -> None:
+        if value is not None and (not isinstance(value, (list, tuple)) or len(value) < 2):
+            raise ValueError("_effect_scale must be a list of at least 2 floats")
         self.__dict__["_effect_scale"] = value
 
     def _scale_effect_point_speeds(self, scale: list[float]) -> None:

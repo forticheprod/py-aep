@@ -9,8 +9,8 @@ from .source import parse_source
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk, ListChunk
-    from ..binary.item_chunks import IdtaChunk
-    from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
+    from ..binary.item_chunks import CmtaChunk, IdtaChunk
+    from ..binary.scalar_chunks import Utf8Chunk
     from ..models.items.folder import FolderItem
     from ..models.project import Project
     from ..models.properties.property import Property

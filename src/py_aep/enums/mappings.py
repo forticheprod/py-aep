@@ -189,7 +189,7 @@ def map_media_color_space(
             from the `apid` chunk inside `LIST:CLRS`.
 
     Returns:
-        `"Working Color Space"` when *ipws_enabled* is True,
+        `"Working Color Space"` when `ipws_enabled` is True,
         `"Embedded"` when the profile ID is all `0xFF`
         (no override), or the resolved profile name.
     """

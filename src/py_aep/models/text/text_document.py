@@ -247,7 +247,7 @@ class TextDocument:
         *,
         _char_style: dict[str, Any] | None = None,
         _para_style: dict[str, Any] | None = None,
-        _doc: dict[str, Any] | None = None,
+        _doc: dict[str, Any],
         _fonts: list[FontObject],
         _cos_data: dict[str, Any],
         _btdk_body: ListChunk,
@@ -291,21 +291,19 @@ class TextDocument:
         """The text value for the Source Text property. Read / Write."""
         if "text" in self.__dict__:
             return str(self.__dict__["text"])
-        if self._doc is not None:
-            val = self._doc.get("0", {}).get("0")
-            if val is not None:
-                return str(val).rstrip("\r\n")
+        val = self._doc.get("0", {}).get("0")
+        if val is not None:
+            return str(val).rstrip("\r\n")
         return ""
 
     @text.setter
     def text(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError("text must be a string")
         self.__dict__.pop("text", None)
-        if self._doc is not None:
-            inner = self._doc.setdefault("0", {})
-            inner["0"] = value
-            self._propagate_cos()
-        else:
-            self.__dict__["text"] = value
+        inner = self._doc.setdefault("0", {})
+        inner["0"] = value
+        self._propagate_cos()
 
     @property
     def font(self) -> str | None:
@@ -320,11 +318,9 @@ class TextDocument:
         return None
 
     @font.setter
-    def font(self, value: str | None) -> None:
-        self.__dict__.pop("font", None)
-        if value is None:
-            self.__dict__["font"] = None
-            return
+    def font(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError("font must be a string")
         if self._char_style is not None:
             for idx, fo in enumerate(self._fonts):
                 if fo.post_script_name == value:
@@ -336,7 +332,7 @@ class TextDocument:
 
     @property
     def font_object(self) -> FontObject | None:
-        """The Text layer's [FontObject][]. Read / Write."""
+        """The Text layer's [FontObject][]. Read-only."""
         if "font_object" in self.__dict__:
             result: FontObject | None = self.__dict__["font_object"]
             return result
@@ -345,10 +341,6 @@ class TextDocument:
             if isinstance(font_idx, int) and 0 <= font_idx < len(self._fonts):
                 return self._fonts[font_idx]
         return None
-
-    @font_object.setter
-    def font_object(self, value: FontObject | None) -> None:
-        self.__dict__["font_object"] = value
 
     @property
     def fill_color(self) -> list[float] | None:
@@ -362,6 +354,13 @@ class TextDocument:
 
     @fill_color.setter
     def fill_color(self, value: list[float] | None) -> None:
+        if value is not None:
+            if (
+                not isinstance(value, list)
+                or len(value) != 3
+                or not all(isinstance(c, float) and 0 <= c <= 1.0 for c in value)
+            ):
+                raise ValueError("fill_color must be a list of three floats between 0.0 and 1.0")
         self.__dict__.pop("fill_color", None)
         if self._char_style is not None:
             if value is None:
@@ -384,6 +383,13 @@ class TextDocument:
 
     @stroke_color.setter
     def stroke_color(self, value: list[float] | None) -> None:
+        if value is not None:
+            if (
+                not isinstance(value, list)
+                or len(value) != 3
+                or not all(isinstance(c, float) and 0 <= c <= 1.0 for c in value)
+            ):
+                raise ValueError("stroke_color must be a list of three floats between 0.0 and 1.0")
         self.__dict__.pop("stroke_color", None)
         if self._char_style is not None:
             if value is None:
@@ -416,6 +422,8 @@ class TextDocument:
 
     @leading.setter
     def leading(self, value: float | None) -> None:
+        if value is not None and (not isinstance(value, (int, float)) or value < 0):
+            raise ValueError("leading must be a non-negative number")
         self.__dict__.pop("leading", None)
         if self._char_style is not None and value is not None:
             self._char_style["10"] = value
@@ -429,15 +437,10 @@ class TextDocument:
         if "paragraph_count" in self.__dict__:
             result: int | None = self.__dict__["paragraph_count"]
             return result
-        if self._doc is not None:
-            para_runs = self._doc.get("0", {}).get("5", {}).get("0")
-            if isinstance(para_runs, list):
-                return len(para_runs)
+        para_runs = self._doc.get("0", {}).get("5", {}).get("0")
+        if isinstance(para_runs, list):
+            return len(para_runs)
         return None
-
-    @paragraph_count.setter
-    def paragraph_count(self, value: int | None) -> None:
-        self.__dict__["paragraph_count"] = value
 
     @property
     def all_caps(self) -> bool | None:
@@ -494,7 +497,7 @@ class TextDocument:
             self._para_style["15"] = not value
             self._propagate_cos()
         else:
-            self.__dict__["every_line_composer"] = value
+            self.__dict__["every_line_composer"] = bool(value)
 
     @property
     def composer_engine(self) -> ComposerEngine | None:
@@ -511,11 +514,9 @@ class TextDocument:
     @property
     def box_text(self) -> bool | None:
         """`True` if this is a box (paragraph) text layer. Read-only."""
-        if self._doc is not None:
-            frame_data = self._doc.get("1", {})
-            # Box text has a "3" key with the bounding box coordinates
-            return "3" in frame_data
-        return None
+        frame_data = self._doc.get("1", {})
+        # Box text has a "3" key with the bounding box coordinates
+        return "3" in frame_data
 
     @property
     def point_text(self) -> bool | None:

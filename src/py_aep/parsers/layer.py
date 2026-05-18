@@ -3,8 +3,9 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING, Any, cast
 
+from ..binary.item_chunks import CmtaChunk
 from ..binary.layer_chunks import LdtaChunk
-from ..binary.scalar_chunks import CmtaChunk, Utf8Chunk
+from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,

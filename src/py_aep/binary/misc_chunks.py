@@ -59,6 +59,37 @@ class PrinChunk(Chunk):
 
 
 # ---------------------------------------------------------------------------
+# sfdt - subfolder data (4 bytes)
+# ---------------------------------------------------------------------------
+
+
+@register("sfdt")
+@define
+class SfdtChunk(Chunk):
+    """Subfolder data chunk."""
+
+    chunk_type: str = "sfdt"
+    value: int = u4_field(default=1)
+    _trailing: bytes = field(default=b"", repr=False)
+
+
+# ---------------------------------------------------------------------------
+# prda - renderer additional data (12 bytes)
+# ---------------------------------------------------------------------------
+
+
+@register("prda")
+@define
+class PrdaChunk(Chunk):
+    """Renderer additional data."""
+
+    chunk_type: str = "prda"
+    _flag: int = u4_field(default=1)
+    _reserved: bytes = bytes_field(8, repr=False)
+    _trailing: bytes = field(default=b"", repr=False)
+
+
+# ---------------------------------------------------------------------------
 # mkif - mask info (48 bytes)
 # ---------------------------------------------------------------------------
 

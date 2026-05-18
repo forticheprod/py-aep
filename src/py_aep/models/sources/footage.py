@@ -187,7 +187,7 @@ class FootageSource:
     set to 0, the `native_frame_rate` is used instead. Read / Write."""
 
     display_frame_rate = ComputedField[float](
-        "_sspc", compute=_compute_display_frame_rate
+        "_sspc", compute=_compute_display_frame_rate,
     )
     """The effective frame rate as displayed and rendered in compositions.
     If `remove_pulldown` is active, the rate is multiplied by 0.8.
@@ -247,7 +247,7 @@ class FootageSource:
     @preserve_rgb.setter
     def preserve_rgb(self, value: bool) -> None:
         if self._clrs is None:
-            raise AttributeError("Cannot set preserve_rgb: no CLRS container")
+            raise AttributeError("Cannot set preserve_rgb: no CLRS container. Update the value in After Effects then re-parse the project to modify this footage source.")
         toggle_flag_chunk(self._clrs, "prgb", bool(value))
 
     @property
