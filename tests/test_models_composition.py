@@ -646,11 +646,11 @@ class TestRoundtripFrameRate:
         project = parse_aep(SAMPLES_DIR / "frameRate.aep").project
         comp = get_comp(project, "frameRate_30")
 
-        comp.frame_rate = 60.0
-        out = tmp_path / "modified_fps60.aep"
+        comp.frame_rate = 29.97
+        out = tmp_path / "modified_fps29.97.aep"
         project.save(out)
         comp2 = get_comp(parse_aep(out).project, "frameRate_30")
-        assert math.isclose(comp2.frame_rate, 60.0, rel_tol=0.001)
+        assert math.isclose(comp2.frame_rate, 29.97, rel_tol=0.001)
 
     def test_frame_rate_validation_rejects_zero(self) -> None:
         comp = get_comp(parse_project(SAMPLES_DIR / "frameRate.aep"), "frameRate_30")
@@ -1531,7 +1531,7 @@ class TestRoundtripEssentialGraphics:
         comp = next(c for c in project.compositions if c.name == "primary")
         assert comp.motion_graphics_controllers[0].name == "Fill Color"
 
-        comp.set_motion_graphics_controller_name(0, "New Controller Name")
+        comp.motion_graphics_controllers[0].name = "New Controller Name"
         out = tmp_path / "modified.aep"
         project.save(out)
         comp2 = next(
@@ -1546,7 +1546,7 @@ class TestRoundtripEssentialGraphics:
         project = parse_aep(EG_SAMPLES_DIR / "multiple_controllers.aep").project
         comp = next(c for c in project.compositions if c.name == "primary")
 
-        comp.set_motion_graphics_controller_name(1, "Renamed Opacity")
+        comp.motion_graphics_controllers[1].name = "Renamed Opacity"
         out = tmp_path / "modified.aep"
         project.save(out)
         comp2 = next(

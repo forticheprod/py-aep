@@ -161,16 +161,16 @@ class LdtaChunk(Chunk):
 
     @property
     def stretch(self) -> float:
-        """Stretch percentage (dividend / divisor * 100). 100 = no stretch."""
+        """Stretch as percentage (100 = no stretch)."""
         if self.stretch_divisor == 0:
-            return 100.0
-        return self.stretch_dividend / self.stretch_divisor * 100.0
+            return 0.0
+        return self.stretch_dividend * 100.0 / self.stretch_divisor
 
     @stretch.setter
     def stretch(self, value: float) -> None:
-        self.stretch_dividend = round(value * self._TIME_DIVISOR)
-        self.stretch_divisor = self._TIME_DIVISOR * 100
-
-
-
-
+        if value == 0:
+            self.stretch_dividend = 0
+            self.stretch_divisor = 0
+        else:
+            self.stretch_dividend = round(value * self._TIME_DIVISOR / 100.0)
+            self.stretch_divisor = self._TIME_DIVISOR

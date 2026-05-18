@@ -79,11 +79,7 @@ def _compute_duration(body: SspcChunk) -> float:
     source_duration = body.duration_dividend / body.duration_divisor
     conform = _compute_conform_frame_rate(body)
     if conform != 0:
-        native = compute_fractional(
-            body,
-            "native_frame_rate_integer",
-            "native_frame_rate_fractional",
-        )
+        native = body.native_frame_rate
         conform_factor = native / conform
     else:
         conform_factor = 1.0
@@ -93,9 +89,6 @@ def _compute_duration(body: SspcChunk) -> float:
 def _compute_frame_duration(body: SspcChunk) -> int:
     return int(_compute_duration(body) * _compute_display_frame_rate(body))
 
-
-def _compute_pixel_aspect(body: SspcChunk) -> float:
-    return compute_ratio(body, "pixel_ratio_dividend", "pixel_ratio_divisor")
 
 
 class FootageSource:
@@ -212,7 +205,7 @@ class FootageSource:
     _height = ChunkField[int]("_sspc", "height", read_only=True)
     _duration = ComputedField[float]("_sspc", compute=_compute_duration)
     _frame_duration = ComputedField[int]("_sspc", compute=_compute_frame_duration)
-    _pixel_aspect = ComputedField[float]("_sspc", compute=_compute_pixel_aspect)
+    _pixel_aspect = ChunkField[float]("_sspc", "pixel_aspect", read_only=True)
     _footage_missing = ChunkField[bool](
         "_sspc",
         "footage_missing_at_save",

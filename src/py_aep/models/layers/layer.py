@@ -53,6 +53,7 @@ def _increment_name(name: str, existing_names: set[str]) -> str:
         candidate = f"{base}{num}"
     return candidate
 
+
 def _reverse_auto_orient(value: AutoOrientType, _body: LdtaChunk) -> dict[str, int]:
     """Decompose AutoOrientType into individual ldta bit flags."""
     return {
@@ -76,9 +77,6 @@ def _compute_auto_orient(body: LdtaChunk) -> AutoOrientType:
     if body.characters_toward_camera and body.three_d_per_char:
         return AutoOrientType.CHARACTERS_TOWARD_CAMERA
     return AutoOrientType.NO_AUTO_ORIENT
-
-
-
 
 
 class Layer(PropertyGroup):

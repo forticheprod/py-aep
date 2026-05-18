@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from .keyframe_ease import KeyframeEase
     from .property import Property
 
-    _ValueType = Union[
-        list[float], float, Gradient, MarkerValue, Shape, TextDocument, None
-    ]
+_ValueType = Union[
+    list[float], float, Gradient, MarkerValue, Shape, TextDocument, None
+]
 
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0
@@ -102,16 +102,7 @@ class Keyframe:
         self._in_temporal_ease: list[KeyframeEase] | None = None
         self._out_temporal_ease: list[KeyframeEase] | None = None
 
-        self._value: (
-            list[float]
-            | float
-            | Gradient
-            | MarkerValue
-            | Shape
-            | TextDocument
-            | None
-            | object
-        ) = _VALUE_FROM_CHUNK
+        self._value: _ValueType | object = _VALUE_FROM_CHUNK
 
     def _bind_property(self, prop: Property) -> None:
         """Set the owning property and propagate speed factor to ease."""
@@ -277,7 +268,7 @@ class Keyframe:
     @property
     def value(
         self,
-    ) -> list[float] | float | Gradient | MarkerValue | Shape | TextDocument | None:
+    ) -> _ValueType:
         """
         The value of the keyframe. For a 1D property (e.g. Opacity, Rotation),
         this is a single `float`. For a multi-dimensional property (e.g.
@@ -298,13 +289,7 @@ class Keyframe:
     @value.setter
     def value(
         self,
-        value: list[float]
-        | float
-        | Gradient
-        | MarkerValue
-        | Shape
-        | TextDocument
-        | None,
+        value: _ValueType,
     ) -> None:
         if not isinstance(
             value,

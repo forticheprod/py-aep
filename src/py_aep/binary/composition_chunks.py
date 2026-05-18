@@ -119,7 +119,79 @@ class CdtaChunk(Chunk):
     motion_blur = BitField("_comp_flags_1", 3)
     hide_shy_layers = BitField("_comp_flags_1", 0)
 
-    # -- Computed properties -----------------------------------------------
+    # -- Assembled properties ----------------------------------------------
+    # Combine raw integer+fractional or dividend/divisor pairs into floats.
+    # Used by model ChunkField descriptors for direct read/write.
+
+    _TIME_DIVISOR: int = 10000
+    _PIXEL_DIVISOR: int = 100000
+
+    @property
+    def frame_rate(self) -> float:
+        """Frame rate assembled from integer + fractional/65536."""
+        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
+
+    @frame_rate.setter
+    def frame_rate(self, value: float) -> None:
+        self.frame_rate_integer = int(value)
+        self.frame_rate_fractional = round((value - int(value)) * 65536)
+
+    @property
+    def time_scale(self) -> float:
+        """Time scale assembled from integer + fractional/256."""
+        return self.time_scale_integer + self.time_scale_fractional / 256.0
+
+    @property
+    def pixel_aspect(self) -> float:
+        """Pixel aspect ratio from dividend/divisor."""
+        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
+
+    @pixel_aspect.setter
+    def pixel_aspect(self, value: float) -> None:
+        self.pixel_ratio_dividend = round(value * self._PIXEL_DIVISOR)
+        self.pixel_ratio_divisor = self._PIXEL_DIVISOR
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds from dividend/divisor."""
+        return self.duration_dividend / self.duration_divisor
+
+    @duration.setter
+    def duration(self, value: float) -> None:
+        self.duration_dividend = round(value * self._TIME_DIVISOR)
+        self.duration_divisor = self._TIME_DIVISOR
+
+    @property
+    def display_start_time(self) -> float:
+        """Display start time in seconds from dividend/divisor."""
+        return self.display_start_time_dividend / self.display_start_time_divisor
+
+    @display_start_time.setter
+    def display_start_time(self, value: float) -> None:
+        self.display_start_time_dividend = round(value * self._TIME_DIVISOR)
+        self.display_start_time_divisor = self._TIME_DIVISOR
+
+    @property
+    def work_area_start(self) -> float:
+        """Work area start in seconds from dividend/divisor."""
+        return self.work_area_start_dividend / self.work_area_start_divisor
+
+    @work_area_start.setter
+    def work_area_start(self, value: float) -> None:
+        self.work_area_start_dividend = round(value * self._TIME_DIVISOR)
+        self.work_area_start_divisor = self._TIME_DIVISOR
+
+    @property
+    def time_seconds(self) -> float:
+        """Current time in seconds from dividend/divisor."""
+        return self.time_dividend / self.time_divisor
+
+    @time_seconds.setter
+    def time_seconds(self, value: float) -> None:
+        self.time_dividend = round(value * self._TIME_DIVISOR)
+        self.time_divisor = self._TIME_DIVISOR
+
+    # -- Derived properties (depend on assembled properties above) ---------
 
     _TIME_DIVISOR = 10000
     _PIXEL_DIVISOR = 100000
@@ -192,28 +264,19 @@ class CdtaChunk(Chunk):
     @property
     def work_area_end_absolute(self) -> float:
         """Absolute work area end in seconds."""
-        display_start_time = (
-            self.display_start_time_dividend / self.display_start_time_divisor
-        )
         if self.work_area_end_dividend == 0xFFFFFFFF:
-            duration = self.duration_dividend / self.duration_divisor
-            return display_start_time + duration
+            return self.display_start_time + self.duration
         return (
-            display_start_time
+            self.display_start_time
             + self.work_area_end_dividend / self.work_area_end_divisor
         )
 
     @property
     def frame_work_area_end_absolute(self) -> float:
         """Absolute work area end in frames."""
-        frame_rate = self.frame_rate_integer + self.frame_rate_fractional / 65536.0
         if self.work_area_end_dividend == 0xFFFFFFFF:
-            display_start_time = (
-                self.display_start_time_dividend / self.display_start_time_divisor
-            )
-            duration = self.duration_dividend / self.duration_divisor
-            return (display_start_time + duration) * frame_rate
-        return self.work_area_end_absolute * frame_rate
+            return (self.display_start_time + self.duration) * self.frame_rate
+        return self.work_area_end_absolute * self.frame_rate
 
 
 # ---------------------------------------------------------------------------

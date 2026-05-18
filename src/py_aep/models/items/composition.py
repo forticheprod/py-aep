@@ -22,18 +22,11 @@ from ..layers.light_layer import LightLayer
 from ..layers.shape_layer import ShapeLayer
 from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
-from ..reverses import (
-    denormalize_values,
-    reverse_frame_ticks,
-    unpack_values,
-)
+from ..reverses import denormalize_values, reverse_frame_ticks, unpack_values
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
-from ..transforms import (
-    normalize_values,
-    pack_values,
-)
+from ..transforms import normalize_values, pack_values
 from ..validators import (
     validate_number,
     validate_sequence,
@@ -284,14 +277,10 @@ class CompItem(AVItem):
     Samples Per Frame setting in the Advanced tab of the Composition
     Settings dialog box. Read / Write."""
 
-    frame_rate = ChunkField[float](
-        "_cdta", "frame_rate", validate=validate_number(min=1.0, max=999.0)
-    )
+    frame_rate = ChunkField[float]("_cdta", "frame_rate", validate=_validate_frame_rate)
     """The frame rate of the item in frames-per-second. Read / Write."""
 
-    duration = ChunkField[float](
-        "_cdta", "duration", validate=validate_number(min=0.0, max=10800.0)
-    )
+    duration = ChunkField[float]("_cdta", "duration", validate=_validate_duration)
     """The duration of the item in seconds. Read / Write."""
 
     frame_duration = ComputedField[int](
@@ -306,18 +295,14 @@ class CompItem(AVItem):
     )
     """The duration of the item in frames. Read / Write."""
 
-    pixel_aspect = ChunkField[float](
-        "_cdta", "pixel_aspect", validate=validate_number(min=0.01, max=100.0)
-    )
+    pixel_aspect = ChunkField[float]("_cdta", "pixel_aspect", validate=_validate_pixel_aspect)
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
 
     time_scale = ChunkField[float]("_cdta", "time_scale", read_only=True)
     """The time scale, used as a divisor for keyframe time values. Read-only."""
 
     display_start_time = ChunkField[float](
-        "_cdta",
-        "display_start_time",
-        validate=validate_number(min=-10800.0, max=86339.0),
+        "_cdta", "display_start_time", validate=validate_number(min=-10800.0, max=86339.0)
     )
     """The time set as the beginning of the composition, in seconds. This
     is the equivalent of the Start Timecode or Start Frame setting in the
