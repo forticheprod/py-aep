@@ -7,6 +7,7 @@ Integer and float chunks use `fmt_field()` to declare their binary format
 inline - the generic `Chunk.read()` / `write()` handles I/O.
 String chunks keep a custom `read()` / `write()` (they use encoding, not struct).
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -52,8 +53,17 @@ class _StringChunkBase(Chunk):
 
 
 @register(
-    "efdc", "acer", "cdrp", "foac", "fiac", "fiop", "ipws",
-    "linl", "lnrb", "lnrp", "prgb",
+    "efdc",
+    "acer",
+    "cdrp",
+    "foac",
+    "fiac",
+    "fiop",
+    "ipws",
+    "linl",
+    "lnrb",
+    "lnrp",
+    "prgb",
 )
 @define
 class U1Chunk(Chunk):
@@ -73,9 +83,20 @@ class U2Chunk(Chunk):
 
 
 @register(
-    "CapL", "CcCt", "CCId", "CLId", "CprC", "CTyp", "StVS",
-    "parn", "fovi", "fivi", "fcid",
-    "fvdv", "ftts", "fifl",
+    "CapL",
+    "CcCt",
+    "CCId",
+    "CLId",
+    "CprC",
+    "CTyp",
+    "StVS",
+    "parn",
+    "fovi",
+    "fivi",
+    "fcid",
+    "fvdv",
+    "ftts",
+    "fifl",
 )
 @define
 class U4Chunk(Chunk):

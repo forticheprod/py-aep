@@ -4,6 +4,7 @@ RouuChunk exposes output module settings fields as `fmt_field()`.
 RoptChunk uses variant subclass dispatch by format_code.
 RoutChunk uses `items_field()` for repeating render-flag entries.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -55,7 +56,9 @@ class RouuChunk(Chunk):
     starting_number: int = u4_field()
     """Starting frame number for image sequence output."""
 
-    _reserved_14: bytes = bytes_field(6, default=b"\xff\xff\xff\xff\x01\x00", repr=False)
+    _reserved_14: bytes = bytes_field(
+        6, default=b"\xff\xff\xff\xff\x01\x00", repr=False
+    )
     format_id: str = ascii_field(4, default="\x00" * 4)
     """Output format 4-char identifier (e.g. '.AVI', 'H264', 'png!')."""
 
@@ -68,7 +71,11 @@ class RouuChunk(Chunk):
     height: int = u2_field()
     """Output height (0 when video disabled)."""
 
-    _reserved_2a: bytes = bytes_field(25, default=b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00", repr=False)
+    _reserved_2a: bytes = bytes_field(
+        25,
+        default=b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+        repr=False,
+    )
     frame_rate: int = u1_field()
     _reserved_44: bytes = bytes_field(3, repr=False)
     depth: int = u1_field()
@@ -78,7 +85,9 @@ class RouuChunk(Chunk):
     color_premultiplied: int = u1_field(default=1)
     _reserved_4e: bytes = bytes_field(3, repr=False)
     color_matted: int = u1_field(default=1)
-    _reserved_52: bytes = bytes_field(18, default=b"FIEL\x00\x01" + b"\x00" * 12, repr=False)
+    _reserved_52: bytes = bytes_field(
+        18, default=b"FIEL\x00\x01" + b"\x00" * 12, repr=False
+    )
     audio_sample_rate: float = f8_field()
     """Audio sample rate in Hz (e.g. 44100.0, 48000.0)."""
 

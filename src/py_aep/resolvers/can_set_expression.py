@@ -30,16 +30,20 @@ if TYPE_CHECKING:
 
 # PVT sets where can_set_expression is always True / False regardless
 # of other signals.
-_PVT_ALWAYS_TRUE: frozenset[int] = frozenset({
-    PropertyValueType.TEXT_DOCUMENT,
-    PropertyValueType.SHAPE,
-})
-_PVT_ALWAYS_FALSE: frozenset[int] = frozenset({
-    PropertyValueType.NO_VALUE,
-    PropertyValueType.MARKER,
-    PropertyValueType.LAYER_INDEX,
-    PropertyValueType.CUSTOM_VALUE,
-})
+_PVT_ALWAYS_TRUE: frozenset[int] = frozenset(
+    {
+        PropertyValueType.TEXT_DOCUMENT,
+        PropertyValueType.SHAPE,
+    }
+)
+_PVT_ALWAYS_FALSE: frozenset[int] = frozenset(
+    {
+        PropertyValueType.NO_VALUE,
+        PropertyValueType.MARKER,
+        PropertyValueType.LAYER_INDEX,
+        PropertyValueType.CUSTOM_VALUE,
+    }
+)
 
 # Effect properties matching one of these (control_type, vector, spatial,
 # integer) tuples are non-expressionable unless explicitly listed in
@@ -49,13 +53,15 @@ _PVT_ALWAYS_FALSE: frozenset[int] = frozenset({
 # combinations correspond to UI controls (integer sliders, boolean
 # toggles, color pickers, 2D/3D point controls) that AE does not allow
 # expressions on.
-_EFFECT_NON_EXPRESSIONABLE: frozenset[tuple[int, bool, bool, bool]] = frozenset({
-    (PropertyControlType.SCALAR, False, False, True),   # integer sliders
-    (PropertyControlType.BOOLEAN, False, False, True),  # boolean toggles
-    (PropertyControlType.COLOR, False, False, False),   # color pickers
-    (PropertyControlType.TWO_D, False, True, True),     # integer 2D points
-    (PropertyControlType.THREE_D, True, True, False),   # 3D position controls
-})
+_EFFECT_NON_EXPRESSIONABLE: frozenset[tuple[int, bool, bool, bool]] = frozenset(
+    {
+        (PropertyControlType.SCALAR, False, False, True),  # integer sliders
+        (PropertyControlType.BOOLEAN, False, False, True),  # boolean toggles
+        (PropertyControlType.COLOR, False, False, False),  # color pickers
+        (PropertyControlType.TWO_D, False, True, True),  # integer 2D points
+        (PropertyControlType.THREE_D, True, True, False),  # 3D position controls
+    }
+)
 
 
 def resolve_can_set_expression(prop: Property) -> bool:

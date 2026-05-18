@@ -158,7 +158,9 @@ class FolderItem(Item):
         _validate_name(name, None)
 
         folder = FolderItem._new(
-            name, project=self._project, parent_folder=self,
+            name,
+            project=self._project,
+            parent_folder=self,
         )
 
         # Insert into parent container
@@ -197,8 +199,14 @@ class FolderItem(Item):
         _validate_name(name, None)
 
         comp = CompItem._new(
-            name, width, height, pixel_aspect, duration, frame_rate,
-            project=self._project, parent_folder=self,
+            name,
+            width,
+            height,
+            pixel_aspect,
+            duration,
+            frame_rate,
+            project=self._project,
+            parent_folder=self,
         )
 
         # Insert into parent container with required view data chunks

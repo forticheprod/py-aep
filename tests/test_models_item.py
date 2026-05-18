@@ -82,7 +82,8 @@ class TestProxySource:
         cls: type,
     ) -> CompItem | FootageItem:
         return next(
-            i for i in project.items.values()
+            i
+            for i in project.items.values()
             if getattr(i, "name", "") == name and isinstance(i, cls)
         )
 
@@ -128,8 +129,8 @@ class TestProxySource:
 
         project2 = parse_aep(out).project
         item2 = next(
-            i for i in project2.items.values()
-            if getattr(i, "name", "") == "proxy_enabled"
-            and isinstance(i, FootageItem)
+            i
+            for i in project2.items.values()
+            if getattr(i, "name", "") == "proxy_enabled" and isinstance(i, FootageItem)
         )
         assert item2.use_proxy is False

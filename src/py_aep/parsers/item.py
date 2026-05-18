@@ -44,7 +44,9 @@ def parse_item(
     idta = cast("IdtaChunk", find_by_type(chunks=child_chunks, chunk_type="idta"))
     name_utf8 = cast("Utf8Chunk", find_by_type(chunks=child_chunks, chunk_type="Utf8"))
     try:
-        cmta: CmtaChunk | None = cast("CmtaChunk", find_by_type(chunks=child_chunks, chunk_type="cmta"))
+        cmta: CmtaChunk | None = cast(
+            "CmtaChunk", find_by_type(chunks=child_chunks, chunk_type="cmta")
+        )
     except ChunkNotFoundError:
         cmta = None
 

@@ -38,8 +38,13 @@ if TYPE_CHECKING:
     from .specs import _PropSpec
 
     _ValueType = Union[
-        list[float], float, int,
-        Gradient, MarkerValue, Shape, TextDocument,
+        list[float],
+        float,
+        int,
+        Gradient,
+        MarkerValue,
+        Shape,
+        TextDocument,
         None,
     ]
 
@@ -290,9 +295,7 @@ class Property(PropertyBase):
         )
 
         display = spec.auto_name or _TDSN_SENTINEL
-        name_utf8 = Utf8Chunk(
-            chunk_type="Utf8", value=display, synthetic=synthetic
-        )
+        name_utf8 = Utf8Chunk(chunk_type="Utf8", value=display, synthetic=synthetic)
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
         )
@@ -413,7 +416,7 @@ class Property(PropertyBase):
 
         self._property_value_type = property_value_type
 
-        self._value: Any = value
+        self._value: _ValueType = value
 
         self._units_text = units_text
 
@@ -505,7 +508,7 @@ class Property(PropertyBase):
             return values[0]
         return values
 
-    def _resolve_value(self, raw: Any) -> Any:
+    def _resolve_value(self, raw: list[float] | float | int | None) -> _ValueType:
         """Forward-transform a raw binary value to user-facing units.
 
         Applied in order: percent scaling, color conversion, effect point
@@ -538,7 +541,7 @@ class Property(PropertyBase):
                 raw = [v * s for v, s in zip(raw, self._effect_scale)]
         return raw
 
-    def _unresolve_value(self, value: Any) -> Any:
+    def _unresolve_value(self, value: _ValueType) -> _ValueType:
         """Reverse-transform a user-facing value to raw binary units.
 
         Applied in reverse order: effect point normalization, color
@@ -584,11 +587,11 @@ class Property(PropertyBase):
         if isinstance(raw_value, list):
             raw[: len(raw_value)] = raw_value
         else:
-            raw[0] = raw_value
+            raw[0] = raw_value  # type: ignore[assignment]
         self._cdat.values = raw
 
     @property
-    def value(self) -> Any:
+    def value(self) -> _ValueType:
         """
         The value of the named property at the current time. If
         `expression_enabled` is `True`, returns the evaluated expression
@@ -613,7 +616,7 @@ class Property(PropertyBase):
         return None
 
     @value.setter
-    def value(self, value: Any) -> None:
+    def value(self, value: _ValueType) -> None:
         _validate_value(self, value)
         self._ensure_materialized()
         self._write_cdat(value)
@@ -1000,7 +1003,7 @@ class Property(PropertyBase):
 
     def value_at_time(
         self, time: float, pre_expression: bool = True
-    ) -> list[float] | float | MarkerValue | Shape | TextDocument | None:
+    ) -> _ValueType:
         """Get the value of the named property at the given time.
 
         If the property has keyframes, the value is computed by
@@ -1026,7 +1029,7 @@ class Property(PropertyBase):
                 "Expression evaluation is not supported by the parser."
             )
         if not self.keyframes:
-            return self.value  # type: ignore[no-any-return]
+            return self.value
 
         return interpolate_keyframes(time, self.keyframes, self.is_spatial)
 
@@ -1095,7 +1098,9 @@ class Property(PropertyBase):
 
     @_effect_scale.setter
     def _effect_scale(self, value: list[float] | None) -> None:
-        if value is not None and (not isinstance(value, (list, tuple)) or len(value) < 2):
+        if value is not None and (
+            not isinstance(value, (list, tuple)) or len(value) < 2
+        ):
             raise ValueError("_effect_scale must be a list of at least 2 floats")
         self.__dict__["_effect_scale"] = value
 

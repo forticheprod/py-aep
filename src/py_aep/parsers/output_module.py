@@ -55,8 +55,12 @@ def parse_output_module(
     # name template. Files without hdrm (pre-2024) have no Utf8 before Als2.
     try:
         als2_chunk = find_by_list_type(chunks=chunks, list_type="Als2")
-        alas_utf8 = cast("Utf8Chunk", find_by_type(chunks=als2_chunk.chunks, chunk_type="alas"))
-        post_als2_utf8 = cast("list[Utf8Chunk]", find_chunks_after(chunks, "Utf8", "LIST:Als2"))
+        alas_utf8 = cast(
+            "Utf8Chunk", find_by_type(chunks=als2_chunk.chunks, chunk_type="alas")
+        )
+        post_als2_utf8 = cast(
+            "list[Utf8Chunk]", find_chunks_after(chunks, "Utf8", "LIST:Als2")
+        )
         name_utf8 = post_als2_utf8[0]
         file_name_utf8 = post_als2_utf8[1]
     except ChunkNotFoundError:

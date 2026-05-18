@@ -4,6 +4,7 @@ All functions default to big-endian because AEP files are always RIFX.
 The `endian` parameter on `read_fmt` / `write_fmt` exists for typed chunks
 that have little-endian fields.
 """
+
 from __future__ import annotations
 
 import struct
@@ -36,9 +37,7 @@ def read_fmt(fmt: str, fp: IO[bytes], endian: str = ">") -> tuple[Any, ...]:
     s = _get_struct(endian + fmt)
     data = fp.read(s.size)
     if len(data) < s.size:
-        raise OSError(
-            f"Short read: expected {s.size} bytes, got {len(data)}"
-        )
+        raise OSError(f"Short read: expected {s.size} bytes, got {len(data)}")
     return s.unpack(data)
 
 
@@ -60,9 +59,7 @@ def read_bytes(fp: IO[bytes], size: int) -> bytes:
     """
     data = fp.read(size)
     if len(data) < size:
-        raise OSError(
-            f"Short read: expected {size} bytes, got {len(data)}"
-        )
+        raise OSError(f"Short read: expected {size} bytes, got {len(data)}")
     return data
 
 

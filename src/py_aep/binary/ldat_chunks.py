@@ -1,4 +1,5 @@
 """Keyframe system chunks (lhd3, ldat) and their item types."""
+
 from __future__ import annotations
 
 import enum
@@ -88,9 +89,12 @@ _NUM_VALUE: dict[int, int] = {
 @define
 class Lhd3Chunk(Chunk):
     """Keyframe list header. Stores item count, size, and raw type."""
+
     chunk_type: str = "lhd3"
 
-    _prefix: bytes = bytes_field(10, default=b"\x00\xd0\x0b\xee\x00\x00\x00\x00\x00\x00", repr=False)
+    _prefix: bytes = bytes_field(
+        10, default=b"\x00\xd0\x0b\xee\x00\x00\x00\x00\x00\x00", repr=False
+    )
     count: int = u2_field()
     _gap: bytes = bytes_field(6, default=b"\x00\x00\x00\x01\x00\x00", repr=False)
     item_size: int = u2_field()
@@ -134,6 +138,7 @@ class GuideItem(FmtItem):
 @define
 class GdtaChunk(Chunk):
     """Guide container data chunk (8 bytes, all zeros)."""
+
     chunk_type: str = "gdta"
     data: bytes = b"\x00\x00\x00\x00\x00\x00\x00\x00"
 
@@ -198,9 +203,7 @@ class KfMultiDimensional:
     out_influence: list[float] = Factory(list)
 
     @classmethod
-    def frombytes(
-        cls, data: bytes, *, num_value: int
-    ) -> KfMultiDimensional:
+    def frombytes(cls, data: bytes, *, num_value: int) -> KfMultiDimensional:
         count = 5 * num_value
         vals = struct.unpack(">" + "d" * count, data[: count * 8])
         n = num_value
@@ -249,9 +252,7 @@ class KfPosition:
         pad2 = data[4:8]
         # 5 fixed doubles + 3*num_value array doubles
         total_doubles = 5 + 3 * num_value
-        vals = struct.unpack(
-            ">" + "d" * total_doubles, data[8 : 8 + total_doubles * 8]
-        )
+        vals = struct.unpack(">" + "d" * total_doubles, data[8 : 8 + total_doubles * 8])
         return cls(
             pad1=pad1,
             spatial_flags=flags,
@@ -262,22 +263,23 @@ class KfPosition:
             out_speed=vals[3],
             out_influence=vals[4],
             value=list(vals[5 : 5 + num_value]),
-            in_spatial_tangents=list(
-                vals[5 + num_value : 5 + 2 * num_value]
-            ),
-            out_spatial_tangents=list(
-                vals[5 + 2 * num_value : 5 + 3 * num_value]
-            ),
+            in_spatial_tangents=list(vals[5 + num_value : 5 + 2 * num_value]),
+            out_spatial_tangents=list(vals[5 + 2 * num_value : 5 + 3 * num_value]),
         )
 
     def tobytes(self) -> bytes:
-        all_vals = [
-            self._unknown_header,
-            self.in_speed,
-            self.in_influence,
-            self.out_speed,
-            self.out_influence,
-        ] + self.value + self.in_spatial_tangents + self.out_spatial_tangents
+        all_vals = (
+            [
+                self._unknown_header,
+                self.in_speed,
+                self.in_influence,
+                self.out_speed,
+                self.out_influence,
+            ]
+            + self.value
+            + self.in_spatial_tangents
+            + self.out_spatial_tangents
+        )
         return (
             self._pad1
             + struct.pack(">B", self._spatial_flags)
@@ -310,9 +312,7 @@ class LdatItem:
     temporal_continuous = BitField("_temporal_flags", 3)
 
     @classmethod
-    def frombytes(
-        cls, data: bytes, *, item_type: LdatItemType
-    ) -> LdatItem:
+    def frombytes(cls, data: bytes, *, item_type: LdatItemType) -> LdatItem:
         # 8-byte header
         pad1 = data[0:1]
         time_raw = struct.unpack(">h", data[1:3])[0]
@@ -344,9 +344,7 @@ class LdatItem:
             trailing = payload[expected:]
         elif num_value is not None:
             # three_d, two_d, one_d, orientation
-            kf_data = KfMultiDimensional.frombytes(
-                payload, num_value=num_value
-            )
+            kf_data = KfMultiDimensional.frombytes(payload, num_value=num_value)
             expected = 5 * num_value * 8
             trailing = payload[expected:]
         else:

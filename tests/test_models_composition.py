@@ -1455,7 +1455,7 @@ class TestEssentialGraphics:
         comp = next(c for c in project.compositions if c.name == "primary")
         assert comp.motion_graphics_template_name == "Untitled"
         assert comp.motion_graphics_template_controller_count == 1
-        assert comp.get_motion_graphics_template_controller_name(0) == "Fill Color"
+        assert comp.motion_graphics_controllers[0].name == "Fill Color"
         assert comp.motion_graphics_template_controller_names == ["Fill Color"]
 
     def test_custom_template_name(self) -> None:
@@ -1476,7 +1476,7 @@ class TestEssentialGraphics:
     def test_controller_renamed(self) -> None:
         project = parse_project(EG_SAMPLES_DIR / "controller_renamed.aep")
         comp = next(c for c in project.compositions if c.name == "primary")
-        assert comp.get_motion_graphics_template_controller_name(0) == "Renamed Color"
+        assert comp.motion_graphics_controllers[0].name == "Renamed Color"
 
     def test_no_essential_properties(self) -> None:
         project = parse_project(EG_SAMPLES_DIR / "no_essential_properties.aep")
@@ -1529,7 +1529,7 @@ class TestRoundtripEssentialGraphics:
     def test_rename_controller(self, tmp_path: Path) -> None:
         project = parse_aep(EG_SAMPLES_DIR / "fill_color_added.aep").project
         comp = next(c for c in project.compositions if c.name == "primary")
-        assert comp.get_motion_graphics_template_controller_name(0) == "Fill Color"
+        assert comp.motion_graphics_controllers[0].name == "Fill Color"
 
         comp.set_motion_graphics_controller_name(0, "New Controller Name")
         out = tmp_path / "modified.aep"
@@ -1538,7 +1538,7 @@ class TestRoundtripEssentialGraphics:
             c for c in parse_aep(out).project.compositions if c.name == "primary"
         )
         assert (
-            comp2.get_motion_graphics_template_controller_name(0)
+            comp2.motion_graphics_controllers[0].name
             == "New Controller Name"
         )
 
@@ -1552,12 +1552,12 @@ class TestRoundtripEssentialGraphics:
         comp2 = next(
             c for c in parse_aep(out).project.compositions if c.name == "primary"
         )
-        assert comp2.get_motion_graphics_template_controller_name(0) == "Brightness"
+        assert comp2.motion_graphics_controllers[0].name == "Brightness"
         assert (
-            comp2.get_motion_graphics_template_controller_name(1) == "Renamed Opacity"
+            comp2.motion_graphics_controllers[1].name == "Renamed Opacity"
         )
         assert (
-            comp2.get_motion_graphics_template_controller_name(2) == "Background Color"
+            comp2.motion_graphics_controllers[2].name == "Background Color"
         )
 
     def test_create_template_name(self, tmp_path: Path) -> None:

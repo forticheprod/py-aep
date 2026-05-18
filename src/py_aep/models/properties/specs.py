@@ -2318,7 +2318,9 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _PropSpec("ADBE Marker", "Marker", None, PropertyValueType.MARKER, dimensions=0),
     _GroupSpec("ADBE Text Properties", "Text"),
     _GroupSpec("ADBE Root Vectors Group", "Contents"),
-    _PropSpec("ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD, min_value=0),
+    _PropSpec(
+        "ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD, min_value=0
+    ),
     _GroupSpec("ADBE MTrackers", "Motion Trackers"),
     _GroupSpec("ADBE Mask Parade", "Masks"),
     _GroupSpec("ADBE Effect Parade", "Effects"),

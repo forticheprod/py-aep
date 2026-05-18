@@ -399,10 +399,14 @@ def parse_effect(
         composition: The parent composition.
     """
     sspc_child_chunks = sspc_chunk.chunks
-    fnam_chunk = cast("ContainerChunk", find_by_type(chunks=sspc_child_chunks, chunk_type="fnam"))
+    fnam_chunk = cast(
+        "ContainerChunk", find_by_type(chunks=sspc_child_chunks, chunk_type="fnam")
+    )
 
     # fnam is a ContainerChunk with a Utf8 child
-    fnam_utf8 = cast("Utf8Chunk", find_by_type(chunks=fnam_chunk.chunks, chunk_type="Utf8"))
+    fnam_utf8 = cast(
+        "Utf8Chunk", find_by_type(chunks=fnam_chunk.chunks, chunk_type="Utf8")
+    )
     tdgp_chunk = find_by_list_type(chunks=sspc_child_chunks, list_type="tdgp")
 
     try:
@@ -421,13 +425,17 @@ def parse_effect(
     if param_defs and group_match_name not in effect_param_defs:
         effect_param_defs[group_match_name] = param_defs
     # Resolve _name_utf8 from the effect tdgp's tdsn child
-    tdsn = cast("ContainerChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn"))
-    effect_name_utf8 = cast("Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8"))
+    tdsn = cast(
+        "ContainerChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn")
+    )
+    effect_name_utf8 = cast(
+        "Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8")
+    )
 
     try:
-        effect_tdsb = cast("TdsbChunk", find_by_type(
-            chunks=tdgp_chunk.chunks, chunk_type="tdsb"
-        ))
+        effect_tdsb = cast(
+            "TdsbChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsb")
+        )
     except ChunkNotFoundError:
         effect_tdsb = None
 
@@ -452,16 +460,14 @@ def parse_effect(
         parent_property=effect_group,
         group_match_name=group_match_name,
     )
-    effect_group.properties = properties
+    effect_group._properties = properties
     for child in properties:
         child._parent_property = effect_group
 
     return effect_group
 
 
-_PARD_EXTRACTORS: dict[
-    PropertyControlType, Callable[[Any, dict[str, Any]], None]
-] = {}
+_PARD_EXTRACTORS: dict[PropertyControlType, Callable[[Any, dict[str, Any]], None]] = {}
 
 
 def _pard_extractor(
@@ -574,7 +580,9 @@ def _extract_no_value(body: Any, result: dict[str, Any]) -> None:
 
 def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]:
     """Parse effect parameter definition from pard chunk, returning a dict of values."""
-    pard_chunk = cast("PardChunk", find_by_type(chunks=parameter_chunks, chunk_type="pard"))
+    pard_chunk = cast(
+        "PardChunk", find_by_type(chunks=parameter_chunks, chunk_type="pard")
+    )
 
     control_type = PropertyControlType(pard_chunk.property_control_type)
 
@@ -588,9 +596,13 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
         extractor(pard_chunk, result)
 
     try:
-        pdnm_chunk = cast("ContainerChunk", find_by_type(chunks=parameter_chunks, chunk_type="pdnm"))
+        pdnm_chunk = cast(
+            "ContainerChunk", find_by_type(chunks=parameter_chunks, chunk_type="pdnm")
+        )
         # pdnm is a ContainerChunk with a Utf8 child
-        utf8_chunk = cast("Utf8Chunk", find_by_type(chunks=pdnm_chunk.chunks, chunk_type="Utf8"))
+        utf8_chunk = cast(
+            "Utf8Chunk", find_by_type(chunks=pdnm_chunk.chunks, chunk_type="Utf8")
+        )
         pdnm_data = utf8_chunk.value
         if control_type == PropertyControlType.ENUM:
             result["property_parameters"] = pdnm_data.split("|")

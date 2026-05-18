@@ -80,7 +80,9 @@ def parse_orientation(
     # cdat is parameterized with is_le; .value returns the correctly-
     # endian doubles regardless of context.
     try:
-        cdat = cast("CdatChunk", find_by_type(chunks=tdbs_chunk.chunks, chunk_type="cdat"))
+        cdat = cast(
+            "CdatChunk", find_by_type(chunks=tdbs_chunk.chunks, chunk_type="cdat")
+        )
         values = list(cdat.values)
         while len(values) < 3:
             values.append(0.0)
@@ -95,7 +97,10 @@ def parse_orientation(
     # otda data.
     try:
         otky_chunk = find_by_list_type(chunks=otst_chunk.chunks, list_type="otky")
-        otda_chunks = cast("list[OtdaChunk]", filter_by_type(chunks=otky_chunk.chunks, chunk_type="otda"))
+        otda_chunks = cast(
+            "list[OtdaChunk]",
+            filter_by_type(chunks=otky_chunk.chunks, chunk_type="otda"),
+        )
         for idx, kf in enumerate(prop.keyframes):
             if idx < len(otda_chunks):
                 kf.value = list(otda_chunks[idx].values)
@@ -135,7 +140,9 @@ def _parse_shape_shap(
     Returns:
         A [Shape][] with absolute coordinates and tangent offsets.
     """
-    shph_chunk = cast("ShphChunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="shph"))
+    shph_chunk = cast(
+        "ShphChunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="shph")
+    )
     list_chunk = find_by_list_type(chunks=shap_chunk.chunks, list_type="list")
 
     ldat = cast("LdatChunk", find_by_type(chunks=list_chunk.chunks, chunk_type="ldat"))
@@ -143,7 +150,9 @@ def _parse_shape_shap(
 
     # Extract variable-width mask feather data from fth5 chunk (if present).
     try:
-        fth5 = cast("Fth5Chunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="fth5"))
+        fth5 = cast(
+            "Fth5Chunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="fth5")
+        )
         feather_points = [FeatherPoint(_fp=pt) for pt in fth5.points]
     except ChunkNotFoundError:
         feather_points = []

@@ -4,6 +4,9 @@ from typing import TYPE_CHECKING, Any
 
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyType
+from py_aep.resolvers.can_add_property import (
+    can_add_property as _can_add_property,
+)
 
 from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.property_chunks import TdmnChunk, TdsbChunk
@@ -23,57 +26,6 @@ if TYPE_CHECKING:
     from typing import Literal
 
     from .specs import _PropSpec
-
-
-# Match names that can be added to specific indexed groups via add_property().
-_ADDABLE_MASK_MATCH_NAMES: frozenset[str] = frozenset({"ADBE Mask Atom"})
-
-_ADDABLE_TEXT_ANIMATOR_MATCH_NAMES: frozenset[str] = frozenset({"ADBE Text Animator"})
-
-# Shape elements that can be added to a Root Vectors Group (Contents).
-_ADDABLE_SHAPE_MATCH_NAMES: frozenset[str] = frozenset(
-    {
-        "ADBE Vector Group",
-        "ADBE Vector Shape - Rect",
-        "ADBE Vector Shape - Ellipse",
-        "ADBE Vector Shape - Star",
-        "ADBE Vector Shape - Group",
-        "ADBE Vector Graphic - Fill",
-        "ADBE Vector Graphic - Stroke",
-        "ADBE Vector Graphic - G-Fill",
-        "ADBE Vector Graphic - G-Stroke",
-        "ADBE Vector Filter - Merge",
-        "ADBE Vector Filter - Offset",
-        "ADBE Vector Filter - PB",
-        "ADBE Vector Filter - Repeater",
-        "ADBE Vector Filter - RC",
-        "ADBE Vector Filter - Trim",
-        "ADBE Vector Filter - Twist",
-        "ADBE Vector Filter - Roughen",
-        "ADBE Vector Filter - Wiggler",
-        "ADBE Vector Filter - Zigzag",
-    }
-)
-
-# Reverse lookup: display name -> match name for addable items.
-_ADDABLE_DISPLAY_TO_MATCH: dict[str, str] = {}
-for _mn in (
-    _ADDABLE_MASK_MATCH_NAMES
-    | _ADDABLE_TEXT_ANIMATOR_MATCH_NAMES
-    | _ADDABLE_SHAPE_MATCH_NAMES
-):
-    _auto = MATCH_NAME_TO_AUTO_NAME.get(_mn)
-    if _auto is not None:
-        _ADDABLE_DISPLAY_TO_MATCH[_auto] = _mn
-del _mn, _auto
-
-# Per-group addable sets, keyed by parent match name.
-_ADDABLE_BY_GROUP: dict[str, frozenset[str]] = {
-    "ADBE Mask Parade": _ADDABLE_MASK_MATCH_NAMES,
-    "ADBE Effect Mask Parade": _ADDABLE_MASK_MATCH_NAMES,
-    "ADBE Text Animators": _ADDABLE_TEXT_ANIMATOR_MATCH_NAMES,
-    "ADBE Root Vectors Group": _ADDABLE_SHAPE_MATCH_NAMES,
-}
 
 
 def _reorder_and_fill(
@@ -166,7 +118,9 @@ def _reorder_and_fill(
                 if tail_mode == "all" or isinstance(child, PropertyGroup):
                     ordered.append(child)
 
-    container.properties = ordered
+    container._properties = ordered
+    for child in ordered:
+        child._parent_property = container
 
 
 def _apply_bounds(prop: Property) -> None:
@@ -332,7 +286,9 @@ class PropertyGroup(PropertyBase):
         self._fnam_utf8 = _fnam_utf8
         self._deferred_ae_major: int | None = None
 
-        self.properties = properties
+        self._properties = properties
+        for child in self._properties:
+            child._parent_property = self
 
         if match_name in _INDEXED_GROUP_MATCH_NAMES:
             self._property_type = PropertyType.INDEXED_GROUP
@@ -412,12 +368,6 @@ class PropertyGroup(PropertyBase):
         """List of properties in this group. Read-only."""
         self._ensure_children_synthesized()
         return self._properties
-
-    @properties.setter
-    def properties(self, properties: list[Property | PropertyGroup]) -> None:
-        self._properties = properties
-        for child in self._properties:
-            child._parent_property = self
 
     def __iter__(self) -> Iterator[Property | PropertyGroup]:
         """Return an iterator over the properties in this group."""
@@ -525,25 +475,7 @@ class PropertyGroup(PropertyBase):
         Args:
             name: A match name or display name to check.
         """
-        if self.property_type != PropertyType.INDEXED_GROUP:
-            return False
-        if not name:
-            return False
-
-        # Effect Parade: accept any name - validation deferred to add_property().
-        if self.match_name == "ADBE Effect Parade":
-            return True
-
-        allowed = _ADDABLE_BY_GROUP.get(self.match_name)
-        if allowed is None:
-            return False
-
-        if name in allowed:
-            return True
-
-        # Try display name -> match name reverse lookup.
-        resolved = _ADDABLE_DISPLAY_TO_MATCH.get(name)
-        return resolved is not None and resolved in allowed
+        return _can_add_property(self.match_name, self.property_type, name)
 
     def property(self, key: int | str) -> Property | PropertyGroup:
         """Look up a child property by index or name.

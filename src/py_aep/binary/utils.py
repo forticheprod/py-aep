@@ -1,4 +1,5 @@
 """Chunk tree navigation helpers for the binary I/O layer."""
+
 from __future__ import annotations
 
 import json
@@ -50,12 +51,7 @@ def filter_by_type(chunks: list[Chunk], chunk_type: str) -> list[Chunk]:
 
 def filter_by_list_type(chunks: list[Chunk], list_type: str) -> list[ListChunk]:
     """Return all ListChunks with matching `list_type`."""
-    return [
-        c
-        for c in chunks
-        if isinstance(c, ListChunk)
-        and c.list_type == list_type
-    ]
+    return [c for c in chunks if isinstance(c, ListChunk) and c.list_type == list_type]
 
 
 def block_slice(

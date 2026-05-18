@@ -277,13 +277,15 @@ def build_world_matrix(layer: Layer) -> Mat4:
 def _layer_local_matrix(layer: Layer) -> Mat4:
     """Build the local matrix for a single layer from its properties."""
     transform = layer.transform
-    position = cast("Property", transform["ADBE Position"]).value
-    anchor = cast("Property", transform["ADBE Anchor Point"]).value
-    scale_pct = cast("Property", transform["ADBE Scale"]).value
-    rz = cast("Property", transform["ADBE Rotate Z"]).value
-    orientation = cast("Property", transform["ADBE Orientation"]).value
-    rx = cast("Property", transform["ADBE Rotate X"]).value
-    ry = cast("Property", transform["ADBE Rotate Y"]).value
+    position = cast("list[float]", cast("Property", transform["ADBE Position"]).value)
+    anchor = cast("list[float]", cast("Property", transform["ADBE Anchor Point"]).value)
+    scale_pct = cast("list[float]", cast("Property", transform["ADBE Scale"]).value)
+    rz = cast("float", cast("Property", transform["ADBE Rotate Z"]).value)
+    orientation = cast(
+        "list[float]", cast("Property", transform["ADBE Orientation"]).value
+    )
+    rx = cast("float", cast("Property", transform["ADBE Rotate X"]).value)
+    ry = cast("float", cast("Property", transform["ADBE Rotate Y"]).value)
 
     is_3d = rx != 0.0 or ry != 0.0 or any(v != 0.0 for v in orientation)
 

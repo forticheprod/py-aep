@@ -31,7 +31,9 @@ class _EnumParam:
     def __set_name__(self, owner: type, name: str) -> None:
         self._name = name
 
-    def __get__(self, obj: XmlFormatOptions | None, objtype: type | None = None) -> object:
+    def __get__(
+        self, obj: XmlFormatOptions | None, objtype: type | None = None
+    ) -> object:
         if obj is None:
             return self
         return obj._enum_param(self._key, self._enum_cls)

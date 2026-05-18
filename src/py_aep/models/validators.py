@@ -131,9 +131,7 @@ def validate_string(
 
     def _validator(value: object, instance: Any = None) -> None:
         if not isinstance(value, str):
-            raise TypeError(
-                f"expected a string, got {type(value).__name__}"
-            )
+            raise TypeError(f"expected a string, got {type(value).__name__}")
         if not allow_empty and not value:
             raise ValueError("must not be empty")
         if max_length is not None and len(value) > max_length:

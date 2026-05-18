@@ -38,10 +38,7 @@ def compute_fractional(
         fractional_field: Name of the fractional field.
         scale: Divisor for the fractional part (default 65536).
     """
-    return float(
-        getattr(body, integer_field)
-        + getattr(body, fractional_field) / scale
-    )
+    return float(getattr(body, integer_field) + getattr(body, fractional_field) / scale)
 
 
 def compute_ratio(body: Any, dividend_field: str, divisor_field: str) -> float:

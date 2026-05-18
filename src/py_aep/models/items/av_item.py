@@ -24,6 +24,7 @@ def _validate_use_proxy(value: bool, obj: AVItem) -> None:
             "Cannot set use_proxy to True when there is no proxy source."
         )
 
+
 class AVItem(Item):
     """
     The `AVItem` object provides access to attributes and methods of
@@ -61,7 +62,9 @@ class AVItem(Item):
     """The width of the item in pixels. Read-only."""
 
     use_proxy = ChunkField[bool](
-        "_idta", "use_proxy", validate=_validate_use_proxy,
+        "_idta",
+        "use_proxy",
+        validate=_validate_use_proxy,
     )
     """When `True`, a proxy is used for the item. Read / Write.
 

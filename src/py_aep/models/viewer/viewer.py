@@ -81,6 +81,4 @@ class Viewer:
     def active(self) -> bool:
         """When `True`, indicates if the viewer panel is active.
         Read-only."""
-        return bool(
-            self._foac and self._foac.value and self._fiac and self._fiac.value
-        )
+        return bool(self._foac and self._foac.value and self._fiac and self._fiac.value)

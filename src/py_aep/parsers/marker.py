@@ -75,9 +75,13 @@ def parse_marker(
         keyframe: The keyframe that holds this marker value.
         frame_time: Fallback time in frames (used when no keyframe ref).
     """
-    nmhd_chunk = cast("NmhdChunk", find_by_type(chunks=nmrd_chunk.chunks, chunk_type="NmHd"))
+    nmhd_chunk = cast(
+        "NmhdChunk", find_by_type(chunks=nmrd_chunk.chunks, chunk_type="NmHd")
+    )
 
-    utf8_chunks = cast("list[Utf8Chunk]", filter_by_type(chunks=nmrd_chunk.chunks, chunk_type="Utf8"))
+    utf8_chunks = cast(
+        "list[Utf8Chunk]", filter_by_type(chunks=nmrd_chunk.chunks, chunk_type="Utf8")
+    )
 
     # Collect cue point param Utf8 chunks
     param_utf8s: list[Utf8Chunk] = utf8_chunks[5:]

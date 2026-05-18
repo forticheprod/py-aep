@@ -98,7 +98,9 @@ class Project:
         FootageTimecodeDisplayStartType,
         "_nnhd",
         "footage_timecode_display_start_type",
-        post_set=lambda obj: obj._sync_nhed_field("footage_timecode_display_start_type"),
+        post_set=lambda obj: obj._sync_nhed_field(
+            "footage_timecode_display_start_type"
+        ),
     )
     """The Footage Start Time setting in the Project Settings dialog box,
     which is enabled when Timecode is selected as the time display style.
@@ -256,7 +258,7 @@ class Project:
         self._active_item: Item | None = None
         self._effect_param_defs: dict[str, dict[str, dict[str, Any]]] = {}
         self._used_in_linked = False
-        self._max_item_id = -1   # lazily computed on first allocation
+        self._max_item_id = -1  # lazily computed on first allocation
         self._max_layer_id = -1  # lazily computed on first allocation
 
     def __repr__(self) -> str:
@@ -444,7 +446,9 @@ class Project:
         if isinstance(value, os.PathLike):
             value = str(value)
         if not isinstance(value, str):
-            raise TypeError(f"ocio_configuration_file must be a string or Path, got {value!r}")
+            raise TypeError(
+                f"ocio_configuration_file must be a string or Path, got {value!r}"
+            )
         self._update_cms_setting("ocioConfigurationFile", value)
 
     @property

@@ -59,9 +59,7 @@ def parse_composition(
     )
 
 
-def _get_markers(
-    child_chunks: list[Chunk], composition: CompItem
-) -> Property | None:
+def _get_markers(child_chunks: list[Chunk], composition: CompItem) -> Property | None:
     """
     Get the composition markers.
 

@@ -465,7 +465,8 @@ class CompItem(AVItem):
         cdta.internal_timebase = round(frame_rate * 256 * 4)
 
         prin_list = ListChunk(
-            list_type="PRin", chunks=[PrinChunk(), PrdaChunk()],
+            list_type="PRin",
+            chunks=[PrinChunk(), PrdaChunk()],
         )
 
         item_list = ListChunk(

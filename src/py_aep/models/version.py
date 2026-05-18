@@ -26,9 +26,7 @@ def _get_ae_version_major(obj: Any) -> int:
     # Project -> HeadChunk
     if hasattr(obj, "_head"):
         return int(obj._head.ae_version_major)
-    raise TypeError(
-        f"Cannot determine AE version from {type(obj).__name__}"
-    )
+    raise TypeError(f"Cannot determine AE version from {type(obj).__name__}")
 
 
 def requires_version(min_major: int) -> Callable[[F], F]:

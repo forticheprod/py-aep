@@ -581,12 +581,12 @@ class TestReadOnlyFields:
 
 
 class TestSetSetting:
-    """Tests for RenderQueueItem.set_setting."""
+    """Tests for setting RenderQueueItem.settings."""
 
     def test_set_enum_value(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
-        rqi.set_setting("Quality", RenderQuality.DRAFT)
+        rqi.settings["Quality"] = RenderQuality.DRAFT
 
         out = tmp_path / "quality_enum.aep"
         project.save(out)
@@ -596,7 +596,7 @@ class TestSetSetting:
     def test_set_int_value(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
-        rqi.set_setting("Quality", 1)  # DRAFT
+        rqi.settings["Quality"] = 1  # DRAFT
 
         out = tmp_path / "quality_int.aep"
         project.save(out)
@@ -606,7 +606,7 @@ class TestSetSetting:
     def test_set_string_value(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
-        rqi.set_setting("Motion Blur", "On for Checked Layers")
+        rqi.settings["Motion Blur"] = "On for Checked Layers"
 
         out = tmp_path / "mblur_str.aep"
         project.save(out)
@@ -616,7 +616,7 @@ class TestSetSetting:
     def test_set_resolution(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
-        rqi.set_setting("Resolution", [2, 2])
+        rqi.settings["Resolution"] = [2, 2]
 
         out = tmp_path / "resolution.aep"
         project.save(out)
@@ -626,7 +626,7 @@ class TestSetSetting:
     def test_set_skip_existing_files(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
-        rqi.set_setting("Skip Existing Files", True)
+        rqi.settings["Skip Existing Files"] = True
 
         out = tmp_path / "skip_existing.aep"
         project.save(out)
@@ -636,7 +636,7 @@ class TestSetSetting:
     def test_set_frame_rate(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
-        rqi.set_setting("Use this frame rate", 30.0)
+        rqi.settings["Use this frame rate"] = 30.0
 
         out = tmp_path / "frame_rate.aep"
         project.save(out)
@@ -647,51 +647,31 @@ class TestSetSetting:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
         with pytest.raises(KeyError, match="Unknown setting"):
-            rqi.set_setting("Nonexistent", 42)
+            rqi.settings["Nonexistent"] = 42
 
     def test_read_only_key_raises(self) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
         with pytest.raises(AttributeError, match="read-only"):
-            rqi.set_setting("Use comp's frame rate", 30.0)
+            rqi.settings["Use comp's frame rate"] = 30.0
 
     def test_invalid_enum_int_raises(self) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
         with pytest.raises(ValueError, match="Invalid int value"):
-            rqi.set_setting("Quality", 9999)
+            rqi.settings["Quality"] = 9999
 
     def test_invalid_enum_str_raises(self) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
         with pytest.raises(ValueError, match="Invalid string"):
-            rqi.set_setting("Quality", "SuperHD")
+            rqi.settings["Quality"] = "SuperHD"
 
     def test_invalid_type_raises(self) -> None:
         project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
         rqi = get_rqi(project, "base")
         with pytest.raises(TypeError, match="Expected"):
-            rqi.set_setting("Quality", [1, 2, 3])
-
-
-class TestSetSettings:
-    """Tests for RenderQueueItem.set_settings."""
-
-    def test_set_multiple(self, tmp_path: Path) -> None:
-        project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
-        rqi = get_rqi(project, "base")
-        rqi.set_settings(
-            {
-                "Quality": RenderQuality.DRAFT,
-                "Resolution": [2, 2],
-            }
-        )
-
-        out = tmp_path / "multi_settings.aep"
-        project.save(out)
-        rqi2 = get_rqi(parse_aep(out).project, "base")
-        assert rqi2.settings["Quality"] == RenderQuality.DRAFT
-        assert rqi2.settings["Resolution"] == [2, 2]
+            rqi.settings["Quality"] = [1, 2, 3]
 
 
 class TestRoundtripComment:

@@ -4,6 +4,7 @@ Fixed-layout chunks use `fmt_field()` and `BitField`.
 Fth5Chunk uses `items_field()` for repeating feather points.
 PardChunk uses variant subclass dispatch for polymorphic layouts.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -197,6 +198,7 @@ class NmhdChunk(Chunk):
     # BitField descriptors
     protected_region = BitField("_marker_flags", 1)
     navigation = BitField("_marker_flags", 0)
+
 
 # ---------------------------------------------------------------------------
 # fips - viewer panel settings (96 bytes)
@@ -690,6 +692,7 @@ _FTH5_ITEM_SIZE = 32
 @define
 class Fth5Chunk(Chunk):
     """Variable-width mask feather points (32 bytes per point)."""
+
     chunk_type: str = "fth5"
 
     points: list[FeatherPointItem] = items_field(FeatherPointItem, 32)

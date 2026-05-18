@@ -164,9 +164,7 @@ class ChunkField(Generic[T]):
         min_version: int | None = None,
     ) -> None:
         if reverse is not None and reverse_multi is not None:
-            raise TypeError(
-                "Cannot set both 'reverse' and 'reverse_multi'."
-            )
+            raise TypeError("Cannot set both 'reverse' and 'reverse_multi'.")
         self.chunk_attr = chunk_attr
         self.field = field
         self.transform = transform
@@ -209,12 +207,15 @@ class ChunkField(Generic[T]):
         if self.min_version is not None:
             if _get_ae_version_major(obj) < self.min_version:
                 raise AttributeError(
-                    f"{self.public_name!r} requires AE"
-                    f" {self.min_version}+ file format."
+                    f"{self.public_name!r} requires AE {self.min_version}+ file format."
                 )
         body = _prepare_write(
-            obj, self.chunk_attr, self.public_name,
-            value, self.validate, self.transform,
+            obj,
+            self.chunk_attr,
+            self.public_name,
+            value,
+            self.validate,
+            self.transform,
         )
         if body is None:
             return
@@ -303,9 +304,7 @@ class ComputedField(Generic[T]):
     @overload
     def __get__(self, obj: Any, objtype: type | None = None) -> T: ...
 
-    def __get__(
-        self, obj: Any, objtype: type | None = None
-    ) -> T | ComputedField[T]:
+    def __get__(self, obj: Any, objtype: type | None = None) -> T | ComputedField[T]:
         if obj is None:
             return self
         if self.public_name in obj.__dict__:
@@ -314,9 +313,7 @@ class ComputedField(Generic[T]):
         if body is None:
             if self.default is not _SENTINEL:
                 return cast(T, self.default)
-            raise AttributeError(
-                f"chunk body {self.chunk_attr!r} is None"
-            )
+            raise AttributeError(f"chunk body {self.chunk_attr!r} is None")
         return cast(T, self.compute(body))
 
     def __set__(self, obj: Any, value: T) -> None:
@@ -325,12 +322,15 @@ class ComputedField(Generic[T]):
         if self.min_version is not None:
             if _get_ae_version_major(obj) < self.min_version:
                 raise AttributeError(
-                    f"{self.public_name!r} requires AE"
-                    f" {self.min_version}+ file format."
+                    f"{self.public_name!r} requires AE {self.min_version}+ file format."
                 )
         body = _prepare_write(
-            obj, self.chunk_attr, self.public_name,
-            value, self.validate, self.enum_transform,
+            obj,
+            self.chunk_attr,
+            self.public_name,
+            value,
+            self.validate,
+            self.enum_transform,
         )
         if body is None:
             return

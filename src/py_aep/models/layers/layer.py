@@ -41,7 +41,7 @@ def _increment_name(name: str, existing_names: set[str]) -> str:
     """
     match = _TRAILING_NUMBER_RE.search(name)
     if match:
-        base = name[:match.start()]
+        base = name[: match.start()]
         num = int(match.group(1)) + 1
         num = max(2, num)  # 1 is skipped
     else:
@@ -199,7 +199,9 @@ class Layer(PropertyGroup):
         except (ValueError, KeyError):
             logger.warning(
                 "Unknown layer type %d for layer '%s' in comp '%s'. Defaulting to 'ADBE AV Layer'.",
-                layer_type_raw, _name_utf8.value, containing_comp.name
+                layer_type_raw,
+                _name_utf8.value,
+                containing_comp.name,
             )
             match_name = "ADBE AV Layer"
 
@@ -516,7 +518,9 @@ class Layer(PropertyGroup):
             new_local = new_parent_world.inverse() @ child_world
 
         # Decompose into AE transform components, keeping anchor fixed.
-        anchor = cast("Property", self.transform["ADBE Anchor Point"]).value
+        anchor = cast(
+            "list[float]", cast("Property", self.transform["ADBE Anchor Point"]).value
+        )
 
         new_pos, new_scale, new_rz, new_rx, new_ry = decompose_transform(
             new_local, anchor
@@ -669,6 +673,7 @@ class Layer(PropertyGroup):
         """
         # Circular: parsers.layer -> models.layers.av_layer -> layer
         from ...parsers.layer import parse_layer  # noqa: PLC0415
+        from ..items.composition import CompItem  # noqa: PLC0415
 
         if not isinstance(into_comp, CompItem):
             raise ValueError("Target composition must be a CompItem.")
@@ -682,9 +687,13 @@ class Layer(PropertyGroup):
         cloned_list = cast("ListChunk", cloned_block[0])
 
         # Patch layer ID
-        cloned_ldta = cast("LdtaChunk", find_by_type(
-            chunks=cloned_list.chunks, chunk_type="ldta",
-        ))
+        cloned_ldta = cast(
+            "LdtaChunk",
+            find_by_type(
+                chunks=cloned_list.chunks,
+                chunk_type="ldta",
+            ),
+        )
         # Layer IDs are unique project-wide, not per-comp.
         cloned_ldta.layer_id = into_comp._project._allocate_layer_id()
 
@@ -700,7 +709,8 @@ class Layer(PropertyGroup):
             if into_comp.layers:
                 # Identity scan - see _layer_block_slice for why .index() is unsafe.
                 chunk_idx = next(
-                    i for i, c in enumerate(into_comp._item_list.chunks)
+                    i
+                    for i, c in enumerate(into_comp._item_list.chunks)
                     if c is into_comp.layers[0]._layer_list
                 )
             else:
@@ -799,7 +809,8 @@ class Layer(PropertyGroup):
         if target_index < len(comp._layers):
             # Identity scan - see _layer_block_slice for why .index() is unsafe.
             chunk_idx = next(
-                i for i, c in enumerate(comp._item_list.chunks)
+                i
+                for i, c in enumerate(comp._item_list.chunks)
                 if c is comp._layers[target_index]._layer_list
             )
         elif comp._layers:

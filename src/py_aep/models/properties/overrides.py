@@ -2631,202 +2631,220 @@ _CANVARY_OVERRIDES: dict[str, bool] = {
 # Exact true exceptions to the broad can_set_expression reduction rules.
 # These are the sampled outliers that remain expressionable even though
 # their surrounding raw signatures are overwhelmingly false.
-_CANSETEXPR_TRUE_OVERRIDES: frozenset[str] = frozenset({
-    "ADBE Block Dissolve-0002",
-    "ADBE Block Dissolve-0003",
-    "ADBE Cell Pattern-0003",
-    "ADBE Circle-0004",
-    "ADBE CurvesCustom-0001",
-    "ADBE Drop Shadow-0004",
-    "ADBE Drop Shadow-0005",
-    "ADBE Easy Levels-0002",
-    "ADBE Easy Levels2-0002",
-    "ADBE Fill-0002",
-    "ADBE Geometry2-0003",
-    "ADBE Geometry2-0004",
-    "ADBE HUE SATURATION-0003",
-    "ADBE LIQUIFY-0014",
-    "ADBE Lightning 2-0003",
-    "ADBE Lumetri-0032",
-    "ADBE Lumetri-0047",
-    "ADBE Lumetri-0073",
-    "ADBE Lumetri-0085",
-    "ADBE MESH WARP-0004",
-    "ADBE Paint Bucket-0005",
-    "ADBE Point3D Control-0001",
-    "ADBE RESHAPE-0006",
-    "APC Colorama-0012",
-    "ISL MochaShapeImporter-0001",
-    "ISL MochaShapeImporter-0012",
-})
+_CANSETEXPR_TRUE_OVERRIDES: frozenset[str] = frozenset(
+    {
+        "ADBE Block Dissolve-0002",
+        "ADBE Block Dissolve-0003",
+        "ADBE Cell Pattern-0003",
+        "ADBE Circle-0004",
+        "ADBE CurvesCustom-0001",
+        "ADBE Drop Shadow-0004",
+        "ADBE Drop Shadow-0005",
+        "ADBE Easy Levels-0002",
+        "ADBE Easy Levels2-0002",
+        "ADBE Fill-0002",
+        "ADBE Geometry2-0003",
+        "ADBE Geometry2-0004",
+        "ADBE HUE SATURATION-0003",
+        "ADBE LIQUIFY-0014",
+        "ADBE Lightning 2-0003",
+        "ADBE Lumetri-0032",
+        "ADBE Lumetri-0047",
+        "ADBE Lumetri-0073",
+        "ADBE Lumetri-0085",
+        "ADBE MESH WARP-0004",
+        "ADBE Paint Bucket-0005",
+        "ADBE Point3D Control-0001",
+        "ADBE RESHAPE-0006",
+        "APC Colorama-0012",
+        "ISL MochaShapeImporter-0001",
+        "ISL MochaShapeImporter-0012",
+    }
+)
 
 # Match names where canSetExpression is always False regardless of context.
-_CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset({
-    # Paint stroke properties
-    "ADBE Paint Clone Time",
-    "ADBE Paint Clone Position",
-    "ADBE Paint Clone Time Shift",
-    # Material coefficients (always-false, not 3D-dependent)
-    "ADBE Reflection Coefficient",
-    "ADBE Glossiness Coefficient",
-    "ADBE Fresnel Coefficient",
-    "ADBE Transparency Coefficient",
-    "ADBE Transp Rolloff",
-    "ADBE Index of Refraction",
-    # Puppet pin
-    "ADBE FreePin3 PosPin Scale",
-    "ADBE FreePin3 PosPin Rotation",
-    # Text on path
-    "ADBE Text Reverse Path",
-    "ADBE Text Perpendicular To Path",
-    "ADBE Text Force Align Path",
-    "ADBE Text First Margin",
-    "ADBE Text Last Margin",
-    # Vector stroke dashes / gaps / offset
-    "ADBE Vector Stroke Dash 1",
-    "ADBE Vector Stroke Dash 2",
-    "ADBE Vector Stroke Dash 3",
-    "ADBE Vector Stroke Gap 1",
-    "ADBE Vector Stroke Gap 2",
-    "ADBE Vector Stroke Gap 3",
-    "ADBE Vector Stroke Offset",
-    # Vector taper
-    "ADBE Vector Taper StartWidthPx",
-    "ADBE Vector Taper EndWidthPx",
-    "ADBE Vector Taper Wave Cycles",
-    # Light background (always false even on light layers)
-    "ADBE Light Backgd Opacity",
-    "ADBE Light Backgd Blur",
-    # Light falloff
-    "ADBE Light Falloff Start",
-    "ADBE Light Falloff Distance",
-    # Vec3D material properties (per-face material options - never expressionable)
-    "ADBE Vec3D Front RGB",
-    "ADBE Vec3D Front Ambient",
-    "ADBE Vec3D Front Diffuse",
-    "ADBE Vec3D Front Specular",
-    "ADBE Vec3D Front Shininess",
-    "ADBE Vec3D Front Metal",
-    "ADBE Vec3D Front Reflection",
-    "ADBE Vec3D Front Gloss",
-    "ADBE Vec3D Front Fresnel",
-    "ADBE Vec3D Front Xparency",
-    "ADBE Vec3D Front XparRoll",
-    "ADBE Vec3D Front IOR",
-    "ADBE Vec3D Bevel RGB",
-    "ADBE Vec3D Bevel Ambient",
-    "ADBE Vec3D Bevel Diffuse",
-    "ADBE Vec3D Bevel Specular",
-    "ADBE Vec3D Bevel Shininess",
-    "ADBE Vec3D Bevel Metal",
-    "ADBE Vec3D Bevel Reflection",
-    "ADBE Vec3D Bevel Gloss",
-    "ADBE Vec3D Bevel Fresnel",
-    "ADBE Vec3D Bevel Xparency",
-    "ADBE Vec3D Bevel XparRoll",
-    "ADBE Vec3D Bevel IOR",
-    "ADBE Vec3D Side RGB",
-    "ADBE Vec3D Side Ambient",
-    "ADBE Vec3D Side Diffuse",
-    "ADBE Vec3D Side Specular",
-    "ADBE Vec3D Side Shininess",
-    "ADBE Vec3D Side Metal",
-    "ADBE Vec3D Side Reflection",
-    "ADBE Vec3D Side Gloss",
-    "ADBE Vec3D Side Fresnel",
-    "ADBE Vec3D Side Xparency",
-    "ADBE Vec3D Side XparRoll",
-    "ADBE Vec3D Side IOR",
-    "ADBE Vec3D Back RGB",
-    "ADBE Vec3D Back Ambient",
-    "ADBE Vec3D Back Diffuse",
-    "ADBE Vec3D Back Specular",
-    "ADBE Vec3D Back Shininess",
-    "ADBE Vec3D Back Metal",
-    "ADBE Vec3D Back Reflection",
-    "ADBE Vec3D Back Gloss",
-    "ADBE Vec3D Back Fresnel",
-    "ADBE Vec3D Back Xparency",
-    "ADBE Vec3D Back XparRoll",
-    "ADBE Vec3D Back IOR",
-    # Replace Source / Item Cache Entry
-    "ADBE Layer Source Alternate",
-    # Shadow Color (true=5 vs false=1024; accept rare mismatches)
-    "ADBE Shadow Color",
-    # Match-specific effect params whose broader signatures are still mixed.
-    "ADBE Lumetri-0063",
-    "ADBE Lumetri-0064",
-    "ADBE Lumetri-0065",
-    "ADBE Lumetri-0066",
-    "ADBE Lumetri-0097",
-    "ADBE Lumetri-0121",
-    "ADBE Lumetri-0123",
-    "ADBE Three-Way Color Corrector-0081",
-    "CC Particle World-0105",
-})
+_CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset(
+    {
+        # Paint stroke properties
+        "ADBE Paint Clone Time",
+        "ADBE Paint Clone Position",
+        "ADBE Paint Clone Time Shift",
+        # Material coefficients (always-false, not 3D-dependent)
+        "ADBE Reflection Coefficient",
+        "ADBE Glossiness Coefficient",
+        "ADBE Fresnel Coefficient",
+        "ADBE Transparency Coefficient",
+        "ADBE Transp Rolloff",
+        "ADBE Index of Refraction",
+        # Puppet pin
+        "ADBE FreePin3 PosPin Scale",
+        "ADBE FreePin3 PosPin Rotation",
+        # Text on path
+        "ADBE Text Reverse Path",
+        "ADBE Text Perpendicular To Path",
+        "ADBE Text Force Align Path",
+        "ADBE Text First Margin",
+        "ADBE Text Last Margin",
+        # Vector stroke dashes / gaps / offset
+        "ADBE Vector Stroke Dash 1",
+        "ADBE Vector Stroke Dash 2",
+        "ADBE Vector Stroke Dash 3",
+        "ADBE Vector Stroke Gap 1",
+        "ADBE Vector Stroke Gap 2",
+        "ADBE Vector Stroke Gap 3",
+        "ADBE Vector Stroke Offset",
+        # Vector taper
+        "ADBE Vector Taper StartWidthPx",
+        "ADBE Vector Taper EndWidthPx",
+        "ADBE Vector Taper Wave Cycles",
+        # Light background (always false even on light layers)
+        "ADBE Light Backgd Opacity",
+        "ADBE Light Backgd Blur",
+        # Light falloff
+        "ADBE Light Falloff Start",
+        "ADBE Light Falloff Distance",
+        # Vec3D material properties (per-face material options - never expressionable)
+        "ADBE Vec3D Front RGB",
+        "ADBE Vec3D Front Ambient",
+        "ADBE Vec3D Front Diffuse",
+        "ADBE Vec3D Front Specular",
+        "ADBE Vec3D Front Shininess",
+        "ADBE Vec3D Front Metal",
+        "ADBE Vec3D Front Reflection",
+        "ADBE Vec3D Front Gloss",
+        "ADBE Vec3D Front Fresnel",
+        "ADBE Vec3D Front Xparency",
+        "ADBE Vec3D Front XparRoll",
+        "ADBE Vec3D Front IOR",
+        "ADBE Vec3D Bevel RGB",
+        "ADBE Vec3D Bevel Ambient",
+        "ADBE Vec3D Bevel Diffuse",
+        "ADBE Vec3D Bevel Specular",
+        "ADBE Vec3D Bevel Shininess",
+        "ADBE Vec3D Bevel Metal",
+        "ADBE Vec3D Bevel Reflection",
+        "ADBE Vec3D Bevel Gloss",
+        "ADBE Vec3D Bevel Fresnel",
+        "ADBE Vec3D Bevel Xparency",
+        "ADBE Vec3D Bevel XparRoll",
+        "ADBE Vec3D Bevel IOR",
+        "ADBE Vec3D Side RGB",
+        "ADBE Vec3D Side Ambient",
+        "ADBE Vec3D Side Diffuse",
+        "ADBE Vec3D Side Specular",
+        "ADBE Vec3D Side Shininess",
+        "ADBE Vec3D Side Metal",
+        "ADBE Vec3D Side Reflection",
+        "ADBE Vec3D Side Gloss",
+        "ADBE Vec3D Side Fresnel",
+        "ADBE Vec3D Side Xparency",
+        "ADBE Vec3D Side XparRoll",
+        "ADBE Vec3D Side IOR",
+        "ADBE Vec3D Back RGB",
+        "ADBE Vec3D Back Ambient",
+        "ADBE Vec3D Back Diffuse",
+        "ADBE Vec3D Back Specular",
+        "ADBE Vec3D Back Shininess",
+        "ADBE Vec3D Back Metal",
+        "ADBE Vec3D Back Reflection",
+        "ADBE Vec3D Back Gloss",
+        "ADBE Vec3D Back Fresnel",
+        "ADBE Vec3D Back Xparency",
+        "ADBE Vec3D Back XparRoll",
+        "ADBE Vec3D Back IOR",
+        # Replace Source / Item Cache Entry
+        "ADBE Layer Source Alternate",
+        # Shadow Color (true=5 vs false=1024; accept rare mismatches)
+        "ADBE Shadow Color",
+        # Match-specific effect params whose broader signatures are still mixed.
+        "ADBE Lumetri-0063",
+        "ADBE Lumetri-0064",
+        "ADBE Lumetri-0065",
+        "ADBE Lumetri-0066",
+        "ADBE Lumetri-0097",
+        "ADBE Lumetri-0121",
+        "ADBE Lumetri-0123",
+        "ADBE Three-Way Color Corrector-0081",
+        "CC Particle World-0105",
+    }
+)
 
 # Match names that are expressionable only on 3D AV layers.
-_CANSETEXPR_3D_ONLY: frozenset[str] = frozenset({
-    "ADBE Orientation",
-    "ADBE Rotate X",
-    "ADBE Rotate Y",
-    "ADBE Ambient Coefficient",
-    "ADBE Diffuse Coefficient",
-    "ADBE Specular Coefficient",
-    "ADBE Shininess Coefficient",
-    "ADBE Metal Coefficient",
-    "ADBE Light Transmission",
-})
+_CANSETEXPR_3D_ONLY: frozenset[str] = frozenset(
+    {
+        "ADBE Orientation",
+        "ADBE Rotate X",
+        "ADBE Rotate Y",
+        "ADBE Ambient Coefficient",
+        "ADBE Diffuse Coefficient",
+        "ADBE Specular Coefficient",
+        "ADBE Shininess Coefficient",
+        "ADBE Metal Coefficient",
+        "ADBE Light Transmission",
+    }
+)
 
 # Match names that are expressionable only on 2D layers (not 3D).
-_CANSETEXPR_2D_ONLY: frozenset[str] = frozenset({
-    "ADBE Plane Curvature",
-    "ADBE Plane Subdivision",
-})
+_CANSETEXPR_2D_ONLY: frozenset[str] = frozenset(
+    {
+        "ADBE Plane Curvature",
+        "ADBE Plane Subdivision",
+    }
+)
 
 # Transform match names that are never expressionable on camera layers.
-_CAMERA_NO_EXPRESSION: frozenset[str] = frozenset({
-    "ADBE Scale",
-    "ADBE Opacity",
-})
+_CAMERA_NO_EXPRESSION: frozenset[str] = frozenset(
+    {
+        "ADBE Scale",
+        "ADBE Opacity",
+    }
+)
 
 # Transform match names that are never expressionable on any light layer.
-_LIGHT_NO_EXPRESSION: frozenset[str] = frozenset({
-    "ADBE Scale",
-    "ADBE Opacity",
-})
+_LIGHT_NO_EXPRESSION: frozenset[str] = frozenset(
+    {
+        "ADBE Scale",
+        "ADBE Opacity",
+    }
+)
 
 # Additional match names not expressionable on ambient lights.
 # Ambient lights support Color, Intensity, and (oddly) Rotate X/Y.
-_LIGHT_AMBIENT_NO_EXPRESSION: frozenset[str] = frozenset({
-    "ADBE Position",
-    "ADBE Anchor Point",
-    "ADBE Orientation",
-    "ADBE Rotate Z",
-    "ADBE Light Cone Angle",
-    "ADBE Light Cone Feather 2",
-    "ADBE Light Falloff Type",
-    "ADBE Light Shadow Darkness",
-    "ADBE Light Shadow Diffusion",
-})
+_LIGHT_AMBIENT_NO_EXPRESSION: frozenset[str] = frozenset(
+    {
+        "ADBE Position",
+        "ADBE Anchor Point",
+        "ADBE Orientation",
+        "ADBE Rotate Z",
+        "ADBE Light Cone Angle",
+        "ADBE Light Cone Feather 2",
+        "ADBE Light Falloff Type",
+        "ADBE Light Shadow Darkness",
+        "ADBE Light Shadow Diffusion",
+    }
+)
 
 # Additional match names not expressionable on point / environment lights.
 # Point lights have Position but not Orientation/Anchor/RotateX/Y/Z.
-_LIGHT_POINT_NO_EXPRESSION: frozenset[str] = frozenset({
-    "ADBE Anchor Point",
-    "ADBE Orientation",
-    "ADBE Rotate X",
-    "ADBE Rotate Y",
-    "ADBE Rotate Z",
-    "ADBE Light Cone Angle",
-    "ADBE Light Cone Feather 2",
-})
+_LIGHT_POINT_NO_EXPRESSION: frozenset[str] = frozenset(
+    {
+        "ADBE Anchor Point",
+        "ADBE Orientation",
+        "ADBE Rotate X",
+        "ADBE Rotate Y",
+        "ADBE Rotate Z",
+        "ADBE Light Cone Angle",
+        "ADBE Light Cone Feather 2",
+    }
+)
 
 # Spot and Parallel lights support all transform expressions.
 # Only Cone properties are Spot-exclusive.
 _LIGHT_SPOT_NO_EXPRESSION: frozenset[str] = frozenset()
 
-_LIGHT_PARALLEL_NO_EXPRESSION: frozenset[str] = frozenset({
-    "ADBE Light Cone Angle",
-    "ADBE Light Cone Feather 2",
-})
+_LIGHT_PARALLEL_NO_EXPRESSION: frozenset[str] = frozenset(
+    {
+        "ADBE Light Cone Angle",
+        "ADBE Light Cone Feather 2",
+    }
+)

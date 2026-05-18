@@ -370,4 +370,3 @@ def test_gradient_remove_color_stop_serializes(gradient_comp) -> None:
     reparsed = parse_gradient_xml(gradient._utf8)
     assert reparsed is not None
     assert len(reparsed.color_stops) == original_count - 1
-

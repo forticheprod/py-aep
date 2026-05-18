@@ -68,9 +68,7 @@ def _compute_premul_color(body: SspcChunk) -> list[float]:
     )
 
 
-def _reverse_premul_color(
-    value: list[float], _body: SspcChunk
-) -> dict[str, Any]:
+def _reverse_premul_color(value: list[float], _body: SspcChunk) -> dict[str, Any]:
     return unpack_values("premul_color_r", "premul_color_g", "premul_color_b")(
         denormalize_values(value), _body
     )
@@ -82,7 +80,9 @@ def _compute_duration(body: SspcChunk) -> float:
     conform = _compute_conform_frame_rate(body)
     if conform != 0:
         native = compute_fractional(
-            body, "native_frame_rate_integer", "native_frame_rate_fractional",
+            body,
+            "native_frame_rate_integer",
+            "native_frame_rate_fractional",
         )
         conform_factor = native / conform
     else:
@@ -187,7 +187,8 @@ class FootageSource:
     set to 0, the `native_frame_rate` is used instead. Read / Write."""
 
     display_frame_rate = ComputedField[float](
-        "_sspc", compute=_compute_display_frame_rate,
+        "_sspc",
+        compute=_compute_display_frame_rate,
     )
     """The effective frame rate as displayed and rendered in compositions.
     If `remove_pulldown` is active, the rate is multiplied by 0.8.
@@ -213,7 +214,9 @@ class FootageSource:
     _frame_duration = ComputedField[int]("_sspc", compute=_compute_frame_duration)
     _pixel_aspect = ComputedField[float]("_sspc", compute=_compute_pixel_aspect)
     _footage_missing = ChunkField[bool](
-        "_sspc", "footage_missing_at_save", read_only=True,
+        "_sspc",
+        "footage_missing_at_save",
+        read_only=True,
     )
     _start_frame = ChunkField[int]("_sspc", "start_frame", read_only=True)
     _end_frame = ChunkField[int]("_sspc", "end_frame", read_only=True)
@@ -247,7 +250,9 @@ class FootageSource:
     @preserve_rgb.setter
     def preserve_rgb(self, value: bool) -> None:
         if self._clrs is None:
-            raise AttributeError("Cannot set preserve_rgb: no CLRS container. Update the value in After Effects then re-parse the project to modify this footage source.")
+            raise AttributeError(
+                "Cannot set preserve_rgb: no CLRS container. Update the value in After Effects then re-parse the project to modify this footage source."
+            )
         toggle_flag_chunk(self._clrs, "prgb", bool(value))
 
     @property
@@ -263,7 +268,9 @@ class FootageSource:
             Not exposed in ExtendScript."""
         if self._clrs is None:
             return "Embedded"
-        ipws_chunk = cast("U1Chunk", find_by_type(chunks=self._clrs.chunks, chunk_type="ipws"))
+        ipws_chunk = cast(
+            "U1Chunk", find_by_type(chunks=self._clrs.chunks, chunk_type="ipws")
+        )
         apid_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="apid")
         return map_media_color_space(
             bool(ipws_chunk.value),

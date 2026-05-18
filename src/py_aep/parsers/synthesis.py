@@ -99,7 +99,9 @@ def _synthesize_missing_top_level_groups(layer: Layer, ae_major: int) -> None:
     else:
         skip_groups = _TEXT_ONLY_GROUPS | _SHAPE_ONLY_GROUPS
 
-    _reorder_and_fill(layer, _TOP_LEVEL_SPECS, 1, skip=skip_groups, tail_mode="all", ae_major=ae_major)
+    _reorder_and_fill(
+        layer, _TOP_LEVEL_SPECS, 1, skip=skip_groups, tail_mode="all", ae_major=ae_major
+    )
 
     # Post-processing: Layer Sets elided flag and depth fixup.
     canonical_mns = {s.match_name for s in _TOP_LEVEL_SPECS}
@@ -222,7 +224,11 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
         overrides[mn] = (value, default)
 
     _reorder_and_fill(
-        transform, _TRANSFORM_SPECS, 2, value_overrides=overrides, tail_mode="none",
+        transform,
+        _TRANSFORM_SPECS,
+        2,
+        value_overrides=overrides,
+        tail_mode="none",
         ae_major=ae_major,
     )
 

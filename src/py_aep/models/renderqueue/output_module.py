@@ -61,7 +61,9 @@ if TYPE_CHECKING:
     from .render_queue_item import RenderQueueItem
 
 
-def _validate_crop(peer_field: str, dimension: str) -> Callable[[int, OutputModule], None]:
+def _validate_crop(
+    peer_field: str, dimension: str
+) -> Callable[[int, OutputModule], None]:
     """Factory for crop validators that check range and final dimension."""
     range_check = validate_number(min=-30000, max=30000, integer=True)
 
@@ -370,9 +372,9 @@ class OutputModule:
         `SET_PROXY`. Read-only.
         """
         comp_id = self._om_ldat.post_render_target_comp_id or None
-        if (
-            comp_id is None
-            or self.post_render_action in (PostRenderAction.NONE, PostRenderAction.IMPORT)
+        if comp_id is None or self.post_render_action in (
+            PostRenderAction.NONE,
+            PostRenderAction.IMPORT,
         ):
             return self._parent_rqi.comp
         return cast("CompItem", self._project.items[comp_id])
@@ -537,7 +539,9 @@ class OutputModule:
         if not isinstance(value, int):
             raise ValueError("Starting number must be an integer")
         if value < 0 or value > 9999999:
-            raise ValueError(f"Starting number must be between 0 and 9999999, got {value}")
+            raise ValueError(
+                f"Starting number must be between 0 and 9999999, got {value}"
+            )
         self._roou.starting_number = value
 
     @property

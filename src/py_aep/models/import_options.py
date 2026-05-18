@@ -117,7 +117,7 @@ class ImportOptions:
     def force_alphabetical(self, value: bool) -> None:
         self._force_alphabetical = bool(value)
 
-    def can_import_as(self, type: ImportAsType) -> bool:
+    def can_import_as(self, type: int | ImportAsType) -> bool:
         """Check whether the file can be imported as the given type.
 
         Args:

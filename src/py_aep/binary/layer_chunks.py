@@ -3,6 +3,7 @@
 The optional `matte_layer_id` (AE >= 23) uses `fmt_field(..., optional=True)`
 so it reads as `None` from older files and is omitted on write when absent.
 """
+
 from __future__ import annotations
 
 from attrs import define
@@ -25,6 +26,7 @@ from .registry import register
 # chunk_type "ldta" (4) + body_size (4) + 40 bytes into ldta body = 48.
 _LDTA_SOURCE_ID_OFFSET = 48
 _LDTA_SOURCE_ID_END = 52
+
 
 @register("ldta")
 @define

@@ -36,7 +36,9 @@ def reverse_frame_ticks(
 
     def _reverse(value: int, body: Any) -> dict[str, int]:
         frame_rate = compute_fractional(
-            body, "frame_rate_integer", "frame_rate_fractional",
+            body,
+            "frame_rate_integer",
+            "frame_rate_fractional",
         )
         seconds = value / frame_rate
         return {
@@ -118,12 +120,7 @@ def unpack_values(
 
     def _reverse(value: Sequence[Any], _body: object) -> dict[str, Any]:
         if len(value) != len(field_names):
-            raise ValueError(
-                f"Expected {len(field_names)} values, got {len(value)}"
-            )
-        return {
-            field_name: value[i]
-            for i, field_name in enumerate(field_names)
-        }
+            raise ValueError(f"Expected {len(field_names)} values, got {len(value)}")
+        return {field_name: value[i] for i, field_name in enumerate(field_names)}
 
     return _reverse

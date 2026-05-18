@@ -118,7 +118,7 @@ def parse_layer(
         composition=composition,
     )
 
-    layer.properties = properties
+    layer._properties = properties
     for child in properties:
         child._parent_property = layer
 

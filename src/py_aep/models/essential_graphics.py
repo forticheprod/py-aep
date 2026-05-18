@@ -25,7 +25,8 @@ class EssentialGraphicsController:
     """
 
     name = ChunkField[str](
-        "_name_utf8", "value",
+        "_name_utf8",
+        "value",
         validate=validate_string(allow_empty=False),
     )
     """The display name of the controller. Read / Write."""

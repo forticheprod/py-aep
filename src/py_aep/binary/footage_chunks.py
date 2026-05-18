@@ -5,6 +5,7 @@ descriptors for alpha flags.
 OptiChunk uses variant subclass dispatch: SoliOptiChunk (fmt_field),
 PsdOptiChunk (custom read/write for LE fields), PlaceholderOptiChunk.
 """
+
 from __future__ import annotations
 
 import struct
@@ -208,13 +209,15 @@ class OptiChunk(Chunk):
         # Peek at discriminator (first 4 bytes = asset_type)
         disc_raw = read_bytes(fp, 6)
         nul = disc_raw.find(b"\x00", 0, 4)
-        asset_type = disc_raw[:nul if nul >= 0 else 4].decode("ascii")
+        asset_type = disc_raw[: nul if nul >= 0 else 4].decode("ascii")
         asset_type_int = struct.unpack(">H", disc_raw[4:6])[0]
         fp.seek(-6, 1)
         # Placeholder: asset_type is empty but asset_type_int == 2
         if not asset_type and asset_type_int == 2:
             return PlaceholderOptiChunk.read(
-                fp, size, chunk_type=chunk_type,
+                fp,
+                size,
+                chunk_type=chunk_type,
             )
         variant_cls = _OPTI_VARIANTS.get(asset_type, OptiChunk)
         if variant_cls is OptiChunk:
@@ -231,7 +234,9 @@ class SoliOptiChunk(OptiChunk):
 
     asset_type: str = ascii_field(4, default="Soli")
     asset_type_int: int = u2_field(default=9)
-    _pad: bytes = bytes_field(8, default=b"\x00\x00\x01\x1a\x3f\x80\x00\x00", repr=False)
+    _pad: bytes = bytes_field(
+        8, default=b"\x00\x00\x01\x1a\x3f\x80\x00\x00", repr=False
+    )
     color_r: float = f4_field()
     """Solid color red component (0.0-1.0)."""
 
@@ -246,6 +251,7 @@ class SoliOptiChunk(OptiChunk):
 
     _trailing: bytes = field(default=b"", repr=False)
 
+
 @define
 class PsdOptiChunk(OptiChunk):
     """PSD footage asset (asset_type='8BPS')."""
@@ -256,7 +262,9 @@ class PsdOptiChunk(OptiChunk):
     psd_layer_index: int = u2_field()
     """0-based layer index. 0xFFFF = merged/flattened."""
 
-    _pad_12: bytes = bytes_field(12, default=b"\x53\x50\x42\x38\x01\x00\x00\x00\x00\x00\x00\x00", repr=False)
+    _pad_12: bytes = bytes_field(
+        12, default=b"\x53\x50\x42\x38\x01\x00\x00\x00\x00\x00\x00\x00", repr=False
+    )
     psd_channels: int = u1_field()
     """Number of color channels (3=RGB, 4=RGBA/CMYK)."""
 

@@ -65,10 +65,14 @@ def parse_format_options(
         return OpenExrFormatOptions(_body=cast("OpenExrRoptChunk", ropt_chunk))
     if format_code == "png!":
         try:
-            hdr10_utf8 = cast("Utf8Chunk", find_by_type(chunks=chunks, chunk_type="Utf8"))
+            hdr10_utf8 = cast(
+                "Utf8Chunk", find_by_type(chunks=chunks, chunk_type="Utf8")
+            )
         except ChunkNotFoundError:
             hdr10_utf8 = None
-        return PngFormatOptions(_body=cast("PngRoptChunk", ropt_chunk), _hdr10_utf8=hdr10_utf8)
+        return PngFormatOptions(
+            _body=cast("PngRoptChunk", ropt_chunk), _hdr10_utf8=hdr10_utf8
+        )
     if format_code in _XML_FORMAT_CODES:
         return XmlFormatOptions(_body=ropt_chunk)
 

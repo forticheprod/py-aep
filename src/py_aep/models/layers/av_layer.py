@@ -11,13 +11,13 @@ from py_aep.enums import (
 )
 
 from ..descriptors import ChunkField, ComputedField
+from ..items.av_item import AVItem
 from ..properties.property import Property
 from ..version import requires_version
 from .layer import Layer
 
 if TYPE_CHECKING:
     from ...binary.layer_chunks import LdtaChunk
-    from ..items.av_item import AVItem
     from ..items.composition import CompItem
 
 

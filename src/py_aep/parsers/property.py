@@ -131,7 +131,9 @@ def _dispatch_sspc(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse effect chunks - iterates all sspc LISTs for the match name."""
-    tdmns = cast("list[TdmnChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    tdmns = cast(
+        "list[TdmnChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="tdmn")
+    )
     sspcs = filter_by_list_type(chunks=sub_prop_chunks, list_type="sspc")
     results: list[Property | PropertyGroup] = []
     for tdmn, sspc in zip(tdmns, sspcs):
@@ -157,7 +159,9 @@ def _dispatch_tdgp(
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Parse property group chunks - handles masks and indexed groups."""
-    tdmns = cast("list[TdmnChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="tdmn"))
+    tdmns = cast(
+        "list[TdmnChunk]", filter_by_type(chunks=sub_prop_chunks, chunk_type="tdmn")
+    )
     if match_name == "ADBE Mask Atom":
         tdgps = list(filter_by_list_type(chunks=sub_prop_chunks, list_type="tdgp"))
         mkifs = cast(
@@ -165,9 +169,7 @@ def _dispatch_tdgp(
             list(filter_by_type(chunks=sub_prop_chunks, chunk_type="mkif")),
         )
         masks: list[Property | PropertyGroup] = []
-        for i, (tdmn, tdgp_c, mkif_c) in enumerate(
-            zip(tdmns, tdgps, mkifs), 1
-        ):
+        for i, (tdmn, tdgp_c, mkif_c) in enumerate(zip(tdmns, tdgps, mkifs), 1):
             mask = _parse_mask_atom(
                 tdgp_chunk=tdgp_c,
                 mkif_chunk=mkif_c,
@@ -371,15 +373,21 @@ def parse_property_group(
     # Try to read the group-level tdsb chunk.
     # Leaf properties always have a tdsb; groups may or may not.
     try:
-        group_tdsb: TdsbChunk | None = cast("TdsbChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsb"))
+        group_tdsb: TdsbChunk | None = cast(
+            "TdsbChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsb")
+        )
     except ChunkNotFoundError:
         group_tdsb = None
 
     # Resolve _name_utf8 from the tdgp's tdsn child
     # tdsn is a ContainerChunk with a Utf8 child
     try:
-        tdsn = cast("ContainerChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn"))
-        name_utf8: Utf8Chunk | None = cast("Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8"))
+        tdsn = cast(
+            "ContainerChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn")
+        )
+        name_utf8: Utf8Chunk | None = cast(
+            "Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8")
+        )
     except ChunkNotFoundError:
         name_utf8 = None
 
@@ -436,7 +444,9 @@ def _parse_mask_atom(
         if isinstance(chunk, ListChunk) and chunk.list_type == "om-s":
             try:
                 tdbs = find_by_list_type(chunks=chunk.chunks, list_type="tdbs")
-                mask_shape_tdsb = cast("TdsbChunk", find_by_type(chunks=tdbs.chunks, chunk_type="tdsb"))
+                mask_shape_tdsb = cast(
+                    "TdsbChunk", find_by_type(chunks=tdbs.chunks, chunk_type="tdsb")
+                )
             except ChunkNotFoundError:
                 pass
             break

@@ -140,7 +140,9 @@ class MarkerValue:
             raise ValueError("params must be a dictionary of string key-value pairs")
         for key, val in value.items():
             if not isinstance(key, str) or not isinstance(val, str):
-                raise ValueError("params must be a dictionary of string key-value pairs")
+                raise ValueError(
+                    "params must be a dictionary of string key-value pairs"
+                )
         bodies = self._param_utf8s
         idx = 0
         for key, val in value.items():

@@ -217,9 +217,7 @@ class TextDocument:
     kerning: int = 0
     """The Text layer's kerning value. Read-Only."""
 
-    baseline_direction: BaselineDirection = (
-        BaselineDirection.BASELINE_WITH_STREAM
-    )
+    baseline_direction: BaselineDirection = BaselineDirection.BASELINE_WITH_STREAM
     """The Text layer's baseline direction. Read / Write."""
 
     ligature: bool = False
@@ -360,7 +358,9 @@ class TextDocument:
                 or len(value) != 3
                 or not all(isinstance(c, float) and 0 <= c <= 1.0 for c in value)
             ):
-                raise ValueError("fill_color must be a list of three floats between 0.0 and 1.0")
+                raise ValueError(
+                    "fill_color must be a list of three floats between 0.0 and 1.0"
+                )
         self.__dict__.pop("fill_color", None)
         if self._char_style is not None:
             if value is None:
@@ -389,7 +389,9 @@ class TextDocument:
                 or len(value) != 3
                 or not all(isinstance(c, float) and 0 <= c <= 1.0 for c in value)
             ):
-                raise ValueError("stroke_color must be a list of three floats between 0.0 and 1.0")
+                raise ValueError(
+                    "stroke_color must be a list of three floats between 0.0 and 1.0"
+                )
         self.__dict__.pop("stroke_color", None)
         if self._char_style is not None:
             if value is None:

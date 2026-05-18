@@ -86,9 +86,14 @@ class Item:
             self._ldat: LdatChunk | None = None
         else:
             self._inner = find_by_list_type(chunks=self._gide.chunks, list_type="list")
-            self._lhd3 = cast("Lhd3Chunk", find_by_type(chunks=self._inner.chunks, chunk_type="lhd3"))
+            self._lhd3 = cast(
+                "Lhd3Chunk", find_by_type(chunks=self._inner.chunks, chunk_type="lhd3")
+            )
             try:
-                self._ldat = cast("LdatChunk", find_by_type(chunks=self._inner.chunks, chunk_type="ldat"))
+                self._ldat = cast(
+                    "LdatChunk",
+                    find_by_type(chunks=self._inner.chunks, chunk_type="ldat"),
+                )
             except ChunkNotFoundError:
                 self._ldat = None
 
@@ -184,8 +189,7 @@ class Item:
             raise IndexError("No guides to remove")
         if not 0 <= guide_index < len(self._guides):
             raise IndexError(
-                f"Guide index {guide_index} out of range "
-                f"[0, {len(self._guides) - 1}]"
+                f"Guide index {guide_index} out of range [0, {len(self._guides) - 1}]"
             )
         assert self._lhd3 is not None
         assert self._ldat is not None
@@ -265,6 +269,8 @@ class Item:
         assert parent is not None
         container = parent._get_children_container()
         start, end = block_slice(
-            container, self._item_list, self._ITEM_BOUNDARY_LIST_TYPES,
+            container,
+            self._item_list,
+            self._ITEM_BOUNDARY_LIST_TYPES,
         )
         del container[start:end]

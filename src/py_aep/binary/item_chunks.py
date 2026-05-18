@@ -4,6 +4,7 @@ All three use `fmt_field()` for fixed-layout I/O.
 HeadChunk packs version info into a 32-bit bitfield word with @property
 accessors. NnhdChunk uses `BitField` for scattered flag bits.
 """
+
 from __future__ import annotations
 
 from attrs import define, field
@@ -48,6 +49,7 @@ class IdtaChunk(Chunk):
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     use_proxy = BitField("_proxy_flags", 0)
+
 
 # ---------------------------------------------------------------------------
 # iide - item ID echo (4 bytes, little-endian u32)
@@ -118,7 +120,9 @@ class HeadChunk(Chunk):
 
     @ae_version_major_a.setter
     def ae_version_major_a(self, value: int) -> None:
-        self._version_word = (self._version_word & ~(0x1F << 26)) | ((value & 0x1F) << 26)
+        self._version_word = (self._version_word & ~(0x1F << 26)) | (
+            (value & 0x1F) << 26
+        )
 
     @property
     def ae_version_major_b(self) -> int:
@@ -126,7 +130,9 @@ class HeadChunk(Chunk):
 
     @ae_version_major_b.setter
     def ae_version_major_b(self, value: int) -> None:
-        self._version_word = (self._version_word & ~(0x07 << 19)) | ((value & 0x07) << 19)
+        self._version_word = (self._version_word & ~(0x07 << 19)) | (
+            (value & 0x07) << 19
+        )
 
     @property
     def ae_version_minor(self) -> int:
@@ -134,7 +140,9 @@ class HeadChunk(Chunk):
 
     @ae_version_minor.setter
     def ae_version_minor(self, value: int) -> None:
-        self._version_word = (self._version_word & ~(0x0F << 15)) | ((value & 0x0F) << 15)
+        self._version_word = (self._version_word & ~(0x0F << 15)) | (
+            (value & 0x0F) << 15
+        )
 
     @property
     def ae_version_beta_flag(self) -> bool:
@@ -160,6 +168,7 @@ class HeadChunk(Chunk):
     def ae_version_major(self) -> int:
         """Full major version (e.g. 25)."""
         return self.ae_version_major_a * 8 + self.ae_version_major_b
+
 
 # ---------------------------------------------------------------------------
 # nhed - compact project settings mirror (32 bytes)

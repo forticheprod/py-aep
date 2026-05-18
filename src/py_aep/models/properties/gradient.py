@@ -9,10 +9,18 @@ from xml.etree.ElementTree import (
     tostring,
 )
 
+from ..validators import validate_number, validate_sequence
+
 if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.scalar_chunks import Utf8Chunk
+
+
+_validate_offset = validate_number(min=0.0, max=1.0)
+_validate_midpoint = validate_number(min=0.0, max=1.0)
+_validate_color = validate_sequence(length=3, min=0.0, max=1.0)
+_validate_alpha = validate_number(min=0.0, max=1.0)
 
 
 class _GradientField:
@@ -22,8 +30,16 @@ class _GradientField:
     automatically re-serialize gradient XML when a field is modified.
     """
 
+    _VALIDATORS: dict[str, Any] = {
+        "offset": _validate_offset,
+        "midpoint": _validate_midpoint,
+        "color": _validate_color,
+        "alpha": _validate_alpha,
+    }
+
     def __set_name__(self, owner: type, name: str) -> None:
         self._slot = "_" + name
+        self._name = name
 
     def __get__(self, obj: object, objtype: type | None = None) -> Any:
         if obj is None:
@@ -31,6 +47,9 @@ class _GradientField:
         return object.__getattribute__(obj, self._slot)
 
     def __set__(self, obj: object, value: Any) -> None:
+        validator = self._VALIDATORS.get(self._name)
+        if validator is not None:
+            validator(value, None)
         object.__setattr__(obj, self._slot, value)
         gradient = getattr(obj, "_gradient", obj)
         serialize = getattr(gradient, "_serialize", None)
@@ -59,6 +78,9 @@ class GradientColorStop:
         midpoint: float,
         color: tuple[float, float, float],
     ) -> None:
+        _validate_offset(offset, None)
+        _validate_midpoint(midpoint, None)
+        _validate_color(color, None)
         self._gradient: Gradient | None = None
         self._offset = offset
         self._midpoint = midpoint
@@ -95,6 +117,9 @@ class GradientAlphaStop:
     """Opacity value (0.0 to 1.0)."""
 
     def __init__(self, offset: float, midpoint: float, alpha: float) -> None:
+        _validate_offset(offset, None)
+        _validate_midpoint(midpoint, None)
+        _validate_alpha(alpha, None)
         self._gradient: Gradient | None = None
         self._offset = offset
         self._midpoint = midpoint
@@ -122,6 +147,7 @@ class Gradient:
     Contains ordered lists of color stops and alpha stops that define
     the gradient appearance.
     """
+
     version = _GradientField()
     """Gradient data format version."""
 
@@ -148,7 +174,8 @@ class Gradient:
 
     @color_stops.setter
     def color_stops(
-        self, value: list[GradientColorStop] | tuple[GradientColorStop, ...],
+        self,
+        value: list[GradientColorStop] | tuple[GradientColorStop, ...],
     ) -> None:
         if not all(isinstance(stop, GradientColorStop) for stop in value):
             raise ValueError("All color stops must be GradientColorStop instances")
@@ -166,7 +193,8 @@ class Gradient:
 
     @alpha_stops.setter
     def alpha_stops(
-        self, value: list[GradientAlphaStop] | tuple[GradientAlphaStop, ...],
+        self,
+        value: list[GradientAlphaStop] | tuple[GradientAlphaStop, ...],
     ) -> None:
         if not all(isinstance(stop, GradientAlphaStop) for stop in value):
             raise ValueError("All alpha stops must be GradientAlphaStop instances")
@@ -177,7 +205,9 @@ class Gradient:
             astop._gradient = self
         self._serialize()
 
-    def add_color_stop(self, offset: float, midpoint: float, color: tuple[float, float, float]) -> None:
+    def add_color_stop(
+        self, offset: float, midpoint: float, color: tuple[float, float, float]
+    ) -> None:
         """Add a color stop."""
         stop = GradientColorStop(offset, midpoint, color)
         stop._gradient = self
@@ -189,7 +219,9 @@ class Gradient:
         if not isinstance(stop, int):
             raise ValueError("stop index must be an integer")
         self._color_stops[stop]._gradient = None
-        self._color_stops = tuple(s for i, s in enumerate(self._color_stops) if i != stop)
+        self._color_stops = tuple(
+            s for i, s in enumerate(self._color_stops) if i != stop
+        )
         self._serialize()
 
     def add_alpha_stop(self, offset: float, midpoint: float, alpha: float) -> None:
@@ -204,7 +236,9 @@ class Gradient:
         if not isinstance(stop, int):
             raise ValueError("stop index must be an integer")
         self._alpha_stops[stop]._gradient = None
-        self._alpha_stops = tuple(s for i, s in enumerate(self._alpha_stops) if i != stop)
+        self._alpha_stops = tuple(
+            s for i, s in enumerate(self._alpha_stops) if i != stop
+        )
         self._serialize()
 
     def _serialize(self) -> None:
@@ -226,7 +260,8 @@ class Gradient:
             stop_list = SubElement(stops_list[-1], "prop.list")
             r, g, b = stop.color
             _add_float_array_pair(
-                stop_list, "Stops Color",
+                stop_list,
+                "Stops Color",
                 [stop.offset, stop.midpoint, r, g, b, 1.0],
             )
 
@@ -239,7 +274,8 @@ class Gradient:
             _add_pair_open(alpha_stops_list, f"Stop-{i}")
             stop_list = SubElement(alpha_stops_list[-1], "prop.list")
             _add_float_array_pair(
-                stop_list, "Stops Alpha",
+                stop_list,
+                "Stops Alpha",
                 [astop.offset, astop.midpoint, astop.alpha],
             )
 
@@ -272,13 +308,10 @@ def _add_pair_open(parent: Element, key_text: str) -> None:
     SubElement(pair, "key").text = key_text
 
 
-def _add_float_array_pair(
-    parent: Element, key_text: str, values: list[float]
-) -> None:
+def _add_float_array_pair(parent: Element, key_text: str, values: list[float]) -> None:
     """Add a prop.pair containing a float array."""
     pair = SubElement(parent, "prop.pair")
     SubElement(pair, "key").text = key_text
     array = SubElement(pair, "array")
     for v in values:
         SubElement(array, "float").text = str(v)
-

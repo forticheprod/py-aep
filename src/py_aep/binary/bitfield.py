@@ -8,6 +8,7 @@ Usage::
 
         my_flag = BitField("_flags", 3)  # bit 3 (no annotation)
 """
+
 from __future__ import annotations
 
 

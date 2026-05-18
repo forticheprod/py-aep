@@ -25,7 +25,9 @@ def _parse_controller(cctl_chunk: ListChunk) -> EssentialGraphicsController:
         cctl_chunk: A LIST:CCtl chunk.
     """
     cps2 = find_by_list_type(chunks=cctl_chunk.chunks, list_type="CpS2")
-    name_utf8 = cast("Utf8Chunk", filter_by_type(chunks=cps2.chunks, chunk_type="Utf8")[0])
+    name_utf8 = cast(
+        "Utf8Chunk", filter_by_type(chunks=cps2.chunks, chunk_type="Utf8")[0]
+    )
 
     ctyp = cast("U4Chunk", find_by_type(chunks=cctl_chunk.chunks, chunk_type="CTyp"))
 
@@ -63,9 +65,13 @@ def parse_essential_graphics(
 
     # Template name from the first LIST:CpS2
     cps2 = find_by_list_type(chunks=cif3_chunks, list_type="CpS2")
-    template_name_utf8 = cast("Utf8Chunk", filter_by_type(
-        chunks=cps2.chunks, chunk_type="Utf8",
-    )[0])
+    template_name_utf8 = cast(
+        "Utf8Chunk",
+        filter_by_type(
+            chunks=cps2.chunks,
+            chunk_type="Utf8",
+        )[0],
+    )
 
     # Parse controllers from LIST:CCtl entries
     cctl_chunks = filter_by_list_type(chunks=cif3_chunks, list_type="CCtl")

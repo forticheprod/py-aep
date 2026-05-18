@@ -335,8 +335,7 @@ class RenderQueueItem:
                 chunks=[utf8_chunk],
             )
             idx = next(
-                i for i, c in enumerate(self._litm.chunks)
-                if c is self._list_chunk
+                i for i, c in enumerate(self._litm.chunks) if c is self._list_chunk
             )
             self._litm.chunks.insert(idx, rcom_chunk)
             self._rcom_utf8 = utf8_chunk

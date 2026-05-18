@@ -2290,7 +2290,7 @@ class TestReplaceSource:
             id = 999999
             name = "ghost"
 
-        with pytest.raises(ValueError, match="not in the project"):
+        with pytest.raises(ValueError, match="must be an AVItem"):
             layer.replace_source(_FakeItem())  # type: ignore[arg-type]
 
     def test_sourceless_layer_raises(self) -> None:

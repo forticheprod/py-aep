@@ -3,6 +3,7 @@
 Everything lives in one file to avoid import cycles between ListChunk and
 the recursive reader/writer.
 """
+
 from __future__ import annotations
 
 import struct
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
 # Chunk base (also serves as fallback for unregistered types)
 # ---------------------------------------------------------------------------
 
+
 @define
 class Chunk:
     """Concrete base for all AEP chunks.
@@ -58,7 +60,19 @@ class Chunk:
         if info is None:
             data = read_bytes(fp, size)
             return cls(chunk_type=chunk_type, data=data)
-        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces, init_names, simple, expected = info
+        (
+            fmt,
+            data_fields,
+            trailing_field,
+            encodings,
+            optional_start,
+            endians,
+            items_info,
+            coerces,
+            init_names,
+            simple,
+            expected,
+        ) = info
         mixed_endian = bool(endians)
 
         if simple and size >= expected:
@@ -73,9 +87,7 @@ class Chunk:
                 kw[name] = crc(kw[name])
             trailing_size = size - expected
             if trailing_field and trailing_size > 0:
-                kw[_init_name(trailing_field.name)] = read_bytes(
-                    fp, trailing_size
-                )
+                kw[_init_name(trailing_field.name)] = read_bytes(fp, trailing_size)
             return cls(**kw)
 
         if mixed_endian:
@@ -136,23 +148,32 @@ class Chunk:
             count = items_bytes // item_size
             fmt_cls = cast("type[FmtItem]", item_cls)
             kw2[items_name] = [
-                fmt_cls.frombytes(fp.read(item_size))
-                for _ in range(count)
+                fmt_cls.frombytes(fp.read(item_size)) for _ in range(count)
             ]
             rest = items_bytes - count * item_size
             if trailing_field and rest > 0:
                 kw2[_init_name(trailing_field.name)] = read_bytes(fp, rest)
         elif trailing_field and size > items_start:
-            kw2[_init_name(trailing_field.name)] = read_bytes(
-                fp, size - items_start
-            )
+            kw2[_init_name(trailing_field.name)] = read_bytes(fp, size - items_start)
         return cls(**kw2)
 
     def write(self, fp: IO[bytes]) -> int:
         info = _struct_info(type(self))  # type: ignore[arg-type]
         if info is None:
             return write_bytes(fp, self.data)
-        fmt, data_fields, trailing_field, encodings, optional_start, endians, items_info, coerces, _init_names, _simple, _expected = info
+        (
+            fmt,
+            data_fields,
+            trailing_field,
+            encodings,
+            optional_start,
+            endians,
+            items_info,
+            coerces,
+            _init_names,
+            _simple,
+            _expected,
+        ) = info
         mixed_endian = bool(endians)
 
         # Find last non-None optional field to determine write boundary
@@ -172,7 +193,9 @@ class Chunk:
                 f = data_fields[i]
                 fe = endians.get(i, ">")
                 value = getattr(self, f.name)
-                value = _encode_value(value, i, encodings, coerces, fe, f.metadata["fmt"])
+                value = _encode_value(
+                    value, i, encodings, coerces, fe, f.metadata["fmt"]
+                )
                 written += write_bytes(fp, struct.pack(fe + f.metadata["fmt"], value))
         else:
             # Build format for fields we're writing
@@ -183,7 +206,9 @@ class Chunk:
             for i in range(last_idx):
                 f = data_fields[i]
                 value = getattr(self, f.name)
-                value = _encode_value(value, i, encodings, coerces, ">", f.metadata["fmt"])
+                value = _encode_value(
+                    value, i, encodings, coerces, ">", f.metadata["fmt"]
+                )
                 write_values.append(value)
             written = write_fmt(fp, w_fmt, *write_values) if write_parts else 0
 
@@ -265,7 +290,9 @@ class ListChunk(Chunk):
                 raw_ctx=child_ctx,
             )
         chunks = read_chunks(
-            fp, size - 4, ctx=child_ctx,
+            fp,
+            size - 4,
+            ctx=child_ctx,
             defer_list_types=defer_list_types,
         )
         return cls(
@@ -499,9 +526,7 @@ def read_header(fp: IO[bytes]) -> tuple[str, int]:
     """Read the 8-byte chunk header: (chunk_type, len_body)."""
     data = fp.read(8)
     if len(data) < 8:
-        raise OSError(
-            f"Short read on chunk header: expected 8 bytes, got {len(data)}"
-        )
+        raise OSError(f"Short read on chunk header: expected 8 bytes, got {len(data)}")
     raw_type, len_body = _HEADER_STRUCT.unpack(data)
     chunk_type = raw_type.decode("ASCII")
     return chunk_type, len_body
@@ -555,7 +580,10 @@ def read_chunks(
         resolver = _CONTEXT_RESOLVERS.get(chunk_type)
         ctx_kw = resolver(result, ctx) if resolver else {}
         chunk = cls.read(
-            fp, len_body, chunk_type=chunk_type, ctx=ctx,
+            fp,
+            len_body,
+            chunk_type=chunk_type,
+            ctx=ctx,
             parent_result=result,
             defer_list_types=defer_list_types,
             **ctx_kw,
@@ -567,9 +595,7 @@ def read_chunks(
         pos += 8 + len_body + (len_body & 1)
 
     if pos != end:
-        raise OSError(
-            f"Chunk reader drifted: expected offset {end}, got {pos}"
-        )
+        raise OSError(f"Chunk reader drifted: expected offset {end}, got {pos}")
 
     return result
 
@@ -577,7 +603,6 @@ def read_chunks(
 # ---------------------------------------------------------------------------
 # AEP file I/O
 # ---------------------------------------------------------------------------
-
 
 
 def read_aep(
@@ -592,7 +617,9 @@ def read_aep(
         raise ValueError(f"Expected RIFX, got {chunk_type!r}")
     (len_body,) = read_fmt("I", fp)
     rifx = ListChunk.read(
-        fp, len_body, chunk_type="RIFX",
+        fp,
+        len_body,
+        chunk_type="RIFX",
         defer_list_types=defer_list_types,
     )
     xmp = fp.read().decode("UTF-8")

@@ -115,9 +115,7 @@ class FileSource(FootageSource):
         self._file_names: list[str]
         try:
             stvc_chunk = find_by_list_type(chunks=pin_chunks, list_type="StVc")
-            utf8_chunks = filter_by_type(
-                chunks=stvc_chunk.chunks, chunk_type="Utf8"
-            )
+            utf8_chunks = filter_by_type(chunks=stvc_chunk.chunks, chunk_type="Utf8")
             self._file_names = [cast("Utf8Chunk", chunk).value for chunk in utf8_chunks]
         except ChunkNotFoundError:
             self._file_names = []

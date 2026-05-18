@@ -6,15 +6,15 @@ from typing import TYPE_CHECKING, Union, cast
 from py_aep.enums import KeyframeInterpolationType, Label
 
 from ..descriptors import ChunkField
+from ..text.text_document import TextDocument
+from .gradient import Gradient
+from .marker import MarkerValue
+from .shape import Shape
 
 if TYPE_CHECKING:
     from ...binary.ldat_chunks import LdatItem
-    from ..text.text_document import TextDocument
-    from .gradient import Gradient
     from .keyframe_ease import KeyframeEase
-    from .marker import MarkerValue
     from .property import Property
-    from .shape import Shape
 
     _ValueType = Union[
         list[float], float, Gradient, MarkerValue, Shape, TextDocument, None
@@ -298,10 +298,21 @@ class Keyframe:
     @value.setter
     def value(
         self,
-        value: list[float] | float | Gradient | MarkerValue | Shape | TextDocument | None,
+        value: list[float]
+        | float
+        | Gradient
+        | MarkerValue
+        | Shape
+        | TextDocument
+        | None,
     ) -> None:
-        if not isinstance(value, (int, float, list, Gradient, MarkerValue, Shape, TextDocument, type(None))):
-            raise ValueError("value must be a float, list of floats, Gradient, MarkerValue, Shape, TextDocument, or None")
+        if not isinstance(
+            value,
+            (int, float, list, Gradient, MarkerValue, Shape, TextDocument, type(None)),
+        ):
+            raise ValueError(
+                "value must be a float, list of floats, Gradient, MarkerValue, Shape, TextDocument, or None"
+            )
         if self._property is not None and isinstance(value, (int, float, list)):
             value = self._property._unresolve_value(value)
         self._value = value

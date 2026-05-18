@@ -147,7 +147,9 @@ class FootageItem(AVItem):
         elif isinstance(self._main_source, PlaceholderSource):
             return "placeholder"
         else:
-            raise TypeError(f"Unexpected source type for {self.name}: {type(self._main_source)}")
+            raise TypeError(
+                f"Unexpected source type for {self.name}: {type(self._main_source)}"
+            )
 
     @property
     def file(self) -> str | None:

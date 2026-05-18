@@ -4,6 +4,7 @@ Uses `fmt_field()` for all fixed-layout fields, `BitField` descriptors
 for two flag bytes and sentinel-aware helpers for work-area end
 interpretation.
 """
+
 from __future__ import annotations
 
 from attrs import define, field
@@ -228,6 +229,3 @@ class CsctChunk(Chunk):
     chunk_type: str = "CsCt"
     value: int = u4_field(default=0x01000000)
     _trailing: bytes = field(default=b"", repr=False)
-
-
-

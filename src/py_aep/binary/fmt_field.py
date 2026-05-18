@@ -5,6 +5,7 @@ Each field declares its struct format via `fmt_field("B")`.
 format string and field list.  Generic `Chunk.read()` / `write()`
 use this to handle all fixed-layout chunks with zero per-class I/O code.
 """
+
 from __future__ import annotations
 
 import struct
@@ -163,19 +164,22 @@ def bool_field(**kw: Any) -> Any:
 @lru_cache(maxsize=None)
 def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None on instances, but type objects are always hashable
     cls: type,
-) -> tuple[
-    str,
-    tuple[Attribute, ...],
-    Attribute | None,
-    dict[int, str],
-    int,
-    dict[int, str],
-    tuple[str, type, int] | None,
-    dict[int, type],
-    tuple[str, ...],
-    bool,
-    int,
-] | None:
+) -> (
+    tuple[
+        str,
+        tuple[Attribute, ...],
+        Attribute | None,
+        dict[int, str],
+        int,
+        dict[int, str],
+        tuple[str, type, int] | None,
+        dict[int, type],
+        tuple[str, ...],
+        bool,
+        int,
+    ]
+    | None
+):
     """Derive struct layout metadata for a chunk class.
 
     Returns an 11-tuple `(fmt, data_fields, trailing, encodings,
@@ -255,7 +259,9 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     if fmt_parts:
         # Validate format/field count match at cache time
         combined = "".join(fmt_parts)
-        n_values = len(struct.unpack(">" + combined, b"\x00" * struct.calcsize(">" + combined)))
+        n_values = len(
+            struct.unpack(">" + combined, b"\x00" * struct.calcsize(">" + combined))
+        )
         if n_values != len(data_fields):
             raise ValueError(
                 f"{cls.__name__}: struct format yields {n_values} values "
@@ -276,7 +282,19 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     )
     expected_size = struct.calcsize(">" + combined) if combined else 0
 
-    return combined, tuple(data_fields), trailing, encodings, optional_start, endians, items_info, coerces, init_names, simple, expected_size
+    return (
+        combined,
+        tuple(data_fields),
+        trailing,
+        encodings,
+        optional_start,
+        endians,
+        items_info,
+        coerces,
+        init_names,
+        simple,
+        expected_size,
+    )
 
 
 def _init_name(name: str) -> str:
@@ -347,7 +365,19 @@ class FmtItem:
         info = _struct_info(cls)  # type: ignore[arg-type]
         if info is None:
             raise TypeError(f"{cls.__name__} has no fmt_field metadata")
-        fmt, data_fields, _, encodings, _, endians, _, coerces, init_names, simple, expected = info
+        (
+            fmt,
+            data_fields,
+            _,
+            encodings,
+            _,
+            endians,
+            _,
+            coerces,
+            init_names,
+            simple,
+            expected,
+        ) = info
         if endians:
             values: list[Any] = []
             pos = 0
@@ -380,7 +410,9 @@ class FmtItem:
             for i, f in enumerate(data_fields):
                 fe = endians.get(i, ">")
                 value = getattr(self, f.name)
-                value = _encode_value(value, i, encodings, coerces, fe, f.metadata["fmt"])
+                value = _encode_value(
+                    value, i, encodings, coerces, fe, f.metadata["fmt"]
+                )
                 parts.append(struct.pack(fe + f.metadata["fmt"], value))
             return b"".join(parts)
         values: list[Any] = []

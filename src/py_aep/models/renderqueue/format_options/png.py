@@ -78,9 +78,7 @@ class PngFormatOptions:
     def _sync_hdr10(self) -> None:
         """Serialize `_hdr10_meta` back to the Utf8 chunk body."""
         if self._hdr10_utf8 is not None:
-            self._hdr10_utf8.value = json.dumps(
-                self._hdr10_meta, separators=(",", ":")
-            )
+            self._hdr10_utf8.value = json.dumps(self._hdr10_meta, separators=(",", ":"))
 
     @property
     def include_hdr10_metadata(self) -> bool:
@@ -111,7 +109,9 @@ class PngFormatOptions:
     @color_primaries.setter
     def color_primaries(self, value: Hdr10ColorPrimaries) -> None:
         if not isinstance(value, (Hdr10ColorPrimaries, int)):
-            raise ValueError("Color primaries must be an instance of Hdr10ColorPrimaries or int")
+            raise ValueError(
+                "Color primaries must be an instance of Hdr10ColorPrimaries or int"
+            )
         self._hdr10_meta["displayPrimaries"] = int(value)
         self._sync_hdr10()
 
@@ -171,7 +171,9 @@ class PngFormatOptions:
             self._hdr10_meta.pop("maxContentLightLevel", None)
         else:
             if not isinstance(value, (int, float)) or value < 0:
-                raise ValueError("Maximum content light level must be a non-negative number")
+                raise ValueError(
+                    "Maximum content light level must be a non-negative number"
+                )
             self._hdr10_meta["maxContentLightLevel"] = value
         self._sync_hdr10()
 
@@ -191,6 +193,8 @@ class PngFormatOptions:
             self._hdr10_meta.pop("maxFrameAverageLightLevel", None)
         else:
             if not isinstance(value, (int, float)) or value < 0:
-                raise ValueError("Maximum frame average light level must be a non-negative number")
+                raise ValueError(
+                    "Maximum frame average light level must be a non-negative number"
+                )
             self._hdr10_meta["maxFrameAverageLightLevel"] = value
         self._sync_hdr10()

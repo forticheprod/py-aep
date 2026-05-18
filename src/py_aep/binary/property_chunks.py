@@ -4,6 +4,7 @@ TdsbChunk and Tdb4Chunk use `fmt_field()` with `BitField` descriptors.
 CdatChunk and TdumChunk override `read()` / `write()` because they
 have variable-length or context-dependent layouts.
 """
+
 from __future__ import annotations
 
 import struct
@@ -83,6 +84,7 @@ class TdsbChunk(Chunk):
 @define
 class Tdb4Chunk(Chunk):
     """Property metadata chunk (124 bytes)."""
+
     chunk_type: str = "tdb4"
 
     _magic: int = u2_field(default=0xDB99, repr=False)
@@ -155,7 +157,9 @@ class CdatChunk(Chunk):
         if count == 0:
             trailing = read_bytes(fp, size) if size > 0 else b""
             return cls(
-                chunk_type=chunk_type, is_le=is_le, trailing=trailing,
+                chunk_type=chunk_type,
+                is_le=is_le,
+                trailing=trailing,
             )
         fmt = "<" if is_le else ">"
         fmt += f"{count}d"
@@ -164,7 +168,9 @@ class CdatChunk(Chunk):
         rest = size - count * 8
         trailing = read_bytes(fp, rest) if rest > 0 else b""
         return cls(
-            chunk_type=chunk_type, values=vals, is_le=is_le,
+            chunk_type=chunk_type,
+            values=vals,
+            is_le=is_le,
             trailing=trailing,
         )
 

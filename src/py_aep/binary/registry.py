@@ -1,4 +1,5 @@
 """Chunk type registry for dispatching binary parsing."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
