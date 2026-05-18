@@ -39,11 +39,10 @@ class JpegFormatOptions:
     JPEG quality level, from 0 (Smaller File) to 10 (Bigger File). Read / Write.
     """
 
-    format_type = ChunkField[JpegFormatType](
+    format_type = ChunkField.enum(
+        JpegFormatType,
         "_body",
         "format_type",
-        transform=JpegFormatType,
-        reverse=int,
     )
     """
     JPEG format option type: Baseline (Standard), Baseline Optimized,

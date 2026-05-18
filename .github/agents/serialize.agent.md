@@ -16,12 +16,10 @@ Read these files to understand the patterns. They are the source of truth - this
 | File | What to learn |
 |------|---------------|
 | `src/py_aep/models/project.py` | **Primary reference.** Multiple chunk bodies, ChunkField, ChunkField.enum, reverse helpers, custom `@property` setters (linear_blending, expression_engine), validators, `__init__` layout |
-| `src/py_aep/models/items/composition.py` | Many descriptors on one `_cdta` body, generic reverse factories (`reverse_fractional`, `reverse_ratio`, `reverse_frame_ticks`), `validate_number` with dynamic `lambda self:` bounds, `default=` on ChunkField |
-| `src/py_aep/models/application.py` | Minimal example - ChunkField with `reverse_multi` for multi-field writes, custom reverse function |
+| `src/py_aep/models/items/composition.py` | Many descriptors on one `_cdta` body, `validate_number` with dynamic `lambda self:` bounds, `default=` on ChunkField |
+| `src/py_aep/models/application.py` | Minimal example - ChunkField with validate, chunk `@property` for multi-field writes |
 | `src/py_aep/models/descriptors.py` | ChunkField / ChunkField.enum API, materialization context management |
 | `src/py_aep/models/validators.py` | `validate_number`, `validate_sequence`, `validate_one_of` |
-| `src/py_aep/models/reverses.py` | `reverse_ratio`, `reverse_frame_ticks`, `reverse_fractional`, `denormalize_values` |
-| `src/py_aep/models/transforms.py` | `normalize_values` |
 | `tests/test_models_composition.py` | **Roundtrip test pattern** - `TestRoundtrip*` classes: parse -> modify -> save -> re-parse -> assert |
 
 ## Procedure
@@ -35,8 +33,8 @@ Read these files to understand the patterns. They are the source of truth - this
 
 - **Direct chunk fields** can be used with `ChunkField` directly.
 - **Computed fields** (derived from multiple chunk fields) MUST use either:
-  - **`reverse_multi` ChunkField** (`reverse_multi` takes `(value, body)` and returns a `dict` of the underlying fields to update), OR
-  - **`@property` with a setter** that writes the underlying fields.
+  - **Chunk `@property` with setter** (preferred: put the multi-field logic on the chunk, then use `ChunkField` pointing to the property), OR
+  - **`@property` with a setter** on the model that writes the underlying fields.
 - **Read-only computed fields** can use `ChunkField` with `read_only=True` (no write-through needed).
 - **Simple inversions** (e.g. `not field`, `field != 0xFF`, `width > 0 or height > 0`) should just be Python `@property` getter/setter logic.
 
@@ -59,13 +57,13 @@ Read these files to understand the patterns. They are the source of truth - this
 ### 4. Update the parser
 Refactor to a thin chunk-locator: find chunks, pass chunks to the model. Remove extraction code for descriptor-backed fields. Keep extraction of non-chunk fields.
 
-### 5. Add transforms, reverses, validators, and read_only
+### 5. Add validators, and read_only
 - **Read-only fields**: Set `read_only=True`. No `reverse` needed.
 - **Booleans**: Use `ChunkField[bool]("_body", "field")` for all boolean fields. When the chunk field is a `BitField`, uses `bool_field()`, or is a `@property` returning `bool`, no transform is needed. When the chunk field is a generic integer (e.g. U1Chunk.value), add `transform=bool, reverse=int`.
 - **Enums**: Use `ChunkField.enum(MyEnum, "_body", "field")` - auto-detects `from_binary`/`to_binary`. Falls back to the enum class as transform and `int` as reverse.
 - **Identity-typed fields** (int->int, float->float, str->str, list->list): No `reverse` needed - only set `read_only=True` if read-only, otherwise omit both `reverse` and `read_only`.
 - **Multi-field writes** (computed from multiple fields): Use `ChunkField` with `reverse_multi` - a 2-arg callable `(value, body)` that returns a `dict` of `{field_name: value}` pairs.
-- **Reverses**: Only add `reverse` (scalar) or `reverse_multi` (multi-field) when actual conversion is needed (bool->int, enum->binary, custom decomposition). Prefer generic factories from `reverses.py`.
+- **Reverses**: Only add `reverse` (scalar) or `reverse_multi` (multi-field) when actual conversion is needed (bool->int, enum->binary, custom decomposition).
 - **Validators**: `validate_number(min=, max=, integer=)`, `validate_sequence(length=, min=, max=)`, `validate_one_of(values)`. Dynamic bounds use `lambda self:`. Located in `models/validators.py`.
 
 ### 6. Write roundtrip tests

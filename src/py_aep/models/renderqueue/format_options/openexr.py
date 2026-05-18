@@ -75,4 +75,4 @@ class OpenExrFormatOptions:
     def dwa_compression_level(self, value: float) -> None:
         if not isinstance(value, (int, float)) or value <= 0:
             raise ValueError("DWA compression level must be a positive number")
-            self._body.dwa_compression_level = value
+        self._body.dwa_compression_level = value

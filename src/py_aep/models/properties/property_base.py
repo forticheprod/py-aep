@@ -37,9 +37,6 @@ _INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset(
 )
 
 
-_validate_name = validate_string(allow_empty=False)
-
-
 def _validate_enabled(value: bool, obj: PropertyBase) -> None:
     if not obj.can_set_enabled:
         raise AttributeError("'enabled' is read-only when 'can_set_enabled' is False.")
@@ -174,7 +171,7 @@ class PropertyBase:
 
     @name.setter
     def name(self, value: str) -> None:
-        _validate_name(value, self)
+        validate_string()(value, None)
 
         self._ensure_materialized()
         self._name = value

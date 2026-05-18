@@ -23,7 +23,7 @@ from ..enums import (
     LutInterpolationMethod,
     TimeDisplayType,
 )
-from .descriptors import ChunkField, ComputedField
+from .descriptors import ChunkField
 from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
@@ -40,19 +40,6 @@ if TYPE_CHECKING:
     from .items.item import Item
     from .layers.layer import Layer
     from .renderqueue.render_queue import RenderQueue
-
-
-def _reverse_working_gamma(value: float, _body: DwgaChunk) -> dict[str, int]:
-    """Decompose working gamma into binary selector.
-
-    AE stores a single selector byte: 0 -> 2.2, nonzero -> 2.4.
-    """
-    return {"working_gamma_selector": 0 if value == 2.2 else 1}
-
-
-def _compute_working_gamma(body: DwgaChunk) -> float:
-    """Return the project working gamma from the selector byte."""
-    return 2.2 if body.working_gamma_selector == 0 else 2.4
 
 
 class Project:
@@ -126,7 +113,6 @@ class Project:
     display_start_frame = ChunkField[int](
         "_nnhd",
         "display_start_frame",
-        reverse_multi=lambda value, _body: {"frames_count_type": value},
         validate=validate_one_of((0, 1)),
         post_set=lambda obj: obj._sync_nhed_field("frames_count_type"),
     )
@@ -184,20 +170,18 @@ class Project:
     Note:
         Not exposed in ExtendScript"""
 
-    working_gamma = ComputedField[float](
+    working_gamma = ChunkField[float](
         "_dwga",
-        compute=_compute_working_gamma,
-        reverse=_reverse_working_gamma,
+        "working_gamma",
         validate=validate_one_of((2.2, 2.4)),
     )
     """The gamma value used for the working color space, either 2.2 or 2.4.
     Read / Write."""
 
-    gpu_accel_type = ChunkField[GpuAccelType](
+    gpu_accel_type = ChunkField.enum(
+        GpuAccelType,
         "_gpug_utf8",
         "value",
-        transform=GpuAccelType.from_binary,
-        reverse=GpuAccelType.to_binary,
     )
     """The GPU acceleration type for the project. None if not
     recognised. Read / Write."""

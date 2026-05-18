@@ -19,8 +19,6 @@ if TYPE_CHECKING:
     from ..project import Project
     from ..viewer.viewer import Viewer
 
-_validate_name = validate_string(allow_empty=False)
-
 
 class FolderItem(Item):
     """
@@ -155,7 +153,7 @@ class FolderItem(Item):
         Returns:
             The newly created [FolderItem][].
         """
-        _validate_name(name, None)
+        validate_string()(name, None)
 
         folder = FolderItem._new(
             name,
@@ -196,7 +194,7 @@ class FolderItem(Item):
         """
         from .composition import CompItem
 
-        _validate_name(name, None)
+        validate_string()(name, None)
 
         comp = CompItem._new(
             name,

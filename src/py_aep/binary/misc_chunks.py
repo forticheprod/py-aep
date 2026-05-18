@@ -126,6 +126,17 @@ class MkifChunk(Chunk):
     color_g: int = u1_field()
     color_b: int = u1_field()
 
+    @property
+    def color(self) -> list[float]:
+        """Mask color as [R, G, B] in 0.0-1.0 range."""
+        return [self.color_r / 255, self.color_g / 255, self.color_b / 255]
+
+    @color.setter
+    def color(self, value: list[float]) -> None:
+        self.color_r = round(value[0] * 255)
+        self.color_g = round(value[1] * 255)
+        self.color_b = round(value[2] * 255)
+
 
 # ---------------------------------------------------------------------------
 # shph - shape path header (24 bytes)
@@ -199,6 +210,14 @@ class NmhdChunk(Chunk):
     protected_region = BitField("_marker_flags", 1)
     navigation = BitField("_marker_flags", 0)
 
+    @property
+    def duration_seconds(self) -> float:
+        """Duration in seconds (frame_duration / 600)."""
+        return self.frame_duration / 600.0
+
+    @duration_seconds.setter
+    def duration_seconds(self, value: float) -> None:
+        self.frame_duration = round(value * 600)
 
 # ---------------------------------------------------------------------------
 # fips - viewer panel settings (96 bytes)
@@ -297,6 +316,13 @@ class FipsChunk(Chunk):
         if self.fast_preview_adaptive:
             return 1
         return 0
+
+    @fast_preview_type.setter
+    def fast_preview_type(self, value: int) -> None:
+        self.fast_preview_adaptive = value == 1
+        self.fast_preview_draft = value == 2
+        self.fast_preview_fast_draft = value == 3
+        self.fast_preview_wireframe = value == 4
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +583,15 @@ class DwgaChunk(Chunk):
 
     working_gamma_selector: int = u1_field()
     _trailing: bytes = field(default=b"", repr=False)
+
+    @property
+    def working_gamma(self) -> float:
+        """Working gamma (2.2 or 2.4)."""
+        return 2.2 if self.working_gamma_selector == 0 else 2.4
+
+    @working_gamma.setter
+    def working_gamma(self, value: float) -> None:
+        self.working_gamma_selector = 0 if value == 2.2 else 1
 
 
 # ---------------------------------------------------------------------------

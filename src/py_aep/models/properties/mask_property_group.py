@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, cast
+from typing import TYPE_CHECKING, List
 
 from ...enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
-from ..descriptors import ChunkField, ComputedField
-from ..reverses import denormalize_values, unpack_values
-from ..transforms import normalize_values, pack_values
+from ..descriptors import ChunkField
 from ..validators import validate_sequence
 from .property_group import PropertyGroup
 
@@ -15,18 +13,6 @@ if TYPE_CHECKING:
     from ...binary.property_chunks import TdmnChunk, TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from .property import Property
-
-
-def _compute_color(body: MkifChunk) -> list[float]:
-    return normalize_values(
-        cast("list[int]", pack_values(body, "color_r", "color_g", "color_b"))
-    )
-
-
-def _reverse_color(value: list[float], _body: MkifChunk) -> dict[str, Any]:
-    return unpack_values("color_r", "color_g", "color_b")(
-        denormalize_values(value), _body
-    )
 
 
 class MaskPropertyGroup(PropertyGroup):
@@ -54,10 +40,9 @@ class MaskPropertyGroup(PropertyGroup):
     See: https://ae-scripting.docsforadobe.dev/property/maskpropertygroup/
     """
 
-    color = ComputedField[List[float]](
+    color = ChunkField[List[float]](
         "_mkif",
-        compute=_compute_color,
-        reverse=_reverse_color,
+        "color",
         validate=validate_sequence(length=3, min=0.0, max=1.0),
     )
     """The color used to draw the mask outline as it appears in the user

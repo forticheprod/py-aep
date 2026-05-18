@@ -10,38 +10,14 @@ from py_aep.enums import (
     TrackMatteType,
 )
 
-from ..descriptors import ChunkField, ComputedField
+from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
 from ..version import requires_version
 from .layer import Layer
 
 if TYPE_CHECKING:
-    from ...binary.layer_chunks import LdtaChunk
     from ..items.composition import CompItem
-
-
-def _compute_frame_blending_type(body: LdtaChunk) -> FrameBlendingType:
-    """Derive FrameBlendingType from frame_blending + frame_blending_mode bits."""
-    if not body.frame_blending:
-        return FrameBlendingType.NO_FRAME_BLEND
-    return (
-        FrameBlendingType.PIXEL_MOTION
-        if body.frame_blending_mode
-        else FrameBlendingType.FRAME_MIX
-    )
-
-
-def _reverse_frame_blending(
-    value: FrameBlendingType, _body: LdtaChunk
-) -> dict[str, int]:
-    """Decompose FrameBlendingType into frame_blending + frame_blending_mode bits."""
-    if value == FrameBlendingType.NO_FRAME_BLEND:
-        return {"frame_blending": 0}
-    return {
-        "frame_blending": 1,
-        "frame_blending_mode": int(value == FrameBlendingType.PIXEL_MOTION),
-    }
 
 
 def _would_create_cycle(target_comp: CompItem, new_source: AVItem) -> bool:
@@ -150,11 +126,10 @@ class AVLayer(Layer):
     composition. Setting this to `True` automatically sets
     [three_d_layer][] to `True`. Read / Write."""
 
-    frame_blending_type = ComputedField.enum(
+    frame_blending_type = ChunkField.enum(
         FrameBlendingType,
         "_ldta",
-        compute=_compute_frame_blending_type,
-        reverse=_reverse_frame_blending,
+        "frame_blending_type",
     )
     """The type of frame blending for the layer. Read / Write."""
 

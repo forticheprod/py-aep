@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Union, cast
+from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import KeyframeInterpolationType, Label
 
@@ -12,13 +12,15 @@ from .marker import MarkerValue
 from .shape import Shape
 
 if TYPE_CHECKING:
+    from typing import Union
+
     from ...binary.ldat_chunks import LdatItem
     from .keyframe_ease import KeyframeEase
     from .property import Property
 
-_ValueType = Union[
-    list[float], float, Gradient, MarkerValue, Shape, TextDocument, None
-]
+    _ValueType = Union[
+        list[float], float, Gradient, MarkerValue, Shape, TextDocument, None
+    ]
 
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0

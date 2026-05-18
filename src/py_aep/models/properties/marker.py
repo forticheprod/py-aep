@@ -4,23 +4,13 @@ from typing import TYPE_CHECKING
 
 from py_aep.enums import Label
 
-from ..descriptors import ChunkField, ComputedField
+from ..descriptors import ChunkField
 from ..validators import validate_number
 
 if TYPE_CHECKING:
     from ...binary.misc_chunks import NmhdChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from .keyframe import Keyframe
-
-
-def _reverse_duration(value: float, body: NmhdChunk) -> dict[str, int]:
-    """Convert duration in seconds to frame_duration in 600ths."""
-    return {"frame_duration": round(value * 600)}
-
-
-def _compute_duration(body: NmhdChunk) -> float:
-    """Convert marker duration from 600ths to seconds."""
-    return body.frame_duration / 600.0
 
 
 class MarkerValue:
@@ -49,11 +39,7 @@ class MarkerValue:
     )
     """The marker's duration, in frames. Read / Write."""
 
-    duration = ComputedField[float](
-        "_nmhd",
-        compute=_compute_duration,
-        reverse=_reverse_duration,
-    )
+    duration = ChunkField[float]("_nmhd", "duration_seconds")
     """The marker's duration, in seconds. Read / Write."""
 
     label = ChunkField.enum(Label, "_nmhd", "label")

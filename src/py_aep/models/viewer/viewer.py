@@ -26,7 +26,8 @@ class Viewer:
     See: https://ae-scripting.docsforadobe.dev/other/viewer/
     """
 
-    type = ChunkField[ViewerType](
+    type = ChunkField.enum(
+        ViewerType,
         "_fitt",
         "value",
         transform=ViewerType.from_string,

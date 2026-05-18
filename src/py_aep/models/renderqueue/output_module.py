@@ -31,7 +31,6 @@ from ...resolvers.output import (
 )
 from ..descriptors import ChunkField
 from ..items.composition import CompItem
-from ..transforms import strip_null
 from ..validators import validate_number
 from .format_options import (
     CineonFormatOptions,
@@ -619,12 +618,12 @@ class OutputModule:
     @property
     def _video_codec(self) -> str | None:
         """The four-character video codec identifier."""
-        return strip_null(self._roou.video_codec) or None
+        return self._roou.video_codec or None
 
     @property
     def _resolve_extension(self) -> str | None:
         """Derive file extension from format_id, with Cineon special case."""
-        format_id = strip_null(self._roou.format_id)
+        format_id = self._roou.format_id
         if format_id == "sDPX":
             fo = self._format_options
             if isinstance(fo, CineonFormatOptions):

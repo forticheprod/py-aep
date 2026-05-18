@@ -7,6 +7,8 @@ accessors. NnhdChunk uses `BitField` for scattered flag bits.
 
 from __future__ import annotations
 
+import re
+
 from attrs import define, field
 
 from .bitfield import BitField
@@ -169,6 +171,22 @@ class HeadChunk(Chunk):
         """Full major version (e.g. 25)."""
         return self.ae_version_major_a * 8 + self.ae_version_major_b
 
+    @property
+    def version(self) -> str:
+        """AE version as `major.minorxbuild` (e.g. '25.6x101')."""
+        return f"{self.ae_version_major}.{self.ae_version_minor}x{self.ae_build_number}"
+
+    @version.setter
+    def version(self, value: str) -> None:
+        m = re.match(r"^(\d+)\.(\d+)x(\d+)$", value)
+        if not m:
+            raise ValueError(f"Invalid version format: {value!r}")
+        major, minor, build = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        self.ae_version_major_a = major // 8
+        self.ae_version_major_b = major % 8
+        self.ae_version_minor = minor
+        self.ae_build_number = build
+
 
 # ---------------------------------------------------------------------------
 # nhed - compact project settings mirror (32 bytes)
@@ -270,6 +288,10 @@ class NnhdChunk(Chunk):
     @property
     def display_start_frame(self) -> int:
         return self.frames_count_type % 2
+
+    @display_start_frame.setter
+    def display_start_frame(self, value: int) -> None:
+        self.frames_count_type = value
 
 
 # ---------------------------------------------------------------------------

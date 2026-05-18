@@ -174,3 +174,36 @@ class LdtaChunk(Chunk):
         else:
             self.stretch_dividend = round(value * self._TIME_DIVISOR / 100.0)
             self.stretch_divisor = self._TIME_DIVISOR
+
+    @property
+    def auto_orient(self) -> int:
+        """Auto-orient type (0=none, 1=path, 2=camera/poi, 3=chars_toward_camera)."""
+        if self.auto_orient_along_path:
+            return 1
+        if self.camera_or_poi_auto_orient and self.three_d_layer:
+            return 2
+        if self.characters_toward_camera and self.three_d_per_char:
+            return 3
+        return 0
+
+    @auto_orient.setter
+    def auto_orient(self, value: int) -> None:
+        self.auto_orient_along_path = value == 1
+        self.camera_or_poi_auto_orient = value == 2
+        self.characters_toward_camera = value == 3
+        self.three_d_per_char = value == 3
+
+    @property
+    def frame_blending_type(self) -> int:
+        """Frame blending type (0=none, 1=frame_mix, 2=pixel_motion)."""
+        if not self.frame_blending:
+            return 0
+        return 2 if self.frame_blending_mode else 1
+
+    @frame_blending_type.setter
+    def frame_blending_type(self, value: int) -> None:
+        if value == 0:
+            self.frame_blending = False
+        else:
+            self.frame_blending = True
+            self.frame_blending_mode = value == 2

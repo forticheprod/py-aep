@@ -71,8 +71,8 @@ For each design decision, document:
 - [ ] Enum/mapping added if binary != ExtendScript value
 
 ### Serialization (if read/write)
-- [ ] ChunkField descriptor type chosen (direct, bool, enum, `reverse_multi`)
-- [ ] `reverse` or `reverse_multi` function implemented where needed
+- [ ] ChunkField descriptor type chosen (direct, bool, enum)
+- [ ] `reverse` function or chunk `@property` setter implemented where needed
 - [ ] Validators added for writable fields
 - [ ] Roundtrip test written (parse > modify > save > re-parse > assert)
 
@@ -88,7 +88,7 @@ For each design decision, document:
 Watch for these architectural anti-patterns in this codebase:
 - **Leaking binary details**: Exposing chunk internals through the public model API
 - **Wrong layer**: Binary decoding outside `binary/`, business logic in parsers, chunk navigation in models
-- **Silent data loss**: Writing to chunk bodies without proper `reverse_multi` (doesn't update dependent fields)
+- **Silent data loss**: Writing to chunk bodies without proper setter (doesn't update dependent fields)
 - **Mutation during parse**: Modifying chunk data in parsers (breaks roundtrip invariant)
 - **Over-synthesis**: Creating synthetic chunks when the chunk data is actually present
 - **Catch-all exceptions**: `except Exception: pass` hiding real parsing failures

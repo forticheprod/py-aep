@@ -34,10 +34,8 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
   - Pattern: Each parser receives chunks + context, returns a model instance
 - **`src/py_aep/models/`** - Typed model classes mirroring AE's object model
   - `application.py`, `project.py`, `items/`, `layers/`, `properties/`, `sources/`, `renderqueue/`, `text/`, `viewer/`
-  - `models/descriptors.py` - `ChunkField` and `ComputedField` descriptors, `_materialization_allowed`, `_suppress_materialization`. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `ComputedField` for model fields derived from multiple chunk fields (e.g. `frame_rate` from integer+fractional). Use `ComputedField.enum()` for IntEnum-backed computed fields. Use `ChunkField.enum()` for IntEnum-backed single-field attributes.
+  - `models/descriptors.py` - `ChunkField` descriptor, `_materialization_allowed`, `_suppress_materialization`. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `ChunkField.enum()` for IntEnum-backed fields.
   - `models/validators.py` - Validator factories for model field constraints
-  - `models/transforms.py` - `normalize_values`, `strip_null`, `compute_fractional`
-  - `models/reverses.py` - `reverse_ratio`, `reverse_frame_ticks`, `reverse_fractional`, `denormalize_values`
 - **`src/py_aep/data/`** - Static data tables
   - `match_names.py` - Match name constants; `units.py` - Unit definitions for properties
 - **`src/py_aep/enums/`** - Enumerations matching ExtendScript values (`general.py`, `property.py`, `mappings.py`, ...)
@@ -92,7 +90,7 @@ JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json
 
 ### Getter/Setter Placement
 - **Chunk classes** (`@define`): Use semantic field aliases (`u1_field()`, `u4_field()`, `f8_field()`, `bool_field()`, etc.) for binary layout. Add computed `@property` only for derived values (e.g. `frame_rate` from integer+fractional parts).
-- **Model classes**: Use `ChunkField` descriptors for attributes backed by a single chunk field. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool chunk fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `ComputedField` for attributes derived from multiple raw chunk fields (compute + reverse dict). Use `ComputedField.enum()` / `ChunkField.enum()` for IntEnum-backed fields. Use `@property` only when custom logic is needed (validation, multi-chunk updates, fallback behavior). Prefer `compute_fractional()` over inline `integer + fractional / 65536.0` formulas.
+- **Model classes**: Use `ChunkField` descriptors for attributes backed by a single chunk field or chunk `@property`. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool chunk fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `ChunkField.enum()` for IntEnum-backed fields. Use `@property` only when custom logic is needed (validation, multi-chunk updates, fallback behavior).
 - Never put business logic in chunk classes. Chunks are data containers.
 
 ### Synthesized Properties

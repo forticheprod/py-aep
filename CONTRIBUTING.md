@@ -35,7 +35,7 @@ py_aep transforms binary .aep files into typed Python objects through a three-st
 - Pattern: Each parser receives chunks + context, passes chunks to the model
 
 **Stage 3: Data Models**
-- `src/py_aep/models/` - Classes using ChunkField and ComputedField descriptors, mirroring AE's object model
+- `src/py_aep/models/` - Classes using ChunkField descriptors, mirroring AE's object model
 - `items/` - CompItem, FootageItem, FolderItem
 - `layers/` - Layer types (AVLayer, TextLayer, ShapeLayer, etc.)
 - `properties/` - Effects and animation (Property, PropertyGroup, Keyframe, MarkerValue)
@@ -48,8 +48,6 @@ py_aep transforms binary .aep files into typed Python objects through a three-st
 - `src/py_aep/resolvers/` - Business logic for computing derived values
 - `src/py_aep/cos/` - COS (PDF-like) format parser for embedded text data
 - `src/py_aep/models/validators.py` - Field validators for model attributes
-- `src/py_aep/models/reverses.py` - Generic reverse transform factories
-- `src/py_aep/models/transforms.py` - Generic forward transform factories
 
 ### Key Concepts
 
@@ -72,30 +70,18 @@ comp_chunk = find_by_list_type(chunks=root_chunks, list_type="Comp")
 layer_chunks = filter_by_list_type(chunks=comp_chunks, list_type="Layr")
 ```
 
-**ChunkField descriptors**: Model attributes backed by binary chunk fields. Reads and writes pass through to the binary:
+**ChunkField descriptors**: Model attributes backed by binary chunk fields or chunk `@property`. Reads and writes pass through to the binary:
 ```python
 class CompItem(AVItem):
     frame_rate = ChunkField[float](
         "_cdta", "frame_rate",
-        transform=..., reverse_multi=...,
     )
     """The frame rate of the composition. Read / Write."""
 ```
 
 When a user writes `comp.frame_rate = 30.0`, the descriptor converts the value back to binary representation and writes it to the underlying chunk.
 
-**ComputedField descriptors**: Model attributes derived from multiple raw chunk fields. The `compute` function reads, `reverse` writes back a dict of field updates:
-```python
-class CompItem(AVItem):
-    frame_rate = ComputedField[float](
-        "_cdta",
-        compute=_compute_frame_rate,
-        reverse=_reverse_frame_rate,
-    )
-    """The frame rate of the composition. Read / Write."""
-```
-
-**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate chunk data. ChunkField descriptors use `reverse` (scalar) or `reverse_multi` (multi-field), and ComputedField uses `reverse(value, body) -> dict`, to convert user-facing values back to binary format. The binary writer (`write_aep()`) backpatches parent chunk sizes automatically.
+**Serialization roundtrip**: `parse()` then `save()` must produce byte-identical output. Parsers must not mutate chunk data. ChunkField descriptors use `reverse` (scalar) to convert user-facing values back to binary format. For multi-field writes, add a `@property` with a setter on the chunk class. The binary writer (`write_aep()`) backpatches parent chunk sizes automatically.
 
 ### Property & Effect Parsing Flow
 
@@ -503,9 +489,7 @@ For read-only fields, set `read_only=True`:
 | `ChunkField[bool]("_body", "field")` | Boolean field (BitField, coerce=bool, or @property) |
 | `ChunkField[bool]("_body", "field", transform=bool, reverse=int)` | Generic integer field exposed as `bool` |
 | `ChunkField.enum(MyEnum, "_body", "field")` | IntEnum field (auto-detects `from_binary`/`to_binary`) |
-| `ChunkField("_body", "inst", reverse_multi=fn)` | Computed field backed by multiple binary fields; `fn(value, body)` returns `dict` of source fields |
-| `ComputedField[float]("_body", compute=fn, reverse=fn)` | Multi-field read (`compute(body)`) and write (`reverse(value, body) -> dict`) |
-| `ComputedField.enum(MyEnum, "_body", compute=fn, reverse=fn)` | IntEnum derived from multiple raw fields |
+| `ChunkField("_body", "computed_prop")` | Multi-field derived value via chunk-level computed `@property` with setter |
 | `@property` (with optional setter) | Computed from multiple fields or non-chunk data |
 
 **Important**: Always add docstrings referencing the [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/). Keep docstring lines under 80 characters. End each docstring with "Read-only." or "Read / Write." as appropriate.

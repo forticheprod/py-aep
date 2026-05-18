@@ -7,12 +7,26 @@ interpretation.
 
 from __future__ import annotations
 
+import math
+
 from attrs import define, field
 
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import bytes_field, s4_field, u1_field, u2_field, u4_field
 from .registry import register
+
+# Standard NTSC multipliers: N*1000/1001 gives the NTSC frame rate.
+_NTSC_MULTIPLIERS = frozenset({24, 30, 48, 60, 120})
+
+
+def _is_ntsc(fps: float) -> bool:
+    """Return True if fps is a standard NTSC drop-frame rate (N*1000/1001)."""
+    n = round(fps * 1001 / 1000)
+    if n not in _NTSC_MULTIPLIERS:
+        return False
+    true_rate = n * 1000 / 1001
+    return abs(fps - true_rate) < 0.01
 
 
 @register("cdta")
@@ -135,11 +149,32 @@ class CdtaChunk(Chunk):
     def frame_rate(self, value: float) -> None:
         self.frame_rate_integer = int(value)
         self.frame_rate_fractional = round((value - int(value)) * 65536)
+        self._update_timebase(value)
 
     @property
     def time_scale(self) -> float:
         """Time scale assembled from integer + fractional/256."""
         return self.time_scale_integer + self.time_scale_fractional / 256.0
+
+    @time_scale.setter
+    def time_scale(self, value: float) -> None:
+        self.time_scale_integer = int(value)
+        self.time_scale_fractional = round((value - int(value)) * 256)
+
+    def _update_timebase(self, fps: float) -> None:
+        """Recalculate internal_timebase and time_scale for a new frame rate.
+
+        NTSC rates (multiples of 24000/1001) use a fixed timebase of 23976.
+        All other rates use the largest power-of-2 time_scale such that
+        fps * time_scale * 256 <= 36864.
+        """
+        if _is_ntsc(fps):
+            self.internal_timebase = 23976
+            self.time_scale = 23976 / (fps * 256)
+        else:
+            time_scale = 2.0 ** math.floor(math.log2(144 / fps))
+            self.internal_timebase = round(fps * time_scale * 256)
+            self.time_scale = time_scale
 
     @property
     def pixel_aspect(self) -> float:
@@ -191,76 +226,6 @@ class CdtaChunk(Chunk):
         self.time_dividend = round(value * self._TIME_DIVISOR)
         self.time_divisor = self._TIME_DIVISOR
 
-    # -- Derived properties (depend on assembled properties above) ---------
-
-    _TIME_DIVISOR = 10000
-    _PIXEL_DIVISOR = 100000
-
-    @property
-    def frame_rate(self) -> float:
-        """Assembled frame rate (integer + fractional/65536)."""
-        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
-
-    @frame_rate.setter
-    def frame_rate(self, value: float) -> None:
-        self.frame_rate_integer = int(value)
-        self.frame_rate_fractional = round((value - int(value)) * 65536)
-
-    @property
-    def time_scale(self) -> float:
-        """Assembled time scale (integer + fractional/256)."""
-        return self.time_scale_integer + self.time_scale_fractional / 256.0
-
-    @property
-    def pixel_aspect(self) -> float:
-        """Pixel aspect ratio (dividend / divisor)."""
-        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
-
-    @pixel_aspect.setter
-    def pixel_aspect(self, value: float) -> None:
-        self.pixel_ratio_dividend = round(value * self._PIXEL_DIVISOR)
-        self.pixel_ratio_divisor = self._PIXEL_DIVISOR
-
-    @property
-    def duration(self) -> float:
-        """Duration in seconds (dividend / divisor)."""
-        return self.duration_dividend / self.duration_divisor
-
-    @duration.setter
-    def duration(self, value: float) -> None:
-        self.duration_dividend = round(value * self._TIME_DIVISOR)
-        self.duration_divisor = self._TIME_DIVISOR
-
-    @property
-    def display_start_time(self) -> float:
-        """Display start time in seconds (dividend / divisor)."""
-        return self.display_start_time_dividend / self.display_start_time_divisor
-
-    @display_start_time.setter
-    def display_start_time(self, value: float) -> None:
-        self.display_start_time_dividend = round(value * self._TIME_DIVISOR)
-        self.display_start_time_divisor = self._TIME_DIVISOR
-
-    @property
-    def work_area_start(self) -> float:
-        """Work area start in seconds (dividend / divisor)."""
-        return self.work_area_start_dividend / self.work_area_start_divisor
-
-    @work_area_start.setter
-    def work_area_start(self, value: float) -> None:
-        self.work_area_start_dividend = round(value * self._TIME_DIVISOR)
-        self.work_area_start_divisor = self._TIME_DIVISOR
-
-    @property
-    def time_seconds(self) -> float:
-        """Current time indicator in seconds (dividend / divisor)."""
-        return self.time_dividend / self.time_divisor
-
-    @time_seconds.setter
-    def time_seconds(self, value: float) -> None:
-        self.time_dividend = round(value * self._TIME_DIVISOR)
-        self.time_divisor = self._TIME_DIVISOR
-
     @property
     def work_area_end_absolute(self) -> float:
         """Absolute work area end in seconds."""
@@ -277,6 +242,95 @@ class CdtaChunk(Chunk):
         if self.work_area_end_dividend == 0xFFFFFFFF:
             return (self.display_start_time + self.duration) * self.frame_rate
         return self.work_area_end_absolute * self.frame_rate
+
+    @property
+    def bg_color(self) -> list[float]:
+        """Background color as [R, G, B] in 0.0-1.0 range."""
+        return [self.bg_color_r / 255, self.bg_color_g / 255, self.bg_color_b / 255]
+
+    @bg_color.setter
+    def bg_color(self, value: list[float]) -> None:
+        self.bg_color_r = round(value[0] * 255)
+        self.bg_color_g = round(value[1] * 255)
+        self.bg_color_b = round(value[2] * 255)
+
+    @property
+    def resolution_factor(self) -> list[int]:
+        """Resolution factor as [horizontal, vertical]."""
+        return [self.resolution_factor_h, self.resolution_factor_v]
+
+    @resolution_factor.setter
+    def resolution_factor(self, value: list[int]) -> None:
+        self.resolution_factor_h = value[0]
+        self.resolution_factor_v = value[1]
+
+    @property
+    def frame_duration(self) -> int:
+        """Duration in frames."""
+        return int(self.duration * self.frame_rate)
+
+    @frame_duration.setter
+    def frame_duration(self, value: int) -> None:
+        self.duration = value / self.frame_rate
+
+    @property
+    def display_start_frame(self) -> int:
+        """Display start time in frames."""
+        return int(self.display_start_time * self.frame_rate)
+
+    @display_start_frame.setter
+    def display_start_frame(self, value: int) -> None:
+        self.display_start_time = value / self.frame_rate
+
+    @property
+    def work_area_start_frame(self) -> int:
+        """Work area start in frames."""
+        return int(self.work_area_start * self.frame_rate)
+
+    @work_area_start_frame.setter
+    def work_area_start_frame(self, value: int) -> None:
+        self.work_area_start = value / self.frame_rate
+
+    @property
+    def work_area_duration(self) -> float:
+        """Work area duration in seconds."""
+        if self.work_area_end_dividend == 0xFFFFFFFF:
+            return self.duration - self.work_area_start
+        return (
+            self.work_area_end_dividend / self.work_area_end_divisor
+            - self.work_area_start
+        )
+
+    @work_area_duration.setter
+    def work_area_duration(self, value: float) -> None:
+        divisor = 10000
+        self.work_area_end_dividend = round(
+            (self.work_area_start + value) * divisor
+        )
+        self.work_area_end_divisor = divisor
+
+    @property
+    def work_area_duration_frame(self) -> int:
+        """Work area duration in frames."""
+        return int(self.work_area_duration * self.frame_rate)
+
+    @work_area_duration_frame.setter
+    def work_area_duration_frame(self, value: int) -> None:
+        divisor = 10000
+        duration_seconds = value / self.frame_rate
+        self.work_area_end_dividend = round(
+            (self.work_area_start + duration_seconds) * divisor
+        )
+        self.work_area_end_divisor = divisor
+
+    @property
+    def frame_time(self) -> int:
+        """Current time in frames."""
+        return int(self.time_seconds * self.frame_rate)
+
+    @frame_time.setter
+    def frame_time(self, value: int) -> None:
+        self.time_seconds = value / self.frame_rate
 
 
 # ---------------------------------------------------------------------------

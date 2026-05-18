@@ -1014,13 +1014,25 @@ class TestRoundtripSettingsBulkAssign:
 
         items[0].settings["Quality"] = RenderQuality.DRAFT
         items[0].settings["Resolution"] = [2, 2]
-        items[1].settings = dict(items[0].settings)
+        copied_settings = dict(items[0].settings)
+        assert "Use comp's frame rate" in copied_settings
+        copied_settings.pop("Use comp's frame rate")
+        items[1].settings = copied_settings
 
         out = tmp_path / "copy_settings.aep"
         project.save(out)
         items2 = parse_aep(out).project.render_queue.items
         assert items2[1].settings["Quality"] == RenderQuality.DRAFT
         assert items2[1].settings["Resolution"] == [2, 2]
+
+    def test_assign_settings_with_read_only_key_raises(self) -> None:
+        """Bulk assignment should surface read-only setting errors."""
+        project = parse_aep(SAMPLES_DIR / "2_rqitems.aep").project
+        items = project.render_queue.items
+        assert len(items) == 2
+
+        with pytest.raises(AttributeError, match="read-only"):
+            items[1].settings = items[0].settings
 
 
 class TestRoundtripSettingsReadOnly:

@@ -175,6 +175,49 @@ class SspcChunk(Chunk):
             return 1.0
         return self.pixel_ratio_dividend / self.pixel_ratio_divisor
 
+    @property
+    def premul_color(self) -> list[float]:
+        """Premultiply color as [R, G, B] in 0.0-1.0 range."""
+        return [
+            self.premul_color_r / 255,
+            self.premul_color_g / 255,
+            self.premul_color_b / 255,
+        ]
+
+    @premul_color.setter
+    def premul_color(self, value: list[float]) -> None:
+        self.premul_color_r = round(value[0] * 255)
+        self.premul_color_g = round(value[1] * 255)
+        self.premul_color_b = round(value[2] * 255)
+
+    @property
+    def field_separation_type(self) -> int:
+        """Field separation type (0=off, 1=upper_first, 2=lower_first)."""
+        if self.field_separation_type_raw == 0:
+            return 0
+        return self.field_order + 1
+
+    @field_separation_type.setter
+    def field_separation_type(self, value: int) -> None:
+        if value == 0:
+            self.field_separation_type_raw = 0
+            self.field_order = 0
+        else:
+            self.field_separation_type_raw = 1
+            self.field_order = value - 1
+
+    @property
+    def has_alpha(self) -> bool:
+        """Whether the footage has an alpha component."""
+        return self.alpha_mode_raw != 3
+
+    @property
+    def display_frame_rate(self) -> float:
+        """Effective frame rate as displayed."""
+        conform = self.conform_frame_rate
+        base = conform if conform != 0 else self.native_frame_rate
+        return base * (0.8 if self.remove_pulldown != 0 else 1.0)
+
 # ---------------------------------------------------------------------------
 # opti - footage asset info (variant dispatch by asset_type)
 # ---------------------------------------------------------------------------
@@ -250,6 +293,17 @@ class SoliOptiChunk(OptiChunk):
     """Solid item name."""
 
     _trailing: bytes = field(default=b"", repr=False)
+
+    @property
+    def color(self) -> list[float]:
+        """Solid color as [R, G, B] in 0.0-1.0 range."""
+        return [self.color_r, self.color_g, self.color_b]
+
+    @color.setter
+    def color(self, value: list[float]) -> None:
+        self.color_r = value[0]
+        self.color_g = value[1]
+        self.color_b = value[2]
 
 
 @define

@@ -53,7 +53,7 @@ class Item:
     name = ChunkField[str](
         "_name_utf8",
         "value",
-        validate=validate_string(allow_empty=False),
+        validate=validate_string(),
     )
     """The name of the item, as shown in the Project panel.
     Read / Write."""

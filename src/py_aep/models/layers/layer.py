@@ -13,7 +13,7 @@ from ...resolvers.transform import (
     build_world_matrix,
     decompose_transform,
 )
-from ..descriptors import ChunkField, ComputedField
+from ..descriptors import ChunkField
 from ..properties.property import Property
 from ..properties.property_base import PropertyBase
 from ..properties.property_group import PropertyGroup
@@ -52,31 +52,6 @@ def _increment_name(name: str, existing_names: set[str]) -> str:
         num += 1
         candidate = f"{base}{num}"
     return candidate
-
-
-def _reverse_auto_orient(value: AutoOrientType, _body: LdtaChunk) -> dict[str, int]:
-    """Decompose AutoOrientType into individual ldta bit flags."""
-    return {
-        "auto_orient_along_path": int(value == AutoOrientType.ALONG_PATH),
-        "camera_or_poi_auto_orient": int(
-            value == AutoOrientType.CAMERA_OR_POINT_OF_INTEREST
-        ),
-        "characters_toward_camera": int(
-            value == AutoOrientType.CHARACTERS_TOWARD_CAMERA
-        ),
-        "three_d_per_char": int(value == AutoOrientType.CHARACTERS_TOWARD_CAMERA),
-    }
-
-
-def _compute_auto_orient(body: LdtaChunk) -> AutoOrientType:
-    """Derive AutoOrientType from individual ldta bit flags."""
-    if body.auto_orient_along_path:
-        return AutoOrientType.ALONG_PATH
-    if body.camera_or_poi_auto_orient and body.three_d_layer:
-        return AutoOrientType.CAMERA_OR_POINT_OF_INTEREST
-    if body.characters_toward_camera and body.three_d_per_char:
-        return AutoOrientType.CHARACTERS_TOWARD_CAMERA
-    return AutoOrientType.NO_AUTO_ORIENT
 
 
 class Layer(PropertyGroup):
@@ -155,11 +130,10 @@ class Layer(PropertyGroup):
     means no stretch. Values between 0 and 1 are set to 1, and values
     between -1 and 0 (not including 0) are set to -1. Read / Write."""
 
-    auto_orient = ComputedField.enum(
+    auto_orient = ChunkField.enum(
         AutoOrientType,
         "_ldta",
-        compute=_compute_auto_orient,
-        reverse=_reverse_auto_orient,
+        "auto_orient",
     )
     """The type of automatic orientation to perform for the layer.
     Read / Write."""

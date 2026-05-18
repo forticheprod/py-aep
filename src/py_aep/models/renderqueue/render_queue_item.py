@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from py_aep.enums import (
     ColorDepthSetting,
@@ -51,21 +51,6 @@ def _start_time_from_binary(value: int) -> datetime | None:
     if not value:
         return None
     return _AEP_EPOCH + timedelta(seconds=value)
-
-
-def _compute_ldat_frame_rate(body: RenderSettingsItem) -> float:
-    """Compute render-settings frame rate from assembled property."""
-    return body.frame_rate
-
-
-def _compute_ldat_time_span_start(body: RenderSettingsItem) -> float:
-    """Compute time-span start in seconds from assembled property."""
-    return body.time_span_start
-
-
-def _compute_ldat_time_span_duration(body: RenderSettingsItem) -> float:
-    """Compute time-span duration in seconds from assembled property."""
-    return body.time_span_duration
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +386,7 @@ class RenderQueueItem:
     @property
     def _use_this_frame_rate(self) -> float:
         """Custom frame rate value."""
-        return _compute_ldat_frame_rate(self._ldat)
+        return self._ldat.frame_rate
 
     @_use_this_frame_rate.setter
     def _use_this_frame_rate(self, value: float) -> None:
@@ -439,8 +424,8 @@ class RenderQueueItem:
         return SettingsView(self, RENDER_SETTINGS)
 
     @settings.setter
-    def settings(self, value: dict[str, Any]) -> None:
-        if not isinstance(value, dict):
+    def settings(self, value: Mapping[str, Any]) -> None:
+        if not isinstance(value, Mapping):
             raise ValueError("Settings must be a dictionary of key-value pairs")
         view = self.settings
         for k, v in value.items():
@@ -454,8 +439,8 @@ class RenderQueueItem:
         if source == TimeSpanSource.WORK_AREA_ONLY:
             return self.comp.work_area_start, self.comp.work_area_duration
         return (
-            _compute_ldat_time_span_start(self._ldat),
-            _compute_ldat_time_span_duration(self._ldat),
+            self._ldat.time_span_start,
+            self._ldat.time_span_duration,
         )
 
     def _resolved_time_span_frames(self) -> tuple[int, int]:

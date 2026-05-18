@@ -221,6 +221,7 @@ not available in ExtendScript:
 | Attribute | Description |
 |-----------|-------------|
 | `time_scale` | Internal time scale divisor for keyframe times |
+| `essential_graphics_controllers` | List of Essential Graphics controllers in the comp |
 | `guides` | List of [Guide][py_aep.models.guide.Guide] objects (ruler guides for alignment) |
 
 ### Layer

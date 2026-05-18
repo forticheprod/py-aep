@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .descriptors import ChunkField, ComputedField
+from .descriptors import ChunkField
 
 if TYPE_CHECKING:
     from ..binary.item_chunks import HeadChunk
@@ -13,28 +13,15 @@ if TYPE_CHECKING:
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)x(\d+)$")
 
 
-def _reverse_version(value: str, body: HeadChunk) -> dict[str, int]:
-    """Parse `"major.minorxbuild"` back into Chunk fields."""
-    m = _VERSION_RE.match(value)
-    if not m:
-        msg = (
+def _validate_version(value: str, obj: HeadChunk) -> None:
+    """Validate that the version string matches the expected format."""
+    if not _VERSION_RE.match(value):
+        raise ValueError(
             f"version must match '{{major}}.{{minor}}x{{build}}' "
             f"(e.g. '25.6x101'), got {value!r}"
         )
-        raise ValueError(msg)
-    major, minor, build = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    return {
-        "ae_version_major_a": major // 8,
-        "ae_version_major_b": major % 8,
-        "ae_version_minor": minor,
-        "ae_build_number": build,
-    }
 
 
-def _compute_version(body: HeadChunk) -> str:
-    """Format the AE version as `{major}.{minor}x{build}`."""
-    major = body.ae_version_major_a * 8 + body.ae_version_major_b
-    return f"{major}.{body.ae_version_minor}x{body.ae_build_number}"
 
 
 class Application:
@@ -67,11 +54,7 @@ class Application:
         cause issues when opening the file in After Effects.
     """
 
-    version = ComputedField[str](
-        "_head",
-        compute=_compute_version,
-        reverse=_reverse_version,
-    )
+    version = ChunkField[str]("_head", "version", validate=_validate_version)
     """The version of After Effects that last saved the project, formatted as
     "{major}.{minor}x{build}" (e.g., "25.6x101"). Read / Write.
 

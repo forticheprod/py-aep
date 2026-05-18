@@ -119,7 +119,7 @@ def validate_one_of(
 
 def validate_string(
     *,
-    allow_empty: bool = True,
+    allow_empty: bool = False,
     max_length: int | None = None,
 ) -> Callable[[object, Any], None]:
     """Return a validator that checks a string value.

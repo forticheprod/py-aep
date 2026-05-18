@@ -12,7 +12,6 @@ from ....enums import (
     VideoCodec,
 )
 from ...descriptors import ChunkField
-from ...transforms import strip_null
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import RoptChunk
@@ -144,7 +143,7 @@ class XmlFormatOptions:
         xml_start = raw.find(b"<?xml")
         if xml_start >= 0:
             self._xml_header = raw[:xml_start]
-            xml_text = strip_null(raw[xml_start:].decode("utf-8", errors="replace"))
+            xml_text = raw[xml_start:].decode("utf-8", errors="replace").split("\x00")[0]
             self._xml_root = ET.fromstring(xml_text)
             data, self._val_elements = _extract_params(self._xml_root)
             self.params.update(data)

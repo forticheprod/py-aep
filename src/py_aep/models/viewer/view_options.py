@@ -11,16 +11,6 @@ if TYPE_CHECKING:
     from ..items.av_item import AVItem
 
 
-def _reverse_fast_preview(value: FastPreviewType, body: FipsChunk) -> dict[str, int]:
-    """Decompose FastPreviewType into individual fips bit flags."""
-    return {
-        "fast_preview_adaptive": int(value == FastPreviewType.FP_ADAPTIVE_RESOLUTION),
-        "fast_preview_draft": int(value == FastPreviewType.FP_DRAFT),
-        "fast_preview_fast_draft": int(value == FastPreviewType.FP_FAST_DRAFT),
-        "fast_preview_wireframe": int(value == FastPreviewType.FP_WIREFRAME),
-    }
-
-
 class ViewOptions:
     """
     The `ViewOptions` object represents the options for a given [View][] object.
@@ -206,7 +196,6 @@ class ViewOptions:
         FastPreviewType,
         "_fips",
         "fast_preview_type",
-        reverse_multi=_reverse_fast_preview,
     )
     """The state of the Fast Previews menu. Read / Write."""
 
