@@ -314,7 +314,7 @@ class RenderQueueItem:
         if self._rcom_utf8 is not None:
             self._rcom_utf8.value = value
         elif value:
-            utf8_chunk = Utf8Chunk(chunk_type="Utf8", value=value)
+            utf8_chunk = Utf8Chunk(value=value)
             rcom_chunk = ContainerChunk(
                 chunk_type="RCom",
                 chunks=[utf8_chunk],

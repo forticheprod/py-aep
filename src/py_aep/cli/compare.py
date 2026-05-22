@@ -2,16 +2,15 @@
 AEP File Comparison Tool.
 
 Compares After Effects project files (.aep) and reports differences
-at the byte level, including:
-- The hierarchical chunk path where the difference occurs
-- Byte position and hex values
-- If only one bit differs, the bit position (7 to 0 from left to right)
+at both the byte level and the structural level:
+- Byte-level: chunk path, byte position, hex values, bit position
+- Structural: child count mismatches between containers
 
 Modes:
     Compare:  aep-compare file1.aep file2.aep
     Multi:    aep-compare ref.aep v1.aep v2.aep v3.aep
-    List:     aep-compare file.aep --list
-    Dump:     aep-compare file.aep --dump "LIST:Fold/ftts"
+
+For single-file inspection (tree, dump, list), use `aep-inspect`.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..binary.chunk import ListChunk, read_aep
+from ._chunk_helpers import chunk_label, extract_leaf_chunks
 
 if TYPE_CHECKING:
     from typing import Any, Iterator
@@ -147,95 +147,8 @@ def compare_binary_data(
 
 # ── AEP chunk extraction ───────────────────────────────────────────────────
 
-
-def parse_aep_chunks(file_path: Path) -> dict[str, bytes]:
-    """
-    Parse an AEP file and extract leaf chunk data with paths.
-
-    Returns a dict mapping chunk paths to their raw binary data.
-    Only leaf chunks (non-LIST) are included.
-    """
-    with open(file_path, "rb") as f:
-        rifx, _xmp = read_aep(f)
-    result: dict[str, bytes] = {}
-    _extract_chunks_recursive(rifx.chunks, "", result)
-    return result
-
-
-def _get_chunk_identifier(chunk: Chunk) -> str:
-    """Get a descriptive identifier for a chunk."""
-    chunk_type = str(chunk.chunk_type)
-
-    # For LIST chunks, include the list_type
-    if chunk_type == "LIST" and hasattr(chunk, "list_type"):
-        return f"LIST:{chunk.list_type}"
-
-    return chunk_type
-
-
-def _build_chunk_path(
-    parent_path: str,
-    identifier: str,
-    counters: dict[str, int],
-) -> str:
-    """Build a chunk path with duplicate indexing.
-
-    Args:
-        parent_path: Parent chunk path prefix.
-        identifier: Chunk identifier (e.g. `ldta`, `LIST:Fold`).
-        counters: Mutable counter dict tracking duplicates at this level.
-
-    Returns:
-        Full chunk path string.
-    """
-    counter_key = parent_path + "/" + identifier if parent_path else identifier
-
-    if counter_key not in counters:
-        counters[counter_key] = 0
-    else:
-        counters[counter_key] += 1
-
-    if counters[counter_key] > 0:
-        return (
-            f"{parent_path}/{identifier}[{counters[counter_key]}]"
-            if parent_path
-            else f"{identifier}[{counters[counter_key]}]"
-        )
-    return f"{parent_path}/{identifier}" if parent_path else identifier
-
-
-def _extract_chunks_recursive(
-    chunks: list[Chunk],
-    parent_path: str,
-    result: dict[str, bytes],
-    counters: dict[str, int] | None = None,
-) -> None:
-    """Recursively extract leaf chunk data with paths.
-
-    Only stores raw data for non-LIST (leaf) chunks.  LIST chunks are
-    traversed but their aggregate raw data is **not** stored, so diff
-    output only appears at the deepest chunk containing the difference.
-    """
-    if counters is None:
-        counters = {}
-
-    for chunk in chunks:
-        identifier = _get_chunk_identifier(chunk)
-        current_path = _build_chunk_path(parent_path, identifier, counters)
-
-        # Recurse into LIST chunks without storing their raw data
-        if isinstance(chunk, ListChunk):
-            if chunk.chunks:
-                child_counters: dict[str, int] = {}
-                _extract_chunks_recursive(
-                    chunk.chunks, current_path, result, child_counters
-                )
-            # Skip LIST chunks entirely (even empty ones)
-        else:
-            # Only store raw data for leaf chunks
-            raw_data = chunk.tobytes()
-            if raw_data:
-                result[current_path] = raw_data
+#: Alias for backward compatibility with tests.
+parse_aep_chunks = extract_leaf_chunks
 
 
 # ── Comparison helpers ──────────────────────────────────────────────────────
@@ -279,134 +192,74 @@ def _compare_chunk_dicts(
     return differences, only_in_1, only_in_2
 
 
-# ── List chunks ─────────────────────────────────────────────────────────────
+# ── Structural comparison ───────────────────────────────────────────────────
 
 
-def _walk_chunks_tree(
-    chunks: list[Chunk],
-    parent_path: str = "",
-    depth: int = 0,
-) -> Iterator[tuple[str, str, int, int, bool]]:
-    """Walk chunk tree yielding metadata for each node.
+@dataclass
+class StructuralDifference:
+    """A structural mismatch between two chunk trees."""
 
-    Args:
-        chunks: List of chunk objects.
-        parent_path: Parent chunk path prefix.
-        depth: Current nesting depth.
-
-    Yields:
-        Tuples of (full_path, identifier, raw_data_size, depth, is_list).
-    """
-    counters: dict[str, int] = {}
-
-    for chunk in chunks:
-        identifier = _get_chunk_identifier(chunk)
-        current_path = _build_chunk_path(parent_path, identifier, counters)
-
-        size = len(chunk.tobytes()) if chunk.chunk_type != "LIST" else 0
-
-        is_list = isinstance(chunk, ListChunk) and chunk.chunks is not None
-        yield current_path, identifier, size, depth, is_list
-
-        if isinstance(chunk, ListChunk) and chunk.chunks is not None:
-            yield from _walk_chunks_tree(chunk.chunks, current_path, depth + 1)
+    path: str
+    count1: int
+    count2: int
+    children1: list[str]
+    children2: list[str]
 
 
-def list_aep_chunks(file_path: Path) -> None:
-    """Print a tree of all chunk paths and sizes in an AEP file.
+def _compare_structure_recursive(
+    c1: Chunk,
+    c2: Chunk,
+    path: str,
+    diffs: list[StructuralDifference],
+) -> None:
+    """Recursively compare two chunk trees structurally."""
+    label1 = chunk_label(c1)
+    label2 = chunk_label(c2)
+    current = f"{path}/{label1}" if path else label1
 
-    Args:
-        file_path: Path to the AEP file.
-    """
-    with open(file_path, "rb") as f:
-        rifx, _xmp = read_aep(f)
-    print(f"\nChunk tree: {file_path.name}\n")
+    if label1 != label2:
+        diffs.append(
+            StructuralDifference(current, -1, -1, [label1], [label2])
+        )
+        return
 
-    for _path, identifier, size, depth, is_list in _walk_chunks_tree(rifx.chunks):
-        indent = "  " * depth
-        if is_list:
-            print(f"{indent}{identifier}/")
-        else:
-            print(f"{indent}{identifier} ({size}B)")
+    if isinstance(c1, ListChunk) and isinstance(c2, ListChunk):
+        ch1 = [chunk_label(c) for c in c1.chunks]
+        ch2 = [chunk_label(c) for c in c2.chunks]
+        if ch1 != ch2:
+            diffs.append(
+                StructuralDifference(
+                    current, len(ch1), len(ch2), ch1, ch2,
+                )
+            )
+        for i in range(min(len(c1.chunks), len(c2.chunks))):
+            _compare_structure_recursive(
+                c1.chunks[i], c2.chunks[i], current, diffs,
+            )
 
 
-# ── Dump chunk ──────────────────────────────────────────────────────────────
+def compare_structure(
+    file1: Path, file2: Path,
+) -> list[StructuralDifference]:
+    """Compare two AEP files structurally.
 
-
-def _format_hex_dump(data: bytes, bytes_per_line: int = 16) -> str:
-    """Format binary data as a hex dump with ASCII representation.
+    Detects child count mismatches, missing chunks (including empty ones
+    invisible to byte-level diffing), and ordering differences.
 
     Args:
-        data: Raw bytes to format.
-        bytes_per_line: Number of bytes per output line.
+        file1: First AEP file path.
+        file2: Second AEP file path.
 
     Returns:
-        Multi-line hex dump string.
+        List of structural differences.
     """
-    lines: list[str] = []
-    mid = bytes_per_line // 2
-
-    for i in range(0, len(data), bytes_per_line):
-        chunk = data[i : i + bytes_per_line]
-
-        # Hex part with midpoint gap
-        left_bytes = chunk[:mid]
-        right_bytes = chunk[mid:]
-        left = " ".join(f"{b:02X}" for b in left_bytes)
-        right = " ".join(f"{b:02X}" for b in right_bytes)
-
-        if right:
-            hex_str = f"{left}  {right}"
-        else:
-            hex_str = left
-
-        # Pad to fixed width: "XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX"
-        # = (mid*3-1) + 2 + (mid*3-1) when both halves are full
-        full_width = (mid * 3 - 1) + 2 + (mid * 3 - 1)
-        hex_str = hex_str.ljust(full_width)
-
-        # ASCII part
-        ascii_str = "".join(chr(b) if 0x20 <= b <= 0x7E else "." for b in chunk)
-
-        lines.append(f"{i:04X}: {hex_str}  {ascii_str}")
-
-    return "\n".join(lines)
-
-
-def dump_aep_chunk(file_path: Path, chunk_path: str) -> None:
-    """Hex-dump a specific chunk from an AEP file.
-
-    If the path does not match exactly, a partial (substring) match is
-    attempted.  Prints available paths on failure.
-
-    Args:
-        file_path: Path to the AEP file.
-        chunk_path: Full or partial chunk path (e.g. `LIST:Fold/ftts`).
-    """
-    chunks = parse_aep_chunks(file_path)
-
-    if chunk_path not in chunks:
-        matches = [p for p in sorted(chunks) if chunk_path in p]
-        if not matches:
-            print(f"Chunk path not found: {chunk_path}", file=sys.stderr)
-            print("\nAvailable leaf chunk paths:", file=sys.stderr)
-            for p in sorted(chunks):
-                print(f"  {p} ({len(chunks[p])}B)", file=sys.stderr)
-            return
-        if len(matches) == 1:
-            chunk_path = matches[0]
-        else:
-            print(
-                f"Ambiguous chunk path '{chunk_path}'. Matches:",
-                file=sys.stderr,
-            )
-            for m in matches:
-                print(f"  {m} ({len(chunks[m])}B)", file=sys.stderr)
-            return
-
-    data = chunks[chunk_path]
-    print(f"\n[{chunk_path}] ({len(data)} bytes)\n")
-    print(_format_hex_dump(data))
+    with open(file1, "rb") as f:
+        rifx1, _ = read_aep(f)
+    with open(file2, "rb") as f:
+        rifx2, _ = read_aep(f)
+    diffs: list[StructuralDifference] = []
+    _compare_structure_recursive(rifx1, rifx2, "", diffs)
+    return diffs
 
 
 # ── Multi-file comparison ──────────────────────────────────────────────────
@@ -506,6 +359,7 @@ def print_results(
     context: int = 0,
     data1: dict[str, bytes] | None = None,
     data2: dict[str, bytes] | None = None,
+    structural_diffs: list[StructuralDifference] | None = None,
 ) -> None:
     """Print comparison results to stdout.
 
@@ -518,6 +372,7 @@ def print_results(
         context: Number of surrounding bytes to show around diffs.
         data1: Parsed chunk data for file 1 (for context display).
         data2: Parsed chunk data for file 2 (for context display).
+        structural_diffs: Structural differences between the two files.
     """
     print(f"\n{'=' * 80}")
     print("Comparing:")
@@ -525,9 +380,32 @@ def print_results(
     print(f"  File 2: {file2}")
     print(f"{'=' * 80}\n")
 
-    if not differences and not only_in_file1 and not only_in_file2:
+    has_any = (
+        differences
+        or only_in_file1
+        or only_in_file2
+        or structural_diffs
+    )
+    if not has_any:
         print("No differences found!")
         return
+
+    # Print structural differences
+    if structural_diffs:
+        print(f"\n{'─' * 40}")
+        print(f"Structural differences ({len(structural_diffs)}):")
+        print(f"{'─' * 40}")
+        for sd in structural_diffs:
+            if sd.count1 == -1:
+                print(f"\n[{sd.path}] type mismatch: {sd.children1[0]} vs {sd.children2[0]}")
+            else:
+                print(f"\n[{sd.path}] child count: {sd.count1} vs {sd.count2}")
+                max_len = max(len(sd.children1), len(sd.children2))
+                for i in range(max_len):
+                    c1 = sd.children1[i] if i < len(sd.children1) else "<missing>"
+                    c2 = sd.children2[i] if i < len(sd.children2) else "<missing>"
+                    marker = "  " if c1 == c2 else "!!"
+                    print(f"  {marker} [{i:2d}] {c1:20s}  vs  {c2}")
 
     # Print chunks only in file1
     if only_in_file1:
@@ -593,6 +471,8 @@ def print_results(
     total_byte_diffs = sum(len(d.byte_diffs) for d in differences)
     print(f"\n{'=' * 80}")
     print("Summary:")
+    if structural_diffs:
+        print(f"  Structural differences: {len(structural_diffs)}")
     print(f"  Chunks with differences: {len(differences)}")
     print(f"  Total byte differences: {total_byte_diffs}")
     print(f"  Chunks only in File 1: {len(only_in_file1)}")
@@ -765,20 +645,17 @@ def main() -> int:
     """CLI entry point for aep-compare command."""
     parser = argparse.ArgumentParser(
         prog="aep-compare",
-        description=(
-            "Compare After Effects project files, list chunks, "
-            "or dump specific chunk data"
-        ),
+        description="Compare After Effects project files (.aep)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     %(prog)s file1.aep file2.aep
     %(prog)s ref.aep v1.aep v2.aep v3.aep   (multi-file)
-    %(prog)s file.aep --list                  (chunk tree)
-    %(prog)s file.aep --dump "LIST:Fold/ftts" (hex dump)
     %(prog)s file1.aep file2.aep --context 4
     %(prog)s file1.aep file2.aep --json
     %(prog)s file1.aep file2.aep --filter ldta
+
+For single-file inspection, use aep-inspect.
 
 Output shows for each different byte:
     - The chunk path (hierarchy of elements/chunks)
@@ -791,7 +668,7 @@ Output shows for each different byte:
         "files",
         type=Path,
         nargs="+",
-        help="AEP files. One file for --list/--dump, two or more for comparison",
+        help="Two or more AEP files to compare",
     )
     parser.add_argument(
         "--json",
@@ -806,18 +683,6 @@ Output shows for each different byte:
             "Filter results to only show chunks matching "
             "this pattern (case-insensitive)"
         ),
-    )
-    parser.add_argument(
-        "--list",
-        action="store_true",
-        help="List all chunk paths and sizes from a single file",
-    )
-    parser.add_argument(
-        "--dump",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help='Hex-dump a specific chunk path (e.g. "LIST:Fold/ftts")',
     )
     parser.add_argument(
         "--context",
@@ -835,28 +700,6 @@ Output shows for each different byte:
         if not f.exists():
             print(f"Error: File not found: {f}", file=sys.stderr)
             return 1
-
-    # ── Single-file modes ──────────────────────────────────────────────
-
-    if args.list:
-        if len(files) != 1:
-            print(
-                "Error: --list requires exactly one file",
-                file=sys.stderr,
-            )
-            return 1
-        list_aep_chunks(files[0])
-        return 0
-
-    if args.dump is not None:
-        if len(files) != 1:
-            print(
-                "Error: --dump requires exactly one file",
-                file=sys.stderr,
-            )
-            return 1
-        dump_aep_chunk(files[0], args.dump)
-        return 0
 
     # ── Comparison mode ────────────────────────────────────────────────
 
@@ -897,9 +740,10 @@ Output shows for each different byte:
 
     try:
         # Parse once and reuse for both comparison and context
-        data1 = parse_aep_chunks(file1)
-        data2 = parse_aep_chunks(file2)
+        data1 = extract_leaf_chunks(file1)
+        data2 = extract_leaf_chunks(file2)
         diffs, only1, only2 = _compare_chunk_dicts(data1, data2)
+        struct_diffs = compare_structure(file1, file2)
         ctx1: dict[str, bytes] | None = data1 if args.context > 0 else None
         ctx2: dict[str, bytes] | None = data2 if args.context > 0 else None
     except Exception as e:
@@ -925,6 +769,7 @@ Output shows for each different byte:
             context=args.context,
             data1=ctx1,
             data2=ctx2,
+            structural_diffs=struct_diffs,
         )
 
     return 0 if not diffs and not only1 and not only2 else 1

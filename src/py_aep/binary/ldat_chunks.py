@@ -6,7 +6,7 @@ import enum
 import struct
 from typing import TYPE_CHECKING
 
-from attrs import Factory, define, field
+from attrs import Factory, define
 
 from .bin_utils import read_bytes, write_bytes
 from .bitfield import BitField
@@ -100,9 +100,8 @@ class Lhd3Chunk(Chunk):
     item_size: int = u2_field()
     _gap2: bytes = bytes_field(3, default=b"\x00\x00\x00", repr=False)
     item_type_raw: int = u1_field()
-    _trail_version: int = u4_field(default=1, repr=False)
-    _trail_next_id: int = u4_field(default=2, repr=False)
-    _trailing: bytes = field(default=b"\x00" * 20, repr=False)
+    _version: int = u4_field(default=1, repr=False)
+    _next_id: int = u4_field(default=2, repr=False)
 
     @property
     def item_type(self) -> LdatItemType:
@@ -412,7 +411,6 @@ class LdatChunk(Chunk):
     items: list[Any] = Factory(list)
     item_type: LdatItemType = LdatItemType.unknown
     item_size: int = 0
-    _trailing: bytes = field(default=b"", repr=False)
 
     @classmethod
     def read(
@@ -445,13 +443,15 @@ class LdatChunk(Chunk):
             items.append(_read_item(item_data, item_type))
         remaining = size - count * item_size
         trailing = read_bytes(fp, remaining) if remaining > 0 else b""
-        return cls(
+        instance = cls(
             chunk_type=chunk_type,
             items=items,
             item_type=item_type,
             item_size=item_size,
-            trailing=trailing,
         )
+        if trailing:
+            object.__setattr__(instance, "_trailing", trailing)
+        return instance
 
     def write(self, fp: IO[bytes]) -> int:
         if not self.items:

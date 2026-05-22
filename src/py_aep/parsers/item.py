@@ -132,22 +132,27 @@ def parse_folder(
         _gide: The LIST chunk for guides (None if no guides).
         parent_folder: The folder's parent folder.
     """
+    if is_root:
+        folder_chunks = child_chunks
+        children_container = _item_list.chunks
+    else:
+        sfdr_chunk = find_by_list_type(chunks=child_chunks, list_type="Sfdr")
+        folder_chunks = sfdr_chunk.chunks
+        children_container = sfdr_chunk.chunks
+
     folder = FolderItem(
         _idta=_idta,
         _name_utf8=_name_utf8,
         _cmta=_cmta,
         _item_list=_item_list,
         _gide=_gide,
+        _children_container=children_container,
         project=project,
         parent_folder=parent_folder,
     )
     if is_root:
         # Avoid mutating chunk fields
         folder.__dict__["name"] = "root"
-        folder_chunks = child_chunks
-    else:
-        sfdr_chunk = find_by_list_type(chunks=child_chunks, list_type="Sfdr")
-        folder_chunks = sfdr_chunk.chunks
     child_item_chunks = filter_by_list_type(chunks=folder_chunks, list_type="Item")
     for child_item_chunk in child_item_chunks:
         child_item = parse_item(

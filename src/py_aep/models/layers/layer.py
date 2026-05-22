@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import AutoOrientType, Label, LayerType
@@ -14,6 +13,7 @@ from ...resolvers.transform import (
     decompose_transform,
 )
 from ..descriptors import ChunkField
+from ..naming import auto_name
 from ..properties.property import Property
 from ..properties.property_base import PropertyBase
 from ..properties.property_group import PropertyGroup
@@ -28,30 +28,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-_TRAILING_NUMBER_RE = re.compile(r"(\d+)$")
-
-
-def _increment_name(name: str, existing_names: set[str]) -> str:
-    """Find the first available incremented name.
-
-    If the name ends with a number N, try N+1, N+2, ... until a name
-    not in `existing_names` is found. Otherwise try `name 2`, `name 3`,
-    etc.
-    """
-    match = _TRAILING_NUMBER_RE.search(name)
-    if match:
-        base = name[: match.start()]
-        num = int(match.group(1)) + 1
-        num = max(2, num)  # 1 is skipped
-    else:
-        base = f"{name} "
-        num = 2
-    candidate = f"{base}{num}"
-    while candidate in existing_names:
-        num += 1
-        candidate = f"{base}{num}"
-    return candidate
 
 
 class Layer(PropertyGroup):
@@ -698,7 +674,8 @@ class Layer(PropertyGroup):
         # Increment user-defined name
         if new_layer.is_name_set:
             existing = {lyr.name for lyr in into_comp.layers}
-            new_layer.name = _increment_name(new_layer.name, existing)
+            if new_layer.name in existing:
+                new_layer.name = auto_name(new_layer.name, existing)
 
         into_comp._invalidate_layer_cache()
 

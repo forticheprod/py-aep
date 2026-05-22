@@ -58,7 +58,10 @@ uv sync --python 3.7 --extra dev  # For Python 3.7
 uv run --python 3.7 python -m pytest -o "addopts=" 2>&1 | Select-Object -Last 60
 ```
 
-JSX scripts run in After Effects via VS Code debugger - see `.vscode/launch.json`.
+JSX scripts run in After Effects via VS Code debugger (see `.vscode/launch.json`) or from terminal:
+```powershell
+& "C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.com" -noui -r <script_path>
+```
 
 ## Code Conventions
 
@@ -168,17 +171,21 @@ When adding new mappings:
 - Use `aep-compare` to investigate unknown binary fields by diffing `.aep` files that differ in a single AE setting
 
 ## Important Notes
+- You are a **thinking partner** more than a coding partner. Spend time analyzing and understanding before editing files. Think through the implications of changes, weigh options, and **pick the least complex solutions**. Focus on maintainability.
+- Review your code after implementation but before running tests. Look for edge cases.
+- Test thoroughly. Do not stop prematurely. Ask questions when uncertain.
 - Run python code through a temporary file, not `python.exe -c`
 - Python 3.7+ compatibility (no walrus operator, no match/case, union types via annotations)
 - Model docstrings should reference [AE Scripting Guide](https://ae-scripting.docsforadobe.dev/)
 - DO NOT switch to plan agent prematurely - exhaust terminal-based investigation first
 
 ## CLI Tools
-Installed via `uv sync --extra dev`. Also invocable as `uv run python -m py_aep.cli.{visualize,validate,compare}`.
+Installed via `uv sync --extra dev`. Also invocable as `uv run python -m py_aep.cli.{visualize,validate,compare,inspect}`.
 
 - **`aep-visualize`** - Tree visualization of a parsed project
 - **`aep-validate`** - Compare parsed output against ExtendScript JSON. **Use after any parsing change.**
-- **`aep-compare`** - Binary chunk diff between `.aep` files. **Use to investigate unknown fields.**
+- **`aep-compare`** - Binary chunk diff between `.aep` files. Compares byte-level and structural differences. **Use to investigate unknown fields.**
+- **`aep-inspect`** - Single-file chunk inspection: item summary, chunk tree, hex dump.
 
 ```powershell
 aep-visualize samples/models/composition/bgColor_custom.aep
@@ -189,9 +196,18 @@ aep-validate sample.aep sample.json --category layers  # filter
 
 aep-compare file1.aep file2.aep
 aep-compare ref.aep v1.aep v2.aep v3.aep     # multi-file
-aep-compare file.aep --list                  # list chunks
-aep-compare file.aep --dump "LIST:Fold/ftts" # dump raw bytes
+aep-compare file1.aep file2.aep --context 4
+aep-compare file1.aep file2.aep --filter ldta
+
+aep-inspect file.aep                          # item summary
+aep-inspect file.aep --tree                   # full chunk tree
+aep-inspect file.aep --item 6                 # inspect specific item
+aep-inspect file.aep --list                   # list all chunk paths
+aep-inspect file.aep --dump "LIST:Fold/ftts"  # hex dump
 ```
+
+### Dev Scripts (not installed, run via `uv run python scripts/dev/...`)
+- **`scripts/jsx/ae_resave.jsx`** - AE resave validation template. Opens Python-generated files in AE, saves with `save(outFile)`, and **verifies output file exists** (catches silent save failures).
 
 ## Documentation
 Zensical; auto-deployed to [GitHub Pages](https://forticheprod.github.io/py-aep/) on push to `main`. Build locally: `zensical serve --strict`.

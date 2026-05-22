@@ -21,7 +21,7 @@ from .bin_utils import (
     write_fmt,
     write_pad,
 )
-from .fmt_field import FmtItem, _decode_fields, _encode_value, _init_name, _struct_info
+from .fmt_field import FmtItem, _decode_fields, _encode_value, _struct_info
 from .registry import CHUNK_TYPES, register
 
 if TYPE_CHECKING:
@@ -45,6 +45,7 @@ class Chunk:
     chunk_type: str = ""
     data: bytes = b""
     synthetic: bool = field(default=False, repr=False)
+    _trailing: bytes = field(default=b"", repr=False, eq=False, init=False)
 
     @classmethod
     def read(
@@ -63,7 +64,6 @@ class Chunk:
         (
             fmt,
             data_fields,
-            trailing_field,
             encodings,
             optional_start,
             endians,
@@ -78,16 +78,18 @@ class Chunk:
         if simple and size >= expected:
             # Fast path: no string encodings, endian overrides, optional
             # fields, or items. dict(zip()) replaces the _decode_fields
-            # Python loop. Coerces (e.g. bool_field) and trailing bytes
-            # are handled inline.
+            # Python loop. Coerces (e.g. bool_field) are handled inline.
             kw: dict[str, Any] = dict(zip(init_names, read_fmt(fmt, fp)))
             kw["chunk_type"] = chunk_type
             for i, crc in coerces.items():
                 name = init_names[i]
                 kw[name] = crc(kw[name])
             trailing_size = size - expected
-            if trailing_field and trailing_size > 0:
-                kw[_init_name(trailing_field.name)] = read_bytes(fp, trailing_size)
+            if trailing_size > 0:
+                extra = read_bytes(fp, trailing_size)
+                instance = cls(**kw)
+                object.__setattr__(instance, "_trailing", extra)
+                return instance
             return cls(**kw)
 
         if mixed_endian:
@@ -142,6 +144,7 @@ class Chunk:
 
         kw2: dict[str, Any] = {"chunk_type": chunk_type}
         kw2.update(_decode_fields(data_fields, values, encodings, coerces, init_names))
+        extra_trailing: bytes | None = None
         if items_info is not None:
             items_name, item_cls, item_size = items_info
             items_bytes = size - items_start
@@ -151,11 +154,14 @@ class Chunk:
                 fmt_cls.frombytes(fp.read(item_size)) for _ in range(count)
             ]
             rest = items_bytes - count * item_size
-            if trailing_field and rest > 0:
-                kw2[_init_name(trailing_field.name)] = read_bytes(fp, rest)
-        elif trailing_field and size > items_start:
-            kw2[_init_name(trailing_field.name)] = read_bytes(fp, size - items_start)
-        return cls(**kw2)
+            if rest > 0:
+                extra_trailing = read_bytes(fp, rest)
+        elif size > items_start:
+            extra_trailing = read_bytes(fp, size - items_start)
+        instance = cls(**kw2)
+        if extra_trailing is not None:
+            object.__setattr__(instance, "_trailing", extra_trailing)
+        return instance
 
     def write(self, fp: IO[bytes]) -> int:
         info = _struct_info(type(self))  # type: ignore[arg-type]
@@ -164,7 +170,6 @@ class Chunk:
         (
             fmt,
             data_fields,
-            trailing_field,
             encodings,
             optional_start,
             endians,
@@ -216,10 +221,8 @@ class Chunk:
             items_name = items_info[0]
             for item in getattr(self, items_name):
                 written += write_bytes(fp, item.tobytes())
-        if trailing_field:
-            t = getattr(self, trailing_field.name)
-            if t:
-                written += write_bytes(fp, t)
+        if self._trailing:
+            written += write_bytes(fp, self._trailing)
         return written
 
     @classmethod

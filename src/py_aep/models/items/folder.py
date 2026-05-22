@@ -6,10 +6,7 @@ from ...binary.chunk import ListChunk
 from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.misc_chunks import SfdtChunk
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import (
-    find_by_list_type,
-)
-from ..validators import validate_string
+from ..naming import auto_name
 from .item import Item
 
 if TYPE_CHECKING:
@@ -54,6 +51,7 @@ class FolderItem(Item):
         _cmta: CmtaChunk | None,
         _item_list: ListChunk,
         _gide: ListChunk | None,
+        _children_container: list[Chunk],
         project: Project,
         parent_folder: FolderItem | None,
     ) -> None:
@@ -68,6 +66,7 @@ class FolderItem(Item):
             type_name="Folder",
         )
         self.items: list[Item] = []
+        self._children_container = _children_container
         self._viewers: list[Viewer] = []
 
     def __iter__(self) -> Iterator[Item]:
@@ -102,7 +101,7 @@ class FolderItem(Item):
         iide = IideChunk(value=new_id)
         idpc = IdpcChunk()
         idta = IdtaChunk(item_type=1, item_id=new_id)
-        name_utf8 = Utf8Chunk(chunk_type="Utf8", value=name)
+        name_utf8 = Utf8Chunk(value=name)
         sfdt = SfdtChunk()
         sfdr = ListChunk(list_type="Sfdr")
 
@@ -117,6 +116,7 @@ class FolderItem(Item):
             _cmta=None,
             _item_list=item_list,
             _gide=None,
+            _children_container=sfdr.chunks,
             project=project,
             parent_folder=parent_folder,
         )
@@ -132,28 +132,20 @@ class FolderItem(Item):
         """
         return len(self.items)
 
-    def _get_children_container(self) -> list[Chunk]:
-        """Return the chunk list where child items should be appended.
-
-        For root folder (id 0): directly `_item_list.chunks`.
-        For non-root folders: the `LIST:Sfdr` chunk inside `_item_list`.
-        """
-        if self._idta is None:
-            # Root folder - children are directly in LIST:Fold.chunks
-            return self._item_list.chunks
-        sfdr = find_by_list_type(chunks=self._item_list.chunks, list_type="Sfdr")
-        return sfdr.chunks
-
-    def add_folder(self, name: str) -> FolderItem:
+    def add_folder(self, name: str | None = None) -> FolderItem:
         """Create a new folder inside this folder.
 
         Args:
-            name: The name of the new folder.
+            name: The name of the new folder. Pass `None` to auto-generate
+                a name (`Untitled 1`, `Untitled 2`, ...).
+                An empty string is allowed.
 
         Returns:
             The newly created [FolderItem][].
         """
-        validate_string()(name, None)
+        if name is None:
+            existing = {item.name for item in self._project.items.values()}
+            name = auto_name("Untitled", existing)
 
         folder = FolderItem._new(
             name,
@@ -162,8 +154,7 @@ class FolderItem(Item):
         )
 
         # Insert into parent container
-        container = self._get_children_container()
-        container.append(folder._item_list)
+        self._children_container.append(folder._item_list)
 
         # Register in project and parent
         self._project.items[folder.id] = folder
@@ -172,7 +163,7 @@ class FolderItem(Item):
 
     def add_comp(
         self,
-        name: str,
+        name: str | None,
         width: int,
         height: int,
         pixel_aspect: float,
@@ -182,7 +173,9 @@ class FolderItem(Item):
         """Create a new composition inside this folder.
 
         Args:
-            name: The name of the new composition.
+            name: The name of the new composition. Pass `None` to
+                auto-generate a name (`Comp 1`, `Comp 2`, ...).
+                An empty string is allowed.
             width: The width of the composition in pixels.
             height: The height of the composition in pixels.
             pixel_aspect: The pixel aspect ratio (1.0 for square pixels).
@@ -194,7 +187,9 @@ class FolderItem(Item):
         """
         from .composition import CompItem
 
-        validate_string()(name, None)
+        if name is None:
+            existing = {item.name for item in self._project.items.values()}
+            name = auto_name("Comp", existing)
 
         comp = CompItem._new(
             name,
@@ -208,9 +203,8 @@ class FolderItem(Item):
         )
 
         # Insert into parent container with required view data chunks
-        container = self._get_children_container()
-        container.append(comp._item_list)
-        container.extend(comp._view_data)
+        self._children_container.append(comp._item_list)
+        self._children_container.extend(comp._view_data)
 
         # Register in project and parent
         self._project.items[comp.id] = comp

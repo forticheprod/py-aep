@@ -9,6 +9,10 @@ You are a Python developer implementing **mutation methods** (add, remove, dupli
 
 Conventions, architecture, chunk navigation, CLI tools, and development commands are in `.github/copilot-instructions.md`. Read it first.
 
+## Mutation Roadmap
+
+Full plan with phases, dependencies, and priorities: `C:\Users\aurore.delaunay\Downloads\methods\methods_v4.md`
+
 ## Reference Documentation
 
 Consult the ExtendScript scripting guide for method signatures, return values, and semantics:
@@ -18,6 +22,10 @@ Consult the ExtendScript scripting guide for method signatures, return values, a
 ## Reference implementations
 - `Layer` methods: `src\py_aep\models\layers\layer.py`
 - `AVLayer` methods: `src\py_aep\models\layers\av_layer.py`
+- `CompItem._new()`: `src\py_aep\models\items\composition.py`
+- `FolderItem._new()`: `src\py_aep\models\items\folder.py`
+- `Property._new()`: `src\py_aep\models\properties\property.py`
+- `PropertyGroup._new()`: `src\py_aep\models\properties\property_group.py`
 
 ## Mutation-Specific Rules
 
@@ -25,7 +33,7 @@ These supplement the rules in `copilot-instructions.md`.
 
 ### Chunk Constructors Need Sensible Defaults
 
-Model code should provide **only domain-relevant values** when creating chunks. Binary boilerplate (gap bytes, trailing bytes, magic prefixes) must have defaults in the chunk class.
+Model code should provide **only domain-relevant values** when creating chunks. Binary boilerplate (gap bytes, trailing bytes, magic prefixes) must have defaults in the chunk class. Use setters for computed fields (e.g. `sspc.duration = 5.0` instead of computing `duration_dividend` / `duration_divisor` manually).
 
 ```python
 # WRONG - model code exposes binary layout details
@@ -45,6 +53,29 @@ lhd3 = Lhd3Chunk(count=1, item_size=16, item_type_raw=2)
 
 If a chunk class lacks sensible defaults, add them in `binary/` before writing model code. Create a registered chunk subclass for raw-data chunks instead of using `Chunk(chunk_type="xxxx", data=b"...")`.
 
+### Do Not Pass `chunk_type` When Defined on the Class
+
+Chunk subclasses already declare `chunk_type` as a class attribute. Never pass it explicitly:
+```python
+# WRONG
+SspcChunk(chunk_type="sspc", width=1920)
+
+# RIGHT
+SspcChunk(width=1920)
+```
+
+### Validation Belongs in `_new()` Methods
+
+Input validation (bounds, types) should happen inside `_new()` classmethods, reusing validators that may already exist on setters or ChunkField descriptors. Do not validate in the calling method (`add_thing()`). This keeps validation logic centralized and DRY.
+
+### Do Not Call Parsers from Models
+
+Models must **never** import or call parser functions (`parse_source()`, `parse_footage()`, `parse_layer()`, etc.). Instead, use `_new()` classmethods to construct model instances directly from chunks. Parsers are for the initial `parse()` pipeline only. The only exception is `duplicate()` / `copy_to_comp()` methods where cloning + parsing is the intended semantic.
+
+### No Chunk Cloning for New Objects
+
+Never copy/clone existing chunks to create a new object. Always construct fresh chunks with explicit field values. The only exception is `duplicate()` / `copy_to_comp()` methods where cloning is the intended semantic.
+
 ### Get-or-Create Pattern
 
 Merge "find chunks" and "bootstrap container" into a single method. Do not have separate `_find_*` and `_bootstrap_*` methods. Use `find_by_type` / `find_by_list_type` with `ChunkNotFoundError` to drive creation.
@@ -59,6 +90,18 @@ Every chunk mutation **must** have a corresponding model list update:
 ### Size Backpatching Is Automatic
 
 Never manually update chunk sizes. `write_chunk()` handles all size backpatching during serialization.
+
+## Known Binary Structures
+
+### Head Chunk Counter
+The `head` chunk has a hidden "next item ID" counter at `_reserved_08[7]` (byte offset 15 within the reserved block). When allocating new item IDs, `_allocate_item_id()` must update this to `(max_item_id + 1) & 0xFF`.
+
+### Common Binary Pitfalls
+- **linl must be 4 bytes LE**: `Chunk(chunk_type="linl", data=b"\x02\x00\x00\x00")`, NOT `U1Chunk(value=2)`.
+- **Every LIST:Item needs TWO Utf8 chunks**: one for the name (after idta), one empty between ftgi and Gide. Missing the second causes silent save failure.
+- **AE's `save(outFile)` silently fails on damaged files**: No exception, no error, just no file on disk. `save()` in-place works even on damaged files.
+- **`aep-compare` now includes structural comparison**: detects missing/extra chunks (including empty Utf8 chunks) alongside byte-level diffs.
+- **Use `aep-inspect --tree` to understand chunk layouts** before implementing new mutations. Don't hardcode chunk trees in documentation - discover them from real files.
 
 ## Standard Workflow
 
@@ -90,7 +133,7 @@ parent_list (LIST:Item / LIST:Comp)
 
 ### 3. Add Factory Classmethod on Model
 
-Create `_new()` classmethod that builds a model instance with minimal parameters. Coerce/validate inputs (e.g. invalid enum defaults to a safe value). Return the model instance, not raw chunks.
+Create `_new()` classmethod that builds a model instance with all backing chunks from scratch. Coerce/validate inputs (e.g. invalid enum defaults to a safe value). Return the model instance, not raw chunks. Existing examples: `CompItem._new()`, `FolderItem._new()`, `Property._new()`, `PropertyGroup._new()`.
 
 ### 4. Implement Mutation Methods
 
@@ -130,7 +173,48 @@ Prefer removing the entire container LIST when the last item is removed - produc
 - **Empty container**: AE may write a container with lhd3 (count=0) but no ldat chunk. The get-or-create method must handle this by adding ldat to the existing container.
 - **0-based indexing**: Use 0-based indexing even if ExtendScript uses 1-based for the same API.
 
-### 6. Write Tests
+### 6. Write and run Inspection Scripts & Verify Against ExtendScript
+
+Verification **must** compare the output of a file modified via ExtendScript with a file modified via py-aep. They must match.
+
+**Three layers of verification** - use all three:
+
+1. **Byte-level diff** (`aep-compare`): Detects value differences in leaf chunks and structural mismatches (missing/extra chunks, wrong child counts).
+   ```powershell
+   uv run aep-compare <jsx_output>.aep <py_output>.aep
+   ```
+
+2. **Single-file inspection** (`aep-inspect`): Inspect chunk trees, hex-dump specific chunks, list all chunk paths.
+   ```powershell
+   uv run aep-inspect file.aep --tree                   # full chunk tree
+   uv run aep-inspect file.aep --item 6                 # inspect specific item
+   uv run aep-inspect file.aep --dump "LIST:Fold/ftts"  # hex dump
+   ```
+
+3. **AE open + save(outFile)**: The ultimate test. Use `scripts/jsx/ae_resave.jsx` as a template. **CRITICAL**: Check that the output file actually exists on disk after save - `save(outFile)` silently fails on damaged files.
+
+#### Script Templates
+
+**JSX mutation script** (`scripts/jsx/_tmp_<feature>_inspect.jsx`):
+1. Opens existing samples
+2. Re-saves as baseline files (removes re-save noise)
+3. Performs mutations on baselines
+4. Saves output `.aep` files
+5. Run: `& "C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.com" -noui -r <script_path>`
+
+**Python mutation script** (`scripts/_tmp_<feature>_inspect.py`):
+1. Opens the same baseline files
+2. Performs the same operations via py-aep
+3. Saves output `.aep` files
+
+**AE resave validation** (`scripts/jsx/ae_resave.jsx`):
+1. Opens Python-generated files in AE
+2. Saves each with `save(outFile)`
+3. **Verifies file exists on disk** - reports FAIL if missing
+4. Logs item count and types for each file
+5. Adapt the template for each phase (set `pyDir`, `outDir`, `tests` array)
+
+### 7. Write Tests
 
 Tests go in `tests/test_models_<category>.py`.
 
@@ -160,7 +244,7 @@ def test_add_roundtrip(self, tmp_path):
     assert comp2.things[-1].field == expected_value
 ```
 
-### 7. Validate
+### 8. Validate
 
 ```powershell
 uv run ruff check src/py_aep/models/ src/py_aep/binary/ tests/
@@ -168,15 +252,6 @@ uv run mypy src/py_aep
 uv run pytest tests/test_models_<category>.py -x
 uv run pytest 2>&1 | Select-Object -Last 40
 ```
-
-### 8. Write Inspection Scripts
-
-After implementation, write a pair of scripts for comparison in After Effects:
-
-1. **JSX script** (`scripts/jsx/_tmp_<feature>_inspect.jsx`): Opens existing samples, re-save them as baseline files for the python script (to avoid noise due to re-saving), exercises each new mutation method, includes many edge-cases, saves one or more modified `.aep` files to a temp directory.
-2. **Python script** (`scripts/_tmp_<feature>_inspect.py`): open the baseline files written by the jsx script, performs the same operations via py-aep, saves output `.aep` files.
-
-When the jsx script is run by the user, compare the output files with aep-compare and/or py-aep to confirm that everything matches as expected.
 
 Example structure:
 ```python
@@ -203,4 +278,4 @@ When implementing a mutation method, report:
 2. Chunk class changes (defaults added, new classes)
 3. Model method implementations
 4. Test results (count passed, any failures)
-5. Validation results (ruff, mypy, pytest)
+5. Validation results (ruff, mypy, pytest, aep-compare)

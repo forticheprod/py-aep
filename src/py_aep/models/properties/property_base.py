@@ -9,7 +9,7 @@ from ...binary.mutations import clone_chunk_tree
 from ...binary.property_chunks import TdmnChunk
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..descriptors import ChunkField
-from ..validators import validate_string
+from ..validators import validate_name
 
 if TYPE_CHECKING:
     from ...binary.chunk import Chunk
@@ -171,7 +171,7 @@ class PropertyBase:
 
     @name.setter
     def name(self, value: str) -> None:
-        validate_string()(value, None)
+        validate_name(value, None)
 
         self._ensure_materialized()
         self._name = value

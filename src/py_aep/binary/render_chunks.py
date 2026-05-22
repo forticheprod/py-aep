@@ -7,9 +7,10 @@ RoutChunk uses `items_field()` for repeating render-flag entries.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
-from attrs import define, field
+from attrs import define
 
 from .bin_utils import read_bytes
 from .bitfield import BitField
@@ -105,8 +106,6 @@ class RouuChunk(Chunk):
     audio_channels: int = u1_field()
     """1=mono, 2=stereo."""
 
-    _trailing: bytes = field(default=b"", repr=False)
-
 
 # ---------------------------------------------------------------------------
 # Ropt - format-specific render options (variant dispatch by format_code)
@@ -172,7 +171,6 @@ class CineonRoptChunk(RoptChunk):
     logarithmic_conversion: bool = bool_field()
     file_format: int = u1_field()
     bit_depth: int = u1_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -184,7 +182,6 @@ class JpegRoptChunk(RoptChunk):
     quality: int = u2_field()
     format_type: int = u2_field()
     scans: int = u2_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -198,7 +195,6 @@ class OpenExrRoptChunk(RoptChunk):
     luminance_chroma: bool = bool_field()
     _pad_11: bytes = bytes_field(1, repr=False)
     dwa_compression_level: float = f4_field(default=0.0, endian="<")
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -210,7 +206,6 @@ class TargaRoptChunk(RoptChunk):
     bits_per_pixel: int = u1_field()
     _pad2: bytes = bytes_field(4, repr=False)
     rle_compression: bool = bool_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -221,7 +216,6 @@ class TiffRoptChunk(RoptChunk):
     _pad: bytes = bytes_field(596, repr=False)
     ibm_pc_byte_order: bool = bool_field()
     lzw_compression: bool = bool_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -235,7 +229,6 @@ class PngRoptChunk(RoptChunk):
     _pad2: bytes = bytes_field(2, repr=False)
     bit_depth: int = u2_field()
     compression: int = u4_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 _ROPT_VARIANTS: dict[str, type[RoptChunk]] = {
@@ -260,7 +253,7 @@ class RoutItem(FmtItem):
     Contains a render flag at bit 6 of the first byte.
     """
 
-    _flags: int = u1_field(default=0)
+    _flags: int = u1_field(repr=False)
     _pad: bytes = bytes_field(3, repr=False)
 
     render = BitField("_flags", 6)
@@ -284,9 +277,9 @@ class RenderSettingsItem(FmtItem):
     status: int = u4_field()
     _reserved_06: bytes = bytes_field(4, repr=False)
     time_span_start_dividend: int = u4_field()
-    time_span_start_divisor: int = u4_field()
+    time_span_start_divisor: int = u4_field(default=1)
     time_span_duration_dividend: int = u4_field()
-    time_span_duration_divisor: int = u4_field()
+    time_span_duration_divisor: int = u4_field(default=1)
     _reserved_11: bytes = bytes_field(8, repr=False)
     frame_rate_integer: int = u2_field()
     frame_rate_fractional: int = u2_field()
@@ -332,8 +325,6 @@ class RenderSettingsItem(FmtItem):
 
     # -- Computed properties -----------------------------------------------
 
-    _TIME_DIVISOR = 10000
-
     @property
     def frame_rate(self) -> float:
         """Assembled frame rate (integer + fractional/65536)."""
@@ -353,9 +344,9 @@ class RenderSettingsItem(FmtItem):
 
     @time_span_start.setter
     def time_span_start(self, value: float) -> None:
-        divisor = self.time_span_start_divisor or self._TIME_DIVISOR
-        self.time_span_start_dividend = round(value * divisor)
-        self.time_span_start_divisor = divisor
+        frac = Fraction(value).limit_denominator()
+        self.time_span_start_dividend = frac.numerator
+        self.time_span_start_divisor = frac.denominator
 
     @property
     def time_span_duration(self) -> float:
@@ -366,9 +357,9 @@ class RenderSettingsItem(FmtItem):
 
     @time_span_duration.setter
     def time_span_duration(self, value: float) -> None:
-        divisor = self.time_span_duration_divisor or self._TIME_DIVISOR
-        self.time_span_duration_dividend = round(value * divisor)
-        self.time_span_duration_divisor = divisor
+        frac = Fraction(value).limit_denominator()
+        self.time_span_duration_dividend = frac.numerator
+        self.time_span_duration_divisor = frac.denominator
 
 # ---------------------------------------------------------------------------
 # Output module settings ldat item (128 bytes per item)
@@ -442,4 +433,3 @@ class RoutChunk(Chunk):
 
     header: bytes = bytes_field(4)
     items: list[RoutItem] = items_field(RoutItem, 4)
-    _trailing: bytes = field(default=b"", repr=False)

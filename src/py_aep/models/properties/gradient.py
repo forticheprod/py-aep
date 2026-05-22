@@ -9,7 +9,7 @@ from xml.etree.ElementTree import (
     tostring,
 )
 
-from ..validators import validate_number, validate_sequence
+from ..validators import validate_number, validate_rgb_color
 
 if TYPE_CHECKING:
     from typing import Any
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 _validate_offset = validate_number(min=0.0, max=1.0)
 _validate_midpoint = validate_number(min=0.0, max=1.0)
-_validate_color = validate_sequence(length=3, min=0.0, max=1.0)
+_validate_color = validate_rgb_color
 _validate_alpha = validate_number(min=0.0, max=1.0)
 
 

@@ -168,7 +168,6 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     tuple[
         str,
         tuple[Attribute, ...],
-        Attribute | None,
         dict[int, str],
         int,
         dict[int, str],
@@ -182,7 +181,7 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
 ):
     """Derive struct layout metadata for a chunk class.
 
-    Returns an 11-tuple `(fmt, data_fields, trailing, encodings,
+    Returns a 10-tuple `(fmt, data_fields, encodings,
     optional_start, endians, items_info, coerces, init_names, simple,
     expected_size)` or `None` for raw-bytes chunks that have neither
     `fmt_field` nor `items_field` fields.
@@ -208,7 +207,6 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     )
     fmt_parts: list[str] = []
     data_fields: list[Attribute] = []
-    trailing: Attribute | None = None
     encodings: dict[int, str] = {}
     endians: dict[int, str] = {}
     coerces: dict[int, type] = {}
@@ -217,9 +215,6 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
 
     for f in fields(cls):
         if f.name in base_names:
-            continue
-        if f.name == "_trailing":
-            trailing = f
             continue
         if f.metadata.get("items"):
             items_info = (
@@ -272,8 +267,7 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
 
     init_names = tuple(_init_name(f.name) for f in data_fields)
     # Simple chunks have no string encodings, endian overrides, optional
-    # fields, or items. Coerces (e.g. bool) and trailing fields are handled
-    # inline in the fast path.
+    # fields, or items. Coerces are handled inline in the fast path.
     simple = (
         not encodings
         and not endians
@@ -285,7 +279,6 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     return (
         combined,
         tuple(data_fields),
-        trailing,
         encodings,
         optional_start,
         endians,
@@ -368,7 +361,6 @@ class FmtItem:
         (
             fmt,
             data_fields,
-            _,
             encodings,
             _,
             endians,
@@ -404,7 +396,7 @@ class FmtItem:
         info = _struct_info(type(self))  # type: ignore[arg-type]
         if info is None:
             raise TypeError(f"{type(self).__name__} has no fmt_field metadata")
-        fmt, data_fields, _, encodings, _, endians, _, coerces, _, _simple, _ = info
+        fmt, data_fields, encodings, _, endians, _, coerces, _, _simple, _ = info
         if endians:
             parts: list[bytes] = []
             for i, f in enumerate(data_fields):

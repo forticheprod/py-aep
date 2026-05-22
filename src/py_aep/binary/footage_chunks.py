@@ -9,9 +9,10 @@ PsdOptiChunk (custom read/write for LE fields), PlaceholderOptiChunk.
 from __future__ import annotations
 
 import struct
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
-from attrs import define, field
+from attrs import define
 
 from .bin_utils import read_bytes
 from .bitfield import BitField
@@ -63,11 +64,13 @@ class SspcChunk(Chunk):
     width: int = u2_field()
     _reserved_22: bytes = bytes_field(2, repr=False)
     height: int = u2_field()
-    duration_dividend: int = u4_field()
+    duration_dividend: int = u4_field(default=1)
     duration_divisor: int = u4_field(default=1)
 
     # -- Frame rate (bytes 46-68) ------------------------------------------
-    _reserved_2e: bytes = bytes_field(10, repr=False)
+    _reserved_2e: bytes = bytes_field(6, repr=False)
+    _time_base: int = u2_field(default=600)
+    _reserved_36: bytes = bytes_field(2, repr=False)
     native_frame_rate_integer: int = u4_field()
     native_frame_rate_fractional: int = u2_field()
     _reserved_3e: bytes = bytes_field(7, repr=False)
@@ -92,30 +95,39 @@ class SspcChunk(Chunk):
     field_order: int = u1_field()
 
     # -- Reserved / footage state (bytes 88-128) ---------------------------
-    _reserved_58: bytes = bytes_field(27, repr=False)
+    _reserved_58: bytes = bytes_field(17, repr=False)
+    _is_synthetic_a: int = u1_field(default=1, repr=False)
+    _reserved_6b: bytes = bytes_field(3, repr=False)
+    _is_synthetic_b: int = u1_field(default=1, repr=False)
+    _reserved_6f: bytes = bytes_field(5, repr=False)
     footage_missing_at_save: bool = bool_field()
     """0 = found, 1 = missing or placeholder."""
 
-    _reserved_74: bytes = bytes_field(13, repr=False)
+    _reserved_74: bytes = bytes_field(9, repr=False)
+    _depth_flag: int = u1_field(default=0x0C, repr=False)
+    _reserved_7e: bytes = bytes_field(3, repr=False)
 
     # -- Loop / pixel ratio (bytes 129-146) --------------------------------
     loop: int = u1_field(default=1)
     """Loop count (1 = no loop, 2+ = loop count)."""
 
-    _reserved_82: bytes = bytes_field(6, repr=False)
-    pixel_ratio_dividend: int = u4_field(default=1)
-    pixel_ratio_divisor: int = u4_field(default=1)
+    _reserved_82: bytes = bytes_field(4, repr=False)
+    _is_synthetic_c: int = u1_field(default=1, repr=False)
+    _reserved_87: bytes = bytes_field(1, repr=False)
+    pixel_aspect_dividend: int = u4_field(default=1)
+    pixel_aspect_divisor: int = u4_field(default=1)
     _reserved_90: bytes = bytes_field(3, repr=False)
 
     # -- Pulldown / conform (bytes 147-158) --------------------------------
-    remove_pulldown: int = u1_field()
-    """0 = OFF, 1-10 = pulldown phase."""
+    _remove_pulldown_value: int = u1_field(repr=False)
 
     conform_frame_rate_integer: int = u2_field()
     """0 = no conforming."""
 
     conform_frame_rate_fractional: int = u2_field()
-    _reserved_98: bytes = bytes_field(7, repr=False)
+    display_frame_rate_integer: int = u2_field()
+    display_frame_rate_fractional: int = u2_field()
+    _reserved_9c: bytes = bytes_field(3, repr=False)
     high_quality_field_separation: int = u1_field()
 
     # -- Audio / sequence (bytes 160-183) ----------------------------------
@@ -128,17 +140,21 @@ class SspcChunk(Chunk):
     frame_padding: int = u4_field()
     """Zero-padded digit count for image sequences (0 for non-sequences)."""
 
-    # -- Trailing (bytes 184+) ---------------------------------------------
-    _trailing: bytes = field(default=b"", repr=False)
+    # -- Extended settings (bytes 184-221) ---------------------------------
+    _reserved_b8: bytes = bytes_field(4, repr=False)
+    work_area_start: int = u4_field(default=0xFFFFFFFF)
+    work_area_end: int = u4_field(default=0xFFFFFFFF)
+    _reserved_c4: bytes = bytes_field(6, repr=False)
+    _reserved_ca: bytes = bytes_field(10, repr=False)
+    _reserved_d4: bytes = bytes_field(
+        10, default=b"\x01" + b"\x00" * 9, repr=False
+    )
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     invert_alpha = BitField("_alpha_flags", 1)
     premultiplied = BitField("_alpha_flags", 0)
 
     # -- Computed properties -----------------------------------------------
-
-    _TIME_DIVISOR = 10000
-    _PIXEL_DIVISOR = 100000
 
     @property
     def native_frame_rate(self) -> float:
@@ -147,6 +163,12 @@ class SspcChunk(Chunk):
             self.native_frame_rate_integer
             + self.native_frame_rate_fractional / 65536.0
         )
+
+    @native_frame_rate.setter
+    def native_frame_rate(self, value: float) -> None:
+        self.native_frame_rate_integer = int(value)
+        self.native_frame_rate_fractional = round((value - int(value)) * 65536)
+        self._update_display_frame_rate()
 
     @property
     def conform_frame_rate(self) -> float:
@@ -160,6 +182,7 @@ class SspcChunk(Chunk):
     def conform_frame_rate(self, value: float) -> None:
         self.conform_frame_rate_integer = int(value)
         self.conform_frame_rate_fractional = round((value - int(value)) * 65536)
+        self._update_display_frame_rate()
 
     @property
     def duration(self) -> float:
@@ -168,12 +191,24 @@ class SspcChunk(Chunk):
             return 0.0
         return self.duration_dividend / self.duration_divisor
 
+    @duration.setter
+    def duration(self, value: float) -> None:
+        frac = Fraction(value).limit_denominator()
+        self.duration_dividend = frac.numerator
+        self.duration_divisor = frac.denominator
+
     @property
     def pixel_aspect(self) -> float:
         """Pixel aspect ratio (dividend / divisor)."""
-        if self.pixel_ratio_divisor == 0:
+        if self.pixel_aspect_divisor == 0:
             return 1.0
-        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
+        return self.pixel_aspect_dividend / self.pixel_aspect_divisor
+
+    @pixel_aspect.setter
+    def pixel_aspect(self, value: float) -> None:
+        frac = Fraction(value).limit_denominator()
+        self.pixel_aspect_dividend = frac.numerator
+        self.pixel_aspect_divisor = frac.denominator
 
     @property
     def premul_color(self) -> list[float]:
@@ -212,11 +247,36 @@ class SspcChunk(Chunk):
         return self.alpha_mode_raw != 3
 
     @property
+    def remove_pulldown(self) -> int:
+        """0 = OFF, 1-10 = pulldown phase."""
+        return self._remove_pulldown_value
+
+    @remove_pulldown.setter
+    def remove_pulldown(self, value: int) -> None:
+        self._remove_pulldown_value = value
+        self._update_display_frame_rate()
+
+    @property
     def display_frame_rate(self) -> float:
         """Effective frame rate as displayed."""
         conform = self.conform_frame_rate
         base = conform if conform != 0 else self.native_frame_rate
-        return base * (0.8 if self.remove_pulldown != 0 else 1.0)
+        return base * (0.8 if self._remove_pulldown_value != 0 else 1.0)
+
+    @display_frame_rate.setter
+    def display_frame_rate(self, value: float) -> None:
+        self.display_frame_rate_integer = int(value)
+        self.display_frame_rate_fractional = round(
+            (value - int(value)) * 65536
+        )
+
+    def _update_display_frame_rate(self) -> None:
+        """Recompute and store display_frame_rate from current settings."""
+        conform = self.conform_frame_rate
+        base = conform if conform != 0 else self.native_frame_rate
+        self.display_frame_rate = base * (
+            0.8 if self._remove_pulldown_value != 0 else 1.0
+        )
 
 # ---------------------------------------------------------------------------
 # opti - footage asset info (variant dispatch by asset_type)
@@ -292,8 +352,6 @@ class SoliOptiChunk(OptiChunk):
     solid_name: str = str_field(256, default="", encoding="windows-1252")
     """Solid item name."""
 
-    _trailing: bytes = field(default=b"", repr=False)
-
     @property
     def color(self) -> list[float]:
         """Solid color as [R, G, B] in 0.0-1.0 range."""
@@ -352,7 +410,6 @@ class PsdOptiChunk(OptiChunk):
     """Layer bounding box right (LE s4)."""
 
     _pad_5e: bytes = bytes_field(250, repr=False)
-    _trailing: bytes = field(default=b"", repr=False)
 
     @property
     def psd_group_name(self) -> str:
@@ -371,24 +428,8 @@ class PlaceholderOptiChunk(OptiChunk):
     asset_type: str = ascii_field(4, default="")
     asset_type_int: int = u2_field(default=2)
     _pad: bytes = bytes_field(4, default=b"\x00\x00\x01\x0a", repr=False)
-    _trailing: bytes = field(default=b"", repr=False)
-
-    @property
-    def placeholder_name(self) -> str:
-        """Placeholder name (variable-length windows-1252 in trailing bytes)."""
-        if not self._trailing:
-            return ""
-        nul = self._trailing.find(b"\x00")
-        if nul >= 0:
-            return self._trailing[:nul].decode("windows-1252")
-        return self._trailing.decode("windows-1252")
-
-    @placeholder_name.setter
-    def placeholder_name(self, value: str) -> None:
-        # Preserve any bytes after the NUL-terminated name
-        old_nul = self._trailing.find(b"\x00")
-        suffix = self._trailing[old_nul:] if old_nul >= 0 else b"\x00"
-        self._trailing = value.encode("windows-1252") + suffix
+    placeholder_name: str = str_field(256, default="", encoding="windows-1252")
+    """Placeholder name (256-byte NUL-padded windows-1252)."""
 
 
 _OPTI_VARIANTS: dict[str, type[OptiChunk]] = {

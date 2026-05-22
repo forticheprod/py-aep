@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, cast
 
-from ...binary.footage_chunks import SoliOptiChunk
+from ...binary.footage_chunks import SoliOptiChunk, SspcChunk
 from ..descriptors import ChunkField
-from ..validators import validate_sequence
+from ..validators import validate_number, validate_pixel_aspect, validate_rgb_color
 from .footage import FootageSource
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
-    from ...binary.footage_chunks import OptiChunk, SspcChunk
+    from ...binary.footage_chunks import OptiChunk
     from ...binary.scalar_chunks import U1Chunk
+
+
+_validate_solid_width = validate_number(min=1, max=30000, integer=True)
+_validate_solid_height = validate_number(min=1, max=30000, integer=True)
 
 
 class SolidSource(FootageSource):
@@ -37,7 +41,7 @@ class SolidSource(FootageSource):
     color = ChunkField[List[float]](
         "_opti",
         "color",
-        validate=validate_sequence(length=3, min=0.0, max=1.0),
+        validate=validate_rgb_color,
     )
     """The solid color, expressed as `[R, G, B]` values in the
     range `[0.0..1.0]`. Read / Write."""
@@ -52,6 +56,46 @@ class SolidSource(FootageSource):
     ) -> None:
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)
         self._opti = _opti
+
+    @classmethod
+    def _new(
+        cls,
+        color: list[float],
+        name: str,
+        width: int,
+        height: int,
+        pixel_aspect: float,
+    ) -> SolidSource:
+        """Create a new solid source with backing chunks.
+
+        Args:
+            color: Solid color as [R, G, B] in 0.0-1.0 range.
+            name: The solid name.
+            width: Width in pixels (1-30000).
+            height: Height in pixels (1-30000).
+            pixel_aspect: Pixel aspect ratio (0.01-100.0).
+        """
+        _validate_solid_width(width, None)
+        _validate_solid_height(height, None)
+        validate_pixel_aspect(pixel_aspect, None)
+        validate_rgb_color(color, None)
+
+        sspc = SspcChunk(
+            width=width,
+            height=height,
+            source_format_type="Soli",
+            alpha_mode_raw=3,
+        )
+        sspc.pixel_aspect = pixel_aspect
+
+        opti = SoliOptiChunk(
+            color_r=color[0],
+            color_g=color[1],
+            color_b=color[2],
+            solid_name=name,
+        )
+
+        return cls(_sspc=sspc, _opti=opti)
 
     def _resolve_name(self, raw_name: str) -> str:
         return str(cast("SoliOptiChunk", self._opti).solid_name)

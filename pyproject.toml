@@ -53,6 +53,7 @@ Changelog = "https://github.com/forticheprod/py-aep/releases"
 [project.scripts]
 aep-visualize = "py_aep.cli.visualize:main"
 aep-compare = "py_aep.cli.compare:main"
+aep-inspect = "py_aep.cli.inspect:main"
 aep-validate = "py_aep.cli.validate:main"
 
 [build-system]

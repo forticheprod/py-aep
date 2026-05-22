@@ -6,6 +6,8 @@ so it reads as `None` from older files and is omitted on write when absent.
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 from attrs import define
 
 from .bitfield import BitField
@@ -44,7 +46,7 @@ class LdtaChunk(Chunk):
     layer_id: int = u4_field()
     quality: int = u2_field()
     _reserved_06: bytes = bytes_field(2, repr=False)
-    stretch_dividend: int = s4_field()
+    stretch_dividend: int = s4_field(default=1)
     start_time_dividend: int = s4_field()
     start_time_divisor: int = u4_field(default=1)
     in_point_dividend: int = s4_field()
@@ -82,9 +84,9 @@ class LdtaChunk(Chunk):
     track_matte_type: int = u1_field()
     stretch_divisor: int = u4_field(default=1)
     _reserved_70: bytes = bytes_field(7, repr=False)
-    _ae26_flag: int = u1_field(default=0)
+    _unknown_ae26_flag: int = u1_field(repr=False)
     """Byte 151: AE 26+ boolean flag (zero in earlier versions)."""
-    _ae26_float: float = f8_field(default=0.0)
+    _unknown_ae26_float: float = f8_field(repr=False)
     """Bytes 152-159: AE 26+ float64 value (zero in earlier versions)."""
     _reserved_70b: bytes = bytes_field(3, repr=False)
     layer_type: int = u1_field()
@@ -127,8 +129,6 @@ class LdtaChunk(Chunk):
 
     # -- Computed properties -----------------------------------------------
 
-    _TIME_DIVISOR = 10000
-
     @property
     def start_time(self) -> float:
         """Start time in seconds (dividend / divisor)."""
@@ -136,8 +136,9 @@ class LdtaChunk(Chunk):
 
     @start_time.setter
     def start_time(self, value: float) -> None:
-        self.start_time_dividend = round(value * self._TIME_DIVISOR)
-        self.start_time_divisor = self._TIME_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.start_time_dividend = frac.numerator
+        self.start_time_divisor = frac.denominator
 
     @property
     def in_point(self) -> float:
@@ -146,8 +147,9 @@ class LdtaChunk(Chunk):
 
     @in_point.setter
     def in_point(self, value: float) -> None:
-        self.in_point_dividend = round(value * self._TIME_DIVISOR)
-        self.in_point_divisor = self._TIME_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.in_point_dividend = frac.numerator
+        self.in_point_divisor = frac.denominator
 
     @property
     def out_point(self) -> float:
@@ -156,8 +158,9 @@ class LdtaChunk(Chunk):
 
     @out_point.setter
     def out_point(self, value: float) -> None:
-        self.out_point_dividend = round(value * self._TIME_DIVISOR)
-        self.out_point_divisor = self._TIME_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.out_point_dividend = frac.numerator
+        self.out_point_divisor = frac.denominator
 
     @property
     def stretch(self) -> float:
@@ -172,8 +175,9 @@ class LdtaChunk(Chunk):
             self.stretch_dividend = 0
             self.stretch_divisor = 0
         else:
-            self.stretch_dividend = round(value * self._TIME_DIVISOR / 100.0)
-            self.stretch_divisor = self._TIME_DIVISOR
+            frac = Fraction(value / 100.0).limit_denominator()
+            self.stretch_dividend = frac.numerator
+            self.stretch_divisor = frac.denominator
 
     @property
     def auto_orient(self) -> int:

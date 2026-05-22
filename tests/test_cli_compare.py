@@ -1,20 +1,19 @@
 """Tests for CLI compare module.
 
 These tests verify the aep-compare command line tool functionality,
-including leaf-only diff output, chunk listing, hex dump, multi-file
-comparison, and context display.
+including leaf-only diff output, multi-file comparison, and context display.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from py_aep.cli._chunk_helpers import format_hex_dump
 from py_aep.cli.compare import (
     ByteDifference,
     ChunkDifference,
     MultiFileDifference,
     _compare_chunk_dicts,
-    _format_hex_dump,
     compare_binary_data,
     filter_differences,
     parse_aep_chunks,
@@ -118,12 +117,12 @@ class TestLeafOnlyChunks:
             )
 
     def test_leaf_chunks_have_data(self) -> None:
-        """All leaf chunks should have non-empty raw data."""
+        """All leaf chunks should have bytes data (may be empty)."""
         aep_path = SAMPLES_DIR / "versions" / "ae2025" / "complete.aep"
         chunks = parse_aep_chunks(aep_path)
         assert len(chunks) > 0
         for path, data in chunks.items():
-            assert len(data) > 0, f"Empty data for {path}"
+            assert isinstance(data, bytes), f"Non-bytes data for {path}"
 
 
 class TestCompareChunkDicts:
@@ -152,20 +151,20 @@ class TestFormatHexDump:
     def test_small_data(self) -> None:
         """Hex dump of a few bytes formats correctly."""
         data = b"\x00\x01\x02\x03"
-        result = _format_hex_dump(data)
+        result = format_hex_dump(data)
         assert "0000:" in result
         assert "00 01 02 03" in result
 
     def test_ascii_representation(self) -> None:
         """ASCII column shows printable chars and dots for non-printable."""
         data = b"Hello\x00World"
-        result = _format_hex_dump(data)
+        result = format_hex_dump(data)
         assert "Hello.World" in result
 
     def test_multi_line(self) -> None:
         """Data longer than 16 bytes produces multiple lines."""
         data = bytes(range(32))
-        result = _format_hex_dump(data)
+        result = format_hex_dump(data)
         lines = result.strip().split("\n")
         assert len(lines) == 2
         assert lines[0].startswith("0000:")

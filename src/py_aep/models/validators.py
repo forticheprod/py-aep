@@ -119,7 +119,7 @@ def validate_one_of(
 
 def validate_string(
     *,
-    allow_empty: bool = False,
+    allow_empty: bool = True,
     max_length: int | None = None,
 ) -> Callable[[object, Any], None]:
     """Return a validator that checks a string value.
@@ -140,3 +140,28 @@ def validate_string(
             )
 
     return _validator
+
+
+# ---- Shared domain validators ----
+# Re-use these across models instead of defining per-module duplicates.
+
+validate_width = validate_number(min=4, max=30000, integer=True)
+"""Validate composition/placeholder width (4-30000 px)."""
+
+validate_height = validate_number(min=4, max=30000, integer=True)
+"""Validate composition/placeholder height (4-30000 px)."""
+
+validate_pixel_aspect = validate_number(min=0.01, max=100.0)
+"""Validate pixel aspect ratio (0.01-100.0)."""
+
+validate_duration = validate_number(min=0.0, max=10800.0)
+"""Validate duration in seconds (0.0-10800.0)."""
+
+validate_frame_rate = validate_number(min=1.0, max=99.0)
+"""Validate frame rate in fps (1.0-99.0)."""
+
+validate_rgb_color = validate_sequence(length=3, min=0.0, max=1.0)
+"""Validate an RGB color as [R, G, B] in 0.0-1.0 range."""
+
+validate_name = validate_string(allow_empty=False)
+"""Validate a name string (1-255 chars)."""

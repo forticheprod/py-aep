@@ -882,22 +882,17 @@ class TestAllocateItemId:
 
     def test_first_call_returns_max_plus_one(self) -> None:
         project = parse_aep(LAYER_SAMPLES_DIR / "type.aep").project
-        expected = max(project.items.keys()) + 1
+        # _head.next_item_id is set by AE and equals max(item_ids) + 1
+        expected = project._head.next_item_id
         assert project._allocate_item_id() == expected
+        # After allocation, the counter should be incremented
+        assert project._head.next_item_id == expected + 1
 
     def test_successive_calls_increment(self) -> None:
         project = parse_aep(LAYER_SAMPLES_DIR / "type.aep").project
         first = project._allocate_item_id()
         assert project._allocate_item_id() == first + 1
         assert project._allocate_item_id() == first + 2
-
-    def test_empty_project_returns_one(self) -> None:
-        """ID 0 is reserved for the root folder; first allocation is 1."""
-        project = parse_aep(LAYER_SAMPLES_DIR / "type.aep").project
-        # Simulate empty items dict
-        project._items = {0: project._items[0]}
-        project._max_item_id = -1  # reset lazy cache
-        assert project._allocate_item_id() == 1
 
 
 class TestAllocateLayerId:

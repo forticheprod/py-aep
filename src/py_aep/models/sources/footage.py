@@ -11,7 +11,7 @@ from ...enums import (
 )
 from ...enums.mappings import map_media_color_space
 from ..descriptors import ChunkField
-from ..validators import validate_number, validate_sequence
+from ..validators import validate_number, validate_rgb_color
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
@@ -78,7 +78,7 @@ class FootageSource:
     premul_color = ChunkField[List[float]](
         "_sspc",
         "premul_color",
-        validate=validate_sequence(length=3, min=0.0, max=1.0),
+        validate=validate_rgb_color,
     )
     """The color to be premultiplied. This attribute is valid only if
     the `alpha_mode` is

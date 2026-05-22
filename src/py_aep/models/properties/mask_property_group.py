@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, List
 
 from ...enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
 from ..descriptors import ChunkField
-from ..validators import validate_sequence
+from ..validators import validate_rgb_color
 from .property_group import PropertyGroup
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ class MaskPropertyGroup(PropertyGroup):
     color = ChunkField[List[float]](
         "_mkif",
         "color",
-        validate=validate_sequence(length=3, min=0.0, max=1.0),
+        validate=validate_rgb_color,
     )
     """The color used to draw the mask outline as it appears in the user
     interface (Composition panel, Layer panel, and Timeline panel).

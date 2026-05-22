@@ -295,7 +295,7 @@ class Property(PropertyBase):
         )
 
         display = spec.auto_name or _TDSN_SENTINEL
-        name_utf8 = Utf8Chunk(chunk_type="Utf8", value=display, synthetic=synthetic)
+        name_utf8 = Utf8Chunk(value=display, synthetic=synthetic)
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
         )
@@ -739,7 +739,7 @@ class Property(PropertyBase):
             self._expression_utf8.value = value
         elif value:
             self._ensure_materialized()
-            chunk = Utf8Chunk(chunk_type="Utf8", value=value)
+            chunk = Utf8Chunk(value=value)
             self._tdbs.chunks.append(chunk)
             self._expression_utf8 = chunk
         self._expression = value

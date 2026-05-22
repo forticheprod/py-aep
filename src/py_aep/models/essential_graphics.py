@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .descriptors import ChunkField
-from .validators import validate_string
+from .validators import validate_name
 
 if TYPE_CHECKING:
     from ..binary.scalar_chunks import U4Chunk, Utf8Chunk
@@ -27,7 +27,7 @@ class EssentialGraphicsController:
     name = ChunkField[str](
         "_name_utf8",
         "value",
-        validate=validate_string(),
+        validate=validate_name,
     )
     """The display name of the controller. Read / Write."""
 

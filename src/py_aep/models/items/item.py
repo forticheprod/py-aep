@@ -16,7 +16,7 @@ from ...binary.utils import (
 )
 from ..descriptors import ChunkField
 from ..guide import Guide
-from ..validators import validate_string
+from ..validators import validate_name
 
 if TYPE_CHECKING:
     from ...binary.item_chunks import IdtaChunk
@@ -53,7 +53,7 @@ class Item:
     name = ChunkField[str](
         "_name_utf8",
         "value",
-        validate=validate_string(),
+        validate=validate_name,
     )
     """The name of the item, as shown in the Project panel.
     Read / Write."""
@@ -267,7 +267,7 @@ class Item:
         """Remove this item's LIST:Item and trailing view-data chunks."""
         parent = self._parent_folder
         assert parent is not None
-        container = parent._get_children_container()
+        container = parent._children_container
         start, end = block_slice(
             container,
             self._item_list,

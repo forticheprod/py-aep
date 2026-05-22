@@ -10,7 +10,7 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING
 
-from attrs import Factory, define, field
+from attrs import Factory, define
 
 from .bin_utils import read_bytes, write_bytes
 from .bitfield import BitField
@@ -45,7 +45,6 @@ class TdsbChunk(Chunk):
     _pad1: int = u1_field(repr=False)
     _lock_flags: int = u1_field(repr=False)
     _enable_flags: int = u1_field(default=1, repr=False)
-    _trailing: bytes = field(default=b"", repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
     locked_ratio = BitField("_lock_flags", 4)
@@ -110,7 +109,6 @@ class Tdb4Chunk(Chunk):
     _pad9: bytes = bytes_field(3, repr=False)
     _expr_flags: int = u1_field(repr=False)
     _pad10: bytes = bytes_field(4, repr=False)
-    _trailing: bytes = field(default=b"", repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
     is_spatial = BitField("_spatial_static_flags", 3)
@@ -141,7 +139,6 @@ class CdatChunk(Chunk):
 
     values: list[float] = Factory(list)
     is_le: bool = False
-    _trailing: bytes = field(default=b"", repr=False)
 
     @classmethod
     def read(
@@ -156,23 +153,20 @@ class CdatChunk(Chunk):
         count = size // 8
         if count == 0:
             trailing = read_bytes(fp, size) if size > 0 else b""
-            return cls(
-                chunk_type=chunk_type,
-                is_le=is_le,
-                trailing=trailing,
-            )
+            instance = cls(chunk_type=chunk_type, is_le=is_le)
+            if trailing:
+                object.__setattr__(instance, "_trailing", trailing)
+            return instance
         fmt = "<" if is_le else ">"
         fmt += f"{count}d"
         raw = read_bytes(fp, count * 8)
         vals = list(struct.unpack(fmt, raw))
         rest = size - count * 8
         trailing = read_bytes(fp, rest) if rest > 0 else b""
-        return cls(
-            chunk_type=chunk_type,
-            values=vals,
-            is_le=is_le,
-            trailing=trailing,
-        )
+        instance = cls(chunk_type=chunk_type, values=vals, is_le=is_le)
+        if trailing:
+            object.__setattr__(instance, "_trailing", trailing)
+        return instance
 
     def write(self, fp: IO[bytes]) -> int:
         written = 0
@@ -208,7 +202,6 @@ class TdumChunk(Chunk):
 
     is_color: bool = False
     is_integer: bool = False
-    _trailing: bytes = field(default=b"", repr=False)
 
     @classmethod
     def read(
@@ -233,13 +226,15 @@ class TdumChunk(Chunk):
             count = size // 8
             vals = list(struct.unpack(f">{count}d", raw[: count * 8]))
             trailing = raw[count * 8 :]
-        return cls(
+        instance = cls(
             chunk_type=chunk_type,
             values=vals,
             is_color=is_color,
             is_integer=is_integer,
-            trailing=trailing,
         )
+        if trailing:
+            object.__setattr__(instance, "_trailing", trailing)
+        return instance
 
     def write(self, fp: IO[bytes]) -> int:
         if self.is_color:
@@ -266,7 +261,6 @@ class OtdaChunk(Chunk):
 
     chunk_type: str = "otda"
     values: list[float] = Factory(list)
-    _trailing: bytes = field(default=b"", repr=False)
 
     @classmethod
     def read(
@@ -281,7 +275,10 @@ class OtdaChunk(Chunk):
         n = size // 8
         vals = list(struct.unpack(f">{n}d", raw[: n * 8]))
         trailing = raw[n * 8 :]
-        return cls(chunk_type=chunk_type, values=vals, trailing=trailing)
+        instance = cls(chunk_type=chunk_type, values=vals)
+        if trailing:
+            object.__setattr__(instance, "_trailing", trailing)
+        return instance
 
     def write(self, fp: IO[bytes]) -> int:
         raw = struct.pack(f">{len(self.values)}d", *self.values)

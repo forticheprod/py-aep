@@ -1,14 +1,31 @@
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
+from ...binary.chunk import Chunk, ListChunk
+from ...binary.misc_chunks import (
+    ApidChunk,
+    DcuiChunk,
+    DropChunk,
+    EmbpChunk,
+    EpidChunk,
+    HdrmChunk,
+    IpwsChunk,
+    LinlChunk,
+    McspChunk,
+    OcspChunk,
+    PrgbChunk,
+    StrtChunk,
+)
+from ...binary.scalar_chunks import U1Chunk, U2Chunk, U4Chunk, Utf8Chunk
+from ...resolvers.solid import solid_color_name
 from ..descriptors import ChunkField
+from ..naming import auto_name
 from .item import Item
 
 if TYPE_CHECKING:
-    from ...binary.chunk import ListChunk
     from ...binary.item_chunks import CmtaChunk, IdtaChunk
-    from ...binary.scalar_chunks import Utf8Chunk
     from ..project import Project
     from ..sources.file import FileSource
     from ..sources.placeholder import PlaceholderSource
@@ -23,6 +40,10 @@ def _validate_use_proxy(value: bool, obj: AVItem) -> None:
         raise AttributeError(
             "Cannot set use_proxy to True when there is no proxy source."
         )
+
+
+def _sync_proxy_active(obj: AVItem) -> None:
+    obj._idta._proxy_active = int(obj._idta.use_proxy)
 
 
 class AVItem(Item):
@@ -65,6 +86,7 @@ class AVItem(Item):
         "_idta",
         "use_proxy",
         validate=_validate_use_proxy,
+        post_set=_sync_proxy_active,
     )
     """When `True`, a proxy is used for the item. Read / Write.
 
@@ -80,6 +102,7 @@ class AVItem(Item):
         _cmta: CmtaChunk | None,
         _item_list: ListChunk,
         _gide: ListChunk | None,
+        _pin_chunks: list[ListChunk],
         project: Project,
         parent_folder: FolderItem,
         type_name: str,
@@ -95,6 +118,7 @@ class AVItem(Item):
             parent_folder=parent_folder,
             type_name=type_name,
         )
+        self._pin_chunks = _pin_chunks
         self._proxy_source = proxy_source
         self._used_in: set[CompItem] = set()
         self._viewer: Viewer | None = None
@@ -165,3 +189,158 @@ class AVItem(Item):
         """All the compositions that use this AVItem."""
         self._project._ensure_used_in_linked()
         return list(self._used_in)
+
+    def set_proxy_to_none(self) -> None:
+        """Remove the proxy source from this item."""
+        if self._proxy_source:
+            self._item_list.chunks.remove(self._pin_chunks[1])
+            del self._pin_chunks[1]
+            self._proxy_source = None
+        self.use_proxy = False
+
+    def set_proxy_with_placeholder(
+        self,
+        name: str | None,
+        width: int,
+        height: int,
+        frame_rate: float,
+        duration: float,
+    ) -> None:
+        """Set a placeholder as the proxy source.
+
+        Args:
+            name: The placeholder name. `None` becomes `Missing Name`.
+                An empty string becomes `Placeholder`.
+            width: Width in pixels (4-30000).
+            height: Height in pixels (4-30000).
+            frame_rate: Frame rate in fps (1.0-99.0).
+            duration: Duration in seconds (> 0, <= 10800).
+        """
+        from ..sources.placeholder import PlaceholderSource
+
+        if name is None:
+            name = "Missing Name"
+        elif name == "":
+            name = "Placeholder"
+
+        source = PlaceholderSource._new(name, width, height, frame_rate, duration)
+        self._set_proxy(source)
+
+    def set_proxy_with_solid(
+        self,
+        color: list[float],
+        name: str | None,
+        width: int,
+        height: int,
+        pixel_aspect: float = 1.0,
+    ) -> None:
+        """Set a solid as the proxy source.
+
+        Args:
+            color: Solid color as [R, G, B] in 0.0-1.0 range.
+            name: The solid name. Pass `None` to auto-generate
+                a name from the color (e.g. `Red Solid 1`).
+                An empty string becomes `????`.
+            width: Width in pixels (1-30000).
+            height: Height in pixels (1-30000).
+            pixel_aspect: Pixel aspect ratio (0.01-100.0).
+        """
+        from ..sources.solid import SolidSource
+
+        if name is None:
+            existing = {item.name for item in self._project.items.values()}
+            solid_name = solid_color_name(color[0], color[1], color[2])
+            name = auto_name(solid_name, existing)
+        elif name == "":
+            name = "????"
+
+        source = SolidSource._new(color, name, width, height, pixel_aspect)
+        self._set_proxy(source)
+
+    @staticmethod
+    def _build_view_data() -> list[Chunk]:
+        """Build the view data chunks AE expects after LIST:Item."""
+        return [
+            U4Chunk(chunk_type="fvdv", value=3),
+            U1Chunk(chunk_type="fiop"),
+            U4Chunk(chunk_type="ftts"),
+            U1Chunk(chunk_type="foac"),
+            U1Chunk(chunk_type="fiac"),
+            U2Chunk(chunk_type="fipc"),
+            U4Chunk(chunk_type="fifl"),
+        ]
+
+    @staticmethod
+    def _build_pin_list(
+        sspc: Chunk,
+        opti: Chunk,
+        *,
+        is_solid: bool = False,
+    ) -> ListChunk:
+        """Build a complete `LIST:Pin` with required companion chunks."""
+        pgui = Chunk(chunk_type="pgui", data=uuid.uuid4().bytes)
+
+        clrs_chunks: list[Chunk] = [
+            EpidChunk(),
+            ApidChunk(),
+            LinlChunk(),
+            EmbpChunk(),
+            IpwsChunk(),
+        ]
+        if is_solid:
+            clrs_chunks.append(DcuiChunk())
+            clrs_chunks.append(PrgbChunk())
+        clrs_chunks.extend([
+            McspChunk(),
+            Utf8Chunk(),
+            OcspChunk(),
+            Utf8Chunk(),
+            HdrmChunk(),
+            Utf8Chunk(value="{}"),
+        ])
+        clrs = ListChunk(list_type="CLRS", chunks=clrs_chunks)
+
+        mnfo = ListChunk(
+            list_type="mnfo",
+            chunks=[StrtChunk(), DropChunk()],
+        )
+
+        return ListChunk(
+            list_type="Pin ",
+            chunks=[
+                sspc,
+                Utf8Chunk(),
+                opti,
+                pgui,
+                clrs,
+                mnfo,
+                Utf8Chunk(),
+            ],
+        )
+
+    def _replace_pin(self, pin_index: int, new_pin: ListChunk) -> None:
+        """Replace or append a LIST:Pin chunk at the given index."""
+        if pin_index < len(self._pin_chunks):
+            old_pin = self._pin_chunks[pin_index]
+            idx = self._item_list.chunks.index(old_pin)
+            self._item_list.chunks[idx] = new_pin
+            self._pin_chunks[pin_index] = new_pin
+        else:
+            self._item_list.chunks.append(new_pin)
+            self._pin_chunks.append(new_pin)
+
+    def _set_proxy(
+        self,
+        source: FileSource | SolidSource | PlaceholderSource,
+    ) -> None:
+        """Set a proxy LIST:Pin chunk (add or replace)."""
+        from ..sources.solid import SolidSource as _SolidSource
+
+        new_pin = AVItem._build_pin_list(
+            source._sspc,
+            source._opti,
+            is_solid=isinstance(source, _SolidSource),
+        )
+        self._replace_pin(1, new_pin)
+        self._proxy_source = source
+        self.use_proxy = True

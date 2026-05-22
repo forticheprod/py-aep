@@ -53,6 +53,7 @@ def parse_footage(
         _cmta=_cmta,
         _item_list=_item_list,
         _gide=_gide,
+        _pin_chunks=pin_chunks,
         project=project,
         parent_folder=parent_folder,
         main_source=main_source,

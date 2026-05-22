@@ -242,7 +242,7 @@ class Project:
         self._active_item: Item | None = None
         self._effect_param_defs: dict[str, dict[str, dict[str, Any]]] = {}
         self._used_in_linked = False
-        self._max_item_id = -1  # lazily computed on first allocation
+
         self._max_layer_id = -1  # lazily computed on first allocation
 
     def __repr__(self) -> str:
@@ -341,7 +341,7 @@ class Project:
         if self._exen_utf8 is not None:
             self._exen_utf8.value = value
         else:
-            utf8 = Utf8Chunk(chunk_type="Utf8", value=value)
+            utf8 = Utf8Chunk(value=value)
             exen = ListChunk(list_type="ExEn", chunks=[utf8])
             self._rifx.chunks.append(exen)
             self._exen_utf8 = utf8
@@ -474,6 +474,50 @@ class Project:
         """All the footages in the project."""
         return [item for item in self.items.values() if isinstance(item, FootageItem)]
 
+    def import_placeholder(
+        self,
+        name: str | None,
+        width: int,
+        height: int,
+        frame_rate: float,
+        duration: float,
+    ) -> FootageItem:
+        """Import a placeholder footage item into the project root folder.
+
+        Args:
+            name: The placeholder name. Pass `None` to use
+                `Missing Name`. An empty string becomes `Placeholder`.
+            width: Width in pixels (4-30000).
+            height: Height in pixels (4-30000).
+            frame_rate: Frame rate in fps (1.0-99.0).
+            duration: Duration in seconds (> 0, <= 10800).
+
+        Returns:
+            The newly created [FootageItem][].
+        """
+        from .sources.placeholder import PlaceholderSource
+
+        if name is None:
+            name = "Missing Name"
+        elif name == "":
+            name = "Placeholder"
+
+        source = PlaceholderSource._new(name, width, height, frame_rate, duration)
+        item = FootageItem._new(
+            name,
+            source,
+            project=self,
+            parent_folder=self.root_folder,
+        )
+
+        # Insert into root folder's chunk tree and register
+        container = self.root_folder._children_container
+        container.append(item._item_list)
+        container.extend(item._view_data)
+        self.items[item.id] = item
+        self.root_folder.items.append(item)
+        return item
+
     def save(self, path: os.PathLike[str]) -> None:
         """
         Save the project to a new .aep file at the given path.
@@ -498,12 +542,11 @@ class Project:
         """Return the next unique item ID and update the counter.
 
         ID 0 is reserved for the root folder, so the minimum returned
-        value is 1.
+        value is 1. Also updates the next-item-ID counter in the head chunk.
         """
-        if self._max_item_id == -1:
-            self._max_item_id = max(self._items.keys(), default=0)
-        self._max_item_id += 1
-        return self._max_item_id
+        new_id = self._head.next_item_id
+        self._head.next_item_id = new_id + 1
+        return new_id
 
     def _allocate_layer_id(self) -> int:
         """Return the next unique layer ID and update the counter."""
@@ -537,7 +580,7 @@ class Project:
         else:
             data = dict(self._CMS_DEFAULTS)
             data[key] = value
-            chunk = Utf8Chunk(chunk_type="Utf8", value=json.dumps(data))
+            chunk = Utf8Chunk(value=json.dumps(data))
             self._rifx.chunks.append(chunk)
             self._cms_utf8 = chunk
 

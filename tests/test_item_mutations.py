@@ -366,3 +366,471 @@ class TestItemRemove:
         app2.project.save(tmp_path / "without_comp.aep")
         app3 = parse_aep(tmp_path / "without_comp.aep")
         assert comp_id not in app3.project.items
+
+
+# -----------------------------------------------------------------------
+# Project.import_placeholder()
+# -----------------------------------------------------------------------
+
+
+class TestImportPlaceholder:
+    """Tests for Project.import_placeholder()."""
+
+    def test_import_placeholder_returns_footage(self) -> None:
+        from py_aep.models.items.footage import FootageItem
+
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("PH", 1920, 1080, 30.0, 10.0)
+        assert isinstance(item, FootageItem)
+
+    def test_import_placeholder_name(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("MyPlaceholder", 1920, 1080, 30.0, 10.0)
+        assert item.name == "MyPlaceholder"
+
+    def test_import_placeholder_dimensions(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("PH", 3840, 2160, 24.0, 5.0)
+        assert item.width == 3840
+        assert item.height == 2160
+
+    def test_import_placeholder_frame_rate(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("PH", 1920, 1080, 29.97, 10.0)
+        assert abs(item.frame_rate - 29.97) < 0.01
+
+    def test_import_placeholder_duration(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("PH", 1920, 1080, 30.0, 7.5)
+        assert abs(item.duration - 7.5) < 0.01
+
+    def test_import_placeholder_is_placeholder(self) -> None:
+        from py_aep.models.sources.placeholder import PlaceholderSource
+
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("PH", 1920, 1080, 30.0, 10.0)
+        assert isinstance(item.main_source, PlaceholderSource)
+        assert item.asset_type == "placeholder"
+
+    def test_import_placeholder_unique_id(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        existing_ids = set(app.project.items.keys())
+        item = app.project.import_placeholder("PH", 1920, 1080, 30.0, 10.0)
+        assert item.id not in existing_ids
+
+    def test_import_placeholder_in_root_folder(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("PH", 1920, 1080, 30.0, 10.0)
+        assert item.parent_folder is app.project.root_folder
+        assert item in app.project.root_folder.items
+
+    def test_import_placeholder_registered_in_project(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("PH", 1920, 1080, 30.0, 10.0)
+        assert app.project.items[item.id] is item
+        assert item in app.project.footages
+
+    def test_import_placeholder_invalid_width(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        with pytest.raises(ValueError, match="must be >= 4"):
+            app.project.import_placeholder("PH", 2, 1080, 30.0, 10.0)
+
+    def test_import_placeholder_invalid_height(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        with pytest.raises(ValueError, match="must be >= 4"):
+            app.project.import_placeholder("PH", 1920, 0, 30.0, 10.0)
+
+    def test_import_placeholder_invalid_frame_rate(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        with pytest.raises(ValueError, match="must be >= 1"):
+            app.project.import_placeholder("PH", 1920, 1080, 0.5, 10.0)
+
+    def test_import_placeholder_invalid_duration(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        with pytest.raises(ValueError, match="duration"):
+            app.project.import_placeholder("PH", 1920, 1080, 30.0, 0.0)
+
+    def test_import_placeholder_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("RTPH", 1280, 720, 25.0, 8.0)
+        item_id = item.id
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+
+        assert item_id in app2.project.items
+        item2 = app2.project.items[item_id]
+        assert item2.name == "RTPH"
+        assert item2.width == 1280
+        assert item2.height == 720
+        assert abs(item2.duration - 8.0) < 0.01
+
+
+# -----------------------------------------------------------------------
+# FootageItem.replace_with_placeholder()
+# -----------------------------------------------------------------------
+
+
+class TestReplaceWithPlaceholder:
+    """Tests for FootageItem.replace_with_placeholder()."""
+
+    def test_replace_with_placeholder(self) -> None:
+        from py_aep.models.sources.placeholder import PlaceholderSource
+
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.replace_with_placeholder("NewPH", 1920, 1080, 30.0, 10.0)
+        assert isinstance(footage.main_source, PlaceholderSource)
+        assert footage.name == "NewPH"
+        assert footage.width == 1920
+        assert footage.height == 1080
+
+    def test_replace_with_placeholder_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage_id = footage.id
+        footage.replace_with_placeholder("RtPH", 1280, 720, 24.0, 5.0)
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        item2 = app2.project.items[footage_id]
+        assert item2.name == "RtPH"
+        assert item2.width == 1280
+        assert item2.height == 720
+        assert item2.asset_type == "placeholder"
+
+
+# -----------------------------------------------------------------------
+# FootageItem.replace_with_solid()
+# -----------------------------------------------------------------------
+
+
+class TestReplaceWithSolid:
+    """Tests for FootageItem.replace_with_solid()."""
+
+    def test_replace_with_solid(self) -> None:
+        from py_aep.models.sources.solid import SolidSource
+
+        app = parse_aep(SAMPLES_DIR / "footage" / "placeholder.aep")
+        footage = app.project.footages[0]
+        footage.replace_with_solid([1.0, 0.0, 0.0], "RedSolid", 1920, 1080, 1.0)
+        assert isinstance(footage.main_source, SolidSource)
+        assert footage.name == "RedSolid"
+        assert footage.width == 1920
+        assert footage.height == 1080
+
+    def test_replace_with_solid_color(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "placeholder.aep")
+        footage = app.project.footages[0]
+        footage.replace_with_solid([0.5, 0.25, 0.75], "ColorSolid", 1920, 1080, 1.0)
+        color = footage.main_source.color
+        assert abs(color[0] - 0.5) < 0.01
+        assert abs(color[1] - 0.25) < 0.01
+        assert abs(color[2] - 0.75) < 0.01
+
+    def test_replace_with_solid_invalid_color(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "placeholder.aep")
+        footage = app.project.footages[0]
+        with pytest.raises(ValueError, match="must be <= 1"):
+            footage.replace_with_solid([1.5, 0.0, 0.0], "Bad", 1920, 1080, 1.0)
+
+    def test_replace_with_solid_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "placeholder.aep")
+        footage = app.project.footages[0]
+        footage_id = footage.id
+        footage.replace_with_solid([0.0, 1.0, 0.0], "GreenSolid", 960, 540, 1.0)
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        item2 = app2.project.items[footage_id]
+        assert item2.name == "GreenSolid"
+        assert item2.width == 960
+        assert item2.height == 540
+        assert item2.asset_type == "solid"
+
+
+# -----------------------------------------------------------------------
+# AVItem.set_proxy_to_none()
+# -----------------------------------------------------------------------
+
+
+class TestSetProxyToNone:
+    """Tests for AVItem.set_proxy_to_none()."""
+
+    def test_set_proxy_to_none_removes_proxy(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "item" / "proxy.aep")
+        # Find an item that has a proxy
+        footage = next(
+            (f for f in app.project.footages if f.proxy_source is not None), None
+        )
+        if footage is None:
+            pytest.skip("No item with proxy found in sample")
+        footage.set_proxy_to_none()
+        assert footage.proxy_source is None
+
+    def test_set_proxy_to_none_noop(self) -> None:
+        """Calling set_proxy_to_none when there's no proxy is a no-op."""
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        # Import a placeholder (which has no proxy)
+        item = app.project.import_placeholder("PH", 1920, 1080, 30.0, 10.0)
+        item.set_proxy_to_none()
+        assert item.proxy_source is None
+
+    def test_set_proxy_to_none_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "item" / "proxy.aep")
+        footage = next(
+            (f for f in app.project.footages if f.proxy_source is not None), None
+        )
+        if footage is None:
+            pytest.skip("No item with proxy found in sample")
+        footage_id = footage.id
+        footage.set_proxy_to_none()
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        item2 = app2.project.items[footage_id]
+        assert item2.proxy_source is None
+
+
+# -----------------------------------------------------------------------
+# AVItem.set_proxy_with_placeholder()
+# -----------------------------------------------------------------------
+
+
+class TestSetProxyWithPlaceholder:
+    """Tests for AVItem.set_proxy_with_placeholder()."""
+
+    def test_set_proxy_with_placeholder(self) -> None:
+        from py_aep.models.sources.placeholder import PlaceholderSource
+
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.set_proxy_with_placeholder("ProxyPH", 960, 540, 30.0, 10.0)
+        assert isinstance(footage.proxy_source, PlaceholderSource)
+
+    def test_set_proxy_with_placeholder_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage_id = footage.id
+        footage.set_proxy_with_placeholder("ProxyPH", 960, 540, 30.0, 10.0)
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        item2 = app2.project.items[footage_id]
+        assert item2.proxy_source is not None
+
+    def test_set_proxy_replaces_existing(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "item" / "proxy.aep")
+        footage = next(
+            (f for f in app.project.footages if f.proxy_source is not None), None
+        )
+        if footage is None:
+            pytest.skip("No item with proxy found in sample")
+        footage.set_proxy_with_placeholder("NewProxy", 640, 480, 25.0, 5.0)
+        from py_aep.models.sources.placeholder import PlaceholderSource
+
+        assert isinstance(footage.proxy_source, PlaceholderSource)
+
+
+# -----------------------------------------------------------------------
+# AVItem.set_proxy_with_solid()
+# -----------------------------------------------------------------------
+
+
+class TestSetProxyWithSolid:
+    """Tests for AVItem.set_proxy_with_solid()."""
+
+    def test_set_proxy_with_solid(self) -> None:
+        from py_aep.models.sources.solid import SolidSource
+
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.set_proxy_with_solid([1.0, 0.0, 0.0], "RedProxy", 960, 540, 1.0)
+        assert isinstance(footage.proxy_source, SolidSource)
+
+    def test_set_proxy_with_solid_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage_id = footage.id
+        footage.set_proxy_with_solid([0.0, 0.0, 1.0], "BlueProxy", 960, 540, 1.0)
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        item2 = app2.project.items[footage_id]
+        assert item2.proxy_source is not None
+
+    def test_set_proxy_then_remove(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.set_proxy_with_solid([1.0, 1.0, 0.0], "YProxy", 640, 480, 1.0)
+        assert footage.proxy_source is not None
+        footage.set_proxy_to_none()
+        assert footage.proxy_source is None
+
+
+# -----------------------------------------------------------------------
+# auto_name / increment_name
+# -----------------------------------------------------------------------
+
+
+class TestAutoName:
+    """Tests for the auto_name naming helper."""
+
+    def test_first_name(self) -> None:
+        from py_aep.models.naming import auto_name
+
+        assert auto_name("Comp", set()) == "Comp 1"
+
+    def test_skips_to_2_when_base_exists(self) -> None:
+        from py_aep.models.naming import auto_name
+
+        assert auto_name("Comp", {"Comp"}) == "Comp 2"
+
+    def test_skips_to_2_when_base_0_exists(self) -> None:
+        from py_aep.models.naming import auto_name
+
+        assert auto_name("Comp", {"Comp 0"}) == "Comp 2"
+
+    def test_skips_existing(self) -> None:
+        from py_aep.models.naming import auto_name
+
+        existing = {"Comp 1", "Comp 2"}
+        assert auto_name("Comp", existing) == "Comp 3"
+
+    def test_skips_existing_with_base(self) -> None:
+        from py_aep.models.naming import auto_name
+
+        existing = {"Comp", "Comp 2", "Comp 3"}
+        assert auto_name("Comp", existing) == "Comp 4"
+
+    def test_uses_max_suffix(self) -> None:
+        from py_aep.models.naming import auto_name
+
+        existing = {"Comp 4"}
+        assert auto_name("Comp", existing) == "Comp 5"
+
+    def test_gap_not_filled(self) -> None:
+        from py_aep.models.naming import auto_name
+
+        existing = {"Comp 1", "Comp 5"}
+        assert auto_name("Comp", existing) == "Comp 6"
+
+
+# -----------------------------------------------------------------------
+# None / empty name behavior
+# -----------------------------------------------------------------------
+
+
+class TestAutoNameFolder:
+    """Tests for add_folder with None name."""
+
+    def test_none_generates_untitled(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        folder = root.add_folder(None)
+        assert folder.name.startswith("Untitled ")
+
+    def test_none_increments(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        f1 = root.add_folder(None)
+        f2 = root.add_folder(None)
+        assert f1.name != f2.name
+
+    def test_none_default_arg(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        folder = root.add_folder()
+        assert folder.name.startswith("Untitled ")
+
+    def test_empty_string_allowed(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        folder = root.add_folder("")
+        assert folder.name == ""
+
+
+class TestAutoNameComp:
+    """Tests for add_comp with None name."""
+
+    def test_none_generates_comp(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        comp = root.add_comp(None, 1920, 1080, 1.0, 10.0, 24.0)
+        assert comp.name.startswith("Comp ")
+
+    def test_empty_string_allowed(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        comp = root.add_comp("", 1920, 1080, 1.0, 10.0, 24.0)
+        assert comp.name == ""
+
+
+class TestAutoNamePlaceholder:
+    """Tests for import_placeholder with None/empty name."""
+
+    def test_none_becomes_missing_name(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder(None, 1920, 1080, 24.0, 10.0)
+        assert item.name == "Missing Name"
+
+    def test_empty_becomes_placeholder(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        item = app.project.import_placeholder("", 1920, 1080, 24.0, 10.0)
+        assert item.name == "Placeholder"
+
+
+class TestAutoNameSolid:
+    """Tests for replace_with_solid with None/empty name."""
+
+    def test_none_auto_names_from_color(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.replace_with_solid([1.0, 0.0, 0.0], None, 1920, 1080)
+        assert "Red Solid" in footage.name
+
+    def test_empty_becomes_question_marks(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.replace_with_solid([1.0, 0.0, 0.0], "", 1920, 1080)
+        assert footage.name == "????"
+
+    def test_replace_with_placeholder_none(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.replace_with_placeholder(None, 1920, 1080, 24.0, 10.0)
+        assert footage.name == "Missing Name"
+
+    def test_replace_with_placeholder_empty(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.replace_with_placeholder("", 1920, 1080, 24.0, 10.0)
+        assert footage.name == "Placeholder"
+
+
+class TestAutoNameProxy:
+    """Tests for proxy methods with None/empty name."""
+
+    def test_proxy_placeholder_none(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.set_proxy_with_placeholder(None, 1920, 1080, 24.0, 10.0)
+        assert footage.proxy_source is not None
+
+    def test_proxy_placeholder_empty(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.set_proxy_with_placeholder("", 1920, 1080, 24.0, 10.0)
+        assert footage.proxy_source is not None
+
+    def test_proxy_solid_none(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.set_proxy_with_solid([0.0, 1.0, 0.0], None, 960, 540)
+        assert footage.proxy_source is not None
+
+    def test_proxy_solid_empty(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "footage" / "solid_colors.aep")
+        footage = app.project.footages[0]
+        footage.set_proxy_with_solid([0.0, 1.0, 0.0], "", 960, 540)
+        assert footage.proxy_source is not None

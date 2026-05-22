@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from attrs import define, field
+from attrs import define
 
 from .bitfield import BitField
 from .chunk import Chunk
@@ -26,7 +26,7 @@ from .registry import register
 class IdtaChunk(Chunk):
     """Item descriptor chunk.
 
-    Contains item type, ID, and label. Most of the 56-byte body is
+    Contains item type, ID, and label. Most of the 84-byte body is
     reserved/unknown and preserved for round-trip fidelity.
     """
 
@@ -42,15 +42,19 @@ class IdtaChunk(Chunk):
     _flags_14: bytes = bytes_field(2, repr=False)
     _proxy_flags: int = u1_field(repr=False)
 
-    _flags_17: bytes = bytes_field(1, repr=False)
-    _reserved_18: bytes = bytes_field(34, repr=False)
+    _flags_17: int = u1_field(repr=False)
+    _reserved_18: bytes = bytes_field(32, repr=False)
+    _proxy_active: int = u1_field(repr=False)
+    _reserved_39: bytes = bytes_field(1, repr=False)
     label: int = u1_field()
     """Label color index."""
 
-    _trailing: bytes = field(default=b"", repr=False)
+    _reserved_3c: bytes = bytes_field(25, repr=False)
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     use_proxy = BitField("_proxy_flags", 0)
+    is_solid = BitField("_flags_17", 4)
+    is_footage = BitField("_flags_17", 5)
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +69,6 @@ class IideChunk(Chunk):
 
     chunk_type: str = "iide"
     value: int = u4_field(endian="<")
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +115,10 @@ class HeadChunk(Chunk):
 
     _reserved_00: bytes = bytes_field(4, repr=False)
     _version_word: int = u4_field(repr=False)
-    _reserved_08: bytes = bytes_field(10, repr=False)
+    _reserved_08: bytes = bytes_field(4, repr=False)
+    next_item_id: int = u4_field(repr=False)
+    """Next item ID to allocate, always > max existing item ID."""
+    _reserved_10: bytes = bytes_field(2, repr=False)
     file_revision: int = u2_field()
     """File revision counter, incremented on each save."""
 

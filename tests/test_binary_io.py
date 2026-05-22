@@ -457,7 +457,6 @@ class TestFmtField:
         (
             fmt,
             data_fields,
-            trailing,
             encodings,
             optional_start,
             endians,
@@ -470,8 +469,6 @@ class TestFmtField:
         assert fmt == "I"
         assert len(data_fields) == 1
         assert data_fields[0].name == "value"
-        assert trailing is not None
-        assert trailing.name == "_trailing"
         assert encodings == {}
         assert endians == {}
         assert items_info is None
@@ -497,7 +494,6 @@ class TestFmtField:
         (
             fmt,
             data_fields,
-            _,
             encodings,
             optional_start,
             endians,
@@ -513,7 +509,7 @@ class TestFmtField:
         assert endians == {}
         assert items_info is None
         assert optional_start == 3  # all required
-        assert simple is True  # no transforms, no trailing/items/optional
+        assert simple is True  # no transforms, no items/optional
 
     def test_struct_info_encoding_tracked(self) -> None:
         from py_aep.binary.fmt_field import _struct_info
@@ -521,7 +517,7 @@ class TestFmtField:
 
         info = _struct_info(PrinChunk)
         assert info is not None
-        _, _, _, encodings, _, _, _, _, _, simple, _ = info
+        _, _, encodings, _, _, _, _, _, simple, _ = info
         # PrinChunk has match_name (field index 1) and display_name (index 2)
         assert 1 in encodings
         assert encodings[1] == "ascii"
@@ -1171,14 +1167,20 @@ class TestOptiChunk:
 
         name = "MyPlaceholder"
         name_bytes = name.encode("windows-1252")
-        trailing = b"\x00" * 20
-        data = b"\x00" * 4 + struct.pack(">H", 2) + b"\x00" * 4 + name_bytes + trailing
+        # Build data: 4-byte asset_type + 2-byte asset_type_int + 4-byte pad
+        # + 256-byte NUL-padded name
+        name_field = name_bytes + b"\x00" * (256 - len(name_bytes))
+        data = (
+            b"\x00" * 4
+            + struct.pack(">H", 2)
+            + b"\x00\x00\x01\x0a"
+            + name_field
+        )
 
         buf = BytesIO(data)
         chunk = OptiChunk.read(buf, len(data), chunk_type="opti")
         assert isinstance(chunk, PlaceholderOptiChunk)
         assert chunk.placeholder_name == "MyPlaceholder"
-        assert chunk._trailing == name_bytes + trailing
 
         out = BytesIO()
         chunk.write(out)
@@ -1553,8 +1555,8 @@ class TestLhd3Chunk:
         count: int,
         item_size: int,
         item_type_raw: int,
-        trail_version: int = 1,
-        trail_next_id: int = 2,
+        version: int = 1,
+        next_id: int = 2,
         trailing: bytes = b"\x00" * 20,
     ) -> bytes:
         import struct
@@ -1566,7 +1568,7 @@ class TestLhd3Chunk:
             + struct.pack(">H", item_size)
             + b"\x00" * 3
             + struct.pack(">B", item_type_raw)
-            + struct.pack(">II", trail_version, trail_next_id)
+            + struct.pack(">II", version, next_id)
             + trailing
         )
 

@@ -7,7 +7,7 @@ from ...binary.composition_chunks import CdtaChunk, CsctChunk
 from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.layer_chunks import _LDTA_SOURCE_ID_END, _LDTA_SOURCE_ID_OFFSET
 from ...binary.misc_chunks import PrdaChunk, PrinChunk
-from ...binary.scalar_chunks import F8Chunk, U1Chunk, U2Chunk, U4Chunk, Utf8Chunk
+from ...binary.scalar_chunks import F8Chunk, U1Chunk, U4Chunk, Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
     block_slice,
@@ -26,8 +26,14 @@ from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
 from ..validators import (
+    validate_duration,
+    validate_frame_rate,
+    validate_height,
     validate_number,
+    validate_pixel_aspect,
+    validate_rgb_color,
     validate_sequence,
+    validate_width,
 )
 from .av_item import AVItem
 from .footage import FootageItem
@@ -60,13 +66,6 @@ _RENDERER_EXTENDSCRIPT_TO_BINARY: dict[str, str] = {
 
 _LAYER_BOUNDARY_TYPES = frozenset({"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO"})
 
-# Shared validators reused by both the CompItem descriptors and CompItem._new
-_validate_width = validate_number(min=4, max=30000, integer=True)
-_validate_height = validate_number(min=4, max=30000, integer=True)
-_validate_pixel_aspect = validate_number(min=0.01, max=100.0)
-_validate_duration = validate_number(min=0.0, max=10800.0)
-_validate_frame_rate = validate_number(min=1.0, max=99.0)
-
 
 class CompItem(AVItem):
     """
@@ -95,7 +94,7 @@ class CompItem(AVItem):
     bg_color = ChunkField[List[float]](
         "_cdta",
         "bg_color",
-        validate=validate_sequence(length=3, min=0.0, max=1.0),
+        validate=validate_rgb_color,
     )
     """The background color of the composition. The three array values specify
     the red, green, and blue components of the color. Read / Write."""
@@ -135,10 +134,10 @@ class CompItem(AVItem):
     Resolution When Nested" option in the Advanced tab of the Composition
     Settings dialog box. Read / Write."""
 
-    width = ChunkField[int]("_cdta", "width", validate=_validate_width)
+    width = ChunkField[int]("_cdta", "width", validate=validate_width)
     """The width of the item in pixels. Read / Write."""
 
-    height = ChunkField[int]("_cdta", "height", validate=_validate_height)
+    height = ChunkField[int]("_cdta", "height", validate=validate_height)
     """The height of the item in pixels. Read / Write."""
 
     shutter_angle = ChunkField[int](
@@ -195,10 +194,10 @@ class CompItem(AVItem):
     Samples Per Frame setting in the Advanced tab of the Composition
     Settings dialog box. Read / Write."""
 
-    frame_rate = ChunkField[float]("_cdta", "frame_rate", validate=_validate_frame_rate)
+    frame_rate = ChunkField[float]("_cdta", "frame_rate", validate=validate_frame_rate)
     """The frame rate of the item in frames-per-second. Read / Write."""
 
-    duration = ChunkField[float]("_cdta", "duration", validate=_validate_duration)
+    duration = ChunkField[float]("_cdta", "duration", validate=validate_duration)
     """The duration of the item in seconds. Read / Write."""
 
     frame_duration = ChunkField[int](
@@ -212,7 +211,7 @@ class CompItem(AVItem):
     )
     """The duration of the item in frames. Read / Write."""
 
-    pixel_aspect = ChunkField[float]("_cdta", "pixel_aspect", validate=_validate_pixel_aspect)
+    pixel_aspect = ChunkField[float]("_cdta", "pixel_aspect", validate=validate_pixel_aspect)
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
 
     time_scale = ChunkField[float]("_cdta", "time_scale", read_only=True)
@@ -337,18 +336,18 @@ class CompItem(AVItem):
             project: The project that owns this composition.
             parent_folder: The folder that will contain this composition.
         """
-        _validate_width(width, None)
-        _validate_height(height, None)
-        _validate_pixel_aspect(pixel_aspect, None)
-        _validate_duration(duration, None)
-        _validate_frame_rate(frame_rate, None)
+        validate_width(width, None)
+        validate_height(height, None)
+        validate_pixel_aspect(pixel_aspect, None)
+        validate_duration(duration, None)
+        validate_frame_rate(frame_rate, None)
 
         new_id = project._allocate_item_id()
 
         iide = IideChunk(value=new_id)
         idpc = IdpcChunk()
         idta = IdtaChunk(item_type=4, item_id=new_id)
-        name_utf8 = Utf8Chunk(chunk_type="Utf8", value=name)
+        name_utf8 = Utf8Chunk(value=name)
 
         cdta = CdtaChunk(width=width, height=height)
         cdta.frame_rate = frame_rate
@@ -370,16 +369,7 @@ class CompItem(AVItem):
             list_type="FEE ",
             chunks=[F8Chunk(chunk_type="ppSn")],
         )
-        view_data: list[Chunk] = [
-            fee,
-            U4Chunk(chunk_type="fvdv", value=3),
-            U1Chunk(chunk_type="fiop"),
-            U4Chunk(chunk_type="ftts"),
-            U1Chunk(chunk_type="foac"),
-            U1Chunk(chunk_type="fiac"),
-            U2Chunk(chunk_type="fipc"),
-            U4Chunk(chunk_type="fifl"),
-        ]
+        view_data: list[Chunk] = [fee, *AVItem._build_view_data()]
 
         comp = cls(
             _child_chunks=item_list.chunks,
@@ -387,6 +377,7 @@ class CompItem(AVItem):
             _idta=idta,
             _item_list=item_list,
             _gide=None,
+            _pin_chunks=[],
             _name_utf8=name_utf8,
             project=project,
             parent_folder=parent_folder,
@@ -404,6 +395,7 @@ class CompItem(AVItem):
         _idta: IdtaChunk,
         _item_list: ListChunk,
         _gide: ListChunk | None,
+        _pin_chunks: list[ListChunk],
         _name_utf8: Utf8Chunk,
         project: Project,
         parent_folder: FolderItem,
@@ -418,6 +410,7 @@ class CompItem(AVItem):
             _cmta=_cmta,
             _item_list=_item_list,
             _gide=_gide,
+            _pin_chunks=_pin_chunks,
             project=project,
             parent_folder=parent_folder,
             type_name="Composition",
@@ -701,13 +694,13 @@ class CompItem(AVItem):
         if self._eg_template_name_utf8 is not None:
             self._eg_template_name_utf8.value = value
         else:
-            utf8_chunk = Utf8Chunk(chunk_type="Utf8", value=value)
+            utf8_chunk = Utf8Chunk(value=value)
             cps2 = ListChunk(
                 list_type="CpS2",
                 chunks=[
                     CsctChunk(),
                     utf8_chunk,
-                    Utf8Chunk(chunk_type="Utf8", value="en_US"),
+                    Utf8Chunk(value="en_US"),
                 ],
             )
             cif3 = ListChunk(

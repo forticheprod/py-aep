@@ -51,6 +51,7 @@ def parse_composition(
         _idta=_idta,
         _item_list=_item_list,
         _gide=_gide,
+        _pin_chunks=pin_chunks,
         _name_utf8=_name_utf8,
         project=project,
         parent_folder=parent_folder,

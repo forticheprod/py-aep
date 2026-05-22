@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from attrs import define, field
+from attrs import define
 
 from .bin_utils import read_bytes, write_bytes
 from .chunk import Chunk
@@ -59,18 +59,14 @@ class _StringChunkBase(Chunk):
     "foac",
     "fiac",
     "fiop",
-    "ipws",
-    "linl",
     "lnrb",
     "lnrp",
-    "prgb",
 )
 @define
 class U1Chunk(Chunk):
     """Unsigned 1-byte integer chunk."""
 
     value: int = u1_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @register("fivc", "fipc")
@@ -79,7 +75,6 @@ class U2Chunk(Chunk):
     """Unsigned 2-byte integer chunk."""
 
     value: int = u2_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @register(
@@ -103,7 +98,6 @@ class U4Chunk(Chunk):
     """Unsigned 4-byte integer chunk."""
 
     value: int = u4_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @register("tdli", "tdpi", "tdps")
@@ -112,7 +106,6 @@ class S4Chunk(Chunk):
     """Signed 4-byte integer chunk."""
 
     value: int = s4_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +119,6 @@ class F8Chunk(Chunk):
     """8-byte double-precision float chunk."""
 
     value: float = f8_field(default=0.0)
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +131,7 @@ class F8Chunk(Chunk):
 class Utf8Chunk(_StringChunkBase):
     """Variable-length UTF-8 string chunk."""
 
+    chunk_type: str = "Utf8"
     _ENCODING = "UTF-8"
 
 

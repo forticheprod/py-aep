@@ -8,8 +8,9 @@ interpretation.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
-from attrs import define, field
+from attrs import define
 
 from .bitfield import BitField
 from .chunk import Chunk
@@ -56,7 +57,7 @@ class CdtaChunk(Chunk):
     """Fractional part (1/256th units). Non-zero for NTSC-style rates."""
 
     # -- Timebase (bytes 8-19) ---------------------------------------------
-    internal_timebase: int = u4_field()
+    internal_timebase: int = u4_field(default=24576)
     """frame_rate * 256 * time_scale. E.g. 24576 for 24fps/ts=4."""
 
     _reserved_0c: bytes = bytes_field(4, repr=False)
@@ -64,14 +65,14 @@ class CdtaChunk(Chunk):
     """Always 600."""
 
     # -- Time / work area / duration (bytes 20-51) -------------------------
-    time_dividend: int = s4_field()
-    time_divisor: int = u4_field(default=10000)
-    work_area_start_dividend: int = u4_field()
-    work_area_start_divisor: int = u4_field(default=10000)
+    time_dividend: int = s4_field(default=1)
+    time_divisor: int = u4_field(default=1)
+    work_area_start_dividend: int = u4_field(default=1)
+    work_area_start_divisor: int = u4_field(default=1)
     work_area_end_dividend: int = u4_field(default=0xFFFFFFFF)
-    work_area_end_divisor: int = u4_field(default=10000)
-    duration_dividend: int = u4_field()
-    duration_divisor: int = u4_field(default=10000)
+    work_area_end_divisor: int = u4_field(default=1)
+    duration_dividend: int = u4_field(default=1)
+    duration_divisor: int = u4_field(default=1)
 
     # -- Background color (bytes 52-54) ------------------------------------
     bg_color_r: int = u1_field()
@@ -93,8 +94,8 @@ class CdtaChunk(Chunk):
     height: int = u2_field()
 
     # -- Pixel ratio (bytes 144-155) ---------------------------------------
-    pixel_ratio_dividend: int = u4_field(default=1)
-    pixel_ratio_divisor: int = u4_field(default=100000)
+    pixel_aspect_dividend: int = u4_field(default=1)
+    pixel_aspect_divisor: int = u4_field(default=1)
     _reserved_98: bytes = bytes_field(4, repr=False)
 
     # -- Frame rate (bytes 156-163) ----------------------------------------
@@ -105,19 +106,19 @@ class CdtaChunk(Chunk):
     _reserved_a0: bytes = bytes_field(4, repr=False)
 
     # -- Display start time (bytes 164-171) --------------------------------
-    display_start_time_dividend: int = s4_field()
+    display_start_time_dividend: int = s4_field(default=1)
     """Signed. Negative = timeline starts before frame 0."""
 
-    display_start_time_divisor: int = u4_field(default=10000)
+    display_start_time_divisor: int = u4_field(default=1)
 
     # -- Shutter (bytes 172-187) -------------------------------------------
     _reserved_ac: bytes = bytes_field(2, repr=False)
     shutter_angle: int = u2_field(default=180)
-    _reserved_b0: bytes = bytes_field(4, default=b"\x00\x00\x01\x68", repr=False)
+    _reserved_b0: int = u4_field(default=360, repr=False)
     """Always 360 (0x0168) big-endian."""
 
     shutter_phase: int = s4_field()
-    _reserved_b8: bytes = bytes_field(4, default=b"\x00\x00\x01\x68", repr=False)
+    _reserved_b8: int = u4_field(default=360, repr=False)
     """Always 360 (0x0168) big-endian."""
 
     # -- Trailing reserved (bytes 188-203) ---------------------------------
@@ -136,9 +137,6 @@ class CdtaChunk(Chunk):
     # -- Assembled properties ----------------------------------------------
     # Combine raw integer+fractional or dividend/divisor pairs into floats.
     # Used by model ChunkField descriptors for direct read/write.
-
-    _TIME_DIVISOR: int = 10000
-    _PIXEL_DIVISOR: int = 100000
 
     @property
     def frame_rate(self) -> float:
@@ -179,12 +177,13 @@ class CdtaChunk(Chunk):
     @property
     def pixel_aspect(self) -> float:
         """Pixel aspect ratio from dividend/divisor."""
-        return self.pixel_ratio_dividend / self.pixel_ratio_divisor
+        return self.pixel_aspect_dividend / self.pixel_aspect_divisor
 
     @pixel_aspect.setter
     def pixel_aspect(self, value: float) -> None:
-        self.pixel_ratio_dividend = round(value * self._PIXEL_DIVISOR)
-        self.pixel_ratio_divisor = self._PIXEL_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.pixel_aspect_dividend = frac.numerator
+        self.pixel_aspect_divisor = frac.denominator
 
     @property
     def duration(self) -> float:
@@ -193,8 +192,9 @@ class CdtaChunk(Chunk):
 
     @duration.setter
     def duration(self, value: float) -> None:
-        self.duration_dividend = round(value * self._TIME_DIVISOR)
-        self.duration_divisor = self._TIME_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.duration_dividend = frac.numerator
+        self.duration_divisor = frac.denominator
 
     @property
     def display_start_time(self) -> float:
@@ -203,8 +203,9 @@ class CdtaChunk(Chunk):
 
     @display_start_time.setter
     def display_start_time(self, value: float) -> None:
-        self.display_start_time_dividend = round(value * self._TIME_DIVISOR)
-        self.display_start_time_divisor = self._TIME_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.display_start_time_dividend = frac.numerator
+        self.display_start_time_divisor = frac.denominator
 
     @property
     def work_area_start(self) -> float:
@@ -213,8 +214,9 @@ class CdtaChunk(Chunk):
 
     @work_area_start.setter
     def work_area_start(self, value: float) -> None:
-        self.work_area_start_dividend = round(value * self._TIME_DIVISOR)
-        self.work_area_start_divisor = self._TIME_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.work_area_start_dividend = frac.numerator
+        self.work_area_start_divisor = frac.denominator
 
     @property
     def time_seconds(self) -> float:
@@ -223,8 +225,9 @@ class CdtaChunk(Chunk):
 
     @time_seconds.setter
     def time_seconds(self, value: float) -> None:
-        self.time_dividend = round(value * self._TIME_DIVISOR)
-        self.time_divisor = self._TIME_DIVISOR
+        frac = Fraction(value).limit_denominator()
+        self.time_dividend = frac.numerator
+        self.time_divisor = frac.denominator
 
     @property
     def work_area_end_absolute(self) -> float:
@@ -303,11 +306,9 @@ class CdtaChunk(Chunk):
 
     @work_area_duration.setter
     def work_area_duration(self, value: float) -> None:
-        divisor = 10000
-        self.work_area_end_dividend = round(
-            (self.work_area_start + value) * divisor
-        )
-        self.work_area_end_divisor = divisor
+        frac = Fraction(self.work_area_start + value).limit_denominator()
+        self.work_area_end_dividend = frac.numerator
+        self.work_area_end_divisor = frac.denominator
 
     @property
     def work_area_duration_frame(self) -> int:
@@ -316,12 +317,10 @@ class CdtaChunk(Chunk):
 
     @work_area_duration_frame.setter
     def work_area_duration_frame(self, value: int) -> None:
-        divisor = 10000
         duration_seconds = value / self.frame_rate
-        self.work_area_end_dividend = round(
-            (self.work_area_start + duration_seconds) * divisor
-        )
-        self.work_area_end_divisor = divisor
+        frac = Fraction(self.work_area_start + duration_seconds).limit_denominator()
+        self.work_area_end_dividend = frac.numerator
+        self.work_area_end_divisor = frac.denominator
 
     @property
     def frame_time(self) -> int:
@@ -345,4 +344,3 @@ class CsctChunk(Chunk):
 
     chunk_type: str = "CsCt"
     value: int = u4_field(default=0x01000000)
-    _trailing: bytes = field(default=b"", repr=False)

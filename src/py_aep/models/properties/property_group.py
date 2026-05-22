@@ -223,7 +223,7 @@ class PropertyGroup(PropertyBase):
         """
         _tdsb = TdsbChunk(synthetic=synthetic)
         display = auto_name or _TDSN_SENTINEL
-        name_utf8 = Utf8Chunk(chunk_type="Utf8", value=display, synthetic=synthetic)
+        name_utf8 = Utf8Chunk(value=display, synthetic=synthetic)
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
         )

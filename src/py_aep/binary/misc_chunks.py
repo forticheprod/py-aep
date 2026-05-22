@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from attrs import define, field
+from attrs import define
 
 from .bin_utils import read_bytes
 from .bitfield import BitField
@@ -71,7 +71,6 @@ class SfdtChunk(Chunk):
 
     chunk_type: str = "sfdt"
     value: int = u4_field(default=1)
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +86,6 @@ class PrdaChunk(Chunk):
     chunk_type: str = "prda"
     _flag: int = u4_field(default=1)
     _reserved: bytes = bytes_field(8, repr=False)
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +202,6 @@ class NmhdChunk(Chunk):
     label: int = u1_field()
     """Label color index."""
 
-    _trailing: bytes = field(default=b"", repr=False)
-
     # BitField descriptors
     protected_region = BitField("_marker_flags", 1)
     navigation = BitField("_marker_flags", 0)
@@ -282,8 +278,6 @@ class FipsChunk(Chunk):
 
     _resolution_flags: int = u1_field(repr=False)
     """Byte 86: bit 0=auto_resolution."""
-
-    _trailing: bytes = field(default=b"", repr=False)
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     proportional_grid = BitField("_grid_safe_flags", 1)
@@ -408,7 +402,6 @@ class GenericPardChunk(PardChunk):
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
     _body: bytes = bytes_field(92, repr=False)
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -423,7 +416,6 @@ class ColorPardChunk(PardChunk):
     _default_color: bytes = bytes_field(4, repr=False)
     _pad_body: bytes = bytes_field(64, repr=False)
     _max_color: bytes = bytes_field(4, repr=False)
-    _trailing: bytes = field(default=b"", repr=False)
 
     @property
     def last_color(self) -> list[int]:
@@ -463,7 +455,6 @@ class ScalarPardChunk(PardChunk):
     min_value: int = s2_field()
     _pad_mid: bytes = bytes_field(2, repr=False)
     max_value: int = s2_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -475,7 +466,6 @@ class AnglePardChunk(PardChunk):
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value: int = s4_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -488,7 +478,6 @@ class BooleanPardChunk(PardChunk):
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value: int = u4_field()
     default: int = u1_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -501,7 +490,6 @@ class TwoDPardChunk(PardChunk):
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value_x_raw: int = s4_field()
     last_value_y_raw: int = s4_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
     @property
     def last_value_x(self) -> float:
@@ -523,7 +511,6 @@ class EnumPardChunk(PardChunk):
     last_value: int = u4_field()
     nb_options: int = s4_field()
     default: int = s4_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -537,7 +524,6 @@ class SliderPardChunk(PardChunk):
     last_value: float = f8_field()
     _pad_body: bytes = bytes_field(52, repr=False)
     max_value: float = f4_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 @define
@@ -551,7 +537,6 @@ class ThreeDPardChunk(PardChunk):
     last_value_x_raw: float = f8_field()
     last_value_y_raw: float = f8_field()
     last_value_z_raw: float = f8_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
     @property
     def last_value_x(self) -> float:
@@ -582,7 +567,6 @@ class DwgaChunk(Chunk):
     chunk_type: str = "dwga"
 
     working_gamma_selector: int = u1_field()
-    _trailing: bytes = field(default=b"", repr=False)
 
     @property
     def working_gamma(self) -> float:
@@ -624,7 +608,6 @@ class EwotChunk(Chunk):
     chunk_type: str = "ewot"
     num_entries: int = u4_field()
     items: list[EwotItem] = items_field(EwotItem, 4)
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +649,6 @@ class OtlnChunk(Chunk):
     chunk_type: str = "otln"
     num_entries: int = u4_field()
     items: list[OtlnItem] = items_field(OtlnItem, 4)
-    _trailing: bytes = field(default=b"", repr=False)
 
 
 _PARD_VARIANTS: dict[int, type[PardChunk]] = {
@@ -731,4 +713,130 @@ class Fth5Chunk(Chunk):
     chunk_type: str = "fth5"
 
     points: list[FeatherPointItem] = items_field(FeatherPointItem, 32)
-    _trailing: bytes = field(default=b"", repr=False)
+
+
+# ---------------------------------------------------------------------------
+# Source / footage utility chunks
+# ---------------------------------------------------------------------------
+
+
+@register("apid")
+@define
+class ApidChunk(Chunk):
+    """Application color profile ID (16 bytes, all 0xff = unmanaged)."""
+
+    chunk_type: str = "apid"
+    data: bytes = b"\xff" * 16
+
+
+@register("epid")
+@define
+class EpidChunk(Chunk):
+    """Embedded color profile ID (16 bytes, all 0xff = unmanaged)."""
+
+    chunk_type: str = "epid"
+    data: bytes = b"\xff" * 16
+
+
+@register("linl")
+@define
+class LinlChunk(Chunk):
+    """Linearization setting (4 bytes little-endian)."""
+
+    chunk_type: str = "linl"
+    value: int = u4_field(endian="<", default=2)
+
+
+@register("embp")
+@define
+class EmbpChunk(Chunk):
+    """Embed profile flag."""
+
+    chunk_type: str = "embp"
+    value: bool = bool_field(default=True)
+
+
+@register("ipws")
+@define
+class IpwsChunk(Chunk):
+    """Input profile working space."""
+
+    chunk_type: str = "ipws"
+    value: int = u1_field(default=1)
+
+
+@register("dcui")
+@define
+class DcuiChunk(Chunk):
+    """Display color UI flag (solid sources only)."""
+
+    chunk_type: str = "dcui"
+    value: bool = bool_field(default=True)
+
+
+@register("prgb")
+@define
+class PrgbChunk(Chunk):
+    """Preserve RGB flag (solid sources only)."""
+
+    chunk_type: str = "prgb"
+    value: int = u1_field(default=1)
+
+
+@register("Mcsp")
+@define
+class McspChunk(Chunk):
+    """Monitor color space flag."""
+
+    chunk_type: str = "Mcsp"
+    value: bool = bool_field(default=True)
+
+
+@register("ocsp")
+@define
+class OcspChunk(Chunk):
+    """Output color space flag."""
+
+    chunk_type: str = "ocsp"
+    value: bool = bool_field(default=True)
+
+
+@register("hdrm")
+@define
+class HdrmChunk(Chunk):
+    """HDR mode flag."""
+
+    chunk_type: str = "hdrm"
+    value: bool = bool_field(default=True)
+
+
+@register("strt")
+@define
+class StrtChunk(Chunk):
+    """Media start info (8 bytes)."""
+
+    chunk_type: str = "strt"
+    _reserved_00: bytes = bytes_field(4, repr=False)
+    fps_byte: int = u1_field(default=1)
+    _reserved_05: bytes = bytes_field(3, repr=False)
+
+
+@register("drop")
+@define
+class DropChunk(Chunk):
+    """Drop frame flag."""
+
+    chunk_type: str = "drop"
+    value: bool = bool_field(default=True)
+
+
+@register("ftgi")
+@define
+class FtgiChunk(Chunk):
+    """Footage interpretation global info (16 bytes)."""
+
+    chunk_type: str = "ftgi"
+    start_offset: int = u4_field()
+    frame_rate_num: int = u4_field(default=1)
+    end_frame: int = u4_field(default=0xFFFFFFFF)
+    time_base: int = u4_field(default=600)
