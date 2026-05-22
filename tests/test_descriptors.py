@@ -383,7 +383,6 @@ class TestChunkFieldTransform:
         assert cf.__get__(model, type(model)) is True
 
 
-
 # ---------------------------------------------------------------------------
 # CosField contract tests
 # ---------------------------------------------------------------------------

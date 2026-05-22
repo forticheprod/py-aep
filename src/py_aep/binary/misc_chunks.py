@@ -215,6 +215,7 @@ class NmhdChunk(Chunk):
     def duration_seconds(self, value: float) -> None:
         self.frame_duration = round(value * 600)
 
+
 # ---------------------------------------------------------------------------
 # fips - viewer panel settings (96 bytes)
 # ---------------------------------------------------------------------------

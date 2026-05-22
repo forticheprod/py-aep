@@ -211,14 +211,18 @@ class CompItem(AVItem):
     )
     """The duration of the item in frames. Read / Write."""
 
-    pixel_aspect = ChunkField[float]("_cdta", "pixel_aspect", validate=validate_pixel_aspect)
+    pixel_aspect = ChunkField[float](
+        "_cdta", "pixel_aspect", validate=validate_pixel_aspect
+    )
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
 
     time_scale = ChunkField[float]("_cdta", "time_scale", read_only=True)
     """The time scale, used as a divisor for keyframe time values. Read-only."""
 
     display_start_time = ChunkField[float](
-        "_cdta", "display_start_time", validate=validate_number(min=-10800.0, max=86339.0)
+        "_cdta",
+        "display_start_time",
+        validate=validate_number(min=-10800.0, max=86339.0),
     )
     """The time set as the beginning of the composition, in seconds. This
     is the equivalent of the Start Timecode or Start Frame setting in the

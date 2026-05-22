@@ -218,9 +218,7 @@ def _compare_structure_recursive(
     current = f"{path}/{label1}" if path else label1
 
     if label1 != label2:
-        diffs.append(
-            StructuralDifference(current, -1, -1, [label1], [label2])
-        )
+        diffs.append(StructuralDifference(current, -1, -1, [label1], [label2]))
         return
 
     if isinstance(c1, ListChunk) and isinstance(c2, ListChunk):
@@ -229,17 +227,25 @@ def _compare_structure_recursive(
         if ch1 != ch2:
             diffs.append(
                 StructuralDifference(
-                    current, len(ch1), len(ch2), ch1, ch2,
+                    current,
+                    len(ch1),
+                    len(ch2),
+                    ch1,
+                    ch2,
                 )
             )
         for i in range(min(len(c1.chunks), len(c2.chunks))):
             _compare_structure_recursive(
-                c1.chunks[i], c2.chunks[i], current, diffs,
+                c1.chunks[i],
+                c2.chunks[i],
+                current,
+                diffs,
             )
 
 
 def compare_structure(
-    file1: Path, file2: Path,
+    file1: Path,
+    file2: Path,
 ) -> list[StructuralDifference]:
     """Compare two AEP files structurally.
 
@@ -380,12 +386,7 @@ def print_results(
     print(f"  File 2: {file2}")
     print(f"{'=' * 80}\n")
 
-    has_any = (
-        differences
-        or only_in_file1
-        or only_in_file2
-        or structural_diffs
-    )
+    has_any = differences or only_in_file1 or only_in_file2 or structural_diffs
     if not has_any:
         print("No differences found!")
         return
@@ -397,7 +398,9 @@ def print_results(
         print(f"{'─' * 40}")
         for sd in structural_diffs:
             if sd.count1 == -1:
-                print(f"\n[{sd.path}] type mismatch: {sd.children1[0]} vs {sd.children2[0]}")
+                print(
+                    f"\n[{sd.path}] type mismatch: {sd.children1[0]} vs {sd.children2[0]}"
+                )
             else:
                 print(f"\n[{sd.path}] child count: {sd.count1} vs {sd.count2}")
                 max_len = max(len(sd.children1), len(sd.children2))

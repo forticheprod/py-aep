@@ -1170,12 +1170,7 @@ class TestOptiChunk:
         # Build data: 4-byte asset_type + 2-byte asset_type_int + 4-byte pad
         # + 256-byte NUL-padded name
         name_field = name_bytes + b"\x00" * (256 - len(name_bytes))
-        data = (
-            b"\x00" * 4
-            + struct.pack(">H", 2)
-            + b"\x00\x00\x01\x0a"
-            + name_field
-        )
+        data = b"\x00" * 4 + struct.pack(">H", 2) + b"\x00\x00\x01\x0a" + name_field
 
         buf = BytesIO(data)
         chunk = OptiChunk.read(buf, len(data), chunk_type="opti")

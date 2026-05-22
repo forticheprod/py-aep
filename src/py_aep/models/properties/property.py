@@ -1001,9 +1001,7 @@ class Property(PropertyBase):
         """`True` if there is a minimum permitted value for the named property."""
         return self.min_value is not None
 
-    def value_at_time(
-        self, time: float, pre_expression: bool = True
-    ) -> _ValueType:
+    def value_at_time(self, time: float, pre_expression: bool = True) -> _ValueType:
         """Get the value of the named property at the given time.
 
         If the property has keyframes, the value is computed by

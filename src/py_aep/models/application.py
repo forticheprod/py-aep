@@ -22,8 +22,6 @@ def _validate_version(value: str, obj: HeadChunk) -> None:
         )
 
 
-
-
 class Application:
     """
     The `Application` object represents the After Effects application. Attributes

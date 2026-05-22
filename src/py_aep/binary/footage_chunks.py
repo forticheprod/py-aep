@@ -146,9 +146,7 @@ class SspcChunk(Chunk):
     work_area_end: int = u4_field(default=0xFFFFFFFF)
     _reserved_c4: bytes = bytes_field(6, repr=False)
     _reserved_ca: bytes = bytes_field(10, repr=False)
-    _reserved_d4: bytes = bytes_field(
-        10, default=b"\x01" + b"\x00" * 9, repr=False
-    )
+    _reserved_d4: bytes = bytes_field(10, default=b"\x01" + b"\x00" * 9, repr=False)
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     invert_alpha = BitField("_alpha_flags", 1)
@@ -160,8 +158,7 @@ class SspcChunk(Chunk):
     def native_frame_rate(self) -> float:
         """Native frame rate (integer + fractional/65536)."""
         return (
-            self.native_frame_rate_integer
-            + self.native_frame_rate_fractional / 65536.0
+            self.native_frame_rate_integer + self.native_frame_rate_fractional / 65536.0
         )
 
     @native_frame_rate.setter
@@ -266,9 +263,7 @@ class SspcChunk(Chunk):
     @display_frame_rate.setter
     def display_frame_rate(self, value: float) -> None:
         self.display_frame_rate_integer = int(value)
-        self.display_frame_rate_fractional = round(
-            (value - int(value)) * 65536
-        )
+        self.display_frame_rate_fractional = round((value - int(value)) * 65536)
 
     def _update_display_frame_rate(self) -> None:
         """Recompute and store display_frame_rate from current settings."""
@@ -277,6 +272,7 @@ class SspcChunk(Chunk):
         self.display_frame_rate = base * (
             0.8 if self._remove_pulldown_value != 0 else 1.0
         )
+
 
 # ---------------------------------------------------------------------------
 # opti - footage asset info (variant dispatch by asset_type)

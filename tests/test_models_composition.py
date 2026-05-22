@@ -1537,10 +1537,7 @@ class TestRoundtripEssentialGraphics:
         comp2 = next(
             c for c in parse_aep(out).project.compositions if c.name == "primary"
         )
-        assert (
-            comp2.motion_graphics_controllers[0].name
-            == "New Controller Name"
-        )
+        assert comp2.motion_graphics_controllers[0].name == "New Controller Name"
 
     def test_rename_multiple_controllers(self, tmp_path: Path) -> None:
         project = parse_aep(EG_SAMPLES_DIR / "multiple_controllers.aep").project
@@ -1553,12 +1550,8 @@ class TestRoundtripEssentialGraphics:
             c for c in parse_aep(out).project.compositions if c.name == "primary"
         )
         assert comp2.motion_graphics_controllers[0].name == "Brightness"
-        assert (
-            comp2.motion_graphics_controllers[1].name == "Renamed Opacity"
-        )
-        assert (
-            comp2.motion_graphics_controllers[2].name == "Background Color"
-        )
+        assert comp2.motion_graphics_controllers[1].name == "Renamed Opacity"
+        assert comp2.motion_graphics_controllers[2].name == "Background Color"
 
     def test_create_template_name(self, tmp_path: Path) -> None:
         """Setting motion_graphics_template_name on a comp without EG

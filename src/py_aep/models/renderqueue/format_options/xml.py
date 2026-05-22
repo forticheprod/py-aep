@@ -143,7 +143,9 @@ class XmlFormatOptions:
         xml_start = raw.find(b"<?xml")
         if xml_start >= 0:
             self._xml_header = raw[:xml_start]
-            xml_text = raw[xml_start:].decode("utf-8", errors="replace").split("\x00")[0]
+            xml_text = (
+                raw[xml_start:].decode("utf-8", errors="replace").split("\x00")[0]
+            )
             self._xml_root = ET.fromstring(xml_text)
             data, self._val_elements = _extract_params(self._xml_root)
             self.params.update(data)

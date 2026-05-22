@@ -361,6 +361,7 @@ class RenderSettingsItem(FmtItem):
         self.time_span_duration_dividend = frac.numerator
         self.time_span_duration_divisor = frac.denominator
 
+
 # ---------------------------------------------------------------------------
 # Output module settings ldat item (128 bytes per item)
 # ---------------------------------------------------------------------------

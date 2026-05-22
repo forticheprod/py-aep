@@ -281,9 +281,7 @@ class FootageItem(AVItem):
         source = SolidSource._new(color, name, width, height, pixel_aspect)
         self._replace_main_source(source)
 
-    def _replace_main_source(
-        self, source: PlaceholderSource | SolidSource
-    ) -> None:
+    def _replace_main_source(self, source: PlaceholderSource | SolidSource) -> None:
         """Replace the first LIST:Pin in _item_list with a new source."""
         is_solid = isinstance(source, SolidSource)
         new_pin = AVItem._build_pin_list(

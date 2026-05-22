@@ -123,9 +123,7 @@ class FootageSource:
     [PulldownPhase.OFF][py_aep.enums.PulldownPhase] by default.
     Read / Write."""
 
-    native_frame_rate = ChunkField[float](
-        "_sspc", "native_frame_rate", read_only=True
-    )
+    native_frame_rate = ChunkField[float]("_sspc", "native_frame_rate", read_only=True)
     """The native frame rate of the footage. Read-only."""
 
     _width = ChunkField[int]("_sspc", "width", read_only=True)

@@ -43,6 +43,7 @@ def _validate_use_proxy(value: bool, obj: AVItem) -> None:
 
 
 def _sync_proxy_active(obj: AVItem) -> None:
+    assert obj._idta is not None
     obj._idta._proxy_active = int(obj._idta.use_proxy)
 
 
@@ -290,14 +291,16 @@ class AVItem(Item):
         if is_solid:
             clrs_chunks.append(DcuiChunk())
             clrs_chunks.append(PrgbChunk())
-        clrs_chunks.extend([
-            McspChunk(),
-            Utf8Chunk(),
-            OcspChunk(),
-            Utf8Chunk(),
-            HdrmChunk(),
-            Utf8Chunk(value="{}"),
-        ])
+        clrs_chunks.extend(
+            [
+                McspChunk(),
+                Utf8Chunk(),
+                OcspChunk(),
+                Utf8Chunk(),
+                HdrmChunk(),
+                Utf8Chunk(value="{}"),
+            ]
+        )
         clrs = ListChunk(list_type="CLRS", chunks=clrs_chunks)
 
         mnfo = ListChunk(

@@ -14,17 +14,18 @@ def _next_suffix(prefix: str, existing_names: set[str]) -> int:
     If any name matches `prefix` (with or without a digit suffix),
     suffix 1 is skipped - returns at least 2.
     """
-    result = 1
+    max_suffix = 0
     for name in existing_names:
         if name.startswith(prefix):
-            tail = name[len(prefix):]
+            tail = name[len(prefix) :]
             if tail.isdigit():
-                result = max(result, int(tail) or 2)
+                n = int(tail)
+                max_suffix = max(max_suffix, n if n > 0 else 1)
             else:
-                result = max(result, 2)
+                max_suffix = max(max_suffix, 1)
         elif name == prefix.rstrip():
-            result = max(result, 2)
-    return result
+            max_suffix = max(max_suffix, 1)
+    return max_suffix + 1
 
 
 def auto_name(name: str, existing_names: set[str]) -> str:
