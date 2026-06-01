@@ -15,7 +15,7 @@ from attrs import Factory, define
 from .bin_utils import read_bytes, write_bytes
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import bool_field, bytes_field, f8_field, u1_field, u2_field
+from .fmt_field import bool_field, f8_field, u1_field, u2_field, u4_field, u8_field
 from .registry import register
 from .scalar_chunks import _StringChunkBase
 
@@ -56,27 +56,40 @@ class TdsbChunk(Chunk):
 # tdb4 - property metadata (124 bytes, inside LIST:tdbs at index 2)
 # ---------------------------------------------------------------------------
 #
-# Struct layout (big-endian):
+# Struct layout (big-endian, 124 bytes):
 #   H   magic (0xdb99)
 #   H   dimensions
-#   B   pad
+#   B   pad1
 #   B   spatial/static flags
-#   5s  pad
+#   H   pad2a
+#   H   value_hint_type
+#   B   value_hint_flag
 #   B   can_vary_over_time flags
-#   4s  pad
+#   H   pad3a
+#   H   time_base (0x7800 when has_time_base, else 0)
 #   5d  unknown floats (threshold, aspect, 1.0, 1.0, 1.0)
-#   B   pad
+#   B   pad4
 #   B   no_value flags
-#   B   pad
+#   B   pad5
 #   B   type flags (vector, integer, color)
-#   8s  pad
+#   B   property_category
+#   I   pad6a
+#   H   pad6b
+#   B   pad6c
 #   B   animated
-#   15s pad
-#   32s reserved (zeros)
-#   3s  pad
+#   I   pad7a
+#   I   pad7b
+#   H   pad7c
+#   B   spatial_marker
+#   I   pad7d
+#   Q   pad8a
+#   Q   pad8b
+#   Q   pad8c
+#   Q   pad8d
+#   H   pad9a
+#   B   pad9b
 #   B   expression_disabled flags
-#   4s  pad
-# Total: 124 bytes
+#   I   pad10
 
 
 @register("tdb4")
@@ -90,9 +103,12 @@ class Tdb4Chunk(Chunk):
     dimensions: int = u2_field(default=1)
     _pad1: int = u1_field(repr=False)
     _spatial_static_flags: int = u1_field(default=1, repr=False)
-    _pad2: bytes = bytes_field(5, repr=False)
+    _pad2a: int = u2_field(repr=False)
+    _value_hint_type: int = u2_field(repr=False)
+    _value_hint_flag: int = u1_field(repr=False)
     _cvot_flags: int = u1_field(repr=False)
-    _pad3: bytes = bytes_field(4, repr=False)
+    _pad3a: int = u2_field(repr=False)
+    _time_base: int = u2_field(repr=False)
     _unknown_float_0: float = f8_field(default=0.0001, repr=False)
     _unknown_float_1: float = f8_field(default=1.0, repr=False)
     _unknown_float_2: float = f8_field(default=1.0, repr=False)
@@ -102,13 +118,24 @@ class Tdb4Chunk(Chunk):
     _no_value_flags: int = u1_field(repr=False)
     _pad5: int = u1_field(repr=False)
     _type_flags: int = u1_field(repr=False)
-    _pad6: bytes = bytes_field(8, repr=False)
+    _property_category: int = u1_field(repr=False)
+    _pad6a: int = u4_field(repr=False)
+    _pad6b: int = u2_field(repr=False)
+    _pad6c: int = u1_field(repr=False)
     animated: bool = bool_field()
-    _pad7: bytes = bytes_field(15, repr=False)
-    _pad8: bytes = bytes_field(32, repr=False)
-    _pad9: bytes = bytes_field(3, repr=False)
+    _pad7a: int = u4_field(repr=False)
+    _pad7b: int = u4_field(repr=False)
+    _pad7c: int = u2_field(repr=False)
+    _spatial_marker: bool = bool_field(repr=False)
+    _pad7d: int = u4_field(repr=False)
+    _pad8a: int = u8_field(repr=False)
+    _pad8b: int = u8_field(repr=False)
+    _pad8c: int = u8_field(repr=False)
+    _pad8d: int = u8_field(repr=False)
+    _pad9a: int = u2_field(repr=False)
+    _pad9b: int = u1_field(repr=False)
     _expr_flags: int = u1_field(repr=False)
-    _pad10: bytes = bytes_field(4, repr=False)
+    _pad10: int = u4_field(repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
     is_spatial = BitField("_spatial_static_flags", 3)
@@ -119,6 +146,10 @@ class Tdb4Chunk(Chunk):
     integer = BitField("_type_flags", 2)
     color = BitField("_type_flags", 0)
     expression_disabled = BitField("_expr_flags", 0)
+
+    @property
+    def has_time_base(self) -> bool:
+        return self._time_base != 0
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +329,7 @@ class OtdaChunk(Chunk):
 class TdmnChunk(_StringChunkBase):
     """Fixed-width 40-byte null-padded match name chunk."""
 
+    chunk_type: str = "tdmn"
     _ENCODING = "UTF-8"
 
     @classmethod

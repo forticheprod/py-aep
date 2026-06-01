@@ -20,8 +20,8 @@ from ..models.layers.light_layer import LightLayer
 from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
 from ..models.layers.three_d_model_layer import ThreeDModelLayer
+from ..synthesis.core import synthesize_layer_properties
 from .property import parse_properties
-from .synthesis import synthesize_layer_properties
 from .utils import (
     get_chunks_by_match_name,
 )
@@ -119,6 +119,7 @@ def parse_layer(
     )
 
     layer._properties = properties
+    layer._tdgp = root_tdgp_chunk
     for child in properties:
         child._parent_property = layer
 

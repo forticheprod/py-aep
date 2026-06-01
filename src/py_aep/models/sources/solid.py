@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, cast
 
 from ...binary.footage_chunks import SoliOptiChunk, SspcChunk
+from ...resolvers.solid import solid_color_name
 from ..descriptors import ChunkField
 from ..validators import validate_number, validate_pixel_aspect, validate_rgb_color
 from .footage import FootageSource
@@ -57,6 +58,21 @@ class SolidSource(FootageSource):
         super().__init__(_sspc=_sspc, _linl=_linl, _clrs=_clrs)
         self._opti = _opti
 
+    @staticmethod
+    def _color_name(r: float, g: float, b: float) -> str:
+        """Derive the base solid name from an RGB color.
+
+        After Effects names solids by their perceived color category.
+        Returns the base name (e.g. `"Red Solid"`) without a trailing
+        number suffix; the caller is responsible for disambiguation.
+
+        Args:
+            r: Red channel in `[0.0, 1.0]`.
+            g: Green channel in `[0.0, 1.0]`.
+            b: Blue channel in `[0.0, 1.0]`.
+        """
+        return solid_color_name(r, g, b)
+
     @classmethod
     def _new(
         cls,
@@ -85,6 +101,7 @@ class SolidSource(FootageSource):
             height=height,
             source_format_type="Soli",
             alpha_mode_raw=3,
+            duration_dividend=0,
         )
         sspc.pixel_aspect = pixel_aspect
 

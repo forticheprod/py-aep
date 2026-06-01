@@ -140,7 +140,7 @@ class Chunk:
             # Remaining optional fields get None (absent)
             while len(values) < len(data_fields):
                 values.append(None)
-            items_start = size  # no trailing/items in the optional-fields slow path
+            items_start = size - remaining
 
         kw2: dict[str, Any] = {"chunk_type": chunk_type}
         kw2.update(_decode_fields(data_fields, values, encodings, coerces, init_names))

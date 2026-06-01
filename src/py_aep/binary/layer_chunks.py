@@ -62,12 +62,15 @@ class LdtaChunk(Chunk):
     _layer_flags_1: int = u1_field(repr=False)
     """Byte 38: bits for null, cam-auto-orient, solo, 3d, adjustment, etc."""
 
-    _layer_flags_2: int = u1_field(repr=False)
-    """Byte 39: bits for collapse, shy, locked, frame-blend, motion-blur, etc."""
+    _layer_flags_2: int = u1_field(default=0x07, repr=False)
+    """Byte 39: bits for collapse, shy, locked, frame-blend, motion-blur, etc.
+    Default 0x07 = enabled + audio_enabled + effects_active."""
 
     # -- Source / label (bytes 40-63) --------------------------------------
     source_id: int = u4_field()
-    _reserved_2c: bytes = bytes_field(17, repr=False)
+    _reserved_2c: bytes = bytes_field(15, repr=False)
+    _reserved_3b: int = u1_field(repr=False)
+    _reserved_3c: int = u1_field(repr=False)
     label: int = u1_field()
     _reserved_3e: bytes = bytes_field(2, repr=False)
 

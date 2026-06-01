@@ -52,6 +52,20 @@ class IndirectReference:
 
 
 @dataclass
+class CosName:
+    """A COS name object used as a value (e.g. `/CoolTypeFont`).
+
+    Distinct from a dict key identifier: when serialized, a CosName
+    writes `/name` while a plain `str` writes `(string)`.
+    """
+
+    value: str
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass
 class Stream:
     dictionary: dict[str, Any]
     data: bytes
@@ -75,12 +89,16 @@ class CosParser:
         return [val] + self.parse_array_content()
 
     def parse_value(self) -> Any:
+        if self.lookahead.type == TokenType.Identifier:
+            val = CosName(self.lookahead.value)
+            self.lex()
+            return val
+
         if (
             self.lookahead.type == TokenType.String
             or self.lookahead.type == TokenType.HexString
             or self.lookahead.type == TokenType.Null
             or self.lookahead.type == TokenType.Boolean
-            or self.lookahead.type == TokenType.Identifier
             or self.lookahead.type == TokenType.Stream
         ):
             val = self.lookahead.value

@@ -6,7 +6,6 @@ from ...binary.chunk import Chunk, ListChunk
 from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.misc_chunks import FtgiChunk
 from ...binary.scalar_chunks import Utf8Chunk
-from ...resolvers.solid import solid_color_name
 from ..naming import auto_name
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
@@ -192,6 +191,7 @@ class FootageItem(AVItem):
             label=3,
         )
         idta.is_footage = True
+        idta.is_solid = isinstance(source, SolidSource)
         name_utf8 = Utf8Chunk()
 
         pin_list = AVItem._build_pin_list(
@@ -273,7 +273,7 @@ class FootageItem(AVItem):
         """
         if name is None:
             existing = {item.name for item in self._project.items.values()}
-            solid_name = solid_color_name(color[0], color[1], color[2])
+            solid_name = SolidSource._color_name(color[0], color[1], color[2])
             name = auto_name(solid_name, existing)
         elif name == "":
             name = "????"

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import (
     BlendingMode,
     FrameBlendingType,
     LayerQuality,
     LayerSamplingQuality,
+    LayerType,
     TrackMatteType,
 )
 
+from ...binary.layer_chunks import LdtaChunk
 from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
@@ -165,6 +167,43 @@ class AVLayer(Layer):
 
     _source_id = ChunkField[int]("_ldta", "source_id")
     """The ID of the source item for this layer. 0 for a text layer. Read-only."""
+
+    @classmethod
+    def _new(  # type: ignore[override]
+        cls,
+        *,
+        name: str,
+        layer_id: int,
+        duration: float,
+        containing_comp: CompItem,
+        source_id: int = 0,
+        null_layer: bool = False,
+        three_d_layer: bool = False,
+        root_tdgp_extra: list[Any] | None = None,
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> AVLayer:
+        ae_major = containing_comp._project._head.ae_version_major
+        ldta = LdtaChunk(
+            layer_id=layer_id,
+            quality=2,
+            source_id=source_id,
+            label=1,
+            blending_mode=2,
+            layer_type=LayerType.AV,
+            matte_layer_id=0 if ae_major >= 23 else None,
+            layer_name=name[:31] if len(name) > 31 else name,
+        )
+        ldta.out_point = duration
+        ldta.null_layer = null_layer
+        ldta.three_d_layer = three_d_layer
+        ldta._reserved_3c = 1
+        return cast("AVLayer", super()._new(
+            ldta=ldta,
+            name=name,
+            containing_comp=containing_comp,
+            root_tdgp_extra=root_tdgp_extra,
+            effect_param_defs=effect_param_defs,
+        ))
 
     @property
     def track_matte_type(self) -> TrackMatteType:

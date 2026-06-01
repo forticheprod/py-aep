@@ -12,6 +12,7 @@ from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdmnChunk, TdsbChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ...data.units import UNITS_TEXT_MAP
+from ...synthesis.specs import _USE_VALUE
 from ..descriptors import ChunkField
 from ..validators import validate_number, validate_sequence
 from .overrides import (
@@ -21,13 +22,13 @@ from .overrides import (
     _NAME_OVERRIDES,
 )
 from .property_base import _TDSN_SENTINEL, PropertyBase
-from .specs import _USE_VALUE
 
 if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.property_chunks import TdumChunk
     from ...binary.scalar_chunks import S4Chunk
+    from ...synthesis.specs import _PropSpec
     from ..items.composition import CompItem
     from ..text.text_document import TextDocument
     from .gradient import Gradient
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
     from .marker import MarkerValue
     from .property_group import PropertyGroup
     from .shape import Shape
-    from .specs import _PropSpec
 
     _ValueType = Union[
         list[float],
@@ -279,20 +279,43 @@ class Property(PropertyBase):
             can_vary = not no_value
 
         _tdsb = TdsbChunk(synthetic=synthetic)
-        _tdb4 = Tdb4Chunk(
-            synthetic=synthetic,
-            dimensions=spec.dimensions,
-            # Set backing integer fields directly instead of going through
-            # BitField descriptors (avoids 6 getattr/setattr pairs per call).
-            spatial_static_flags=1 | (0x08 if spec.is_spatial else 0),
-            cvot_flags=0x02 if can_vary else 0,
-            no_value_flags=0x01 if no_value else 0,
-            type_flags=(
-                (0x01 if spec.color else 0)
-                | (0x04 if spec.integer else 0)
-                | (0x08 if spec.dimensions > 1 else 0)
-            ),
-        )
+
+        _tdb4 = Tdb4Chunk(synthetic=synthetic, dimensions=spec.dimensions)
+        if spec.has_time_base:
+            binary_nv = no_value or (spec.is_spatial and not spec.color)
+            _tdb4._time_base = 0x7800
+            _tdb4._spatial_marker = spec.is_spatial
+            _tdb4.no_value = binary_nv
+            if spec.spatial_flags is not None:
+                _tdb4._spatial_static_flags = spec.spatial_flags
+            if spec.integer:
+                _tdb4.integer = True
+                _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0x04
+                _tdb4._property_category = 0x04
+                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 0xFFFF
+            elif spec.color:
+                _tdb4.color = True
+                _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0xFF
+                _tdb4._property_category = 0x01
+                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 1
+                _tdb4._value_hint_flag = 0xFF
+            elif binary_nv:
+                _tdb4._type_flags = 0x18 if spec.is_spatial else 0x08
+                _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0x04
+                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 1
+            else:
+                _tdb4.vector = True
+                _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0xFF
+                _tdb4._property_category = 0x09
+                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 1
+                _tdb4._value_hint_flag = 0xFF
+        else:
+            _tdb4.is_spatial = spec.is_spatial
+            _tdb4.no_value = no_value
+            _tdb4.color = spec.color
+            _tdb4.integer = spec.integer
+            _tdb4.vector = spec.dimensions > 1
+            _tdb4.can_vary_over_time = can_vary
 
         display = spec.auto_name or _TDSN_SENTINEL
         name_utf8 = Utf8Chunk(value=display, synthetic=synthetic)
@@ -313,19 +336,20 @@ class Property(PropertyBase):
                 raw_vals = [float(v) for v in final_value]
             else:
                 raw_vals = [float(final_value)]
-            _cdat = CdatChunk(chunk_type="cdat", values=raw_vals, synthetic=synthetic)
+            _cdat = CdatChunk(values=raw_vals, synthetic=synthetic)
             _tdbs.chunks.append(_cdat)
 
-        # Insert into parent's chunk tree.
+        # Insert into parent's chunk tree (before parent's group end).
         _tdmn = TdmnChunk(
-            chunk_type="tdmn",
             value=spec.match_name,
             synthetic=synthetic,
         )
         tdgp = parent_property._tdgp
         if tdgp is not None:
-            tdgp.chunks.append(_tdmn)
-            tdgp.chunks.append(_tdbs)
+            from .property_group import _insert_before_group_end  # noqa: PLC0415
+
+            _insert_before_group_end(tdgp, _tdmn)
+            _insert_before_group_end(tdgp, _tdbs)
 
         prop = cls(
             _tdmn=_tdmn,

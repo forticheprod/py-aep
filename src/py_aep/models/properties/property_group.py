@@ -11,21 +11,34 @@ from py_aep.resolvers.can_add_property import (
 from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.property_chunks import TdmnChunk, TdsbChunk
 from ...binary.scalar_chunks import Utf8Chunk
-from .overrides import _PROPERTY_MIN_MAX
-from .property import Property
-from .property_base import _INDEXED_GROUP_MATCH_NAMES, _TDSN_SENTINEL, PropertyBase
-from .specs import (
+from ...synthesis.specs import (
     _GROUP_CHILD_SPECS,
     _LAYER_STYLE_CHILD_SPECS,
     _USE_VALUE,
     _GroupSpec,
 )
+from .overrides import _PROPERTY_MIN_MAX
+from .property import Property
+from .property_base import _INDEXED_GROUP_MATCH_NAMES, _TDSN_SENTINEL, PropertyBase
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Literal
 
-    from .specs import _PropSpec
+    from ...synthesis.specs import _PropSpec
+
+
+def _insert_before_group_end(tdgp: ListChunk, chunk: Any) -> None:
+    """Insert *chunk* before the 'ADBE Group End' tdmn in *tdgp*.
+
+    Falls back to appending if no group end marker exists.
+    """
+    for i in range(len(tdgp.chunks) - 1, -1, -1):
+        c = tdgp.chunks[i]
+        if c.chunk_type == "tdmn" and getattr(c, "value", None) == "ADBE Group End":
+            tdgp.chunks.insert(i, chunk)
+            return
+    tdgp.chunks.append(chunk)
 
 
 def _reorder_and_fill(
@@ -227,24 +240,26 @@ class PropertyGroup(PropertyBase):
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
         )
+        group_end = TdmnChunk(
+            value="ADBE Group End", synthetic=synthetic
+        )
         _tdgp = ListChunk(
             list_type="tdgp",
-            chunks=[_tdsb, tdsn],
+            chunks=[_tdsb, tdsn, group_end],
             synthetic=synthetic,
         )
 
-        # Insert into parent's chunk tree.
+        # Insert into parent's chunk tree (before parent's group end).
         _tdmn: TdmnChunk | None = None
         if parent_property is not None:
             parent_tdgp = getattr(parent_property, "_tdgp", None)
             if parent_tdgp is not None:
                 _tdmn = TdmnChunk(
-                    chunk_type="tdmn",
                     value=match_name,
                     synthetic=synthetic,
                 )
-                parent_tdgp.chunks.append(_tdmn)
-                parent_tdgp.chunks.append(_tdgp)
+                _insert_before_group_end(parent_tdgp, _tdmn)
+                _insert_before_group_end(parent_tdgp, _tdgp)
 
         return cls(
             _tdmn=_tdmn,
@@ -335,6 +350,14 @@ class PropertyGroup(PropertyBase):
                 if getattr(c, "chunk_type", None) == "tdsn":
                     c.synthetic = False
                     break
+        # Also flip the group end marker.
+        for c in self._tdgp.chunks:
+            if (
+                c.chunk_type == "tdmn"
+                and getattr(c, "value", None) == "ADBE Group End"
+            ):
+                c.synthetic = False
+                break
 
     def _ensure_children_synthesized(self) -> None:
         """Run deferred child synthesis exactly once, on first access."""

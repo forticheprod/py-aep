@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from py_aep.enums import LightType
+import math
+from typing import TYPE_CHECKING, Any, cast
 
+from py_aep.enums import LayerType, LightType
+
+from ...binary.layer_chunks import LdtaChunk
 from ..descriptors import ChunkField
 from .av_layer import AVLayer
 from .layer import Layer
+
+if TYPE_CHECKING:
+    from ..items.composition import CompItem
 
 #: Sentinel value indicating an undefined source id in the binary format.
 _UNDEFINED_ID = 0xFFFFFFFF
@@ -31,6 +38,10 @@ class LightLayer(Layer):
     See: https://ae-scripting.docsforadobe.dev/layer/lightlayer/
     """
 
+    _auto_name: str = "Light"
+    _fov_rad: float = 39.5978 * math.pi / 180
+    _zoom_dividend: float = 2 * math.tan(_fov_rad / 2)
+
     light_type = ChunkField.enum(
         LightType,
         "_ldta",
@@ -45,6 +56,37 @@ class LightLayer(Layer):
         reverse=lambda v: _UNDEFINED_ID if v == 0 else v,
     )
     """The ID of the layer used as a light source. `0` if none."""
+
+    @classmethod
+    def _new(  # type: ignore[override]
+        cls,
+        *,
+        name: str,
+        layer_id: int,
+        duration: float,
+        containing_comp: CompItem,
+        light_type: int = 1,
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> LightLayer:
+        ae_major = containing_comp._project._head.ae_version_major
+        ldta = LdtaChunk(
+            layer_id=layer_id,
+            source_id=_UNDEFINED_ID,
+            label=6,
+            layer_type=LayerType.LIGHT,
+            light_type=light_type,
+            layer_flags_2=0x01,
+            matte_layer_id=0 if ae_major >= 23 else None,
+            layer_name=name[:31] if len(name) > 31 else name,
+        )
+        ldta.out_point = duration
+        ldta.three_d_layer = True
+        return cast("LightLayer", super()._new(
+            ldta=ldta,
+            name=name,
+            containing_comp=containing_comp,
+            effect_param_defs=effect_param_defs,
+        ))
 
     @property
     def light_source(self) -> Layer | None:

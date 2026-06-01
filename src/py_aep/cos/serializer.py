@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 from typing import TYPE_CHECKING
 
-from .cos import IndirectObject, IndirectReference, Stream
+from .cos import CosName, IndirectObject, IndirectReference, Stream
 
 if TYPE_CHECKING:
     from typing import Any
@@ -33,30 +33,14 @@ def serialize(data: Any) -> bytes:
     return buf.getvalue()
 
 
-# COS tokens that are self-delimiting (no whitespace needed after them
-# when followed by another self-delimiting token).
-_SELF_DELIM = {b"<<", b">>", b"[", b"]", b"(", b")", b"<", b">"}
-
-
-def _needs_space_before(buf: io.BytesIO) -> bool:
-    """Check if a space is needed before the next token.
-
-    A space is required when the last byte written is alphanumeric or
-    could be confused with the next token (e.g. two numbers in a row).
-    """
+def _space(buf: io.BytesIO) -> None:
+    """Write a space separator unless the buffer already ends with whitespace."""
     pos = buf.tell()
     if pos == 0:
-        return False
+        return
     buf.seek(pos - 1)
-    last_byte = buf.read(1)
-    # Space needed after alphanumeric, dot, +, - (number chars) and
-    # after identifiers that end with alphanum
-    return last_byte.isalnum() or last_byte in b".+-/"
-
-
-def _space(buf: io.BytesIO) -> None:
-    """Write a space separator if the previous byte needs one."""
-    if _needs_space_before(buf):
+    last = buf.read(1)
+    if last not in b" \t\n\r":
         buf.write(b" ")
 
 
@@ -84,6 +68,9 @@ def _write_value(buf: io.BytesIO, value: Any, *, top_level: bool = False) -> Non
     elif isinstance(value, float):
         _space(buf)
         buf.write(_format_float(value))
+    elif isinstance(value, CosName):
+        _space(buf)
+        _write_identifier(buf, value.value)
     elif isinstance(value, str):
         _space(buf)
         _write_string(buf, value)
@@ -107,13 +94,7 @@ def _write_value(buf: io.BytesIO, value: Any, *, top_level: bool = False) -> Non
 
 
 def _format_float(value: float) -> bytes:
-    """Format a float matching the COS parser's conventions.
-
-    The parser produces Python `float` from strings like `1.5` or
-    `0.123`. We output enough precision to round-trip but strip
-    trailing zeros.
-    """
-    # Use repr-level precision and strip trailing zeros
+    """Format a float matching the COS parser's conventions."""
     text = f"{value:.10g}"
     return text.encode("ascii")
 
@@ -122,16 +103,14 @@ def _write_dict(buf: io.BytesIO, d: dict[str, Any]) -> None:
     """Write a COS dictionary: `<< /key value /key value >>`."""
     buf.write(b"<<")
     _write_dict_content(buf, d)
+    _space(buf)
     buf.write(b">>")
 
 
 def _write_dict_content(buf: io.BytesIO, d: dict[str, Any]) -> None:
-    """Write dict key/value pairs without the `<<`/`>>` delimiters.
-
-    Used for top-level dicts (which the parser emits without delimiters)
-    and for nested dicts.
-    """
+    """Write dict key/value pairs without the `<<`/`>>` delimiters."""
     for key, val in d.items():
+        _space(buf)
         _write_identifier(buf, key)
         _write_value(buf, val)
 
@@ -140,6 +119,7 @@ def _write_array(buf: io.BytesIO, lst: list[Any]) -> None:
     """Write a COS array: `[ val val val ]`."""
     buf.write(b"[")
     _write_array_content(buf, lst)
+    _space(buf)
     buf.write(b"]")
 
 
@@ -165,15 +145,10 @@ def _write_identifier(buf: io.BytesIO, name: str) -> None:
 def _write_string(buf: io.BytesIO, s: str) -> None:
     """Write a COS string literal: `(escaped content)`.
 
-    Strings that contain non-ASCII characters are encoded as UTF-16 BE
-    with a BOM prefix, matching the convention used by After Effects.
-    Pure ASCII strings are written as UTF-8.
+    All strings are encoded as UTF-16 BE with a BOM prefix, matching
+    the convention used by After Effects for text document data.
     """
-    try:
-        raw = s.encode("ascii")
-    except UnicodeEncodeError:
-        # Non-ASCII: use UTF-16 BE with BOM
-        raw = b"\xfe\xff" + s.encode("utf-16-be")
+    raw = b"\xfe\xff" + s.encode("utf-16-be")
     buf.write(b"(")
     buf.write(_escape_string(raw))
     buf.write(b")")

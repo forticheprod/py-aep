@@ -6,7 +6,8 @@ from py_aep.enums import Label
 
 from ...binary.chunk import ListChunk
 from ...binary.item_chunks import CmtaChunk
-from ...binary.ldat_chunks import GdtaChunk, LdatChunk, LdatItemType, Lhd3Chunk
+from ...binary.ldat_chunks import LdatChunk, LdatItemType, Lhd3Chunk
+from ...binary.mutations import build_gide_list
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
@@ -111,7 +112,7 @@ class Item:
         if self._cmta is not None:
             self._cmta.value = value
         elif value:
-            chunk = CmtaChunk(chunk_type="cmta")
+            chunk = CmtaChunk()
             chunk.value = value
             self._item_list.chunks.append(chunk)
             self._cmta = chunk
@@ -204,26 +205,13 @@ class Item:
         if self._ldat is not None:
             return
         self._ldat = LdatChunk(
-            chunk_type="ldat",
             items=[],
             item_type=LdatItemType.gide,
             item_size=16,
         )
         if self._lhd3 is None:
-            self._lhd3 = Lhd3Chunk(
-                chunk_type="lhd3",
-                count=0,
-                item_size=16,
-                item_type_raw=2,
-            )
-            self._inner = ListChunk(
-                list_type="list",
-                chunks=[self._lhd3, self._ldat],
-            )
-            self._gide = ListChunk(
-                list_type="Gide",
-                chunks=[GdtaChunk(), self._inner],
-            )
+            self._gide, self._lhd3, self._inner = build_gide_list()
+            self._inner.chunks.append(self._ldat)
             self._item_list.chunks.append(self._gide)
         else:
             assert self._inner is not None

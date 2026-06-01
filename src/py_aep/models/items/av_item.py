@@ -19,7 +19,6 @@ from ...binary.misc_chunks import (
     StrtChunk,
 )
 from ...binary.scalar_chunks import U1Chunk, U2Chunk, U4Chunk, Utf8Chunk
-from ...resolvers.solid import solid_color_name
 from ..descriptors import ChunkField
 from ..naming import auto_name
 from .item import Item
@@ -250,7 +249,7 @@ class AVItem(Item):
 
         if name is None:
             existing = {item.name for item in self._project.items.values()}
-            solid_name = solid_color_name(color[0], color[1], color[2])
+            solid_name = SolidSource._color_name(color[0], color[1], color[2])
             name = auto_name(solid_name, existing)
         elif name == "":
             name = "????"

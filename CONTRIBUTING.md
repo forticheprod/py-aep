@@ -197,14 +197,14 @@ Each property in the tree is in one of two states:
 
 **Phase 1 - Binary parsing**: Dispatch by `list_type` is shown in the overview flowchart above. Most dispatch targets produce properties with real chunk backing. The exception is `parse_effect()` (sspc), which produces a mix: existing params get real backing, missing params are synthesized with `synthetic=True` chunks via `_synthesize_effect_property()`.
 
-**Phase 2 - Post-processing** (single pass in `parsers/synthesis.py`):
+**Phase 2 - Post-processing** (single pass in `synthesis.py`):
 
 After `parse_properties` returns, `parse_layer` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use synthetic chunks and bypass materialization (the `_suppress_materialization` context is active).
 
 ```
 parse_layer()
   |
-  +-- synthesize_layer_properties(layer)     # parsers/synthesis.py
+  +-- synthesize_layer_properties(layer)     # synthesis.py
         |
         +-- _set_transform_defaults(layer)            # Site 1: Transform
         |     Phase 1: set default_value on parsed transform properties

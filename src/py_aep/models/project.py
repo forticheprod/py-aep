@@ -558,6 +558,14 @@ class Project:
         self._max_layer_id += 1
         return self._max_layer_id
 
+    @property
+    def _solids_folder(self) -> FolderItem:
+        """Return the Solids folder, creating one if it doesn't exist."""
+        for folder in self.root_folder.folders:
+            if folder.name == "Solids":
+                return folder
+        return self.root_folder.add_folder("Solids")
+
     _CMS_DEFAULTS: ClassVar[dict[str, int | str]] = {
         "colorManagementSystem": 0,
         "lutInterpolationMethod": 0,

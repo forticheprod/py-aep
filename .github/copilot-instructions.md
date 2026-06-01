@@ -16,7 +16,7 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
 
 1. **Binary parsing**: `parse_layer()` > `get_chunks_by_match_name()` > `parse_properties()` dispatches by chunk list_type (tdgp > PropertyGroup, tdbs > Property, sspc > Effect, etc.)
 2. **Effect enrichment**: `parse_effect()` merges param defs from `LIST:parT` (layer-level, with project-level fallback from `LIST:EfdG`) into parsed properties via `_merge_param_def()`, and synthesizes missing params via `_synthesize_effect_property()`
-3. **Post-processing**: `synthesize_layer_properties()` runs a single pass (in `parsers/synthesis.py`) handling transform defaults, top-level group ordering, recursive child synthesis via `_reorder_and_fill()`, and min/max bounds. Effect param synthesis remains a separate dynamic step inside `parse_effect()`. Synthesis uses `_PropSpec` (leaf Property) and `_GroupSpec` (empty PropertyGroup) with `synthetic=True` chunk backing.
+3. **Post-processing**: `synthesize_layer_properties()` runs a single pass (in `synthesis.py`) handling transform defaults, top-level group ordering, recursive child synthesis via `_reorder_and_fill()`, and min/max bounds. Effect param synthesis remains a separate dynamic step inside `parse_effect()`. Synthesis uses `_PropSpec` (leaf Property) and `_GroupSpec` (empty PropertyGroup) with `synthetic=True` chunk backing.
 
 ### Key Directories
 - **`src/py_aep/binary/`** - Binary I/O layer (attrs-based)
