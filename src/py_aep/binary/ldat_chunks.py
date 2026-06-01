@@ -102,6 +102,9 @@ class Lhd3Chunk(Chunk):
     item_type_raw: int = u1_field()
     _version: int = u4_field(default=1, repr=False)
     _next_id: int = u4_field(default=2, repr=False)
+    _trailing_pad: bytes | None = bytes_field(
+        20, default=b"\x00" * 20, optional=True, repr=False
+    )
 
     @property
     def item_type(self) -> LdatItemType:

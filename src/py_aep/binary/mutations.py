@@ -5,12 +5,13 @@ from __future__ import annotations
 from io import BytesIO
 from typing import TYPE_CHECKING
 
-from .chunk import read_chunks, write_chunk
+from .chunk import ListChunk, read_chunks, write_chunk
+from .ldat_chunks import GdtaChunk, Lhd3Chunk
 
 if TYPE_CHECKING:
     from typing import Callable
 
-    from .chunk import Chunk, ListChunk
+    from .chunk import Chunk
 
 
 def remove_chunks_by_type(
@@ -72,3 +73,17 @@ def clone_chunk_tree(chunk: Chunk) -> Chunk:
     size = write_chunk(buf, chunk)
     buf.seek(0)
     return read_chunks(buf, size)[0]
+
+
+def build_gide_list() -> tuple[ListChunk, Lhd3Chunk, ListChunk]:
+    """Build an empty ``LIST:Gide`` guide container.
+
+    Returns:
+        (gide, lhd3, inner) - the outer Gide list, header chunk,
+        and inner ``LIST:list``.  Callers can append an `LdatChunk`
+        to *inner* when guide data is needed.
+    """
+    lhd3 = Lhd3Chunk(item_size=16, item_type_raw=2)
+    inner = ListChunk(list_type="list", chunks=[lhd3])
+    gide = ListChunk(list_type="Gide", chunks=[GdtaChunk(), inner])
+    return gide, lhd3, inner

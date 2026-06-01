@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import AutoOrientType, Label, LayerType
 
+from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.item_chunks import CmtaChunk
-from ...binary.mutations import clone_chunk_tree
+from ...binary.mutations import build_gide_list, clone_chunk_tree
+from ...binary.property_chunks import TdsbChunk
+from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import find_by_type
+from ...parsers.property import parse_properties
+from ...parsers.utils import get_chunks_by_match_name
 from ...resolvers.transform import (
     build_world_matrix,
     decompose_transform,
@@ -19,10 +24,7 @@ from ..properties.property_base import PropertyBase
 from ..properties.property_group import PropertyGroup
 
 if TYPE_CHECKING:
-    from ...binary.chunk import ListChunk
-    from ...binary.item_chunks import CmtaChunk
     from ...binary.layer_chunks import LdtaChunk
-    from ...binary.scalar_chunks import Utf8Chunk
     from ..items.composition import CompItem
     from ..properties.marker import MarkerValue
 
@@ -164,6 +166,56 @@ class Layer(PropertyGroup):
 
         self._containing_comp = containing_comp
 
+    @classmethod
+    def _new(  # type: ignore[override]
+        cls,
+        *,
+        ldta: LdtaChunk,
+        name: str,
+        containing_comp: CompItem,
+        root_tdgp_extra: list[Any] | None = None,
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> Layer:
+        from ...synthesis.core import synthesize_layer_properties  # noqa: PLC0415
+
+        name_utf8 = Utf8Chunk(value=name)
+        tdgp_chunks: list[Any] = [
+            TdsbChunk(),
+            ContainerChunk(chunk_type="tdsn", chunks=[Utf8Chunk(value="")]),
+        ]
+        if root_tdgp_extra:
+            tdgp_chunks.extend(root_tdgp_extra)
+        root_tdgp = ListChunk(list_type="tdgp", chunks=tdgp_chunks)
+        gide, _lhd3, _inner = build_gide_list()
+        layer_list = ListChunk(
+            list_type="Layr",
+            chunks=[ldta, name_utf8, root_tdgp, gide],
+        )
+
+        layer = cls(
+            _ldta=ldta,
+            _cmta=None,
+            _name_utf8=name_utf8,
+            _layer_list=layer_list,
+            containing_comp=containing_comp,
+            properties=[],
+            essential_property_uuids=[],
+        )
+        layer._tdgp = root_tdgp
+
+        props = parse_properties(
+            chunks_by_match_name=get_chunks_by_match_name(root_tdgp),
+            child_depth=1,
+            effect_param_defs=effect_param_defs or {},
+            composition=containing_comp,
+        )
+        layer._properties = props
+        for child in props:
+            child._parent_property = layer
+
+        synthesize_layer_properties(layer)
+        return layer
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}("
@@ -191,7 +243,7 @@ class Layer(PropertyGroup):
         if self._cmta is not None:
             self._cmta.value = value
         elif value:
-            chunk = CmtaChunk(chunk_type="cmta")
+            chunk = CmtaChunk()
             chunk.value = value
             self._layer_list.chunks.append(chunk)
             self._cmta = chunk

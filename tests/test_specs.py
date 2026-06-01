@@ -10,7 +10,7 @@ import pytest
 
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyValueType
-from py_aep.models.properties.specs import (
+from py_aep.synthesis.specs import (
     _ADV_BLEND_SPECS,
     _AUDIO_SPECS,
     _BEVEL_EMBOSS_SPECS,

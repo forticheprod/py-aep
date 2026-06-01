@@ -402,7 +402,7 @@ class PropertyBase:
         cloned_backing = clone_chunk_tree(backing)
 
         # Clone the tdmn
-        cloned_tdmn = TdmnChunk(chunk_type="tdmn", value=self._match_name)
+        cloned_tdmn = TdmnChunk(value=self._match_name)
 
         # Insert after original in parent's chunk list
         _, end = self._find_chunk_span(parent_tdgp)

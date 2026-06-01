@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from ...enums import PropertyValueType
+from ..enums import PropertyValueType
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -32,7 +32,11 @@ class _PropSpec(NamedTuple):
     max_value: float | None = None
     default_value: Any = _USE_VALUE
     can_vary_over_time: bool | None = None
+    has_time_base: bool = False
     min_major: int | None = None
+    spatial_flags: int | None = None
+    cvot: int | None = None
+    value_hint_type: int | None = None
 
 
 class _GroupSpec(NamedTuple):
@@ -55,7 +59,9 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         "Casts Shadows",
         0.0,
         PropertyValueType.OneD,
+        integer=True,
         can_vary_over_time=False,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Light Transmission",
@@ -64,20 +70,25 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Accepts Shadows",
         "Accepts Shadows",
         1.0,
         PropertyValueType.OneD,
+        integer=True,
         can_vary_over_time=False,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Accepts Lights",
         "Accepts Lights",
         1.0,
         PropertyValueType.OneD,
+        integer=True,
         can_vary_over_time=False,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Shadow Color",
@@ -89,13 +100,18 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
+        has_time_base=True,
+        spatial_flags=0x07,
+        value_hint_type=2,
     ),
     _PropSpec(
         "ADBE Appears in Reflections",
         "Appears in Reflections",
         1.0,
         PropertyValueType.OneD,
+        integer=True,
         can_vary_over_time=False,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Ambient Coefficient",
@@ -104,6 +120,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Diffuse Coefficient",
@@ -112,6 +129,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Specular Coefficient",
@@ -120,6 +138,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Shininess Coefficient",
@@ -128,6 +147,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Metal Coefficient",
@@ -136,6 +156,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Reflection Coefficient",
@@ -144,6 +165,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Glossiness Coefficient",
@@ -152,6 +174,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Fresnel Coefficient",
@@ -160,6 +183,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Transparency Coefficient",
@@ -168,6 +192,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Transp Rolloff",
@@ -176,6 +201,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Index of Refraction",
@@ -184,6 +210,8 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=1,
         max_value=5,
+        has_time_base=True,
+        value_hint_type=0xFFFF,
     ),
 ]
 
@@ -203,9 +231,13 @@ _EXTRUSION_SPECS: list[_PropSpec] = [
         "Bevel Direction",
         1.0,
         PropertyValueType.OneD,
+        integer=True,
         min_value=1,
         max_value=2,
         can_vary_over_time=False,
+        has_time_base=True,
+        cvot=0x00,
+        value_hint_type=2,
     ),
     _PropSpec(
         "ADBE Bevel Depth",
@@ -275,6 +307,7 @@ _SOURCE_OPTIONS_SPECS: list[_PropSpec] = [
         PropertyValueType.NO_VALUE,
         default_value=0,
         can_vary_over_time=True,
+        has_time_base=True,
     ),
 ]
 
@@ -344,7 +377,9 @@ _LIGHT_SPECS: list[_PropSpec] = [
         "Background Visible",
         0.0,
         PropertyValueType.OneD,
+        integer=True,
         can_vary_over_time=False,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Light Backgd Opacity",
@@ -353,6 +388,7 @@ _LIGHT_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Light Backgd Blur",
@@ -361,6 +397,7 @@ _LIGHT_SPECS: list[_PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Light Intensity",
@@ -409,6 +446,7 @@ _LIGHT_SPECS: list[_PropSpec] = [
         500.0,
         PropertyValueType.OneD,
         min_value=0,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Light Falloff Distance",
@@ -416,13 +454,16 @@ _LIGHT_SPECS: list[_PropSpec] = [
         500.0,
         PropertyValueType.OneD,
         min_value=0,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Casts Shadows",
         "Casts Shadows",
         0.0,
         PropertyValueType.OneD,
+        integer=True,
         can_vary_over_time=False,
+        has_time_base=True,
     ),
     _PropSpec(
         "ADBE Light Shadow Darkness",
@@ -2268,8 +2309,8 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         dimensions=3,
         is_spatial=True,
     ),
-    _PropSpec("ADBE Position_0", "X Position", None, PropertyValueType.OneD),
-    _PropSpec("ADBE Position_1", "Y Position", None, PropertyValueType.OneD),
+    _PropSpec("ADBE Position_0", "X Position", None, PropertyValueType.OneD, has_time_base=True),
+    _PropSpec("ADBE Position_1", "Y Position", None, PropertyValueType.OneD, has_time_base=True),
     _PropSpec("ADBE Position_2", "Z Position", None, PropertyValueType.OneD),
     _PropSpec(
         "ADBE Scale",
@@ -2285,9 +2326,13 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         PropertyValueType.ThreeD_SPATIAL,
         dimensions=3,
         is_spatial=True,
+        has_time_base=True,
+        spatial_flags=0x07,
+        cvot=0x07,
+        value_hint_type=6,
     ),
-    _PropSpec("ADBE Rotate X", "X Rotation", None, PropertyValueType.OneD),
-    _PropSpec("ADBE Rotate Y", "Y Rotation", None, PropertyValueType.OneD),
+    _PropSpec("ADBE Rotate X", "X Rotation", None, PropertyValueType.OneD, has_time_base=True),
+    _PropSpec("ADBE Rotate Y", "Y Rotation", None, PropertyValueType.OneD, has_time_base=True),
     _PropSpec("ADBE Rotate Z", "Rotation", None, PropertyValueType.OneD),
     _PropSpec("ADBE Opacity", "Opacity", None, PropertyValueType.OneD),
     _PropSpec(
@@ -2295,7 +2340,9 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         "Appears in Reflections",
         None,
         PropertyValueType.OneD,
+        integer=True,
         can_vary_over_time=False,
+        has_time_base=True,
     ),
 ]
 
@@ -2319,7 +2366,7 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Text Properties", "Text"),
     _GroupSpec("ADBE Root Vectors Group", "Contents"),
     _PropSpec(
-        "ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD, min_value=0
+        "ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD, min_value=0, has_time_base=True
     ),
     _GroupSpec("ADBE MTrackers", "Motion Trackers"),
     _GroupSpec("ADBE Mask Parade", "Masks"),

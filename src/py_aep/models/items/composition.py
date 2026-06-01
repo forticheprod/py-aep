@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any, List, cast
 
-from ...binary.chunk import Chunk, DeferredListChunk, ListChunk
+from ...binary.chunk import Chunk, ContainerChunk, DeferredListChunk, ListChunk
 from ...binary.composition_chunks import CdtaChunk, CsctChunk
 from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
-from ...binary.layer_chunks import _LDTA_SOURCE_ID_END, _LDTA_SOURCE_ID_OFFSET
+from ...binary.layer_chunks import (
+    _LDTA_SOURCE_ID_END,
+    _LDTA_SOURCE_ID_OFFSET,
+    LdtaChunk,
+)
 from ...binary.misc_chunks import PrdaChunk, PrinChunk
+from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdmnChunk, TdsbChunk
 from ...binary.scalar_chunks import F8Chunk, U1Chunk, U4Chunk, Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
@@ -15,6 +21,9 @@ from ...binary.utils import (
     find_by_list_type,
     find_by_type,
 )
+from ...cos.serializer import serialize
+from ...cos.text import build_text_cos
+from ...parsers.essential_graphics import parse_essential_graphics
 from ..descriptors import ChunkField
 from ..layers.av_layer import AVLayer
 from ..layers.camera_layer import CameraLayer
@@ -22,6 +31,10 @@ from ..layers.light_layer import LightLayer
 from ..layers.shape_layer import ShapeLayer
 from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
+from ..naming import auto_name
+from ..properties.property import Property
+from ..properties.property_base import _TDSN_SENTINEL
+from ..properties.property_group import PropertyGroup
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
@@ -42,12 +55,10 @@ if TYPE_CHECKING:
     from typing import Iterator
 
     from ...binary.item_chunks import CmtaChunk
-    from ...binary.layer_chunks import LdtaChunk
     from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
     from ..project import Project
     from ..properties.marker import MarkerValue
-    from ..properties.property import Property
     from .folder import FolderItem
 
 # The binary prin chunk stores internal plugin match_names (e.g. ADBE Escher)
@@ -65,6 +76,33 @@ _RENDERER_EXTENDSCRIPT_TO_BINARY: dict[str, str] = {
 
 
 _LAYER_BOUNDARY_TYPES = frozenset({"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO"})
+
+
+def _materialize_layer(layer: Layer) -> None:
+    """Materialize properties for a newly created layer.
+
+    Walks the full property tree and:
+    1. Materializes all PropertyGroup shells (not children).
+    2. Materializes only Property items whose tdb4 has a non-zero
+       time-base field.  Properties without a time base stay
+       synthetic; writing them causes AE "zero denominator" errors.
+
+    Group end markers are already present in each tdgp (added during
+    synthesis) and get flipped to non-synthetic by _ensure_materialized().
+    """
+    def _materialize_tree(group: PropertyGroup) -> None:
+        group._ensure_materialized()
+        for child in group.properties:
+            if isinstance(child, PropertyGroup):
+                _materialize_tree(child)
+            elif isinstance(child, Property) and child._tdb4.has_time_base:
+                child._ensure_materialized()
+
+    for top in layer.properties:
+        if isinstance(top, PropertyGroup):
+            _materialize_tree(top)
+        elif isinstance(top, Property) and top._tdb4.has_time_base:
+            top._ensure_materialized()
 
 
 class CompItem(AVItem):
@@ -90,6 +128,8 @@ class CompItem(AVItem):
         all of these item types.
 
     See: https://ae-scripting.docsforadobe.dev/item/compitem/"""
+
+    _auto_name: str = "Comp"
 
     bg_color = ChunkField[List[float]](
         "_cdta",
@@ -567,11 +607,7 @@ class CompItem(AVItem):
         child_chunks = self._deferred_child_chunks
         self._deferred_child_chunks = None
 
-        # Deferred imports: both parsers import from models.
         from ...parsers.composition import _get_markers  # noqa: PLC0415
-        from ...parsers.essential_graphics import (  # noqa: PLC0415
-            parse_essential_graphics,
-        )
 
         self._marker_property = _get_markers(
             child_chunks=child_chunks,
@@ -965,3 +1001,415 @@ class CompItem(AVItem):
     def solo_layers(self) -> list[Layer]:
         """A list of the soloed layers in this composition."""
         return [layer for layer in self.layers if layer.solo]
+
+    # -- Layer creation --------------------------------------------------------
+
+    def _insert_layer(self, layer: Layer) -> None:
+        """Insert a fully-constructed layer at the top of the layer stack.
+
+        Handles view block creation, chunk insertion, materialization,
+        and layer list bookkeeping.
+        """
+        view_block: list[Chunk] = [
+            ListChunk(list_type="Ewst", chunks=[]),
+            *AVItem._build_view_data(),
+            *AVItem._build_view_data(),
+        ]
+
+        chunk_idx = (
+            next(
+                (
+                    i
+                    for i, c in enumerate(self._item_list.chunks)
+                    if c is self.layers[0]._layer_list
+                ),
+                self._find_first_layer_position(),
+            )
+            if self.layers
+            else self._find_first_layer_position()
+        )
+        self._item_list.chunks[chunk_idx:chunk_idx] = [layer._layer_list, *view_block]
+
+        _materialize_layer(layer)
+        self._layers.insert(0, layer)
+        self._invalidate_layer_cache()
+
+    def add_null(self, duration: float | None = None) -> AVLayer:
+        """Create a new null layer at the top of the layer stack.
+
+        A null layer has no visual content and is commonly used as a parent
+        for other layers. Its source is a small transparent solid created
+        automatically.
+
+        Args:
+            duration: Layer duration in seconds. Defaults to the composition
+                duration.
+
+        Returns:
+            The newly created [AVLayer][].
+        """
+        existing = {lyr.name for lyr in self.layers}
+        name = auto_name("Null", existing)
+
+        solid_source = SolidSource._new(
+            color=[0.0, 0.0, 0.0],
+            name=name,
+            width=100,
+            height=100,
+            pixel_aspect=1.0,
+        )
+        solids_folder = self._project._solids_folder
+        footage = FootageItem._new(
+            name=name,
+            source=solid_source,
+            project=self._project,
+            parent_folder=solids_folder,
+        )
+        solids_folder._children_container.append(footage._item_list)
+        solids_folder._children_container.extend(footage._view_data)
+        self._project.items[footage.id] = footage
+        solids_folder.items.append(footage)
+
+        layer = AVLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            source_id=footage.id,
+            duration=duration if duration is not None else self.duration,
+            containing_comp=self,
+            null_layer=True,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+        return cast("AVLayer", layer)
+
+    def add_shape(self) -> ShapeLayer:
+        """Create a new empty shape layer at the top of the layer stack.
+
+        Returns:
+            The newly created [ShapeLayer][].
+        """
+        existing = {lyr.name for lyr in self.layers}
+        name = auto_name(ShapeLayer._auto_name, existing)
+
+        layer = ShapeLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            duration=self.duration,
+            containing_comp=self,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+        return cast("ShapeLayer", layer)
+
+    def add_camera(
+        self,
+        name: str | None = None,
+        center_point: list[float] | None = None,
+    ) -> CameraLayer:
+        """Create a new camera layer at the top of the layer stack.
+
+        Args:
+            name: Layer name. Auto-generated if `None`.
+            center_point: The `[x, y]` center point. Defaults to
+                `[width/2, height/2]`.
+
+        Returns:
+            The newly created [CameraLayer][].
+        """
+        if name is None:
+            existing = {lyr.name for lyr in self.layers}
+            name = auto_name(CameraLayer._auto_name, existing)
+        if center_point is None:
+            center_point = [self.width / 2, self.height / 2]
+
+        layer = CameraLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            duration=self.duration,
+            containing_comp=self,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+
+        zoom = self.width / CameraLayer._zoom_dividend
+
+        transform = layer.transform
+        cast("Property", transform["ADBE Anchor Point"]).value = [
+            center_point[0],
+            center_point[1],
+            0.0,
+        ]
+        cast("Property", transform["ADBE Position"]).value = [
+            center_point[0],
+            center_point[1],
+            -zoom,
+        ]
+
+        return layer
+
+    def add_light(
+        self,
+        name: str | None = None,
+        center_point: list[float] | None = None,
+    ) -> LightLayer:
+        """Create a new light layer at the top of the layer stack.
+
+        Args:
+            name: Layer name. Auto-generated if `None`.
+            center_point: The `[x, y]` center point. Defaults to
+                `[width/2, height/2]`.
+
+        Returns:
+            The newly created [LightLayer][].
+        """
+        if name is None:
+            existing = {lyr.name for lyr in self.layers}
+            name = auto_name(LightLayer._auto_name, existing)
+        if center_point is None:
+            center_point = [self.width / 2, self.height / 2]
+
+        layer = LightLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            duration=self.duration,
+            containing_comp=self,
+            light_type=1,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+
+        zoom = self.width / LightLayer._zoom_dividend
+
+        cast("Property", layer.transform["ADBE Position"]).value = [
+            center_point[0],
+            center_point[1],
+            -zoom / 2,
+        ]
+
+        return layer
+
+    def add(
+        self,
+        item: AVItem,
+        duration: float | None = None,
+    ) -> AVLayer:
+        """Add an existing footage or composition item as a new layer.
+
+        Args:
+            item: The [AVItem][] (footage or composition) to add.
+            duration: Layer duration in seconds. Defaults to the composition
+                duration.
+
+        Returns:
+            The newly created [AVLayer][].
+        """
+        if not isinstance(item, AVItem):
+            raise ValueError("item must be an AVItem (FootageItem or CompItem).")
+
+        layer = AVLayer._new(
+            name=item.name,
+            layer_id=self._project._allocate_layer_id(),
+            source_id=item.id,
+            duration=duration if duration is not None else self.duration,
+            containing_comp=self,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+
+        self._project._ensure_used_in_linked()
+        if hasattr(item, "_used_in"):
+            item._used_in.add(self)
+
+        return cast("AVLayer", layer)
+
+    def add_solid(
+        self,
+        color: list[float],
+        name: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        pixel_aspect: float = 1.0,
+        duration: float | None = None,
+    ) -> AVLayer:
+        """Create a new solid layer at the top of the layer stack.
+
+        Args:
+            color: Solid color as `[R, G, B]` in 0.0--1.0 range.
+            name: The solid and layer name. Pass `None` to auto-generate
+                a name from the color (e.g. `Red Solid 1`).
+            width: Solid width in pixels. Defaults to comp width.
+            height: Solid height in pixels. Defaults to comp height.
+            pixel_aspect: Pixel aspect ratio (default 1.0).
+            duration: Layer duration in seconds. Defaults to comp duration.
+
+        Returns:
+            The newly created [AVLayer][].
+        """
+        if width is None:
+            width = self.width
+        if height is None:
+            height = self.height
+
+        validate_rgb_color(color, None)
+
+        if name is None:
+            existing = {item.name for item in self._project.items.values()}
+            solid_name = SolidSource._color_name(color[0], color[1], color[2])
+            name = auto_name(solid_name, existing)
+
+        solid_source = SolidSource._new(
+            color=color,
+            name=name,
+            width=width,
+            height=height,
+            pixel_aspect=pixel_aspect,
+        )
+        solids_folder = self._project._solids_folder
+        footage = FootageItem._new(
+            name=name,
+            source=solid_source,
+            project=self._project,
+            parent_folder=solids_folder,
+        )
+        solids_folder._children_container.append(footage._item_list)
+        solids_folder._children_container.extend(footage._view_data)
+        self._project.items[footage.id] = footage
+        solids_folder.items.append(footage)
+
+        layer = AVLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            source_id=footage.id,
+            duration=duration if duration is not None else self.duration,
+            containing_comp=self,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+
+        self._project._ensure_used_in_linked()
+        if hasattr(footage, "_used_in"):
+            footage._used_in.add(self)
+
+        return cast("AVLayer", layer)
+
+    def _build_text_btds(
+        self,
+        text: str,
+        box_size: list[float] | None = None,
+        font_size: float | None = None,
+        font: str | None = None,
+    ) -> tuple[ListChunk, ListChunk, TdmnChunk]:
+        """Build the binary btds/btdk structure for a text layer.
+
+        Args:
+            text: The text content.
+            box_size: `[width, height]` for box text; `None` for point text.
+            font_size: Font size override in pixels.
+            font: PostScript font name override.
+
+        Returns:
+            A `(LIST:btds, btgu, tdmn)` tuple to inject into the root tdgp.
+        """
+        cos = build_text_cos(text, font=font, font_size=font_size, box_size=box_size)
+        btdk_data = serialize(cos)
+
+        btdk = ListChunk(list_type="btdk", data=btdk_data)
+        cdat = CdatChunk()
+        cdat._trailing = b"\x00\x00\x00\x00"
+        tdb4 = Tdb4Chunk(
+            dimensions=1,
+            time_base=0x7800,
+            no_value_flags=1,
+            type_flags=0x08,
+            cvot_flags=0x04,
+            value_hint_type=1,
+        )
+        tdbs = ListChunk(list_type="tdbs", chunks=[
+            TdsbChunk(),
+            ContainerChunk(chunk_type="tdsn", chunks=[Utf8Chunk(value=_TDSN_SENTINEL)]),
+            tdb4,
+            cdat,
+        ])
+        btds = ListChunk(list_type="btds", chunks=[tdbs, btdk])
+        btgu = ListChunk(list_type="btgu", chunks=[
+            Chunk(chunk_type="pgui", data=uuid.uuid4().bytes),
+            Chunk(chunk_type="pgui", data=b"\x00" * 16),
+        ])
+        tdmn = TdmnChunk(value="ADBE Text Document")
+        return btds, btgu, tdmn
+
+    def add_text(
+        self,
+        text: str = "",
+        *,
+        font_size: float | None = None,
+        font: str | None = None,
+    ) -> TextLayer:
+        """Create a new point text layer at the top of the layer stack.
+
+        Args:
+            text: Initial text content.
+            font_size: Font size in pixels. Defaults to 36.
+            font: PostScript font name (e.g. `"MyriadPro-Regular"`).
+
+        Returns:
+            The newly created [TextLayer][].
+        """
+        existing = {lyr.name for lyr in self.layers}
+        name = auto_name(TextLayer._auto_name, existing) if not text else text
+
+        btds, btgu, td_mn = self._build_text_btds(
+            text or name, font_size=font_size, font=font,
+        )
+
+        layer = TextLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            duration=self.duration,
+            containing_comp=self,
+            btds=btds,
+            btgu=btgu,
+            tdmn=td_mn,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+        return cast("TextLayer", layer)
+
+    def add_box_text(
+        self,
+        box_size: list[float],
+        text: str = "",
+        *,
+        font_size: float | None = None,
+        font: str | None = None,
+    ) -> TextLayer:
+        """Create a new box (paragraph) text layer at the top of the layer stack.
+
+        Args:
+            box_size: `[width, height]` of the text box.
+            text: Initial text content.
+            font_size: Font size in pixels. Defaults to 36.
+            font: PostScript font name (e.g. `"MyriadPro-Regular"`).
+
+        Returns:
+            The newly created [TextLayer][].
+        """
+        existing = {lyr.name for lyr in self.layers}
+        name = auto_name(TextLayer._auto_name, existing) if not text else text
+
+        btds, btgu, td_mn = self._build_text_btds(
+            text or name, box_size=box_size, font_size=font_size, font=font,
+        )
+
+        layer = TextLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            duration=self.duration,
+            containing_comp=self,
+            btds=btds,
+            btgu=btgu,
+            tdmn=td_mn,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+        return cast("TextLayer", layer)

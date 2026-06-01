@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, cast
+
+from ...enums import LayerType
 from .av_layer import AVLayer
+
+if TYPE_CHECKING:
+    from ..items.composition import CompItem
 
 
 class ShapeLayer(AVLayer):
@@ -24,4 +30,26 @@ class ShapeLayer(AVLayer):
     See: https://ae-scripting.docsforadobe.dev/layer/shapelayer/
     """
 
-    pass
+    _auto_name: str = "Shape Layer"
+
+    @classmethod
+    def _new(  # type: ignore[override]
+        cls,
+        *,
+        name: str,
+        layer_id: int,
+        duration: float,
+        containing_comp: CompItem,
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> ShapeLayer:
+        layer = cast("ShapeLayer", super()._new(
+            name=name,
+            layer_id=layer_id,
+            duration=duration,
+            containing_comp=containing_comp,
+            effect_param_defs=effect_param_defs,
+        ))
+        layer._ldta.layer_type = LayerType.SHAPE
+        layer._ldta.label = 8
+        layer._ldta.collapse_transformation = True
+        return layer

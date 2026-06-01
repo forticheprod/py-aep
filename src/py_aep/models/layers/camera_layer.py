@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import math
+from typing import TYPE_CHECKING, Any, cast
+
+from ...binary.layer_chunks import LdtaChunk
+from ...enums import LayerType
 from .layer import Layer
+
+if TYPE_CHECKING:
+    from ..items.composition import CompItem
 
 
 class CameraLayer(Layer):
@@ -24,4 +32,34 @@ class CameraLayer(Layer):
     See: https://ae-scripting.docsforadobe.dev/layer/cameralayer/
     """
 
-    pass
+    _auto_name: str = "Camera"
+    _fov_rad: float = 39.5978 * math.pi / 180
+    _zoom_dividend: float = 2 * math.tan(_fov_rad / 2)
+
+    @classmethod
+    def _new(  # type: ignore[override]
+        cls,
+        *,
+        name: str,
+        layer_id: int,
+        duration: float,
+        containing_comp: CompItem,
+        effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> CameraLayer:
+        ae_major = containing_comp._project._head.ae_version_major
+        ldta = LdtaChunk(
+            layer_id=layer_id,
+            label=4,
+            layer_type=LayerType.CAMERA,
+            layer_flags_2=0x01,
+            matte_layer_id=0 if ae_major >= 23 else None,
+            layer_name=name[:31] if len(name) > 31 else name,
+        )
+        ldta.out_point = duration
+        ldta.three_d_layer = True
+        return cast("CameraLayer", super()._new(
+            ldta=ldta,
+            name=name,
+            containing_comp=containing_comp,
+            effect_param_defs=effect_param_defs,
+        ))

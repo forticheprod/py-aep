@@ -36,7 +36,8 @@ from ..models.properties.property_group import (
     _derive_layer_styles_enabled,
     _reorder_and_fill,
 )
-from ..models.properties.specs import (
+from ..models.version import _get_ae_version_major
+from .specs import (
     _REGULAR_AV_ONLY_GROUPS,
     _SHAPE_ONLY_GROUPS,
     _TEXT_ONLY_GROUPS,
@@ -44,7 +45,6 @@ from ..models.properties.specs import (
     _TRANSFORM_FIXED_DEFAULTS,
     _TRANSFORM_SPECS,
 )
-from ..models.version import _get_ae_version_major
 
 if TYPE_CHECKING:
     from ..models.layers.layer import Layer
@@ -85,10 +85,10 @@ def _synthesize_missing_top_level_groups(layer: Layer, ae_major: int) -> None:
     groups and reorders all groups to match the canonical ExtendScript order.
     """
     if isinstance(layer, (CameraLayer, LightLayer)):
-        # Light/Camera layers only need Marker synthesized; all other
-        # AVLayer-specific groups are irrelevant.
         skip_groups = frozenset(
-            s.match_name for s in _TOP_LEVEL_SPECS if s.match_name != "ADBE Marker"
+            s.match_name
+            for s in _TOP_LEVEL_SPECS
+            if s.match_name not in ("ADBE Marker", "ADBE Transform Group")
         )
     elif not isinstance(layer, AVLayer):
         return
@@ -302,10 +302,10 @@ def synthesize_layer_properties(layer: Layer) -> None:
     """
     ae_major: int = _get_ae_version_major(layer)
 
-    _set_transform_defaults(layer, ae_major)
-
     # --- Synthesize missing top-level groups --------------------------------
     _synthesize_missing_top_level_groups(layer, ae_major)
+
+    _set_transform_defaults(layer, ae_major)
 
     # --- Synthesize children & apply min/max (single recursive pass) --------
     for group in layer.properties:

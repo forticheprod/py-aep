@@ -315,6 +315,8 @@ class CmtaChunk(Chunk):
     back with CRLF and a double-null terminator, matching AE's convention.
     """
 
+    chunk_type: str = "cmta"
+
     @property
     def value(self) -> str:
         """Decoded comment text, LF line endings, no trailing null."""

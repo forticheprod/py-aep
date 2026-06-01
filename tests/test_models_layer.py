@@ -1768,7 +1768,7 @@ class TestRoundtripLayerName:
 # ---------------------------------------------------------------------------
 # Invariant tests for top-level property synthesis and ordering.
 # These lock down the behavior of synthesize_layer_properties
-# (in parsers/synthesis.py) so refactoring can be validated against them.
+# (in synthesis.py) so refactoring can be validated against them.
 # ---------------------------------------------------------------------------
 
 

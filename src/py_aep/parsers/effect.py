@@ -24,7 +24,7 @@ from ..enums import (
 from ..models.properties.overrides import _PROPERTY_DEFAULTS
 from ..models.properties.property import Property
 from ..models.properties.property_group import PropertyGroup
-from ..models.properties.specs import _PropSpec
+from ..synthesis.specs import _PropSpec
 from .utils import (
     get_chunks_by_match_name,
 )

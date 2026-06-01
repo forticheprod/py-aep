@@ -551,7 +551,7 @@ class TestFmtField:
 
         # Use a windows-1252 character: e-acute (0xe9)
         name = "caf\xe9"
-        chunk = LdtaChunk(chunk_type="ldta", layer_name=name)
+        chunk = LdtaChunk(layer_name=name)
         assert chunk.layer_name == name
 
         buf = BytesIO()
@@ -569,7 +569,7 @@ class TestFmtField:
 
         # 48-byte field: overlong strings are truncated to 48 chars
         long_name = "A" * 100
-        chunk = PrinChunk(chunk_type="prin", match_name=long_name)
+        chunk = PrinChunk(match_name=long_name)
 
         buf = BytesIO()
         chunk.write(buf)
@@ -582,7 +582,7 @@ class TestFmtField:
         from py_aep.binary.layer_chunks import LdtaChunk
 
         # Build 164-byte ldta (160 fixed + 4 optional matte)
-        chunk = LdtaChunk(chunk_type="ldta")
+        chunk = LdtaChunk()
         assert chunk.matte_layer_id is None
 
         buf = BytesIO()
@@ -606,7 +606,7 @@ class TestFmtField:
         """Setting matte_layer_id to a value causes it to be written."""
         from py_aep.binary.layer_chunks import LdtaChunk
 
-        chunk = LdtaChunk(chunk_type="ldta")
+        chunk = LdtaChunk()
         assert chunk.matte_layer_id is None
 
         chunk.matte_layer_id = 7
@@ -624,7 +624,7 @@ class TestFmtField:
         from py_aep.binary.layer_chunks import LdtaChunk
 
         # 164 bytes: matte_layer_id is 0 (present, not absent)
-        chunk = LdtaChunk(chunk_type="ldta")
+        chunk = LdtaChunk()
         buf = BytesIO()
         chunk.write(buf)
         raw_164 = buf.getvalue() + struct.pack(">I", 0)

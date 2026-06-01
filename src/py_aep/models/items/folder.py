@@ -7,12 +7,13 @@ from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.misc_chunks import SfdtChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ..naming import auto_name
+from .composition import CompItem
+from .footage import FootageItem
 from .item import Item
 
 if TYPE_CHECKING:
     from ...binary.chunk import Chunk
     from ...binary.item_chunks import CmtaChunk
-    from ..items.composition import CompItem
     from ..project import Project
     from ..viewer.viewer import Viewer
 
@@ -36,6 +37,8 @@ class FolderItem(Item):
 
     See: https://ae-scripting.docsforadobe.dev/item/folderitem/
     """
+
+    _auto_name: str = "Untitled"
 
     items: list[Item]
     """
@@ -72,6 +75,21 @@ class FolderItem(Item):
     def __iter__(self) -> Iterator[Item]:
         """Return an iterator over the folder items."""
         return iter(self.items)
+
+    @property
+    def compositions(self) -> list[CompItem]:
+        """All the compositions in the project."""
+        return [item for item in self.items if isinstance(item, CompItem)]
+
+    @property
+    def folders(self) -> list[FolderItem]:
+        """All the folders in the project."""
+        return [item for item in self.items if isinstance(item, FolderItem)]
+
+    @property
+    def footages(self) -> list[FootageItem]:
+        """All the footages in the project."""
+        return [item for item in self.items if isinstance(item, FootageItem)]
 
     def remove(self) -> None:
         """Remove this folder and all its children from the project."""
@@ -145,7 +163,7 @@ class FolderItem(Item):
         """
         if name is None:
             existing = {item.name for item in self._project.items.values()}
-            name = auto_name("Untitled", existing)
+            name = auto_name(FolderItem._auto_name, existing)
 
         folder = FolderItem._new(
             name,
@@ -189,7 +207,7 @@ class FolderItem(Item):
 
         if name is None:
             existing = {item.name for item in self._project.items.values()}
-            name = auto_name("Comp", existing)
+            name = auto_name(CompItem._auto_name, existing)
 
         comp = CompItem._new(
             name,
