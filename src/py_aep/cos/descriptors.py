@@ -126,14 +126,14 @@ class CosField(Generic[T]):
     ) -> CosField[bool | None]:
         """Create a CosField for boolean flags.
 
-        Bakes in `transform=bool` and `reverse=int` so call
-        sites only need the dict attribute and key.
+        Bakes in `transform=bool` and `reverse=bool` so call sites only
+        need the dict attribute and key.
         """
         return cls(  # type: ignore[return-value]
             dict_attr,
             key,
             transform=bool,
-            reverse=int,
+            reverse=bool,
             **kwargs,
         )
 
@@ -143,26 +143,20 @@ class CosField(Generic[T]):
         enum_cls: type[T],
         dict_attr: str,
         key: str,
-        *,
-        map: dict[int, Any] | None = None,
-        reverse_map: dict[Any, int] | None = None,
         **kwargs: Any,
     ) -> CosField[T]:
-        """Create a CosField for enum-backed fields.
+        """Create a CosField for IntEnum-backed fields.
 
-        When `map` is provided, it is used as the lookup table (COS int
-        value -> enum member).  Otherwise a direct `enum_cls(value)`
-        call is attempted.  `reverse_map` inverts the mapping; if not
-        given, `int(value)` is used.
+        Auto-detects `from_binary`/`to_binary` on the enum class,
+        mirroring `ChunkField.enum`. If the enum has a `from_binary`
+        classmethod it is used as `transform`; otherwise the class
+        itself is used. If the enum has a `to_binary` method it is used
+        as `reverse`; otherwise `int` is used.
         """
-        if map is not None:
-            kwargs.setdefault("transform", lambda v: map.get(v))  # type: ignore[arg-type]
-        else:
-            kwargs.setdefault("transform", enum_cls)
-        if reverse_map is not None:
-            kwargs.setdefault("reverse", lambda v: reverse_map.get(v, int(v)))  # type: ignore[arg-type]
-        else:
-            kwargs.setdefault("reverse", int)
+        if "transform" not in kwargs:
+            kwargs["transform"] = getattr(enum_cls, "from_binary", enum_cls)
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = getattr(enum_cls, "to_binary", int)
         return cls(dict_attr, key, **kwargs)
 
     @classmethod

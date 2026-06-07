@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING, cast
 from ...binary.footage_chunks import PlaceholderOptiChunk, SspcChunk
 from ..validators import (
     validate_duration,
+    validate_footage_dimension,
     validate_frame_rate,
-    validate_height,
-    validate_width,
+    validate_name,
 )
 from .footage import FootageSource
 
@@ -70,10 +70,11 @@ class PlaceholderSource(FootageSource):
             frame_rate: Frame rate in fps (1.0-99.0).
             duration: Duration in seconds (> 0, <= 10800).
         """
-        validate_width(width, None)
-        validate_height(height, None)
-        validate_frame_rate(frame_rate, None)
-        validate_duration(duration, None)
+        validate_name(name)
+        validate_footage_dimension(width)
+        validate_footage_dimension(height)
+        validate_frame_rate(frame_rate)
+        validate_duration(duration)
         if duration <= 0.0:
             raise ValueError(f"duration must be > 0, got {duration}")
 

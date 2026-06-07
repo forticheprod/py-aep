@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 try:
     import importlib.metadata as importlib_metadata
@@ -293,7 +294,11 @@ __all__ = [
 ]
 
 
-def parse(aep_file_path: str | os.PathLike[str]) -> Application:
+def parse(
+    aep_file_path: str | os.PathLike[str],
+    *,
+    ae_preferences_dir: str | os.PathLike[str] | None = None,
+) -> Application:
     """Parse an After Effects (.aep) project file and return an [Application][] instance.
 
     This is the main entry point for the library. It parses the binary
@@ -303,6 +308,10 @@ def parse(aep_file_path: str | os.PathLike[str]) -> Application:
 
     Args:
         aep_file_path: Path to the `.aep` file.
+        ae_preferences_dir: Optional path to the AE preferences directory
+            (e.g. `C:/Users/<user>/AppData/Roaming/Adobe/After Effects/25.6`).
+            When provided, render settings and output module templates are
+            parsed lazily when needed.
 
     Example:
         ```python
@@ -321,8 +330,9 @@ def parse(aep_file_path: str | os.PathLike[str]) -> Application:
     _DEFERRED_LIST_TYPES = frozenset({"Layr"})
 
     file_path = os.fspath(aep_file_path)
+    prefs_path = Path(ae_preferences_dir) if ae_preferences_dir else None
     with _suppress_materialization():
         with open(file_path, "rb") as f:
             rifx, xmp = read_aep(f, defer_list_types=_DEFERRED_LIST_TYPES)
-        project = parse_project(rifx, xmp, file_path)
+        project = parse_project(rifx, xmp, file_path, ae_preferences_dir=prefs_path)
         return parse_app(rifx, project)

@@ -10,6 +10,7 @@ from ..naming import auto_name
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
+from ..validators import validate_string
 from .av_item import AVItem
 
 if TYPE_CHECKING:
@@ -164,6 +165,35 @@ class FootageItem(AVItem):
             return self._main_source.file
         return None
 
+    def _consolidation_key(self) -> tuple[object, ...] | None:
+        """Identity used by [Project.consolidate_footage][].
+
+        Returns a hashable key for footage that can be merged with other
+        footage sharing the same source file and interpretation, or `None`
+        for sources that are always unique (solids, placeholders).
+        """
+        source = self._main_source
+        if not isinstance(source, FileSource):
+            return None
+        attrs = source.file_attributes
+        return (
+            source.file,
+            tuple(source.file_names),
+            source.alpha_mode,
+            source.invert_alpha,
+            tuple(source.premul_color),
+            source.field_separation_type,
+            source.remove_pulldown,
+            source.loop,
+            source.conform_frame_rate,
+            source.high_quality_field_separation,
+            source.interpret_as_linear_light,
+            source.is_still,
+            source.native_frame_rate,
+            source.media_color_space,
+            tuple(sorted(attrs.items())) if attrs else (),
+        )
+
     @classmethod
     def _new(
         cls,
@@ -181,6 +211,7 @@ class FootageItem(AVItem):
             project: The project that owns this item.
             parent_folder: The folder that will contain this item.
         """
+        validate_string(name)
         item_id = project._allocate_item_id()
 
         iide = IideChunk(value=item_id)
@@ -192,7 +223,7 @@ class FootageItem(AVItem):
         )
         idta.is_footage = True
         idta.is_solid = isinstance(source, SolidSource)
-        name_utf8 = Utf8Chunk()
+        name_utf8 = Utf8Chunk(value=name)
 
         pin_list = AVItem._build_pin_list(
             source._sspc,
@@ -278,7 +309,13 @@ class FootageItem(AVItem):
         elif name == "":
             name = "????"
 
-        source = SolidSource._new(color, name, width, height, pixel_aspect)
+        source = SolidSource._new(
+            name=name,
+            color=color,
+            width=width,
+            height=height,
+            pixel_aspect=pixel_aspect,
+        )
         self._replace_main_source(source)
 
     def _replace_main_source(self, source: PlaceholderSource | SolidSource) -> None:

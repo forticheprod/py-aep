@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from ....enums import CineonFileFormat
 from ...descriptors import ChunkField
-from ...validators import validate_number, validate_one_of
+from ...validators import _validate_number, validate_one_of
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import RoptChunk
@@ -34,7 +34,7 @@ class CineonFormatOptions:
     ten_bit_black_point = ChunkField[int](
         "_body",
         "ten_bit_black_point",
-        validate=validate_number(min=0, max=1023, integer=True),
+        validate=_validate_number(min=0, max=1023, integer=True),
     )
     """
     The 10-bit black point value (0-1023). Defines the code value that
@@ -44,7 +44,7 @@ class CineonFormatOptions:
     ten_bit_white_point = ChunkField[int](
         "_body",
         "ten_bit_white_point",
-        validate=validate_number(min=0, max=1023, integer=True),
+        validate=_validate_number(min=0, max=1023, integer=True),
     )
     """
     The 10-bit white point value (0-1023). Defines the code value that

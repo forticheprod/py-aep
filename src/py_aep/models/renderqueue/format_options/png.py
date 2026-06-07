@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from ....enums import Hdr10ColorPrimaries, PngCompression
 from ...descriptors import ChunkField
-from ...validators import validate_one_of
+from ...validators import validate_enum, validate_one_of, validate_positive_number
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import PngRoptChunk
@@ -108,10 +108,7 @@ class PngFormatOptions:
 
     @color_primaries.setter
     def color_primaries(self, value: Hdr10ColorPrimaries) -> None:
-        if not isinstance(value, (Hdr10ColorPrimaries, int)):
-            raise ValueError(
-                "Color primaries must be an instance of Hdr10ColorPrimaries or int"
-            )
+        validate_enum(Hdr10ColorPrimaries)(value)
         self._hdr10_meta["displayPrimaries"] = int(value)
         self._sync_hdr10()
 
@@ -130,8 +127,7 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("minLuminance", None)
         else:
-            if not isinstance(value, (int, float)) or value < 0:
-                raise ValueError("Minimum luminance must be a non-negative number")
+            validate_positive_number(value)
             self._hdr10_meta["minLuminance"] = value
         self._sync_hdr10()
 
@@ -150,8 +146,7 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("maxLuminance", None)
         else:
-            if not isinstance(value, (int, float)) or value < 0:
-                raise ValueError("Maximum luminance must be a non-negative number")
+            validate_positive_number(value)
             self._hdr10_meta["maxLuminance"] = value
         self._sync_hdr10()
 
@@ -170,10 +165,7 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("maxContentLightLevel", None)
         else:
-            if not isinstance(value, (int, float)) or value < 0:
-                raise ValueError(
-                    "Maximum content light level must be a non-negative number"
-                )
+            validate_positive_number(value)
             self._hdr10_meta["maxContentLightLevel"] = value
         self._sync_hdr10()
 
@@ -192,9 +184,6 @@ class PngFormatOptions:
         if value is None:
             self._hdr10_meta.pop("maxFrameAverageLightLevel", None)
         else:
-            if not isinstance(value, (int, float)) or value < 0:
-                raise ValueError(
-                    "Maximum frame average light level must be a non-negative number"
-                )
+            validate_positive_number(value)
             self._hdr10_meta["maxFrameAverageLightLevel"] = value
         self._sync_hdr10()

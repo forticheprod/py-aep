@@ -27,7 +27,13 @@ from .descriptors import ChunkField
 from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
-from .validators import validate_number, validate_one_of
+from .validators import (
+    _validate_number,
+    validate_enum,
+    validate_one_of,
+    validate_path,
+    validate_path_does_not_exist,
+)
 from .version import requires_version
 
 if TYPE_CHECKING:
@@ -36,10 +42,15 @@ if TYPE_CHECKING:
     from ..binary.chunk import Chunk
     from ..binary.item_chunks import HeadChunk, NhedChunk, NnhdChunk
     from ..binary.misc_chunks import DwgaChunk
+    from ..binary.render_chunks import RenderSettingsItem
     from ..binary.scalar_chunks import F8Chunk, U1Chunk
+    from ..parsers.templates import OutputModuleTemplate
     from .items.item import Item
     from .layers.layer import Layer
     from .renderqueue.render_queue import RenderQueue
+
+
+_validate_expression_engine = validate_one_of(("extendscript", "javascript-1.0"))
 
 
 class Project:
@@ -96,7 +107,7 @@ class Project:
     _timecode_default_base = ChunkField[int](
         "_nnhd",
         "timecode_default_base",
-        validate=validate_number(min=1, max=999, integer=True),
+        validate=_validate_number(min=1, max=999, integer=True),
     )
     """The Default Base value in the Time Display Style section of
     the Project Settings dialog, under Timecode. Read/Write."""
@@ -218,6 +229,7 @@ class Project:
         file: str,
         items: dict[int, Item],
         render_queue: RenderQueue | None,
+        ae_preferences_dir: Path | None = None,
     ) -> None:
         # Chunk body references for descriptors
         self._nhed = _nhed
@@ -244,6 +256,11 @@ class Project:
         self._used_in_linked = False
 
         self._max_layer_id = -1  # lazily computed on first allocation
+        self._ae_preferences_dir = ae_preferences_dir
+        self._render_templates_cache: list[RenderSettingsItem] | None = None
+        self._output_templates_cache: list[OutputModuleTemplate] | None = None
+        self._default_render_template_index: int | None = None
+        self._default_output_template_index: int | None = None
 
     def __repr__(self) -> str:
         return f"Project(file={self._file!r})"
@@ -333,11 +350,7 @@ class Project:
 
     @expression_engine.setter
     def expression_engine(self, value: str) -> None:
-        if value not in ("extendscript", "javascript-1.0"):
-            raise ValueError(
-                f"expression_engine must be 'extendscript' or 'javascript-1.0', "
-                f"got {value!r}"
-            )
+        _validate_expression_engine(value)
         if self._exen_utf8 is not None:
             self._exen_utf8.value = value
         else:
@@ -399,8 +412,7 @@ class Project:
     @color_management_system.setter
     @requires_version(24)
     def color_management_system(self, value: ColorManagementSystem | int) -> None:
-        if not isinstance(value, (ColorManagementSystem, int)):
-            raise TypeError(f"expected a ColorManagementSystem member, got {value!r}")
+        validate_enum(ColorManagementSystem)(value)
         self._update_cms_setting("colorManagementSystem", int(value))
 
     @property
@@ -413,8 +425,7 @@ class Project:
     @lut_interpolation_method.setter
     @requires_version(24)
     def lut_interpolation_method(self, value: LutInterpolationMethod | int) -> None:
-        if not isinstance(value, (LutInterpolationMethod, int)):
-            raise TypeError(f"expected a LutInterpolationMethod member, got {value!r}")
+        validate_enum(LutInterpolationMethod)(value)
         self._update_cms_setting("lutInterpolationMethod", int(value))
 
     @property
@@ -426,14 +437,9 @@ class Project:
 
     @ocio_configuration_file.setter
     @requires_version(24)
-    def ocio_configuration_file(self, value: str) -> None:
-        if isinstance(value, os.PathLike):
-            value = str(value)
-        if not isinstance(value, str):
-            raise TypeError(
-                f"ocio_configuration_file must be a string or Path, got {value!r}"
-            )
-        self._update_cms_setting("ocioConfigurationFile", value)
+    def ocio_configuration_file(self, value: str | os.PathLike[str]) -> None:
+        validate_path(value)
+        self._update_cms_setting("ocioConfigurationFile", str(value))
 
     @property
     def project_name(self) -> str:
@@ -518,6 +524,90 @@ class Project:
         self.root_folder.items.append(item)
         return item
 
+    def remove_unused_footage(self) -> int:
+        """Remove footage items that are not used in any composition.
+
+        Same as the File > Remove Unused Footage command.
+
+        Returns:
+            The total number of footage items removed.
+        """
+        removed = 0
+        for footage in self.footages:
+            if not footage.used_in:
+                footage.remove()
+                removed += 1
+        return removed
+
+    def reduce_project(self, items_to_keep: list[Item]) -> int:
+        """Remove all items except those specified and the items they use.
+
+        Same as the File > Reduce Project command. For each kept composition,
+        the items it uses (and their dependencies, recursively) are also kept.
+        The folders containing kept items are kept as well.
+
+        Args:
+            items_to_keep: The items to keep in the project.
+
+        Returns:
+            The total number of items removed.
+        """
+        keep_ids: set[int] = {0}
+        queue = list(items_to_keep)
+        while queue:
+            item = queue.pop()
+            if item.id in keep_ids:
+                continue
+            keep_ids.add(item.id)
+            parent = item.parent_folder
+            while parent is not None and parent.id not in keep_ids:
+                keep_ids.add(parent.id)
+                parent = parent.parent_folder
+            if isinstance(item, CompItem):
+                for source_id in item._source_ids_for_linking():
+                    source = self.items.get(source_id)
+                    if source is not None:
+                        queue.append(source)
+        removed = 0
+        for item_id in list(self.items):
+            if item_id in keep_ids or item_id not in self.items:
+                continue
+            self.items[item_id].remove()
+            removed += 1
+        return removed
+
+    def consolidate_footage(self) -> int:
+        """Merge duplicate footage items that share the same source.
+
+        Same as the File > Consolidate All Footage command. Footage items
+        whose sources are identical (same file and interpretation, or same
+        solid characteristics) are merged: layers referencing a duplicate are
+        retargeted to the kept item, and the duplicate is removed.
+
+        Returns:
+            The total number of footage items removed.
+        """
+        groups: dict[object, list[FootageItem]] = {}
+        for footage in self.footages:
+            key = footage._consolidation_key()
+            if key is None:
+                continue
+            groups.setdefault(key, []).append(footage)
+        removed = 0
+        for duplicates in groups.values():
+            if len(duplicates) < 2:
+                continue
+            kept = duplicates[0]
+            for dup in duplicates[1:]:
+                for comp in dup.used_in:
+                    for layer in comp.av_layers:
+                        if layer._source_id == dup.id:
+                            layer._source_id = kept.id
+                            kept._used_in.add(comp)
+                dup.remove()
+                removed += 1
+        return removed
+
     def save(self, path: os.PathLike[str]) -> None:
         """
         Save the project to a new .aep file at the given path.
@@ -525,18 +615,70 @@ class Project:
         Warning:
             This is highly experimental for now.
         """
+        validate_path_does_not_exist(path)
         path_obj = Path(path)
-        if path_obj.exists():
-            raise FileExistsError(
-                f"The file '{path}' already exists. As writing is still experimental, "
-                "overwriting is not allowed for now. Please choose a different path or "
-                "delete the existing file."
-            )
-
         path_obj.parent.mkdir(parents=True, exist_ok=True)
-        with open(path_obj, "wb") as f:
+        with path_obj.open("wb") as f:
             write_aep(f, self._rifx, self._xmp)
         self._file = str(path)
+
+    def _get_render_templates(self) -> list[RenderSettingsItem]:
+        """Lazily parse render settings templates from AE preferences.
+
+        Raises:
+            ValueError: If no preferences directory was provided to
+                `parse()`. Render settings templates are required for
+                adding items to the render queue.
+        """
+        if self._render_templates_cache is not None:
+            return self._render_templates_cache
+
+        if self._ae_preferences_dir is None:
+            raise ValueError(
+                "No 'ae_preferences_dir' provided to parse(); "
+                "render settings templates are required for adding items "
+                "to the render queue. Pass ae_preferences_dir pointing to "
+                "the AE preferences directory (e.g. "
+                "C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0)"
+            )
+
+        from ..parsers.templates import parse_render_templates
+
+        templates, default_index = parse_render_templates(self._ae_preferences_dir)
+        self._default_render_template_index = default_index
+
+        self._render_templates_cache = templates
+        return templates
+
+    def _get_output_templates(self) -> list[OutputModuleTemplate]:
+        """Lazily parse output module templates from AE preferences.
+
+        Returns a list of [OutputModuleTemplate][] objects.
+
+        Raises:
+            ValueError: If no preferences directory was provided to
+                `parse()`. Output module templates are required for
+                adding items to the render queue.
+        """
+        if self._output_templates_cache is not None:
+            return self._output_templates_cache
+
+        if self._ae_preferences_dir is None:
+            raise ValueError(
+                "No 'ae_preferences_dir' provided to parse(); "
+                "output module templates are required for adding items "
+                "to the render queue. Pass ae_preferences_dir pointing to "
+                "the AE preferences directory (e.g. "
+                "C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0)"
+            )
+
+        from ..parsers.templates import parse_output_templates
+
+        templates, default_index = parse_output_templates(self._ae_preferences_dir)
+        self._default_output_template_index = default_index
+
+        self._output_templates_cache = templates
+        return self._output_templates_cache
 
     def _allocate_item_id(self) -> int:
         """Return the next unique item ID and update the counter.

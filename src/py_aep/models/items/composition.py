@@ -21,8 +21,7 @@ from ...binary.utils import (
     find_by_list_type,
     find_by_type,
 )
-from ...cos.serializer import serialize
-from ...cos.text import build_text_cos
+from ...enums import LineOrientation
 from ...parsers.essential_graphics import parse_essential_graphics
 from ..descriptors import ChunkField
 from ..layers.av_layer import AVLayer
@@ -38,15 +37,19 @@ from ..properties.property_group import PropertyGroup
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
+from ..text.text_document import TextDocument
 from ..validators import (
+    _validate_number,
     validate_duration,
+    validate_footage_dimension,
     validate_frame_rate,
-    validate_height,
-    validate_number,
+    validate_name,
+    validate_one_of,
     validate_pixel_aspect,
     validate_rgb_color,
     validate_sequence,
-    validate_width,
+    validate_string,
+    validate_vector2,
 )
 from .av_item import AVItem
 from .footage import FootageItem
@@ -78,6 +81,9 @@ _RENDERER_EXTENDSCRIPT_TO_BINARY: dict[str, str] = {
 _LAYER_BOUNDARY_TYPES = frozenset({"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO"})
 
 
+_validate_renderer = validate_one_of(list(_RENDERER_EXTENDSCRIPT_TO_BINARY.keys()))
+
+
 def _materialize_layer(layer: Layer) -> None:
     """Materialize properties for a newly created layer.
 
@@ -90,6 +96,7 @@ def _materialize_layer(layer: Layer) -> None:
     Group end markers are already present in each tdgp (added during
     synthesis) and get flipped to non-synthetic by _ensure_materialized().
     """
+
     def _materialize_tree(group: PropertyGroup) -> None:
         group._ensure_materialized()
         for child in group.properties:
@@ -174,16 +181,16 @@ class CompItem(AVItem):
     Resolution When Nested" option in the Advanced tab of the Composition
     Settings dialog box. Read / Write."""
 
-    width = ChunkField[int]("_cdta", "width", validate=validate_width)
+    width = ChunkField[int]("_cdta", "width", validate=validate_footage_dimension)
     """The width of the item in pixels. Read / Write."""
 
-    height = ChunkField[int]("_cdta", "height", validate=validate_height)
+    height = ChunkField[int]("_cdta", "height", validate=validate_footage_dimension)
     """The height of the item in pixels. Read / Write."""
 
     shutter_angle = ChunkField[int](
         "_cdta",
         "shutter_angle",
-        validate=validate_number(min=0, max=720, integer=True),
+        validate=_validate_number(min=0, max=720, integer=True),
     )
     """The shutter angle setting for the composition. This corresponds to the
     Shutter Angle setting in the Advanced tab of the Composition Settings
@@ -192,7 +199,7 @@ class CompItem(AVItem):
     shutter_phase = ChunkField[int](
         "_cdta",
         "shutter_phase",
-        validate=validate_number(min=-360, max=360, integer=True),
+        validate=_validate_number(min=-360, max=360, integer=True),
     )
     """The shutter phase setting for the composition. This corresponds to the
     Shutter Phase setting in the Advanced tab of the Composition Settings
@@ -213,7 +220,7 @@ class CompItem(AVItem):
     motion_blur_adaptive_sample_limit = ChunkField[int](
         "_cdta",
         "motion_blur_adaptive_sample_limit",
-        validate=validate_number(
+        validate=_validate_number(
             min=lambda self: self.motion_blur_samples_per_frame,
             max=256,
             integer=True,
@@ -227,7 +234,7 @@ class CompItem(AVItem):
     motion_blur_samples_per_frame = ChunkField[int](
         "_cdta",
         "motion_blur_samples_per_frame",
-        validate=validate_number(min=2, max=64, integer=True),
+        validate=_validate_number(min=2, max=64, integer=True),
     )
     """The minimum number of motion blur samples per frame for Classic 3D
     layers, shape layers, and certain effects. This corresponds to the
@@ -243,7 +250,7 @@ class CompItem(AVItem):
     frame_duration = ChunkField[int](
         "_cdta",
         "frame_duration",
-        validate=validate_number(
+        validate=_validate_number(
             min=1,
             max=lambda self: int(self.duration * self.frame_rate),
             integer=True,
@@ -262,7 +269,7 @@ class CompItem(AVItem):
     display_start_time = ChunkField[float](
         "_cdta",
         "display_start_time",
-        validate=validate_number(min=-10800.0, max=86339.0),
+        validate=_validate_number(min=-10800.0, max=86339.0),
     )
     """The time set as the beginning of the composition, in seconds. This
     is the equivalent of the Start Timecode or Start Frame setting in the
@@ -271,7 +278,7 @@ class CompItem(AVItem):
     display_start_frame = ChunkField[int](
         "_cdta",
         "display_start_frame",
-        validate=validate_number(
+        validate=_validate_number(
             min=lambda self: int(-10800.0 * self.frame_rate),
             max=lambda self: int(86339.0 * self.frame_rate),
             integer=True,
@@ -282,7 +289,7 @@ class CompItem(AVItem):
     work_area_start = ChunkField[float](
         "_cdta",
         "work_area_start",
-        validate=validate_number(
+        validate=_validate_number(
             min=0.0,
             max=lambda self: self.duration - 1 / self.frame_rate,
         ),
@@ -293,7 +300,7 @@ class CompItem(AVItem):
     work_area_start_frame = ChunkField[int](
         "_cdta",
         "work_area_start_frame",
-        validate=validate_number(
+        validate=_validate_number(
             min=0,
             max=lambda self: self.frame_duration - 1,
             integer=True,
@@ -305,7 +312,7 @@ class CompItem(AVItem):
     work_area_duration = ChunkField[float](
         "_cdta",
         "work_area_duration",
-        validate=validate_number(
+        validate=_validate_number(
             min=lambda self: 1 / self.frame_rate,
             max=lambda self: self.duration - self.work_area_start,
         ),
@@ -315,7 +322,7 @@ class CompItem(AVItem):
     work_area_duration_frame = ChunkField[int](
         "_cdta",
         "work_area_duration_frame",
-        validate=validate_number(
+        validate=_validate_number(
             min=1,
             max=lambda self: self.frame_duration - self.work_area_start_frame,
             integer=True,
@@ -326,7 +333,7 @@ class CompItem(AVItem):
     time = ChunkField[float](
         "_cdta",
         "time_seconds",
-        validate=validate_number(
+        validate=_validate_number(
             min=lambda self: self.display_start_time,
             max=lambda self: (
                 self.display_start_time + self.duration - 1 / self.frame_rate
@@ -340,7 +347,7 @@ class CompItem(AVItem):
     frame_time = ChunkField[int](
         "_cdta",
         "frame_time",
-        validate=validate_number(
+        validate=_validate_number(
             min=lambda self: self.display_start_frame,
             max=lambda self: self.display_start_frame + self.frame_duration - 1,
             integer=True,
@@ -380,11 +387,12 @@ class CompItem(AVItem):
             project: The project that owns this composition.
             parent_folder: The folder that will contain this composition.
         """
-        validate_width(width, None)
-        validate_height(height, None)
-        validate_pixel_aspect(pixel_aspect, None)
-        validate_duration(duration, None)
-        validate_frame_rate(frame_rate, None)
+        validate_string(name)
+        validate_footage_dimension(width)
+        validate_footage_dimension(height)
+        validate_pixel_aspect(pixel_aspect)
+        validate_duration(duration)
+        validate_frame_rate(frame_rate)
 
         new_id = project._allocate_item_id()
 
@@ -619,7 +627,6 @@ class CompItem(AVItem):
             self._eg_controllers = list(eg_result[1])
 
     def _build_type_cache(self) -> dict[str, list[Any]]:
-
         av: list[AVLayer] = []
         text: list[TextLayer] = []
         shape: list[ShapeLayer] = []
@@ -727,9 +734,7 @@ class CompItem(AVItem):
 
     @motion_graphics_template_name.setter
     def motion_graphics_template_name(self, value: str) -> None:
-        if not isinstance(value, str):
-            raise ValueError("motion_graphics_template_name must be a string")
-
+        validate_name(value)
         self._ensure_comp_parsed()
         if self._eg_template_name_utf8 is not None:
             self._eg_template_name_utf8.value = value
@@ -788,9 +793,7 @@ class CompItem(AVItem):
 
     @renderer.setter
     def renderer(self, value: str) -> None:
-        if value not in _RENDERER_EXTENDSCRIPT_TO_BINARY:
-            valid = ", ".join(_RENDERER_EXTENDSCRIPT_TO_BINARY)
-            raise ValueError(f"Invalid renderer {value!r}. Valid values: {valid}")
+        _validate_renderer(value)
         self._prin.match_name = _RENDERER_EXTENDSCRIPT_TO_BINARY[value]
 
     @property
@@ -1048,16 +1051,13 @@ class CompItem(AVItem):
         Returns:
             The newly created [AVLayer][].
         """
+        if duration is not None:
+            validate_duration(duration)
+
         existing = {lyr.name for lyr in self.layers}
         name = auto_name("Null", existing)
 
-        solid_source = SolidSource._new(
-            color=[0.0, 0.0, 0.0],
-            name=name,
-            width=100,
-            height=100,
-            pixel_aspect=1.0,
-        )
+        solid_source = SolidSource._new(name=name)
         solids_folder = self._project._solids_folder
         footage = FootageItem._new(
             name=name,
@@ -1119,8 +1119,11 @@ class CompItem(AVItem):
         if name is None:
             existing = {lyr.name for lyr in self.layers}
             name = auto_name(CameraLayer._auto_name, existing)
+
         if center_point is None:
             center_point = [self.width / 2, self.height / 2]
+        else:
+            validate_vector2(center_point)
 
         layer = CameraLayer._new(
             name=name,
@@ -1134,12 +1137,14 @@ class CompItem(AVItem):
         zoom = self.width / CameraLayer._zoom_dividend
 
         transform = layer.transform
-        cast("Property", transform["ADBE Anchor Point"]).value = [
+        anchor_point = cast("Property", transform["ADBE Anchor Point"])
+        anchor_point.value = [
             center_point[0],
             center_point[1],
             0.0,
         ]
-        cast("Property", transform["ADBE Position"]).value = [
+        position = cast("Property", transform["ADBE Position"])
+        position.value = [
             center_point[0],
             center_point[1],
             -zoom,
@@ -1165,8 +1170,11 @@ class CompItem(AVItem):
         if name is None:
             existing = {lyr.name for lyr in self.layers}
             name = auto_name(LightLayer._auto_name, existing)
+
         if center_point is None:
             center_point = [self.width / 2, self.height / 2]
+        else:
+            validate_vector2(center_point)
 
         layer = LightLayer._new(
             name=name,
@@ -1180,7 +1188,8 @@ class CompItem(AVItem):
 
         zoom = self.width / LightLayer._zoom_dividend
 
-        cast("Property", layer.transform["ADBE Position"]).value = [
+        position = cast("Property", layer.transform["ADBE Position"])
+        position.value = [
             center_point[0],
             center_point[1],
             -zoom / 2,
@@ -1205,6 +1214,9 @@ class CompItem(AVItem):
         """
         if not isinstance(item, AVItem):
             raise ValueError("item must be an AVItem (FootageItem or CompItem).")
+
+        if duration is not None:
+            validate_duration(duration)
 
         layer = AVLayer._new(
             name=item.name,
@@ -1245,21 +1257,19 @@ class CompItem(AVItem):
         Returns:
             The newly created [AVLayer][].
         """
-        if width is None:
-            width = self.width
-        if height is None:
-            height = self.height
-
-        validate_rgb_color(color, None)
-
         if name is None:
             existing = {item.name for item in self._project.items.values()}
             solid_name = SolidSource._color_name(color[0], color[1], color[2])
             name = auto_name(solid_name, existing)
 
+        if width is None:
+            width = self.width
+        if height is None:
+            height = self.height
+
         solid_source = SolidSource._new(
-            color=color,
             name=name,
+            color=color,
             width=width,
             height=height,
             pixel_aspect=pixel_aspect,
@@ -1296,26 +1306,27 @@ class CompItem(AVItem):
         self,
         text: str,
         box_size: list[float] | None = None,
-        font_size: float | None = None,
-        font: str | None = None,
+        line_orientation: LineOrientation | None = None,
     ) -> tuple[ListChunk, ListChunk, TdmnChunk]:
         """Build the binary btds/btdk structure for a text layer.
 
         Args:
             text: The text content.
             box_size: `[width, height]` for box text; `None` for point text.
-            font_size: Font size override in pixels.
-            font: PostScript font name override.
+            line_orientation: Text [LineOrientation][]; `None` for the
+                default horizontal orientation.
 
         Returns:
             A `(LIST:btds, btgu, tdmn)` tuple to inject into the root tdgp.
         """
-        cos = build_text_cos(text, font=font, font_size=font_size, box_size=box_size)
-        btdk_data = serialize(cos)
+        td = TextDocument._new(
+            text, box_size=box_size, line_orientation=line_orientation
+        )
+        btdk = td._btdk_body
 
-        btdk = ListChunk(list_type="btdk", data=btdk_data)
-        cdat = CdatChunk()
-        cdat._trailing = b"\x00\x00\x00\x00"
+        # Text-document tdbs carries an empty cdat with 4 trailing zero
+        # bytes (matches what AE writes).
+        cdat = CdatChunk(pad=b"\x00\x00\x00\x00")
         tdb4 = Tdb4Chunk(
             dimensions=1,
             time_base=0x7800,
@@ -1324,92 +1335,135 @@ class CompItem(AVItem):
             cvot_flags=0x04,
             value_hint_type=1,
         )
-        tdbs = ListChunk(list_type="tdbs", chunks=[
-            TdsbChunk(),
-            ContainerChunk(chunk_type="tdsn", chunks=[Utf8Chunk(value=_TDSN_SENTINEL)]),
-            tdb4,
-            cdat,
-        ])
+        tdbs = ListChunk(
+            list_type="tdbs",
+            chunks=[
+                TdsbChunk(),
+                ContainerChunk(
+                    chunk_type="tdsn", chunks=[Utf8Chunk(value=_TDSN_SENTINEL)]
+                ),
+                tdb4,
+                cdat,
+            ],
+        )
         btds = ListChunk(list_type="btds", chunks=[tdbs, btdk])
-        btgu = ListChunk(list_type="btgu", chunks=[
-            Chunk(chunk_type="pgui", data=uuid.uuid4().bytes),
-            Chunk(chunk_type="pgui", data=b"\x00" * 16),
-        ])
+        btgu = ListChunk(
+            list_type="btgu",
+            chunks=[
+                Chunk(chunk_type="pgui", data=uuid.uuid4().bytes),
+                Chunk(chunk_type="pgui", data=b"\x00" * 16),
+            ],
+        )
         tdmn = TdmnChunk(value="ADBE Text Document")
         return btds, btgu, tdmn
+
+    def _add_text_layer(
+        self,
+        text: str,
+        box: bool = False,
+        box_size: list[float] | None = None,
+        line_orientation: LineOrientation | None = None,
+    ) -> TextLayer:
+        validate_string(text)
+        if box:
+            if box_size is None:
+                box_size = [float(self.width), float(self.height)]
+            else:
+                validate_vector2(box_size)
+
+        existing = {lyr.name for lyr in self.layers}
+        text = text or auto_name(TextLayer._auto_name, existing)
+
+        btds, btgu, td_mn = self._build_text_btds(
+            text, box_size=box_size, line_orientation=line_orientation
+        )
+
+        layer = TextLayer._new(
+            name=text,
+            layer_id=self._project._allocate_layer_id(),
+            duration=self.duration,
+            containing_comp=self,
+            btds=btds,
+            btgu=btgu,
+            tdmn=td_mn,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        self._insert_layer(layer)
+        return cast("TextLayer", layer)
 
     def add_text(
         self,
         text: str = "",
-        *,
-        font_size: float | None = None,
-        font: str | None = None,
     ) -> TextLayer:
         """Create a new point text layer at the top of the layer stack.
 
         Args:
             text: Initial text content.
-            font_size: Font size in pixels. Defaults to 36.
-            font: PostScript font name (e.g. `"MyriadPro-Regular"`).
 
         Returns:
             The newly created [TextLayer][].
         """
-        existing = {lyr.name for lyr in self.layers}
-        name = auto_name(TextLayer._auto_name, existing) if not text else text
-
-        btds, btgu, td_mn = self._build_text_btds(
-            text or name, font_size=font_size, font=font,
-        )
-
-        layer = TextLayer._new(
-            name=name,
-            layer_id=self._project._allocate_layer_id(),
-            duration=self.duration,
-            containing_comp=self,
-            btds=btds,
-            btgu=btgu,
-            tdmn=td_mn,
-            effect_param_defs=self._project._effect_param_defs,
-        )
-        self._insert_layer(layer)
-        return cast("TextLayer", layer)
+        return self._add_text_layer(text=text, box=False)
 
     def add_box_text(
         self,
-        box_size: list[float],
+        box_size: list[float] | None = None,
         text: str = "",
-        *,
-        font_size: float | None = None,
-        font: str | None = None,
     ) -> TextLayer:
         """Create a new box (paragraph) text layer at the top of the layer stack.
 
         Args:
-            box_size: `[width, height]` of the text box.
+            box_size: `[width, height]` of the text box. If `None`, uses
+                the composition dimensions.
             text: Initial text content.
-            font_size: Font size in pixels. Defaults to 36.
-            font: PostScript font name (e.g. `"MyriadPro-Regular"`).
 
         Returns:
             The newly created [TextLayer][].
         """
-        existing = {lyr.name for lyr in self.layers}
-        name = auto_name(TextLayer._auto_name, existing) if not text else text
+        return self._add_text_layer(text=text, box=True, box_size=box_size)
 
-        btds, btgu, td_mn = self._build_text_btds(
-            text or name, box_size=box_size, font_size=font_size, font=font,
+    def add_vertical_text(
+        self,
+        text: str = "",
+    ) -> TextLayer:
+        """Create a new vertical point text layer at the top of the stack.
+
+        Vertical text flows top-to-bottom with lines stacking right-to-left,
+        matching the Vertical Type Tool default.
+
+        Args:
+            text: Initial text content.
+
+        Returns:
+            The newly created [TextLayer][].
+        """
+        return self._add_text_layer(
+            text=text,
+            box=False,
+            line_orientation=LineOrientation.VERTICAL_RIGHT_TO_LEFT,
         )
 
-        layer = TextLayer._new(
-            name=name,
-            layer_id=self._project._allocate_layer_id(),
-            duration=self.duration,
-            containing_comp=self,
-            btds=btds,
-            btgu=btgu,
-            tdmn=td_mn,
-            effect_param_defs=self._project._effect_param_defs,
+    def add_vertical_box_text(
+        self,
+        box_size: list[float] | None = None,
+        text: str = "",
+    ) -> TextLayer:
+        """Create a new vertical box (paragraph) text layer at the top of the stack.
+
+        Vertical text flows top-to-bottom with lines stacking right-to-left,
+        matching the Vertical Type Tool default.
+
+        Args:
+            box_size: `[width, height]` of the text box. If `None`, uses
+                the composition dimensions.
+            text: Initial text content.
+
+        Returns:
+            The newly created [TextLayer][].
+        """
+        return self._add_text_layer(
+            text=text,
+            box=True,
+            box_size=box_size,
+            line_orientation=LineOrientation.VERTICAL_RIGHT_TO_LEFT,
         )
-        self._insert_layer(layer)
-        return cast("TextLayer", layer)

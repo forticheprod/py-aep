@@ -73,7 +73,6 @@ def parse_essential_graphics(
         )[0],
     )
 
-    # Parse controllers from LIST:CCtl entries
     cctl_chunks = filter_by_list_type(chunks=cif3_chunks, list_type="CCtl")
     controllers = [_parse_controller(cctl) for cctl in cctl_chunks]
 

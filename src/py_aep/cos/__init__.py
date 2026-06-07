@@ -1,9 +1,9 @@
 """COS (Carousel Object Syntax) parser and serializer."""
 
-from .cos import CosName, CosParser, IndirectObject, IndirectReference, Stream
+from .cos import CosName, CosParser, IndirectObject, IndirectReference, Stream, cos_get
 from .descriptors import CosField
 from .serializer import serialize
-from .text import POINT_TEXT_COS_TEMPLATE, build_text_cos, get_cos_template
+from .text import POINT_TEXT_COS_TEMPLATE, get_cos_template
 
 __all__ = [
     "CosField",
@@ -13,7 +13,7 @@ __all__ = [
     "IndirectReference",
     "POINT_TEXT_COS_TEMPLATE",
     "Stream",
-    "build_text_cos",
+    "cos_get",
     "get_cos_template",
     "serialize",
 ]

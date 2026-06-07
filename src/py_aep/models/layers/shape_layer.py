@@ -42,13 +42,16 @@ class ShapeLayer(AVLayer):
         containing_comp: CompItem,
         effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> ShapeLayer:
-        layer = cast("ShapeLayer", super()._new(
-            name=name,
-            layer_id=layer_id,
-            duration=duration,
-            containing_comp=containing_comp,
-            effect_param_defs=effect_param_defs,
-        ))
+        layer = cast(
+            "ShapeLayer",
+            super()._new(
+                name=name,
+                layer_id=layer_id,
+                duration=duration,
+                containing_comp=containing_comp,
+                effect_param_defs=effect_param_defs,
+            ),
+        )
         layer._ldta.layer_type = LayerType.SHAPE
         layer._ldta.label = 8
         layer._ldta.collapse_transformation = True

@@ -18,16 +18,25 @@ from .item import parse_folder
 from .render_queue import parse_render_queue
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..binary.chunk import ListChunk
 
 
-def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
+def parse_project(
+    rifx: ListChunk,
+    xmp: str,
+    file_path: str,
+    ae_preferences_dir: Path | None = None,
+) -> Project:
     """Parse an After Effects (.aep) project file into a Project.
 
     Args:
         rifx: The parsed binary RIFX root chunk.
         xmp: The XMP metadata string from the file trailer.
         file_path: Path to the `.aep` file (stored on the Project).
+        ae_preferences_dir: Optional path to the AE preferences directory
+            for template lookup.
     """
     root_chunks = rifx.chunks
 
@@ -84,6 +93,7 @@ def parse_project(rifx: ListChunk, xmp: str, file_path: str) -> Project:
         file=file_path,
         items={},
         render_queue=None,
+        ae_preferences_dir=ae_preferences_dir,
     )
 
     project._effect_param_defs = parse_effect_definitions(root_chunks)

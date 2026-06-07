@@ -5,17 +5,18 @@ from typing import TYPE_CHECKING, List, cast
 from ...binary.footage_chunks import SoliOptiChunk, SspcChunk
 from ...resolvers.solid import solid_color_name
 from ..descriptors import ChunkField
-from ..validators import validate_number, validate_pixel_aspect, validate_rgb_color
+from ..validators import (
+    validate_name,
+    validate_pixel_aspect,
+    validate_rgb_color,
+    validate_solid_dimension,
+)
 from .footage import FootageSource
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.footage_chunks import OptiChunk
     from ...binary.scalar_chunks import U1Chunk
-
-
-_validate_solid_width = validate_number(min=1, max=30000, integer=True)
-_validate_solid_height = validate_number(min=1, max=30000, integer=True)
 
 
 class SolidSource(FootageSource):
@@ -76,11 +77,11 @@ class SolidSource(FootageSource):
     @classmethod
     def _new(
         cls,
-        color: list[float],
         name: str,
-        width: int,
-        height: int,
-        pixel_aspect: float,
+        color: list[float] | tuple[float, float, float] = (0.0, 0.0, 0.0),
+        width: int = 100,
+        height: int = 100,
+        pixel_aspect: float = 1.0,
     ) -> SolidSource:
         """Create a new solid source with backing chunks.
 
@@ -91,10 +92,11 @@ class SolidSource(FootageSource):
             height: Height in pixels (1-30000).
             pixel_aspect: Pixel aspect ratio (0.01-100.0).
         """
-        _validate_solid_width(width, None)
-        _validate_solid_height(height, None)
-        validate_pixel_aspect(pixel_aspect, None)
-        validate_rgb_color(color, None)
+        validate_name(name)
+        validate_solid_dimension(width)
+        validate_solid_dimension(height)
+        validate_pixel_aspect(pixel_aspect)
+        validate_rgb_color(color)
 
         sspc = SspcChunk(
             width=width,

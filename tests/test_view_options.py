@@ -320,11 +320,11 @@ class TestViewActive:
         assert viewer.views[1].active is True
 
     def test_active_view_index_setter_validation(self) -> None:
-        """Setting an invalid active_view_index should raise IndexError."""
+        """Setting an invalid active_view_index should raise ValueError."""
         app = parse_app(SAMPLES_DIR / "roi_base.aep")
         assert app.active_viewer is not None
         viewer = app.active_viewer
-        with pytest.raises(IndexError):
+        with pytest.raises(ValueError):
             viewer.active_view_index = 99
 
 

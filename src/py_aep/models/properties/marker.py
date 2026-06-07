@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from py_aep.enums import Label
 
 from ..descriptors import ChunkField
-from ..validators import validate_number
+from ..validators import validate_int, validate_positive_int
 
 if TYPE_CHECKING:
     from ...binary.misc_chunks import NmhdChunk
@@ -35,7 +35,7 @@ class MarkerValue:
     frame_duration = ChunkField[int](
         "_nmhd",
         "frame_duration",
-        validate=validate_number(min=0, integer=True),
+        validate=validate_positive_int,
     )
     """The marker's duration, in frames. Read / Write."""
 
@@ -146,8 +146,7 @@ class MarkerValue:
 
     @frame_time.setter
     def frame_time(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise ValueError("frame_time must be an integer")
+        validate_int(value)
         if self._keyframe is not None:
             self._keyframe.frame_time = value
         else:

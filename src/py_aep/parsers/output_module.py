@@ -6,9 +6,9 @@ from ..binary.render_chunks import RouuChunk
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
+    filter_by_type,
     find_by_list_type,
     find_by_type,
-    find_chunks_after,
 )
 from ..models.renderqueue.output_module import OutputModule
 from ..models.renderqueue.render_queue_item import RenderQueueItem
@@ -32,13 +32,16 @@ def parse_output_module(
     - Ropt: Render options (binary data)
     - hdrm: HDR metadata (optional)
     - Utf8: HDR10 / color metadata JSON (optional, only when hdrm present)
-    - LIST Als2: Output file path info
+    - LIST Als2: Output file path info (only once an output file is set;
+      a freshly added module has none)
       - alas: JSON with fullpath and target_is_folder
     - Utf8: Template/format name (e.g., "H.264 - Match Render Settings - 15 Mbps")
     - Utf8: File name template (e.g., "[compName].[fileextension]" or "output.mp4")
 
-    The Utf8 chunks after Als2 are always name + file template. Files without
-    hdrm have only 2 Utf8 chunks total.
+    The format name and file-name template are always the last two top-level
+    `Utf8` chunks (the optional HDR-metadata `Utf8` precedes them, and the
+    `alas` lives inside the `Als2` LIST), so they are located by position
+    rather than relative to `Als2` - which may be absent.
 
     Args:
         chunks: List of chunks belonging to this output module.
@@ -50,21 +53,21 @@ def parse_output_module(
     """
     roou_chunk = cast("RouuChunk", find_by_type(chunks=chunks, chunk_type="Roou"))
 
-    # Get the alas chunk for write-through
-    # Utf8 chunks after the Als2 LIST: [0] = format/template name, [1] = file
-    # name template. Files without hdrm (pre-2024) have no Utf8 before Als2.
+    # The alas (output file path) is present only once a file is set.
     try:
         als2_chunk = find_by_list_type(chunks=chunks, list_type="Als2")
-        alas_utf8 = cast(
+        alas_utf8: Utf8Chunk | None = cast(
             "Utf8Chunk", find_by_type(chunks=als2_chunk.chunks, chunk_type="alas")
         )
-        post_als2_utf8 = cast(
-            "list[Utf8Chunk]", find_chunks_after(chunks, "Utf8", "LIST:Als2")
-        )
-        name_utf8 = post_als2_utf8[0]
-        file_name_utf8 = post_als2_utf8[1]
     except ChunkNotFoundError:
         alas_utf8 = None
+
+    # Format name + file-name template are the last two top-level Utf8 chunks.
+    om_utf8 = cast("list[Utf8Chunk]", filter_by_type(chunks=chunks, chunk_type="Utf8"))
+    if len(om_utf8) >= 2:
+        name_utf8: Utf8Chunk | None = om_utf8[-2]
+        file_name_utf8: Utf8Chunk | None = om_utf8[-1]
+    else:
         name_utf8 = None
         file_name_utf8 = None
 

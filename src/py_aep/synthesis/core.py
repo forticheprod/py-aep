@@ -36,7 +36,7 @@ from ..models.properties.property_group import (
     _derive_layer_styles_enabled,
     _reorder_and_fill,
 )
-from ..models.version import _get_ae_version_major
+from ..models.version import get_ae_version_major
 from .specs import (
     _REGULAR_AV_ONLY_GROUPS,
     _SHAPE_ONLY_GROUPS,
@@ -300,7 +300,7 @@ def synthesize_layer_properties(layer: Layer) -> None:
     Args:
         layer: The layer whose property tree should be finalized.
     """
-    ae_major: int = _get_ae_version_major(layer)
+    ae_major: int = get_ae_version_major(layer)
 
     # --- Synthesize missing top-level groups --------------------------------
     _synthesize_missing_top_level_groups(layer, ae_major)

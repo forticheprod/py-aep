@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from enum import IntEnum
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
 
-from .version import _get_ae_version_major
+from .version import get_ae_version_major
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Iterator
@@ -152,7 +152,7 @@ class ChunkField(Generic[T]):
         if self.read_only:
             raise AttributeError(f"{self.public_name!r} is read-only.")
         if self.min_version is not None:
-            if _get_ae_version_major(obj) < self.min_version:
+            if get_ae_version_major(obj) < self.min_version:
                 raise AttributeError(
                     f"{self.public_name!r} requires AE {self.min_version}+ file format."
                 )
