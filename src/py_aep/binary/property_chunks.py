@@ -170,6 +170,9 @@ class CdatChunk(Chunk):
 
     values: list[float] = Factory(list)
     is_le: bool = False
+    pad: bytes = b""
+    """Trailing bytes after the values: empty, or 4 zero bytes for the empty
+    cdat AE writes in a text-document `tdbs`. Settable at construction."""
 
     @classmethod
     def read(
@@ -183,21 +186,15 @@ class CdatChunk(Chunk):
     ) -> CdatChunk:
         count = size // 8
         if count == 0:
-            trailing = read_bytes(fp, size) if size > 0 else b""
-            instance = cls(chunk_type=chunk_type, is_le=is_le)
-            if trailing:
-                object.__setattr__(instance, "_trailing", trailing)
-            return instance
+            pad = read_bytes(fp, size) if size > 0 else b""
+            return cls(chunk_type=chunk_type, is_le=is_le, pad=pad)
         fmt = "<" if is_le else ">"
         fmt += f"{count}d"
         raw = read_bytes(fp, count * 8)
         vals = list(struct.unpack(fmt, raw))
         rest = size - count * 8
-        trailing = read_bytes(fp, rest) if rest > 0 else b""
-        instance = cls(chunk_type=chunk_type, values=vals, is_le=is_le)
-        if trailing:
-            object.__setattr__(instance, "_trailing", trailing)
-        return instance
+        pad = read_bytes(fp, rest) if rest > 0 else b""
+        return cls(chunk_type=chunk_type, values=vals, is_le=is_le, pad=pad)
 
     def write(self, fp: IO[bytes]) -> int:
         written = 0
@@ -207,8 +204,8 @@ class CdatChunk(Chunk):
             fmt += f"{count}d"
             raw = struct.pack(fmt, *self.values)
             written += write_bytes(fp, raw)
-        if self._trailing:
-            written += write_bytes(fp, self._trailing)
+        if self.pad:
+            written += write_bytes(fp, self.pad)
         return written
 
 

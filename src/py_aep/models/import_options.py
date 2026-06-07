@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from ..enums import ImportAsType
+from .validators import validate_enum, validate_path
 
 # File extensions that can be imported as compositions (multi-layer).
 _COMP_IMPORTABLE_EXTENSIONS: frozenset[str] = frozenset(
@@ -65,11 +66,8 @@ class ImportOptions:
     """
 
     def __init__(self, file: str | os.PathLike[str]) -> None:
-        if not isinstance(file, (str, os.PathLike)):
-            raise ValueError("file must be a string or Path.")
-        if not isinstance(file, Path):
-            file = Path(file)
-        self._file = file
+        validate_path(file)
+        self._file = Path(file)
         self._import_as = ImportAsType.FOOTAGE
         self._sequence = False
         self._force_alphabetical = False
@@ -82,8 +80,7 @@ class ImportOptions:
 
     @file.setter
     def file(self, value: str | os.PathLike[str]) -> None:
-        if not isinstance(value, (str, os.PathLike)):
-            raise ValueError("file must be a string or Path.")
+        validate_path(value)
         self._file = Path(value)
 
     @property
@@ -93,8 +90,7 @@ class ImportOptions:
 
     @import_as.setter
     def import_as(self, value: ImportAsType) -> None:
-        if not isinstance(value, (int, ImportAsType)):
-            raise ValueError("import_as must be an ImportAsType enum value.")
+        validate_enum(ImportAsType)(value)
         self._import_as = ImportAsType(value)
 
     @property

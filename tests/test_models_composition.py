@@ -433,7 +433,7 @@ class TestRoundtripRenderer:
 
     def test_renderer_validation_rejects_invalid(self) -> None:
         comp = parse_project(SAMPLES_DIR / "renderer_classic_3d.aep").compositions[0]
-        with pytest.raises(ValueError, match="Invalid renderer"):
+        with pytest.raises(ValueError, match="must be one of"):
             comp.renderer = "Not A Renderer"
 
 
@@ -1346,9 +1346,9 @@ class TestRemoveGuide:
     def test_remove_guide_invalid_index_raises(self) -> None:
         project = parse_aep(SAMPLES_DIR / "guides.aep").project
         comp = get_comp(project, "guides_horizontal")
-        with pytest.raises(IndexError):
+        with pytest.raises(ValueError):
             comp.remove_guide(5)
-        with pytest.raises(IndexError):
+        with pytest.raises(ValueError):
             comp.remove_guide(-1)
 
     def test_remove_guide_invariant(self) -> None:

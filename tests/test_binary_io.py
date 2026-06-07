@@ -1072,7 +1072,7 @@ class TestRoutChunk:
         items = [RoutItem(flags=0x40), RoutItem(flags=0x00)]
         chunk = RoutChunk(
             chunk_type="Rout",
-            header=b"\x00\x00\x00\x02",
+            count=2,
             items=items,
         )
         assert chunk.items[0].render is True
@@ -1080,7 +1080,7 @@ class TestRoutChunk:
 
         buf = BytesIO()
         chunk.write(buf)
-        assert buf.tell() == 12  # 4 header + 2 * 4
+        assert buf.tell() == 12  # 4 count + 2 * 4
         buf.seek(0)
         chunk2 = RoutChunk.read(buf, 12, chunk_type="Rout")
         assert len(chunk2.items) == 2
@@ -2025,7 +2025,8 @@ class TestLdatContextResolver:
             chunk_type="lhd3",
             prefix=b"\x00" * 10,
             count=3,
-            gap=b"\x00" * 6,
+            count_b=3,
+            gap_b=b"\x00" * 2,
             item_size=48,
             gap2=b"\x00" * 3,
             item_type_raw=4,
@@ -2044,7 +2045,8 @@ class TestLdatContextResolver:
             chunk_type="lhd3",
             prefix=b"\x00" * 10,
             count=1,
-            gap=b"\x00" * 6,
+            count_b=1,
+            gap_b=b"\x00" * 2,
             item_size=128,
             gap2=b"\x00" * 3,
             item_type_raw=4,

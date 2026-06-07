@@ -171,7 +171,7 @@ class PropertyBase:
 
     @name.setter
     def name(self, value: str) -> None:
-        validate_name(value, None)
+        validate_name(value)
 
         self._ensure_materialized()
         self._name = value

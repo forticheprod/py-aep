@@ -7,6 +7,7 @@ from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.misc_chunks import SfdtChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ..naming import auto_name
+from ..validators import validate_string
 from .composition import CompItem
 from .footage import FootageItem
 from .item import Item
@@ -114,6 +115,7 @@ class FolderItem(Item):
             project: The project that owns this folder.
             parent_folder: The folder that will contain this folder.
         """
+        validate_string(name)
         new_id = project._allocate_item_id()
 
         iide = IideChunk(value=new_id)

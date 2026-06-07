@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from ....enums import JpegFormatType
 from ...descriptors import ChunkField
-from ...validators import validate_number, validate_one_of
+from ...validators import _validate_number, validate_one_of
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import RoptChunk
@@ -33,7 +33,7 @@ class JpegFormatOptions:
     quality = ChunkField[int](
         "_body",
         "quality",
-        validate=validate_number(min=0, max=10, integer=True),
+        validate=_validate_number(min=0, max=10, integer=True),
     )
     """
     JPEG quality level, from 0 (Smaller File) to 10 (Bigger File). Read / Write.

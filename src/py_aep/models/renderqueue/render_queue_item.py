@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Mapping, cast
 
 from py_aep.enums import (
     ColorDepthSetting,
@@ -22,10 +23,20 @@ from py_aep.enums import (
     TimeSpanSource,
 )
 
-from ...binary.chunk import ContainerChunk
+from ...binary.chunk import ContainerChunk, ListChunk
+from ...binary.ldat_chunks import LdatChunk, LdatItemType, Lhd3Chunk
+from ...binary.mutations import clone_chunk_tree
+from ...binary.render_chunks import RenderSettingsItem, RoutItem
 from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.utils import find_by_type, split_on_type
 from ..descriptors import (
     ChunkField,
+)
+from ..validators import (
+    _validate_number,
+    validate_positive_int,
+    validate_positive_number,
+    validate_string,
 )
 from .settings import (
     SettingsView,
@@ -36,8 +47,6 @@ from .settings import (
 if TYPE_CHECKING:
     from typing import Any, Iterator
 
-    from ...binary.chunk import ListChunk
-    from ...binary.render_chunks import RenderSettingsItem
     from ..items.composition import CompItem
     from ..project import Project
     from .output_module import OutputModule
@@ -236,7 +245,10 @@ class RenderQueueItem:
         _ldat: RenderSettingsItem,
         _litm: ListChunk,
         _list_chunk: ListChunk,
+        _lom: ListChunk,
+        _rcom: ContainerChunk | None = None,
         _rcom_utf8: Utf8Chunk | None = None,
+        _rout_items: list[RoutItem],
         parent: RenderQueue,
         comp: CompItem,
         output_modules: list[OutputModule],
@@ -244,10 +256,127 @@ class RenderQueueItem:
         self._ldat = _ldat
         self._litm = _litm
         self._list_chunk = _list_chunk
+        self._lom = _lom
+        self._rcom = _rcom
         self._rcom_utf8 = _rcom_utf8
+        self._rout_items = _rout_items
         self._parent_rq = parent
         self._comp = comp
         self._output_modules = output_modules
+
+    @classmethod
+    def _new(
+        cls,
+        comp: CompItem,
+        *,
+        parent: RenderQueue,
+    ) -> tuple[RenderQueueItem, RenderSettingsItem, list[RoutItem]]:
+        """Create a new RenderQueueItem for a composition.
+
+        Constructs all backing chunks from scratch with default render
+        settings and a single output module. If default templates are
+        available from AE preferences, their settings are applied.
+
+        Args:
+            comp: The composition to render.
+            parent: The parent RenderQueue.
+
+        Returns:
+            A tuple of (RenderQueueItem model, render settings item,
+            list of RoutItem entries for this RQ item).
+        """
+        project = parent.parent
+
+        # Create render settings with comp-specific values; the remaining
+        # fields default to AE's factory "Best Settings" render template.
+        rs_item = RenderSettingsItem(comp_id=comp.id)
+        # AE writes a fixed 30 in this "use this frame rate" slot for a fresh
+        # item (the active setting is "use comp's frame rate", so it's an
+        # unused placeholder); the real rate comes from the comp.
+        rs_item.frame_rate_integer = 30
+        # Match a freshly-added AE item: status NEEDS_OUTPUT (no output file
+        # yet) and time span = work area (the source stores zero dividend/
+        # divisor; the span is derived from the comp's work area).
+        rs_item.status = RQItemStatus.NEEDS_OUTPUT.to_binary()
+        rs_item.time_span_source = int(TimeSpanSource.WORK_AREA_ONLY)
+        rs_item.time_span_start_divisor = 0
+        rs_item.time_span_duration_divisor = 0
+
+        # When ae_preferences_dir was supplied, overlay the user's configured
+        # default render-settings template. Only _TEMPLATE_FIELDS are copied,
+        # so status / time-span / reserved defaults above are preserved.
+        if project._ae_preferences_dir is not None:
+            templates = project._get_render_templates()
+            default_idx = project._default_render_template_index
+            if default_idx is not None and default_idx < len(templates):
+                rs_item.copy_settings_from(templates[default_idx])
+
+        # Rout items: 5 per RQ item (1 render flag + 4 slot entries).
+        # _state is a position-dependent slot type code: 0x11 at positions
+        # 0/1/3, 0x7B at position 2, 0x88 at position 4.
+        rout_items = [
+            RoutItem(flags=0x40, state=0x11),
+            RoutItem(flags=0x80, state=0x11),
+            RoutItem(flags=0xA0, state=0x7B),
+            RoutItem(flags=0x80, state=0x11),
+            RoutItem(flags=0xA0, state=0x88),
+        ]
+
+        # Build empty OM metadata container (lhd3 + ldat); add() fills it.
+        # count_b/counter_a/counter_b stay at 1 to match real files (see
+        # RenderQueue.add); only `count` tracks the OM count.
+        om_lhd3 = Lhd3Chunk(count=0, item_size=128, item_type_raw=1, counter_b=1)
+        om_ldat = LdatChunk(items=[], item_type=LdatItemType.litm, item_size=128)
+
+        rqi = cls(
+            _ldat=rs_item,
+            _litm=parent._litm,
+            _list_chunk=ListChunk(list_type="list", chunks=[om_lhd3, om_ldat]),
+            _lom=ListChunk(list_type="LOm ", chunks=[]),
+            _rcom=None,
+            _rcom_utf8=None,
+            _rout_items=rout_items,
+            parent=parent,
+            comp=comp,
+            output_modules=[],
+        )
+
+        rqi.add()
+
+        return rqi, rs_item, rout_items
+
+    def add(self) -> OutputModule:
+        """Add an output module to this render queue item.
+
+        Creates a new [OutputModule][] with default settings (or the
+        default template if `ae_preferences_dir` was passed to `parse()`).
+
+        Returns:
+            The newly created [OutputModule][].
+        """
+        from .output_module import OutputModule
+
+        om, lom_chunks = OutputModule._new(
+            render_settings_ldat=self._ldat,
+            parent=self,
+        )
+
+        self._lom.chunks.extend(lom_chunks)
+
+        om_ldat = cast(
+            "LdatChunk",
+            find_by_type(chunks=self._list_chunk.chunks, chunk_type="ldat"),
+        )
+        om_ldat.items.append(om._om_ldat)
+
+        om_lhd3 = cast(
+            "Lhd3Chunk",
+            find_by_type(chunks=self._list_chunk.chunks, chunk_type="lhd3"),
+        )
+        om_lhd3.count += 1
+
+        self._output_modules.append(om)
+        return om
 
     def __iter__(self) -> Iterator[OutputModule]:
         """Allow iteration over Output Modules."""
@@ -309,8 +438,7 @@ class RenderQueueItem:
 
     @comment.setter
     def comment(self, value: str) -> None:
-        if not isinstance(value, str):
-            raise ValueError("Comment must be a string")
+        validate_string(value)
         if self._rcom_utf8 is not None:
             self._rcom_utf8.value = value
         elif value:
@@ -324,6 +452,7 @@ class RenderQueueItem:
             )
             self._litm.chunks.insert(idx, rcom_chunk)
             self._rcom_utf8 = utf8_chunk
+            self._rcom = rcom_chunk
 
     @property
     def skip_frames(self) -> int:
@@ -346,10 +475,7 @@ class RenderQueueItem:
 
     @skip_frames.setter
     def skip_frames(self, value: int) -> None:
-        if not self.output_modules:
-            raise AttributeError("No output modules to set skip_frames on")
-        if not isinstance(value, (int, float)) or value < 0:
-            raise ValueError("skip_frames must be a non-negative number")
+        validate_positive_int(value)
         new_frame_rate = round(self.comp.frame_rate / (value + 1))
         for om in self.output_modules:
             om._roou.frame_rate = new_frame_rate
@@ -390,18 +516,8 @@ class RenderQueueItem:
 
     @_use_this_frame_rate.setter
     def _use_this_frame_rate(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("Frame rate must be a number")
-        fval = float(value)
-        if fval < 0.1:
-            raise ValueError(
-                f"Frame rate must be greater than or equal to 0.1, got {fval}"
-            )
-        elif fval > 999:
-            raise ValueError(
-                f"Frame rate must be less than or equal to 999, got {fval}"
-            )
-        self._ldat.frame_rate = fval
+        _validate_number(min=0.1, max=999)(value)
+        self._ldat.frame_rate = value
 
     @property
     def _comp_frame_rate(self) -> float:
@@ -557,8 +673,7 @@ class RenderQueueItem:
 
     @time_span_end.setter
     def time_span_end(self, value: float) -> None:
-        if not isinstance(value, (int, float)) or value < 0:
-            raise ValueError("End time must be a non-negative number")
+        validate_positive_number(value)
         self.time_span_duration = value - self.time_span_start
 
     @property
@@ -574,8 +689,7 @@ class RenderQueueItem:
 
     @time_span_end_frame.setter
     def time_span_end_frame(self, value: int) -> None:
-        if not isinstance(value, int) or value < 0:
-            raise ValueError("End frame must be a non-negative integer")
+        validate_positive_int(value)
         self.time_span_duration_frames = value - self.time_span_start_frame
 
     @property
@@ -612,3 +726,157 @@ class RenderQueueItem:
             format: The output format.
         """
         return self.get_settings(format)[key]
+
+    @property
+    def templates(self) -> list[str]:
+        """Available render settings template names.
+
+        Requires `ae_preferences_dir` to have been passed to `parse()`.
+        Returns an empty list if no preferences directory was provided.
+        """
+        try:
+            return [
+                t.clean_template_name for t in self._project._get_render_templates()
+            ]
+        except ValueError:
+            return []
+
+    def apply_template(self, name: str) -> None:
+        """Apply a render settings template by name.
+
+        Looks up the template from the AE preferences data (requires
+        `ae_preferences_dir` in `parse()`) and copies its settings to
+        this render queue item.
+
+        Args:
+            name: Template name (e.g. `"Best Settings"`, `"Draft Settings"`).
+
+        Raises:
+            ValueError: If the template name is not found.
+        """
+        rs_items = self._project._get_render_templates()
+        for t in rs_items:
+            if t.clean_template_name == name:
+                self._ldat.copy_settings_from(t)
+                for om in self._output_modules:
+                    om._update_output_dimensions()
+                return
+        names = [t.clean_template_name for t in rs_items]
+        raise ValueError(f"Template {name!r} not found. Available: {names}")
+
+    def remove(self) -> None:
+        """Remove this item from the render queue."""
+        rq = self._parent_rq
+        idx = rq._items.index(self)
+
+        del rq._rs_ldat.items[idx]
+        rq._rs_lhd3.count -= 1
+
+        # AE stores a fixed block of Rout items per RQ item. Delete the whole
+        # contiguous block (located by identity of its first entry) and refresh
+        # the count, mirroring RenderQueue.add.
+        rout_start = next(
+            i for i, v in enumerate(rq._rout.items) if v is self._rout_items[0]
+        )
+        del rq._rout.items[rout_start : rout_start + len(self._rout_items)]
+        rq._rout.count = len(rq._rout.items)
+
+        # RCom, list, LOm chunks removed from LItm by identity
+        chunks = self._litm.chunks
+        if self._rcom is not None:
+            rcom_idx = next(i for i, c in enumerate(chunks) if c is self._rcom)
+            del chunks[rcom_idx]
+        list_idx = next(i for i, c in enumerate(chunks) if c is self._list_chunk)
+        del chunks[list_idx]
+        lom_idx = next(i for i, c in enumerate(chunks) if c is self._lom)
+        del chunks[lom_idx]
+
+        del rq._items[idx]
+
+        # Removing the last item empties the queue: clear the LSIf/ARsi
+        # non-empty marker AE set (the inverse of RenderQueue.add). Verified
+        # in AE 2026: it writes 0 here for an empty queue (and normalizes a
+        # stale 1 back to 0 on save). The other ARsi state bytes are session
+        # UI state with no fixed empty value, so they are left as-is.
+        if not rq._items:
+            rq._arsi.queue_nonempty = 0
+
+    def duplicate(self) -> RenderQueueItem:
+        """Create a duplicate of this item in the render queue.
+
+        Returns the new [RenderQueueItem][]. If the original item's status is
+        `DONE` or `ERR_STOPPED`, the duplicate's status is set to `QUEUED`.
+        """
+        rq = self._parent_rq
+        idx = rq._items.index(self)
+
+        new_rsi = copy.deepcopy(self._ldat)
+
+        if new_rsi.status in (RQItemStatus.DONE, RQItemStatus.ERR_STOPPED):
+            new_rsi.status = RQItemStatus.QUEUED
+
+        new_rout_items = [copy.deepcopy(ri) for ri in self._rout_items]
+
+        new_list_chunk = cast("ListChunk", clone_chunk_tree(self._list_chunk))
+        new_lom = cast("ListChunk", clone_chunk_tree(self._lom))
+
+        new_rcom: ContainerChunk | None = None
+        new_rcom_utf8: Utf8Chunk | None = None
+        if self._rcom is not None:
+            new_rcom = cast("ContainerChunk", clone_chunk_tree(self._rcom))
+            if new_rcom.chunks:
+                new_rcom_utf8 = cast("Utf8Chunk", new_rcom.chunks[0])
+
+        rq._rs_ldat.items.insert(idx + 1, new_rsi)
+        rq._rs_lhd3.count += 1
+
+        # Insert the duplicated Rout block right after this item's block
+        # (located by identity of its first entry) and refresh the count.
+        rout_start = next(
+            i for i, v in enumerate(rq._rout.items) if v is self._rout_items[0]
+        )
+        insert_at = rout_start + len(self._rout_items)
+        rq._rout.items[insert_at:insert_at] = new_rout_items
+        rq._rout.count = len(rq._rout.items)
+
+        # Insert chunks into LItm after this item's chunks (by identity)
+        lom_idx = next(i for i, c in enumerate(self._litm.chunks) if c is self._lom)
+        insert_at = lom_idx + 1
+        if new_rcom is not None:
+            self._litm.chunks.insert(insert_at, new_rcom)
+            insert_at += 1
+        self._litm.chunks.insert(insert_at, new_list_chunk)
+        insert_at += 1
+        self._litm.chunks.insert(insert_at, new_lom)
+
+        from ...parsers.output_module import parse_output_module  # noqa: PLC0415
+
+        new_om_ldat = cast(
+            "LdatChunk", find_by_type(chunks=new_list_chunk.chunks, chunk_type="ldat")
+        )
+        om_groups = split_on_type(chunks=new_lom.chunks, chunk_type="Roou")
+
+        # Build model first (OMs need parent ref)
+        new_item = RenderQueueItem(
+            _ldat=new_rsi,
+            _litm=self._litm,
+            _list_chunk=new_list_chunk,
+            _lom=new_lom,
+            _rcom=new_rcom,
+            _rcom_utf8=new_rcom_utf8,
+            _rout_items=new_rout_items,
+            parent=rq,
+            comp=self._comp,
+            output_modules=[],
+        )
+
+        output_modules = []
+        for i, om_group in enumerate(om_groups):
+            om = parse_output_module(om_group, new_om_ldat.items[i], new_item)
+            output_modules.append(om)
+        new_item._output_modules = output_modules
+
+        # Insert into model list after original
+        rq._items.insert(idx + 1, new_item)
+
+        return new_item

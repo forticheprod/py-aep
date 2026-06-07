@@ -11,9 +11,17 @@ from conftest import get_comp
 from py_aep import parse as parse_aep
 from py_aep.enums import (
     AutoKernType,
+    BaselineDirection,
+    BoxAutoFitPolicy,
+    BoxFirstBaselineAlignment,
+    BoxVerticalAlignment,
+    DigitSet,
     FontBaselineOption,
     FontCapsOption,
     LeadingType,
+    LineJoinType,
+    LineOrientation,
+    ParagraphDirection,
     ParagraphJustification,
     PropertyValueType,
 )
@@ -121,7 +129,7 @@ class TestTextDocumentParsing:
 
     def test_auto_kern_type(self) -> None:
         _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
-        assert doc.auto_kern_type == AutoKernType.NO_AUTO_KERN
+        assert doc.auto_kern_type == AutoKernType.METRIC_KERN
 
     def test_leading_type(self) -> None:
         _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
@@ -238,6 +246,135 @@ class TestRoundtripTracking:
 
         _project2, doc2 = _get_text_document(out, "type_text")
         assert doc2.tracking == 50.0
+
+
+class TestTextDocumentWiredAttributes:
+    """Read tests for attributes wired to COS keys in this change.
+
+    Expected values for `type.aep` were validated against ExtendScript.
+    """
+
+    def test_baseline_direction(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.baseline_direction == BaselineDirection.BASELINE_WITH_STREAM
+
+    def test_ligature(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.ligature is False
+
+    def test_no_break(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.no_break is False
+
+    def test_digit_set(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.digit_set == DigitSet.DEFAULT_DIGITS
+
+    def test_line_join_type(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.line_join_type == LineJoinType.LINE_JOIN_MITER
+
+    def test_direction(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.direction == ParagraphDirection.DIRECTION_LEFT_TO_RIGHT
+
+    def test_line_orientation(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.line_orientation == LineOrientation.HORIZONTAL
+
+    def test_tsume(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.tsume == 0.0
+
+    def test_kerning(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.kerning == 0
+
+    def test_leading_auto(self) -> None:
+        # Auto-leading on: leading == font_size * 1.2 (43.2 for 36px).
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.auto_leading is True
+        assert doc.leading == pytest.approx(43.2)
+
+
+class TestRoundtripWiredAttributes:
+    """Set -> save -> reparse roundtrip for newly-wired attributes."""
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [
+            ("tsume", 0.5),
+            ("auto_leading", False),
+            ("leading", 60.0),
+            ("auto_kern_type", AutoKernType.OPTICAL_KERN),
+            ("baseline_direction", BaselineDirection.BASELINE_VERTICAL_ROTATED),
+            ("ligature", True),
+            ("no_break", True),
+            ("digit_set", DigitSet.ARABIC_DIGITS),
+            ("line_join_type", LineJoinType.LINE_JOIN_ROUND),
+            ("direction", ParagraphDirection.DIRECTION_RIGHT_TO_LEFT),
+            ("every_line_composer", True),
+            ("line_orientation", LineOrientation.VERTICAL_RIGHT_TO_LEFT),
+        ],
+    )
+    def test_roundtrip(self, tmp_path: Path, attr: str, value: object) -> None:
+        project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        setattr(doc, attr, value)
+        out = tmp_path / "modified.aep"
+        project.save(out)
+
+        _project2, doc2 = _get_text_document(out, "type_text")
+        assert getattr(doc2, attr) == value
+
+
+class TestBoxText:
+    """Box (paragraph) text attributes via point->box conversion + roundtrip."""
+
+    def test_convert_point_to_box(self, tmp_path: Path) -> None:
+        project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.point_text is True
+        assert doc.box_text_size is None
+
+        doc.box_text_size = [320.0, 180.0]
+        assert doc.box_text is True
+        out = tmp_path / "box.aep"
+        project.save(out)
+
+        _p2, doc2 = _get_text_document(out, "type_text")
+        assert doc2.box_text is True
+        assert doc2.box_text_size == [320.0, 180.0]
+
+    def test_box_text_pos_requires_box(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        with pytest.raises(ValueError, match="box text"):
+            doc.box_text_pos = [10.0, 20.0]
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [
+            ("box_text_size", [240.0, 120.0]),
+            ("box_text_pos", [15.0, 25.0]),
+            ("box_inset_spacing", 4.0),
+            ("box_vertical_alignment", BoxVerticalAlignment.CENTER),
+            ("box_vertical_alignment", BoxVerticalAlignment.JUSTIFY),
+            ("box_auto_fit_policy", BoxAutoFitPolicy.HEIGHT_BASELINE),
+            ("box_first_baseline_alignment", BoxFirstBaselineAlignment.CAP_HEIGHT),
+            (
+                "box_first_baseline_alignment",
+                BoxFirstBaselineAlignment.MINIMUM_VALUE_ROMAN,
+            ),
+            ("box_first_baseline_alignment_minimum", 7.0),
+        ],
+    )
+    def test_box_attr_roundtrip(self, tmp_path: Path, attr: str, value: object) -> None:
+        project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        doc.box_text_size = [300.0, 150.0]  # convert to box first
+        setattr(doc, attr, value)
+        out = tmp_path / "box.aep"
+        project.save(out)
+
+        _p2, doc2 = _get_text_document(out, "type_text")
+        assert getattr(doc2, attr) == value
 
 
 class TestParseTextDocument:
@@ -358,3 +495,28 @@ class TestParseTextDocument:
                 composition=SimpleNamespace(),
                 tdmn=SimpleNamespace(),
             )
+
+
+class TestRegisterFont:
+    """Regression: setting a font absent from the document registers it.
+
+    The new font entry's `99` type tag must be a COS name (`/CoolTypeFont`),
+    matching how AE and the parser represent it, not a plain string.
+    """
+
+    def test_new_font_tag_is_cos_name(self) -> None:
+        from py_aep.cos import CosName
+
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        doc.font = "Arial-BoldMT"  # not in the template -> _register_font
+        new_entry = doc._cos_data["0"]["1"]["0"][-1]
+        assert isinstance(new_entry["0"]["99"], CosName)
+
+    def test_new_font_roundtrips(self, tmp_path: Path) -> None:
+        project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        doc.font = "Arial-BoldMT"
+        out = tmp_path / "out.aep"
+        project.save(out)
+
+        _project2, doc2 = _get_text_document(out, "type_text")
+        assert doc2.font == "Arial-BoldMT"

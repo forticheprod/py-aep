@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def _get_ae_version_major(obj: Any) -> int:
+def get_ae_version_major(obj: Any) -> int:
     """Navigate from a model object to the AE version major number.
 
     Supports Layer (via `containing_comp`), Item (via `_project`),
@@ -42,7 +42,7 @@ def requires_version(min_major: int) -> Callable[[F], F]:
     def decorator(method: F) -> F:
         @functools.wraps(method)
         def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-            major = _get_ae_version_major(self)
+            major = get_ae_version_major(self)
             if major < min_major:
                 raise AttributeError(
                     f"{method.__name__}() requires AE {min_major}+ "

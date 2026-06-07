@@ -108,7 +108,10 @@ def _get_field_names(obj: Any) -> frozenset[str] | set[str] | None:
             if not name.startswith("_"):
                 names.add(name)
         for name, attr in vars(base).items():
-            if hasattr(attr, "chunk_attr") and hasattr(attr, "__get__"):
+            # ChunkField (binary-backed) and CosField (COS-dict-backed)
+            # descriptors both expose a backing-store attribute name.
+            is_descriptor = hasattr(attr, "chunk_attr") or hasattr(attr, "dict_attr")
+            if is_descriptor and hasattr(attr, "__get__"):
                 names.add(name)
     if names:
         result = frozenset(names)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..binary.ldat_chunks import GuideItem
 from ..enums import GuideOrientationType
 from .descriptors import ChunkField
-from .validators import validate_number
+from .validators import validate_positive_number
 
 
 class Guide:
@@ -34,7 +34,7 @@ class Guide:
     """The orientation of the guide. Read / Write."""
 
     position = ChunkField[float](
-        "_guide_item", "position", validate=validate_number(min=0.0)
+        "_guide_item", "position", validate=validate_positive_number
     )
     """The position of the guide in pixels from the top (horizontal) or
     left (vertical) edge of the composition. Read / Write."""
@@ -60,6 +60,7 @@ class Guide:
             A new `Guide` instance backed by a freshly created `GuideItem`.
         """
         orientation = GuideOrientationType.from_binary(orientation_type)
+        validate_positive_number(position)
         item = GuideItem(
             orientation_type=orientation.to_binary(),
             position_type=0,

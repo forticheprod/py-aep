@@ -9,18 +9,16 @@ from xml.etree.ElementTree import (
     tostring,
 )
 
-from ..validators import validate_number, validate_rgb_color
+from ..validators import (
+    validate_normalized_float,
+    validate_positive_int,
+    validate_rgb_color,
+)
 
 if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.scalar_chunks import Utf8Chunk
-
-
-_validate_offset = validate_number(min=0.0, max=1.0)
-_validate_midpoint = validate_number(min=0.0, max=1.0)
-_validate_color = validate_rgb_color
-_validate_alpha = validate_number(min=0.0, max=1.0)
 
 
 class _GradientField:
@@ -31,10 +29,10 @@ class _GradientField:
     """
 
     _VALIDATORS: dict[str, Any] = {
-        "offset": _validate_offset,
-        "midpoint": _validate_midpoint,
-        "color": _validate_color,
-        "alpha": _validate_alpha,
+        "offset": validate_normalized_float,
+        "midpoint": validate_normalized_float,
+        "color": validate_rgb_color,
+        "alpha": validate_normalized_float,
     }
 
     def __set_name__(self, owner: type, name: str) -> None:
@@ -78,9 +76,9 @@ class GradientColorStop:
         midpoint: float,
         color: tuple[float, float, float],
     ) -> None:
-        _validate_offset(offset, None)
-        _validate_midpoint(midpoint, None)
-        _validate_color(color, None)
+        validate_normalized_float(offset)
+        validate_normalized_float(midpoint)
+        validate_rgb_color(color)
         self._gradient: Gradient | None = None
         self._offset = offset
         self._midpoint = midpoint
@@ -117,9 +115,9 @@ class GradientAlphaStop:
     """Opacity value (0.0 to 1.0)."""
 
     def __init__(self, offset: float, midpoint: float, alpha: float) -> None:
-        _validate_offset(offset, None)
-        _validate_midpoint(midpoint, None)
-        _validate_alpha(alpha, None)
+        validate_normalized_float(offset)
+        validate_normalized_float(midpoint)
+        validate_normalized_float(alpha)
         self._gradient: Gradient | None = None
         self._offset = offset
         self._midpoint = midpoint
@@ -216,8 +214,7 @@ class Gradient:
 
     def remove_color_stop(self, stop: int) -> None:
         """Remove a color stop by index."""
-        if not isinstance(stop, int):
-            raise ValueError("stop index must be an integer")
+        validate_positive_int(stop)
         self._color_stops[stop]._gradient = None
         self._color_stops = tuple(
             s for i, s in enumerate(self._color_stops) if i != stop
@@ -233,8 +230,7 @@ class Gradient:
 
     def remove_alpha_stop(self, stop: int) -> None:
         """Remove an alpha stop by index."""
-        if not isinstance(stop, int):
-            raise ValueError("stop index must be an integer")
+        validate_positive_int(stop)
         self._alpha_stops[stop]._gradient = None
         self._alpha_stops = tuple(
             s for i, s in enumerate(self._alpha_stops) if i != stop

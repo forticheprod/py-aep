@@ -81,12 +81,15 @@ class LightLayer(Layer):
         )
         ldta.out_point = duration
         ldta.three_d_layer = True
-        return cast("LightLayer", super()._new(
-            ldta=ldta,
-            name=name,
-            containing_comp=containing_comp,
-            effect_param_defs=effect_param_defs,
-        ))
+        return cast(
+            "LightLayer",
+            super()._new(
+                ldta=ldta,
+                name=name,
+                containing_comp=containing_comp,
+                effect_param_defs=effect_param_defs,
+            ),
+        )
 
     @property
     def light_source(self) -> Layer | None:

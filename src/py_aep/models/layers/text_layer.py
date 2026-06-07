@@ -60,14 +60,17 @@ class TextLayer(AVLayer):
             ],
         )
 
-        layer = cast("TextLayer", super()._new(
-            name=name,
-            layer_id=layer_id,
-            duration=duration,
-            containing_comp=containing_comp,
-            root_tdgp_extra=[text_props_tdmn, text_props_tdgp],
-            effect_param_defs=effect_param_defs,
-        ))
+        layer = cast(
+            "TextLayer",
+            super()._new(
+                name=name,
+                layer_id=layer_id,
+                duration=duration,
+                containing_comp=containing_comp,
+                root_tdgp_extra=[text_props_tdmn, text_props_tdgp],
+                effect_param_defs=effect_param_defs,
+            ),
+        )
         layer._ldta.layer_type = LayerType.TEXT
         layer._ldta.label = 5
         return layer

@@ -224,7 +224,6 @@ def parse_shape(
     if shape_values:
         prop.value = shape_values[0]
 
-    # Assign shape values to keyframes by index
     for idx, kf in enumerate(prop.keyframes):
         if idx < len(shape_values):
             kf.value = shape_values[idx]

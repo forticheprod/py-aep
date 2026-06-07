@@ -132,3 +132,11 @@ tmp_*
 _tmp_*
 scripts/jsx/
 scripts/dev/
+opencode.json
+.opencode/
+.claude
+CLAUDE.md
+memory/
+.codegraph/
+.github/copilot-instructions.md
+.github/agents/

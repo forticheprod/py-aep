@@ -6,7 +6,6 @@ template.
 
 from __future__ import annotations
 
-import copy
 import gzip
 import io
 from base64 import b64decode
@@ -15,55 +14,6 @@ from typing import Any
 from .cos import CosParser
 
 _COS_TEMPLATE_CACHE: dict[str, Any] | None = None
-
-
-def build_text_cos(
-    text: str,
-    *,
-    font: str | None = None,
-    font_size: float | None = None,
-    box_size: list[float] | None = None,
-) -> dict[str, Any]:
-    """Build a COS dict for a text layer from the parsed template.
-
-    Parses the gzip template once (cached), then modifies a deep copy
-    to set text content, font, font size, and box dimensions.
-    """
-    data = copy.deepcopy(get_cos_template())
-    fs = font_size if font_size is not None else 36.0
-
-    data["1"]["1"][0]["0"]["0"] = text + "\r"
-
-    if font is not None:
-        data["0"]["1"]["0"][1]["0"]["0"]["0"] = font
-
-    if font_size is not None:
-        data["0"]["6"]["0"][0]["0"]["5"]["14"] = fs
-        data["0"]["6"]["0"][0]["0"]["5"]["31"] = fs
-        data["1"]["1"][0]["0"]["5"]["0"][0]["0"]["0"]["5"]["14"] = fs
-        data["1"]["1"][0]["0"]["5"]["0"][0]["0"]["0"]["5"]["31"] = fs
-        data["1"]["1"][0]["0"]["6"]["0"][0]["0"]["0"]["6"]["1"] = fs
-        data["1"]["3"]["14"] = fs
-        data["1"]["3"]["31"] = fs
-
-    if box_size is not None:
-        hw, hh = box_size[0] / 2.0, box_size[1] / 2.0
-        coords: list[float] = []
-        for x, y in [
-            (-hw, -hh), (-hw, -hh), (hw, -hh), (hw, -hh),
-            (hw, -hh), (hw, -hh), (hw, hh), (hw, hh),
-            (hw, hh), (hw, hh), (-hw, hh), (-hw, hh),
-            (-hw, hh), (-hw, hh), (-hw, -hh), (-hw, -hh),
-        ]:
-            coords.extend([x, y])
-        box_dict: dict[str, Any] = {
-            "0": [{"0": {"0": {"1": {"0": coords}, "2": {
-                "0": 1, "6": [-2.0, -2.0], "11": {"4": -2, "18": -2.0, "22": 0.025},
-            }}}}],
-        }
-        data["0"]["8"]["0"][0]["0"] = box_dict
-
-    return data
 
 
 def get_cos_template() -> dict[str, Any]:

@@ -12,6 +12,7 @@ from ....enums import (
     VideoCodec,
 )
 from ...descriptors import ChunkField
+from ...validators import _validate_number
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import RoptChunk
@@ -258,8 +259,7 @@ class XmlFormatOptions:
     def frame_rate(self, value: float | None) -> None:
         if value is None:
             return
-        if not isinstance(value, (int, float)) or value <= 0:
-            raise ValueError("Frame rate must be a positive number")
+        _validate_number(min=1 / _ADOBE_TICKS_PER_SECOND)(value)
         ticks = round(_ADOBE_TICKS_PER_SECOND / value)
         self._set_param("ADBEVideoFPS", str(ticks))
 

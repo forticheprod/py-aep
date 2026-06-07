@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..validators import _validate_number, validate_number
+
 if TYPE_CHECKING:
     from typing import Any
 
@@ -65,8 +67,7 @@ class KeyframeEase:
 
     @speed.setter
     def speed(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("speed must be a number")
+        validate_number(value)
         if self._kf_data is None:
             self._speed = value
             return
@@ -91,10 +92,7 @@ class KeyframeEase:
 
     @influence.setter
     def influence(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("influence must be a number")
-        if value < 0.1 or value > 100.0:
-            raise ValueError(f"influence must be between 0.1 and 100.0, got {value}")
+        _validate_number(min=0.1, max=100.0)(value)
         if self._kf_data is None:
             self._influence = value
             return

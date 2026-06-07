@@ -23,6 +23,16 @@ from py_aep.enums import (
 )
 from py_aep.enums.mappings import map_output_audio, map_output_color_space
 
+from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ...binary.misc_chunks import HdrmChunk
+from ...binary.render_chunks import (
+    OutputModuleSettingsItem,
+    RoptChunk,
+    RouuChunk,
+    TiffRoptChunk,
+)
+from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.utils import find_by_type
 from ...resolvers.output import (
     FORMAT_ID_EXTENSIONS,
     VIDEO_CODEC_NAMES,
@@ -31,7 +41,7 @@ from ...resolvers.output import (
 )
 from ..descriptors import ChunkField
 from ..items.composition import CompItem
-from ..validators import validate_number
+from ..validators import _validate_number, validate_sequence, validate_string
 from .format_options import (
     CineonFormatOptions,
     JpegFormatOptions,
@@ -50,12 +60,9 @@ from .settings import (
 if TYPE_CHECKING:
     from typing import Any, Callable
 
-    from ...binary.render_chunks import (
-        OutputModuleSettingsItem,
-        RenderSettingsItem,
-        RouuChunk,
-    )
-    from ...binary.scalar_chunks import Utf8Chunk
+    from ...binary.chunk import Chunk
+    from ...binary.render_chunks import RenderSettingsItem
+    from ...parsers.templates import OutputModuleTemplate
     from ..project import Project
     from .render_queue_item import RenderQueueItem
 
@@ -64,7 +71,7 @@ def _validate_crop(
     peer_field: str, dimension: str
 ) -> Callable[[int, OutputModule], None]:
     """Factory for crop validators that check range and final dimension."""
-    range_check = validate_number(min=-30000, max=30000, integer=True)
+    range_check = _validate_number(min=-30000, max=30000, integer=True)
 
     def validator(value: int, obj: OutputModule) -> None:
         range_check(value, obj)
@@ -316,6 +323,62 @@ class OutputModule:
         self._parent_rqi = parent
         self._format_options = format_options
 
+    @classmethod
+    def _new(
+        cls,
+        *,
+        render_settings_ldat: RenderSettingsItem,
+        parent: RenderQueueItem,
+    ) -> tuple[OutputModule, list[Chunk]]:
+        """Create a new output module: a fresh TIFF image sequence.
+
+        Builds the chunks After Effects writes for a freshly added output
+        module - a simple image sequence with an empty `Ropt` and no output
+        file set yet (so no `Als2` alias and an empty file name). This needs
+        no preferences. Codec-based formats (H.264/AVI) are not reproduced
+        because their format options are not available without an open AE.
+
+        Args:
+            render_settings_ldat: The render settings item for the parent
+                render queue item (used for dimension resolution).
+            parent: The parent RenderQueueItem.
+
+        Returns:
+            A tuple of (OutputModule model, list of chunks for LIST:LOm).
+        """
+        om_ldat_item = OutputModuleSettingsItem()
+        roou = RouuChunk()  # defaults reproduce AE's fresh image-sequence Rouu
+        ropt = TiffRoptChunk()  # AE's exact 602-byte TIFF format options
+        hdrm = HdrmChunk()
+        hdr_json = Utf8Chunk(value="{}")
+        name_utf8 = Utf8Chunk(value="TIFF Sequence with Alpha")
+        # A freshly added module has no output file: AE leaves the file name
+        # empty and writes no Als2 alias (it is created when a path is set).
+        file_name_utf8 = Utf8Chunk(value="")
+
+        lom_chunks: list[Chunk] = [
+            roou,
+            ropt,
+            hdrm,
+            hdr_json,
+            name_utf8,
+            file_name_utf8,
+        ]
+
+        om = cls(
+            _om_ldat=om_ldat_item,
+            _roou=roou,
+            _alas_utf8=None,
+            _file_name_utf8=file_name_utf8,
+            _name_utf8=name_utf8,
+            _render_settings_ldat=render_settings_ldat,
+            parent=parent,
+            format_options=None,
+        )
+        om._finalize_roou()  # resolve output dimensions to the comp
+
+        return om, lom_chunks
+
     @property
     def format_options(
         self,
@@ -487,6 +550,20 @@ class OutputModule:
 
         self._roou.width, self._roou.height = self._effective_dimensions
 
+    def _finalize_roou(self) -> None:
+        """Apply the runtime touches AE adds to a freshly built/applied Rouu.
+
+        After Effects writes two things on top of the stored format header:
+        the `_reserved_2a` marker bit (byte 15), and the comp-resolved output
+        dimensions for video formats (audio-only formats keep width/height=0).
+        """
+        pad = bytearray(self._roou._reserved_2a)
+        if len(pad) > 15:
+            pad[15] = 1
+            self._roou._reserved_2a = bytes(pad)
+        if self._roou.width > 0:  # video format; audio keeps 0
+            self._update_output_dimensions()
+
     @property
     def _output_color_space(self) -> str | None:
         """Output color space derived from ICC profile and working space."""
@@ -535,12 +612,7 @@ class OutputModule:
 
     @_starting_number.setter
     def _starting_number(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise ValueError("Starting number must be an integer")
-        if value < 0 or value > 9999999:
-            raise ValueError(
-                f"Starting number must be between 0 and 9999999, got {value}"
-            )
+        _validate_number(min=0, max=9999999, integer=True)(value)
         self._roou.starting_number = value
 
     @property
@@ -550,21 +622,8 @@ class OutputModule:
 
     @_resize_to.setter
     def _resize_to(self, value: list[int]) -> None:
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("Resize dimensions must be a list of [width, height]")
-        if len(value) != 2:
-            raise ValueError(
-                f"Resize must be [width, height], got {len(value)} elements"
-            )
-        if not all(isinstance(v, int) for v in value):
-            raise ValueError("Resize dimensions must be integers")
-        w, h = int(value[0]), int(value[1])
-        if not (1 <= w <= 30000 and 1 <= h <= 30000):
-            raise ValueError(
-                f"Resize dimensions must be between 1 and 30000, got [{w}, {h}]"
-            )
-        self._roou.width = w
-        self._roou.height = h
+        validate_sequence(min=1, max=30000, length=2, integer=True)(value)
+        self._roou.width, self._roou.height = value
 
     @staticmethod
     def _build_file_template(
@@ -653,8 +712,7 @@ class OutputModule:
 
     @file_template.setter
     def file_template(self, value: str) -> None:
-        if not isinstance(value, str):
-            raise ValueError("File template must be a string")
+        validate_string(value)
         if self._is_folder:
             path_sep = "\\" if "\\" in value else "/"
             last_sep = value.rfind(path_sep)
@@ -768,3 +826,116 @@ class OutputModule:
             format: The output format.
         """
         return self.get_settings(format)[key]
+
+    @property
+    def templates(self) -> list[str]:
+        """Available output module template names.
+
+        Requires `ae_preferences_dir` to have been passed to `parse()`.
+        Returns an empty list if no preferences directory was provided.
+        """
+        try:
+            return [t.name for t in self._project._get_output_templates()]
+        except ValueError:
+            return []
+
+    def apply_template(self, name: str) -> None:
+        """Apply an output module template by name.
+
+        Copies the template's settings (channels, resize, crop, audio,
+        post-render action, etc.) and format info (Rouu data) to this
+        output module.
+
+        Requires `ae_preferences_dir` to have been passed to `parse()`.
+
+        Args:
+            name: Template name (e.g. `"Lossless"`, `"H.264 - Match Render Settings - 15 Mbps"`).
+
+        Raises:
+            ValueError: If the template name is not found.
+        """
+        templates = self._project._get_output_templates()
+        for template in templates:
+            if template.name == name:
+                self._apply_output_template(template)
+                return
+        names = [t.name for t in templates]
+        raise ValueError(f"Template {name!r} not found. Available: {names}")
+
+    def _apply_output_template(self, template: OutputModuleTemplate) -> None:
+        """Apply a parsed output-module template to this module's chunks.
+
+        Sets the per-module settings, the format header (`Rouu`), the format
+        options (`Ropt`, from the prefs "Output File Options" section), and
+        the module name.
+
+        Note:
+            The `Ropt` and name match After Effects byte-for-byte, but the
+            `Rouu` header and the settings come from the on-disk preferences
+            representation, which AE transforms when it applies a template -
+            so those two are not yet byte-identical to AE's runtime output.
+        """
+        lom_chunks = self._parent_rqi._lom.chunks
+        self._om_ldat.copy_settings_from(template.settings)
+
+        if template.format_info is not None:
+            new_roou = RouuChunk.frombytes(template.format_info, chunk_type="Roou")
+            assert isinstance(new_roou, RouuChunk)
+            lom_chunks[lom_chunks.index(self._roou)] = new_roou
+            self._roou = new_roou
+            self._finalize_roou()  # marker bit + comp-resolved dimensions
+
+        # Replace the Ropt with the template's format options (or an empty
+        # Ropt for formats that have none, e.g. AIFF).
+        new_ropt: Chunk = (
+            RoptChunk.frombytes(template.format_options, chunk_type="Ropt")
+            if template.format_options is not None
+            else RoptChunk(data=b"")
+        )
+        for i, chunk in enumerate(lom_chunks):
+            if chunk.chunk_type == "Ropt":
+                lom_chunks[i] = new_ropt
+                break
+
+        if self._name_utf8 is not None:
+            self._name_utf8.value = template.name
+
+    def remove(self) -> None:
+        """Remove this output module from the render queue item.
+
+        Raises:
+            RuntimeError: If this is the last output module (AE requires
+                at least one).
+        """
+        if len(self._parent_rqi._output_modules) <= 1:
+            raise RuntimeError("Cannot remove the last output module")
+
+        rqi = self._parent_rqi
+        om_idx = rqi._output_modules.index(self)
+
+        # Remove chunks from LOm: from this Roou to the next Roou (or end)
+        lom_chunks = rqi._lom.chunks
+        roou_idx = lom_chunks.index(self._roou)
+
+        # Find the end: next Roou or end of list
+        end_idx = len(lom_chunks)
+        for i in range(roou_idx + 1, len(lom_chunks)):
+            if getattr(lom_chunks[i], "chunk_type", None) == "Roou":
+                end_idx = i
+                break
+
+        del lom_chunks[roou_idx:end_idx]
+
+        om_ldat = cast(
+            "LdatChunk",
+            find_by_type(chunks=rqi._list_chunk.chunks, chunk_type="ldat"),
+        )
+        del om_ldat.items[om_idx]
+
+        om_lhd3 = cast(
+            "Lhd3Chunk",
+            find_by_type(chunks=rqi._list_chunk.chunks, chunk_type="lhd3"),
+        )
+        om_lhd3.count -= 1
+
+        del rqi._output_modules[om_idx]

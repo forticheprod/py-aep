@@ -2193,7 +2193,7 @@ class TestValidateKeyframeEaseInfluence:
         prop = _find_property(layer, "ADBE Position")
         assert prop is not None
         kf = prop.keyframes[0]
-        with pytest.raises(ValueError, match="must be between 0.1 and 100.0"):
+        with pytest.raises(ValueError, match="must be"):
             kf.out_temporal_ease[0].influence = 0.0
 
     def test_influence_rejects_above_max(self) -> None:
@@ -2203,7 +2203,7 @@ class TestValidateKeyframeEaseInfluence:
         prop = _find_property(layer, "ADBE Position")
         assert prop is not None
         kf = prop.keyframes[0]
-        with pytest.raises(ValueError, match="must be between 0.1 and 100.0"):
+        with pytest.raises(ValueError, match="must be"):
             kf.out_temporal_ease[0].influence = 100.1
 
 
@@ -3053,3 +3053,30 @@ class TestCanAddProperty:
             pytest.skip("No Root Vectors Group found")
         assert contents.can_add_property("ADBE Position") is False
         assert contents.can_add_property("ADBE Mask Atom") is False
+
+
+class TestValueInPlaceMutation:
+    """Regression: re-assigning a mutated list value must write through.
+
+    The value setter early-returns when re-assigning the identical object,
+    which is correct only for complex write-through types. A plain list read,
+    mutated in place, and re-assigned must still reach the cdat chunk.
+    """
+
+    def test_inplace_list_mutation_roundtrips(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "is_modified_false.aep").project
+        layer = project.compositions[0].layers[0]
+        pos = _find_property(layer, "ADBE Position")
+        assert pos is not None
+        original = list(pos.value)
+
+        v = pos.value
+        v[0] = original[0] + 123.0  # mutate in place
+        pos.value = v  # re-assign the SAME object
+
+        out = tmp_path / "out.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+        pos2 = _find_property(project2.compositions[0].layers[0], "ADBE Position")
+        assert pos2 is not None
+        assert pos2.value[0] == pytest.approx(original[0] + 123.0)

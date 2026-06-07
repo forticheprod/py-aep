@@ -15,6 +15,7 @@ from ...binary.layer_chunks import LdtaChunk
 from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
+from ..validators import validate_enum, validate_number
 from ..version import requires_version
 from .layer import Layer
 
@@ -197,13 +198,16 @@ class AVLayer(Layer):
         ldta.null_layer = null_layer
         ldta.three_d_layer = three_d_layer
         ldta._reserved_3c = 1
-        return cast("AVLayer", super()._new(
-            ldta=ldta,
-            name=name,
-            containing_comp=containing_comp,
-            root_tdgp_extra=root_tdgp_extra,
-            effect_param_defs=effect_param_defs,
-        ))
+        return cast(
+            "AVLayer",
+            super()._new(
+                ldta=ldta,
+                name=name,
+                containing_comp=containing_comp,
+                root_tdgp_extra=root_tdgp_extra,
+                effect_param_defs=effect_param_defs,
+            ),
+        )
 
     @property
     def track_matte_type(self) -> TrackMatteType:
@@ -224,10 +228,9 @@ class AVLayer(Layer):
         return TrackMatteType.from_binary(self._ldta.track_matte_type)
 
     @track_matte_type.setter
-    def track_matte_type(self, value: TrackMatteType) -> None:
-        if not isinstance(value, (TrackMatteType, int)):
-            raise ValueError("track_matte_type must be a TrackMatteType enum value.")
-
+    def track_matte_type(self, value: TrackMatteType | int) -> None:
+        validate_enum(TrackMatteType)(value)
+        value = TrackMatteType(value)
         old_matte = self.track_matte_layer
         self._ldta.track_matte_type = value.to_binary()
         if (
@@ -289,8 +292,7 @@ class AVLayer(Layer):
 
     @in_point.setter
     def in_point(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("in_point must be a number.")
+        validate_number(value)
         self._set_raw_in_point(value)
 
     @property
@@ -310,8 +312,7 @@ class AVLayer(Layer):
 
     @out_point.setter
     def out_point(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("out_point must be a number.")
+        validate_number(value)
         self._set_raw_out_point(value)
 
     @property
@@ -384,8 +385,7 @@ class AVLayer(Layer):
         Args:
             time: The time in seconds.
         """
-        if not isinstance(time, (int, float)):
-            raise ValueError("time must be a number.")
+        validate_number(time)
 
         if not self.has_audio:
             return False
@@ -568,7 +568,7 @@ class AVLayer(Layer):
     def set_track_matte(
         self,
         track_matte_layer: AVLayer | None,
-        track_matte_type: TrackMatteType,
+        track_matte_type: TrackMatteType | int,
     ) -> None:
         """Sets the track matte layer and type for this layer.
         Passing in `None` to `track_matte_layer` parameter removes
@@ -590,8 +590,8 @@ class AVLayer(Layer):
             ValueError: If `track_matte_layer` belongs to a
                 different composition.
         """
-        if not isinstance(track_matte_type, TrackMatteType):
-            raise ValueError("track_matte_type must be a TrackMatteType enum value.")
+        validate_enum(TrackMatteType)(track_matte_type)
+        track_matte_type = TrackMatteType(track_matte_type)
         if track_matte_layer is not None and not isinstance(track_matte_layer, AVLayer):
             raise ValueError("track_matte_layer must be an AVLayer or None.")
         if (

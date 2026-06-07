@@ -76,11 +76,11 @@ def clone_chunk_tree(chunk: Chunk) -> Chunk:
 
 
 def build_gide_list() -> tuple[ListChunk, Lhd3Chunk, ListChunk]:
-    """Build an empty ``LIST:Gide`` guide container.
+    """Build an empty `LIST:Gide` guide container.
 
     Returns:
         (gide, lhd3, inner) - the outer Gide list, header chunk,
-        and inner ``LIST:list``.  Callers can append an `LdatChunk`
+        and inner `LIST:list`.  Callers can append an `LdatChunk`
         to *inner* when guide data is needed.
     """
     lhd3 = Lhd3Chunk(item_size=16, item_type_raw=2)

@@ -254,7 +254,7 @@ class AVItem(Item):
         elif name == "":
             name = "????"
 
-        source = SolidSource._new(color, name, width, height, pixel_aspect)
+        source = SolidSource._new(name, color, width, height, pixel_aspect)
         self._set_proxy(source)
 
     @staticmethod

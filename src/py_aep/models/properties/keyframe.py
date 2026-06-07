@@ -7,6 +7,7 @@ from py_aep.enums import KeyframeInterpolationType, Label
 
 from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
+from ..validators import validate_int, validate_number, validate_sequence
 from .gradient import Gradient
 from .marker import MarkerValue
 from .shape import Shape
@@ -220,15 +221,7 @@ class Keyframe:
     def in_spatial_tangent(self, value: list[float]) -> None:
         if value is None or self.in_spatial_tangent is None:
             return
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("in_spatial_tangent must be a list of floats")
-        if not all(isinstance(v, (int, float)) for v in value):
-            raise ValueError("in_spatial_tangent must be a list of floats")
-        if len(value) != len(self.in_spatial_tangent):
-            raise ValueError(
-                f"in_spatial_tangent must have length {len(self.in_spatial_tangent)}"
-            )
-
+        validate_sequence(length=len(self.in_spatial_tangent))(value)
         kf_data = self._ldat_item.kf_data
         if hasattr(kf_data, "in_spatial_tangents"):
             kf_data.in_spatial_tangents = value
@@ -255,14 +248,7 @@ class Keyframe:
     def out_spatial_tangent(self, value: list[float] | None) -> None:
         if value is None or self.out_spatial_tangent is None:
             return
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("out_spatial_tangent must be a list of floats")
-        if not all(isinstance(v, (int, float)) for v in value):
-            raise ValueError("out_spatial_tangent must be a list of floats")
-        if len(value) != len(self.out_spatial_tangent):
-            raise ValueError(
-                f"out_spatial_tangent must have length {len(self.out_spatial_tangent)}"
-            )
+        validate_sequence(length=len(self.out_spatial_tangent))(value)
         kf_data = self._ldat_item.kf_data
         if value is not None and hasattr(kf_data, "out_spatial_tangents"):
             kf_data.out_spatial_tangents = value
@@ -298,7 +284,7 @@ class Keyframe:
             (int, float, list, Gradient, MarkerValue, Shape, TextDocument, type(None)),
         ):
             raise ValueError(
-                "value must be a float, list of floats, Gradient, MarkerValue, Shape, TextDocument, or None"
+                "value must be a number, list of numbers, Gradient, MarkerValue, Shape, TextDocument, or None"
             )
         if self._property is not None and isinstance(value, (int, float, list)):
             value = self._property._unresolve_value(value)
@@ -458,8 +444,7 @@ class Keyframe:
 
     @frame_time.setter
     def frame_time(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise ValueError("frame_time must be an integer")
+        validate_int(value)
         offset = self._property._frame_offset if self._property is not None else 0
         self._ldat_item.time_raw = round((value - offset) * self._time_scale)
 
@@ -470,8 +455,7 @@ class Keyframe:
 
     @time.setter
     def time(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("time must be a number")
+        validate_number(value)
         self.frame_time = round(value * self._frame_rate)
 
 

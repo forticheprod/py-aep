@@ -2309,8 +2309,20 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         dimensions=3,
         is_spatial=True,
     ),
-    _PropSpec("ADBE Position_0", "X Position", None, PropertyValueType.OneD, has_time_base=True),
-    _PropSpec("ADBE Position_1", "Y Position", None, PropertyValueType.OneD, has_time_base=True),
+    _PropSpec(
+        "ADBE Position_0",
+        "X Position",
+        None,
+        PropertyValueType.OneD,
+        has_time_base=True,
+    ),
+    _PropSpec(
+        "ADBE Position_1",
+        "Y Position",
+        None,
+        PropertyValueType.OneD,
+        has_time_base=True,
+    ),
     _PropSpec("ADBE Position_2", "Z Position", None, PropertyValueType.OneD),
     _PropSpec(
         "ADBE Scale",
@@ -2331,8 +2343,12 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         cvot=0x07,
         value_hint_type=6,
     ),
-    _PropSpec("ADBE Rotate X", "X Rotation", None, PropertyValueType.OneD, has_time_base=True),
-    _PropSpec("ADBE Rotate Y", "Y Rotation", None, PropertyValueType.OneD, has_time_base=True),
+    _PropSpec(
+        "ADBE Rotate X", "X Rotation", None, PropertyValueType.OneD, has_time_base=True
+    ),
+    _PropSpec(
+        "ADBE Rotate Y", "Y Rotation", None, PropertyValueType.OneD, has_time_base=True
+    ),
     _PropSpec("ADBE Rotate Z", "Rotation", None, PropertyValueType.OneD),
     _PropSpec("ADBE Opacity", "Opacity", None, PropertyValueType.OneD),
     _PropSpec(
@@ -2366,7 +2382,12 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Text Properties", "Text"),
     _GroupSpec("ADBE Root Vectors Group", "Contents"),
     _PropSpec(
-        "ADBE Time Remapping", "Time Remap", None, PropertyValueType.OneD, min_value=0, has_time_base=True
+        "ADBE Time Remapping",
+        "Time Remap",
+        None,
+        PropertyValueType.OneD,
+        min_value=0,
+        has_time_base=True,
     ),
     _GroupSpec("ADBE MTrackers", "Motion Trackers"),
     _GroupSpec("ADBE Mask Parade", "Masks"),

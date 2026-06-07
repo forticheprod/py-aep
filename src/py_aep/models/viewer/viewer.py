@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from ...enums import ViewerType
 from ..descriptors import ChunkField
+from ..validators import _validate_number
 
 if TYPE_CHECKING:
     from ...binary.scalar_chunks import AsciiChunk, U1Chunk
@@ -68,14 +69,11 @@ class Viewer:
 
     @active_view_index.setter
     def active_view_index(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise ValueError("active_view_index must be an integer")
-        if self._views and not 0 <= value < len(self._views):
-            msg = (
-                f"active_view_index must be between 0 and "
-                f"{len(self._views) - 1}, got {value}"
-            )
-            raise IndexError(msg)
+        # With no views the index is moot; clamp the upper bound to 0 so the
+        # bound stays valid (an empty views list would otherwise give max=-1,
+        # rejecting every value including 0).
+        max_index = len(self._views) - 1 if self._views else 0
+        _validate_number(min=0, max=max_index, integer=True)(value)
         self._active_view_index = value
 
     @property

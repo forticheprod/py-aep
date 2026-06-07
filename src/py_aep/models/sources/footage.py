@@ -11,7 +11,7 @@ from ...enums import (
 )
 from ...enums.mappings import map_media_color_space
 from ..descriptors import ChunkField
-from ..validators import validate_number, validate_rgb_color
+from ..validators import _validate_number, validate_rgb_color
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
@@ -70,7 +70,7 @@ class FootageSource:
     loop = ChunkField[int](
         "_sspc",
         "loop",
-        validate=validate_number(min=1, max=9999, integer=True),
+        validate=_validate_number(min=1, max=9999, integer=True),
     )
     """The number of times that the footage is to be played consecutively
     when used in a composition. Read / Write."""
@@ -100,7 +100,7 @@ class FootageSource:
     conform_frame_rate = ChunkField[float](
         "_sspc",
         "conform_frame_rate",
-        validate=validate_number(min=0.0, max=999.0),
+        validate=_validate_number(min=0.0, max=999.0),
     )
     """A frame rate to use instead of the `native_frame_rate` value. If
     set to 0, the `native_frame_rate` is used instead. Read / Write."""

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from ....enums import OpenExrCompression
 from ...descriptors import ChunkField
+from ...validators import validate_positive_number
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import OpenExrRoptChunk
@@ -73,6 +74,5 @@ class OpenExrFormatOptions:
 
     @dwa_compression_level.setter
     def dwa_compression_level(self, value: float) -> None:
-        if not isinstance(value, (int, float)) or value <= 0:
-            raise ValueError("DWA compression level must be a positive number")
+        validate_positive_number(value)
         self._body.dwa_compression_level = value

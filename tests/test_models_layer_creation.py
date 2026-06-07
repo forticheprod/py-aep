@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 from py_aep import parse as parse_aep
+from py_aep.enums import LineOrientation
 from py_aep.models.layers.av_layer import AVLayer
 from py_aep.models.layers.camera_layer import CameraLayer
 from py_aep.models.layers.light_layer import LightLayer
@@ -505,8 +506,10 @@ class TestAddText:
     def test_custom_font_size(self) -> None:
         app = parse_aep(EMPTY_COMP_AEP)
         comp = app.project.compositions[0]
-        layer = comp.add_text("Big Text", font_size=72.0)
+        layer = comp.add_text("Big Text")
         st = layer.text.property("ADBE Text Document")
+        td = st.value
+        td.font_size = 72.0
         assert st.value.font_size == pytest.approx(72.0)
 
     def test_roundtrip(self, tmp_path: Path) -> None:
@@ -529,7 +532,10 @@ class TestAddText:
     def test_roundtrip_custom_font_size(self, tmp_path: Path) -> None:
         app = parse_aep(EMPTY_COMP_AEP)
         comp = app.project.compositions[0]
-        comp.add_text("Sized", font_size=48.0)
+        layer = comp.add_text("Sized")
+        st = layer.text.property("ADBE Text Document")
+        td = st.value
+        td.font_size = 48.0
 
         app.project.save(tmp_path / "out.aep")
         app2 = parse_aep(tmp_path / "out.aep")
@@ -574,3 +580,85 @@ class TestAddBoxText:
         assert isinstance(lyr2, TextLayer)
         st = lyr2.text.property("ADBE Text Document")
         assert st.value.text == "Box Text"
+
+
+# ---------------------------------------------------------------------------
+# add_vertical_text
+# ---------------------------------------------------------------------------
+
+
+class TestAddVerticalText:
+    def test_returns_text_layer(self) -> None:
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        layer = comp.add_vertical_text("Hello")
+        assert isinstance(layer, TextLayer)
+
+    def test_orientation_and_point_text(self) -> None:
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        layer = comp.add_vertical_text("Hello")
+        td = layer.text.property("ADBE Text Document").value
+        assert td.text == "Hello"
+        assert td.line_orientation == LineOrientation.VERTICAL_RIGHT_TO_LEFT
+        assert td.point_text is True
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        layer = comp.add_vertical_text("Vertical")
+        layer_id = layer.id
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = app2.project.compositions[0]
+
+        assert len(comp2.layers) == 1
+        lyr2 = comp2.layers[0]
+        assert lyr2.id == layer_id
+        assert isinstance(lyr2, TextLayer)
+        td = lyr2.text.property("ADBE Text Document").value
+        assert td.text == "Vertical"
+        assert td.line_orientation == LineOrientation.VERTICAL_RIGHT_TO_LEFT
+
+
+# ---------------------------------------------------------------------------
+# add_vertical_box_text
+# ---------------------------------------------------------------------------
+
+
+class TestAddVerticalBoxText:
+    def test_returns_text_layer(self) -> None:
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        layer = comp.add_vertical_box_text([400, 200], "VBox")
+        assert isinstance(layer, TextLayer)
+
+    def test_orientation_and_box_text(self) -> None:
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        layer = comp.add_vertical_box_text([400, 200], "VBox")
+        td = layer.text.property("ADBE Text Document").value
+        assert td.text == "VBox"
+        assert td.line_orientation == LineOrientation.VERTICAL_RIGHT_TO_LEFT
+        assert td.box_text is True
+        assert td.box_text_size == [400.0, 200.0]
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        layer = comp.add_vertical_box_text([400, 200], "VBox Text")
+        layer_id = layer.id
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        comp2 = app2.project.compositions[0]
+
+        assert len(comp2.layers) == 1
+        lyr2 = comp2.layers[0]
+        assert lyr2.id == layer_id
+        assert isinstance(lyr2, TextLayer)
+        td = lyr2.text.property("ADBE Text Document").value
+        assert td.text == "VBox Text"
+        assert td.line_orientation == LineOrientation.VERTICAL_RIGHT_TO_LEFT
+        assert td.box_text is True

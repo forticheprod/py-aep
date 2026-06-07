@@ -10,18 +10,20 @@ cross-field validation (e.g. checking that one field is >= another).
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any, Callable, Sequence
+    from typing import Callable, Iterable
 
 
-def validate_number(
+def _validate_number(
     *,
-    min: float | Callable[[Any], float | None] | None = None,
-    max: float | Callable[[Any], float | None] | None = None,
+    min: float | Callable[..., float | None] | None = None,
+    max: float | Callable[..., float | None] | None = None,
     integer: bool = False,
-) -> Callable[[object, Any], None]:
+) -> Callable[..., None]:
     """Return a validator that checks a numeric value.
 
     Args:
@@ -33,7 +35,7 @@ def validate_number(
     """
     type_label = "an integer" if integer else "a number"
 
-    def _validator(value: object, instance: Any = None) -> None:
+    def _validator(value: object, instance: object | None = None) -> None:
         if isinstance(value, (list, tuple)):
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
         if integer and not isinstance(value, int):
@@ -55,11 +57,11 @@ def validate_number(
 
 def validate_sequence(
     *,
-    length: int | Callable[[Any], int | None] | None = None,
-    min: float | Callable[[Any], float | None] | None = None,
-    max: float | Callable[[Any], float | None] | None = None,
+    length: int | Callable[..., int | None] | None = None,
+    min: float | Callable[..., float | None] | None = None,
+    max: float | Callable[..., float | None] | None = None,
     integer: bool = False,
-) -> Callable[[object, Any], None]:
+) -> Callable[..., None]:
     """Return a validator that checks a fixed-length numeric sequence.
 
     Args:
@@ -74,11 +76,11 @@ def validate_sequence(
             dynamic bounds.
         integer: When `True`, reject non-`int` elements.
     """
-    _element_validator = validate_number(min=min, max=max, integer=integer)
+    _element_validator = _validate_number(min=min, max=max, integer=integer)
 
-    def _validator(value: object, instance: Any = None) -> None:
+    def _validator(value: object, instance: object | None = None) -> None:
         try:
-            items: Sequence[object] = list(value)  # type: ignore[call-overload]
+            items: list[object] = list(value)  # type: ignore[call-overload]
         except TypeError:
             n = length(instance) if callable(length) else length
             raise TypeError(
@@ -96,32 +98,57 @@ def validate_sequence(
     return _validator
 
 
-def validate_one_of(
-    allowed: Sequence[object],
-) -> Callable[[object, Any], None]:
-    """Return a validator that checks value is in the allowed set.
+def validate_enum(enum_cls: type) -> Callable[..., None]:
+    """Return a validator that checks value is a member of `enum_cls`.
+
+    Accepts both enum instances and their int equivalents. An int that is
+    not a valid member value raises `ValueError`; any other wrong type
+    raises `TypeError`.
 
     Args:
-        allowed: Sequence of valid values.
+        enum_cls: The enum class the value must be a member of.
     """
-    allowed_set = set(allowed)
-    formatted = ", ".join(str(v) for v in allowed)
 
-    def _validator(value: object, instance: Any = None) -> None:
-        try:
-            if float(value) not in allowed_set:  # type: ignore[arg-type]
-                raise ValueError(f"must be one of [{formatted}], got {value}")
-        except TypeError:
-            raise TypeError(f"expected a number, got {type(value).__name__}") from None
+    def _validator(value: object, instance: object | None = None) -> None:
+        if isinstance(value, enum_cls):
+            return
+        if isinstance(value, int):
+            try:
+                enum_cls(value)
+            except ValueError:
+                raise ValueError(
+                    f"{value!r} is not a valid {enum_cls.__name__} value"
+                ) from None
+            return
+        raise TypeError(f"expected a {enum_cls.__name__}, got {type(value).__name__}")
 
     return _validator
 
 
-def validate_string(
+def validate_one_of(
+    allowed: Iterable[object],
+) -> Callable[..., None]:
+    """Return a validator that checks value is in the allowed set.
+
+    Args:
+        allowed: Iterable of valid values.
+    """
+    allowed_list = list(allowed)
+    allowed_set = set(allowed_list)
+    formatted = ", ".join(str(v) for v in allowed_list)
+
+    def _validator(value: object, instance: object | None = None) -> None:
+        if value not in allowed_set:
+            raise ValueError(f"must be one of [{formatted}], got {value!r}")
+
+    return _validator
+
+
+def _validate_str(
     *,
     allow_empty: bool = True,
     max_length: int | None = None,
-) -> Callable[[object, Any], None]:
+) -> Callable[..., None]:
     """Return a validator that checks a string value.
 
     Args:
@@ -129,7 +156,7 @@ def validate_string(
         max_length: Maximum allowed character count.
     """
 
-    def _validator(value: object, instance: Any = None) -> None:
+    def _validator(value: object, instance: object | None = None) -> None:
         if not isinstance(value, str):
             raise TypeError(f"expected a string, got {type(value).__name__}")
         if not allow_empty and not value:
@@ -142,26 +169,62 @@ def validate_string(
     return _validator
 
 
+def _validate_path(
+    *,
+    must_exist: bool | None = None,
+) -> Callable[..., None]:
+    """Return a validator that checks a filesystem path.
+
+    Args:
+        must_exist: When `True`, reject paths that don't exist.
+            When `False`, reject paths that do exist. When `None`, allow both.
+    """
+
+    def _validator(value: object, instance: object | None = None) -> None:
+        if not isinstance(value, (str, os.PathLike)):
+            raise TypeError(f"expected a file system path, got {type(value).__name__}")
+        path = Path(value)
+        if must_exist:
+            if not path.exists():
+                raise ValueError(f"path does not exist: {path}")
+        else:
+            if path.exists():
+                raise ValueError(f"path already exists: {path}")
+
+    return _validator
+
+
 # ---- Shared domain validators ----
 # Re-use these across models instead of defining per-module duplicates.
 
-validate_width = validate_number(min=4, max=30000, integer=True)
-"""Validate composition/placeholder width (4-30000 px)."""
+validate_number = _validate_number()
 
-validate_height = validate_number(min=4, max=30000, integer=True)
-"""Validate composition/placeholder height (4-30000 px)."""
+validate_positive_number = _validate_number(min=0.0)
 
-validate_pixel_aspect = validate_number(min=0.01, max=100.0)
-"""Validate pixel aspect ratio (0.01-100.0)."""
+validate_normalized_float = _validate_number(min=0.0, max=1.0)
 
-validate_duration = validate_number(min=0.0, max=10800.0)
-"""Validate duration in seconds (0.0-10800.0)."""
+validate_int = _validate_number(integer=True)
 
-validate_frame_rate = validate_number(min=1.0, max=99.0)
-"""Validate frame rate in fps (1.0-99.0)."""
+validate_positive_int = _validate_number(min=0, integer=True)
+
+validate_footage_dimension = _validate_number(min=4, max=30000, integer=True)
+
+validate_solid_dimension = _validate_number(min=1, max=30000, integer=True)
+
+validate_pixel_aspect = _validate_number(min=0.01, max=100.0)
+
+validate_duration = _validate_number(min=0.0, max=10800.0)
+
+validate_frame_rate = _validate_number(min=1.0, max=99.0)
+
+validate_vector2 = validate_sequence(length=2)
 
 validate_rgb_color = validate_sequence(length=3, min=0.0, max=1.0)
-"""Validate an RGB color as [R, G, B] in 0.0-1.0 range."""
 
-validate_name = validate_string(allow_empty=False)
-"""Validate a name string (1-255 chars)."""
+validate_string = _validate_str()
+
+validate_name = _validate_str(allow_empty=False)
+
+validate_path = _validate_path()
+
+validate_path_does_not_exist = _validate_path(must_exist=False)

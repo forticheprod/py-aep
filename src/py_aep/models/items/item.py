@@ -17,7 +17,7 @@ from ...binary.utils import (
 )
 from ..descriptors import ChunkField
 from ..guide import Guide
-from ..validators import validate_name
+from ..validators import _validate_number, validate_name, validate_string
 
 if TYPE_CHECKING:
     from ...binary.item_chunks import IdtaChunk
@@ -107,8 +107,7 @@ class Item:
 
     @comment.setter
     def comment(self, value: str) -> None:
-        if not isinstance(value, str):
-            raise ValueError("comment must be a string")
+        validate_string(value)
         if self._cmta is not None:
             self._cmta.value = value
         elif value:
@@ -188,10 +187,7 @@ class Item:
         """
         if not self._guides:
             raise IndexError("No guides to remove")
-        if not 0 <= guide_index < len(self._guides):
-            raise IndexError(
-                f"Guide index {guide_index} out of range [0, {len(self._guides) - 1}]"
-            )
+        _validate_number(integer=True, min=0, max=len(self._guides) - 1)(guide_index)
         assert self._lhd3 is not None
         assert self._ldat is not None
         del self._ldat.items[guide_index]

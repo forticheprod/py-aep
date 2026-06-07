@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from ...enums import ChannelType, FastPreviewType
 from ..descriptors import ChunkField
-from ..validators import validate_number
+from ..validators import _validate_number
 
 if TYPE_CHECKING:
     from ...binary.misc_chunks import FipsChunk
@@ -58,7 +58,7 @@ class ViewOptions:
     exposure = ChunkField[float](
         "_fips",
         "exposure",
-        validate=validate_number(min=-40.0, max=40.0),
+        validate=_validate_number(min=-40.0, max=40.0),
     )
     """
     The exposure value for the current view. Read / Write.
@@ -117,7 +117,7 @@ class ViewOptions:
     roi_top = ChunkField[int](
         "_fips",
         "roi_top",
-        validate=validate_number(
+        validate=_validate_number(
             min=0,
             max=lambda self: self.roi_bottom - 1,
             integer=True,
@@ -128,7 +128,7 @@ class ViewOptions:
     roi_left = ChunkField[int](
         "_fips",
         "roi_left",
-        validate=validate_number(
+        validate=_validate_number(
             min=0,
             max=lambda self: self.roi_right - 1,
             integer=True,
@@ -139,7 +139,7 @@ class ViewOptions:
     roi_bottom = ChunkField[int](
         "_fips",
         "roi_bottom",
-        validate=validate_number(
+        validate=_validate_number(
             min=lambda self: self.roi_top + 1,
             max=lambda self: self._item.height if self._item else None,
             integer=True,
@@ -150,7 +150,7 @@ class ViewOptions:
     roi_right = ChunkField[int](
         "_fips",
         "roi_right",
-        validate=validate_number(
+        validate=_validate_number(
             min=lambda self: self.roi_left + 1,
             max=lambda self: self._item.width if self._item else None,
             integer=True,
@@ -185,7 +185,7 @@ class ViewOptions:
     zoom = ChunkField[float](
         "_fips",
         "zoom",
-        validate=validate_number(min=0.01, max=16.0),
+        validate=_validate_number(min=0.01, max=16.0),
     )
     """
     The current zoom value for the view, as a normalized percentage between 1%

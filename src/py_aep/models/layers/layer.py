@@ -22,6 +22,11 @@ from ..naming import auto_name
 from ..properties.property import Property
 from ..properties.property_base import PropertyBase
 from ..properties.property_group import PropertyGroup
+from ..validators import (
+    validate_int,
+    validate_number,
+    validate_string,
+)
 
 if TYPE_CHECKING:
     from ...binary.layer_chunks import LdtaChunk
@@ -178,6 +183,8 @@ class Layer(PropertyGroup):
     ) -> Layer:
         from ...synthesis.core import synthesize_layer_properties  # noqa: PLC0415
 
+        validate_string(name)
+
         name_utf8 = Utf8Chunk(value=name)
         tdgp_chunks: list[Any] = [
             TdsbChunk(),
@@ -238,8 +245,7 @@ class Layer(PropertyGroup):
 
     @comment.setter
     def comment(self, value: str) -> None:
-        if not isinstance(value, str):
-            raise ValueError("comment must be a string")
+        validate_string(value)
         if self._cmta is not None:
             self._cmta.value = value
         elif value:
@@ -285,8 +291,7 @@ class Layer(PropertyGroup):
 
     @in_point.setter
     def in_point(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("in_point must be a number")
+        validate_number(value)
         self._set_raw_in_point(value)
 
     @property
@@ -297,8 +302,7 @@ class Layer(PropertyGroup):
 
     @out_point.setter
     def out_point(self, value: float) -> None:
-        if not isinstance(value, (int, float)):
-            raise ValueError("out_point must be a number")
+        validate_number(value)
         self._set_raw_out_point(value)
 
     @property
@@ -309,8 +313,7 @@ class Layer(PropertyGroup):
 
     @frame_in_point.setter
     def frame_in_point(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise ValueError("frame_in_point must be an integer")
+        validate_int(value)
         self.in_point = value / self.containing_comp.frame_rate
 
     @property
@@ -321,8 +324,7 @@ class Layer(PropertyGroup):
 
     @frame_out_point.setter
     def frame_out_point(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise ValueError("frame_out_point must be an integer")
+        validate_int(value)
         self.out_point = value / self.containing_comp.frame_rate
 
     @property
@@ -333,8 +335,7 @@ class Layer(PropertyGroup):
 
     @frame_start_time.setter
     def frame_start_time(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise ValueError("frame_start_time must be an integer")
+        validate_int(value)
         self.start_time = value / self.containing_comp.frame_rate
 
     @property
@@ -575,6 +576,7 @@ class Layer(PropertyGroup):
         Args:
             time: The time in seconds.
         """
+        validate_number(time)
         if not self.enabled:
             return False
 
@@ -791,9 +793,6 @@ class Layer(PropertyGroup):
         `remove()`, so parent and track matte connections on other
         layers are preserved.
         """
-        if not isinstance(target_index, int):
-            raise ValueError("Target index must be an integer.")
-
         comp = self.containing_comp
 
         # Extract and remove chunk block

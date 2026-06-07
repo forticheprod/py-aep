@@ -240,9 +240,7 @@ class PropertyGroup(PropertyBase):
         tdsn = ContainerChunk(
             chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
         )
-        group_end = TdmnChunk(
-            value="ADBE Group End", synthetic=synthetic
-        )
+        group_end = TdmnChunk(value="ADBE Group End", synthetic=synthetic)
         _tdgp = ListChunk(
             list_type="tdgp",
             chunks=[_tdsb, tdsn, group_end],
@@ -352,10 +350,7 @@ class PropertyGroup(PropertyBase):
                     break
         # Also flip the group end marker.
         for c in self._tdgp.chunks:
-            if (
-                c.chunk_type == "tdmn"
-                and getattr(c, "value", None) == "ADBE Group End"
-            ):
+            if c.chunk_type == "tdmn" and getattr(c, "value", None) == "ADBE Group End":
                 c.synthetic = False
                 break
 

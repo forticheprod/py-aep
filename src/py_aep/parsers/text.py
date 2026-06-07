@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..cos import cos_get
 from ..models.text.font_object import FontObject
 from ..models.text.text_document import TextDocument
 
@@ -41,37 +42,6 @@ if TYPE_CHECKING:
     from ..binary.chunk import ListChunk
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Helper - safe nested dict/list access
-# ---------------------------------------------------------------------------
-
-
-def _g(data: Any, *keys: str | int) -> Any:
-    """Safely traverse a nested dict/list by successive keys.
-
-    Each key is tried as a dict string key first and then as a list index.
-    Returns `None` when any step along the path is missing.
-
-    Example::
-
-        _g(data, "1", "1", 0, "0", "0")  # -> text string
-    """
-    cur: Any = data
-    for key in keys:
-        if cur is None:
-            return None
-        if isinstance(cur, dict):
-            cur = cur.get(str(key))
-        elif isinstance(cur, list):
-            try:
-                cur = cur[int(key)]
-            except (IndexError, ValueError, TypeError):
-                return None
-        else:
-            return None
-    return cur
 
 
 # ---------------------------------------------------------------------------
@@ -96,16 +66,16 @@ def parse_fonts(cos_data: dict[str, Any]) -> list[FontObject]:
         List of [FontObject][] instances in the same order as the COS
         array (the index is referenced by character styles).
     """
-    font_array = _g(cos_data, "0", "1", "0")
+    font_array = cos_get(cos_data, "0", "1", "0")
     if not font_array or not isinstance(font_array, list):
         return []
 
     fonts: list[FontObject] = []
     for entry in font_array:
-        font_data = _g(entry, "0", "0")
+        font_data = cos_get(entry, "0", "0")
         if font_data is None or not isinstance(font_data, dict):
             continue
-        font_entry = _g(entry, "0")
+        font_entry = cos_get(entry, "0")
         font = FontObject(
             _font_data=font_data,
             _font_entry=font_entry if isinstance(font_entry, dict) else None,
@@ -125,7 +95,7 @@ def _get_first_char_style(doc: dict[str, Any]) -> dict[str, Any] | None:
 
     Path: `doc["0"]["6"]["0"][0]["0"]["0"]["6"]`
     """
-    result = _g(doc, "0", "6", "0", 0, "0", "0", "6")
+    result = cos_get(doc, "0", "6", "0", 0, "0", "0", "6")
     if isinstance(result, dict):
         return result
     return None
@@ -136,7 +106,7 @@ def _get_first_para_style(doc: dict[str, Any]) -> dict[str, Any] | None:
 
     Path: `doc["0"]["5"]["0"][0]["0"]["0"]["5"]`
     """
-    result = _g(doc, "0", "5", "0", 0, "0", "0", "5")
+    result = cos_get(doc, "0", "5", "0", 0, "0", "0", "5")
     if isinstance(result, dict):
         return result
     return None
@@ -162,7 +132,7 @@ def parse_text_documents(
     Returns:
         List of [TextDocument][] instances (one per keyframe).
     """
-    doc_array = _g(cos_data, "1", "1")
+    doc_array = cos_get(cos_data, "1", "1")
     if not doc_array or not isinstance(doc_array, list):
         return []
 

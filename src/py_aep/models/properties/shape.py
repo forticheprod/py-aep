@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..descriptors import ChunkField
-from ..validators import validate_number
+from ..validators import (
+    validate_normalized_float,
+    validate_positive_int,
+    validate_vector2,
+)
 
 if TYPE_CHECKING:
     from ...binary.ldat_chunks import ShapePoint
@@ -39,15 +43,13 @@ class FeatherPoint:
         that they were created.
     """
 
-    seg_loc = ChunkField[int](
-        "_fp", "seg_loc", validate=validate_number(min=0, integer=True)
-    )
+    seg_loc = ChunkField[int]("_fp", "seg_loc", validate=validate_positive_int)
     """Mask path segment number where this feather point is located
     (0-based, segments are portions of the path between vertices).
     Read / Write."""
 
     rel_seg_loc = ChunkField[float](
-        "_fp", "rel_seg_loc", validate=validate_number(min=0.0, max=1.0)
+        "_fp", "rel_seg_loc", validate=validate_normalized_float
     )
     """Relative position on the segment, from 0.0 (at the starting
     vertex) to 1.0 (at the next vertex). Read / Write."""
@@ -65,9 +67,7 @@ class FeatherPoint:
     """Radius interpolation type: 0 for non-Hold feather points,
     1 for Hold feather points. Read / Write."""
 
-    tension = ChunkField[float](
-        "_fp", "tension", validate=validate_number(min=0.0, max=1.0)
-    )
+    tension = ChunkField[float]("_fp", "tension", validate=validate_normalized_float)
     """Feather tension amount, from 0.0 (0%) to 1.0 (100%). Read / Write."""
 
     rel_corner_angle = ChunkField[float]("_fp", "corner_angle")
@@ -205,8 +205,8 @@ class Shape:
             return
         if not isinstance(value, (list, tuple)):
             raise ValueError("vertices must be a list of [x,y] pairs")
-        if not all(isinstance(pt, (list, tuple)) and len(pt) == 2 for pt in value):
-            raise ValueError("each vertex must be a list of two floats [x, y]")
+        for pt in value:
+            validate_vector2(pt)
         coords = value
         if self._is_mask and self._comp_size is not None:
             w, h = self._comp_size
@@ -249,8 +249,8 @@ class Shape:
             return
         if not isinstance(value, (list, tuple)):
             raise ValueError("in_tangents must be a list of [x,y] pairs")
-        if not all(isinstance(pt, (list, tuple)) and len(pt) == 2 for pt in value):
-            raise ValueError("each in_tangent must be a list of two floats [x, y]")
+        for pt in value:
+            validate_vector2(pt)
         tangents = value
         if self._is_mask and self._comp_size is not None:
             w, h = self._comp_size
@@ -295,8 +295,8 @@ class Shape:
             return
         if not isinstance(value, (list, tuple)):
             raise ValueError("out_tangents must be a list of [x,y] pairs")
-        if not all(isinstance(pt, (list, tuple)) and len(pt) == 2 for pt in value):
-            raise ValueError("each out_tangent must be a list of two floats [x, y]")
+        for pt in value:
+            validate_vector2(pt)
         tangents = value
         if self._is_mask and self._comp_size is not None:
             w, h = self._comp_size

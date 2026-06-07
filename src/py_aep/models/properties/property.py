@@ -14,7 +14,7 @@ from ...binary.scalar_chunks import Utf8Chunk
 from ...data.units import UNITS_TEXT_MAP
 from ...synthesis.specs import _USE_VALUE
 from ..descriptors import ChunkField
-from ..validators import validate_number, validate_sequence
+from ..validators import _validate_number, validate_sequence, validate_string
 from .overrides import (
     _ALWAYS_MODIFIED,
     _CANVARY_OVERRIDES,
@@ -96,7 +96,7 @@ def _get_dimensions(prop: Property) -> int:
     return d
 
 
-_validate_scalar = validate_number(min=_get_min, max=_get_max)
+_validate_scalar = _validate_number(min=_get_min, max=_get_max)
 _validate_list = validate_sequence(length=_get_dimensions, min=_get_min, max=_get_max)
 
 
@@ -292,22 +292,30 @@ class Property(PropertyBase):
                 _tdb4.integer = True
                 _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0x04
                 _tdb4._property_category = 0x04
-                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 0xFFFF
+                _tdb4._value_hint_type = (
+                    spec.value_hint_type if spec.value_hint_type is not None else 0xFFFF
+                )
             elif spec.color:
                 _tdb4.color = True
                 _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0xFF
                 _tdb4._property_category = 0x01
-                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 1
+                _tdb4._value_hint_type = (
+                    spec.value_hint_type if spec.value_hint_type is not None else 1
+                )
                 _tdb4._value_hint_flag = 0xFF
             elif binary_nv:
                 _tdb4._type_flags = 0x18 if spec.is_spatial else 0x08
                 _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0x04
-                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 1
+                _tdb4._value_hint_type = (
+                    spec.value_hint_type if spec.value_hint_type is not None else 1
+                )
             else:
                 _tdb4.vector = True
                 _tdb4._cvot_flags = spec.cvot if spec.cvot is not None else 0xFF
                 _tdb4._property_category = 0x09
-                _tdb4._value_hint_type = spec.value_hint_type if spec.value_hint_type is not None else 1
+                _tdb4._value_hint_type = (
+                    spec.value_hint_type if spec.value_hint_type is not None else 1
+                )
                 _tdb4._value_hint_flag = 0xFF
         else:
             _tdb4.is_spatial = spec.is_spatial
@@ -616,15 +624,25 @@ class Property(PropertyBase):
 
     @property
     def value(self) -> _ValueType:
-        """
-        The value of the named property at the current time. If
-        `expression_enabled` is `True`, returns the evaluated expression
+        """The value of the named property at the current time.
+
+        If `expression_enabled` is `True`, returns the evaluated expression
         value. If there are keyframes, returns the keyframed value at the
         current time. Otherwise, returns the static value. Read / Write.
 
         The type depends on `property_value_type`:
         `list[float]`, `float`, `int`, [Gradient][], [MarkerValue][],
         [Shape][], [TextDocument][], or `None`.
+
+        Mutations on complex value types (TextDocument, Shape,
+        MarkerValue, Gradient) write through to the backing chunks
+        automatically, so re-assignment is not needed:
+
+        ```python
+        text_doc = prop.value
+        text_doc.font_size = 72  # persists automatically
+        # prop.value = text_doc  # unnecessary - same object
+        ```
         """
         if self._tdpi is not None and self._composition is not None:
             layer_id = self._tdpi.value
@@ -641,6 +659,13 @@ class Property(PropertyBase):
 
     @value.setter
     def value(self, value: _ValueType) -> None:
+        # Re-assigning the identical complex value object (TextDocument,
+        # Shape, MarkerValue, Gradient) is a no-op: those types write through
+        # to the backing chunks via their own descriptors. Plain numeric/list
+        # values have no write-through, so a value read, mutated in place, and
+        # re-assigned must still be written to the cdat chunk.
+        if value is self._value and not isinstance(value, (int, float, list)):
+            return
         _validate_value(self, value)
         self._ensure_materialized()
         self._write_cdat(value)
@@ -734,7 +759,7 @@ class Property(PropertyBase):
         if self.match_name == _SEPARATION_LEADER:
             self._ensure_materialized()
             assert self._tdsb is not None
-            self._tdsb.dimensions_separated = value
+            self._tdsb.dimensions_separated = bool(value)
             self._dimensions_separated = bool(value)
 
     @property
@@ -756,8 +781,7 @@ class Property(PropertyBase):
             raise AttributeError(
                 f"expression cannot be set on property {self.match_name!r}"
             )
-        if not isinstance(value, str):
-            raise ValueError("expression must be a string")
+        validate_string(value)
         if self._expression_utf8 is not None:
             self._ensure_materialized()
             self._expression_utf8.value = value
@@ -1085,11 +1109,10 @@ class Property(PropertyBase):
         `_scale_effect_point_speeds` to set speed factors on keyframe ease
         objects.
         """
-        _sentinel = "_effect_scale"
         # Allow explicit override via __dict__ (e.g. from tests or
         # _scale_effect_point_speeds recursion guard).
-        if _sentinel in self.__dict__:
-            result: list[float] | None = self.__dict__[_sentinel]
+        if "_effect_scale" in self.__dict__:
+            result: list[float] | None = self.__dict__["_effect_scale"]
             return result
 
         scale: list[float] | None = None
@@ -1111,11 +1134,11 @@ class Property(PropertyBase):
         if scale is not None and self.match_name != "ADBE Anchor Point":
             # Set guard before _scale_effect_point_speeds (which accesses
             # kf.value -> _resolve_value -> _effect_scale) to avoid recursion.
-            self.__dict__[_sentinel] = scale
+            self.__dict__["_effect_scale"] = scale
             try:
                 self._scale_effect_point_speeds(scale)
             finally:
-                del self.__dict__[_sentinel]
+                del self.__dict__["_effect_scale"]
         return scale
 
     @_effect_scale.setter

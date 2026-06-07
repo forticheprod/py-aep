@@ -14,6 +14,32 @@ documentation: https://github.com/hunger-zh/lottie-docs/blob/main/docs/aep.md#li
 """
 
 
+def cos_get(data: Any, *keys: str | int) -> Any:
+    """Safely traverse parsed COS data by successive keys.
+
+    Each key is tried as a dict string key first and then as a list
+    index. Returns `None` when any step along the path is missing.
+
+    Example::
+
+        cos_get(data, "1", "1", 0, "0", "0")  # -> text string
+    """
+    cur: Any = data
+    for key in keys:
+        if cur is None:
+            return None
+        if isinstance(cur, dict):
+            cur = cur.get(str(key))
+        elif isinstance(cur, list):
+            try:
+                cur = cur[int(key)]
+            except (IndexError, ValueError, TypeError):
+                return None
+        else:
+            return None
+    return cur
+
+
 class TokenType(Enum):
     Identifier = auto()  # /foo
     Number = auto()  # 123

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 from conftest import get_rqi, load_expected, parse_project
 
 from py_aep import parse as parse_aep
+from py_aep.binary.render_chunks import ROUT_ITEMS_PER_RQ_ITEM
 from py_aep.enums import (
     ConvertToLinearLight,
     FieldRender,
@@ -25,11 +27,13 @@ from py_aep.enums import (
     TimeSpanSource,
 )
 from py_aep.models.renderqueue import OutputModule
+from py_aep.models.renderqueue.render_queue_item import RenderQueueItem
 from py_aep.resolvers.output import resolve_output_filename
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "renderqueue"
 OM_SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "output_module"
 BUGS_DIR = Path(__file__).parent.parent / "samples" / "bugs"
+AE_PREFS_DIR = os.getenv("AE_PREFS_DIR")
 
 
 class TestRenderQueueBasic:
@@ -1291,3 +1295,541 @@ class TestGetSettings:
         om = rqi.output_modules[0]
         with pytest.raises(ValueError):
             om.get_settings(9999)  # type: ignore[arg-type]
+
+
+# ==================== Mutation Tests ====================
+
+
+def _assert_rout_consistent(app: object) -> None:
+    """The Rout chunk holds a fixed block of items per RQ item.
+
+    AE writes `ROUT_ITEMS_PER_RQ_ITEM` Rout entries per render queue item and
+    the `count` field must match the number of entries. Parse/remove/duplicate
+    must keep this invariant (otherwise AE reports "missing data in file").
+    """
+    rq = app.project.render_queue  # type: ignore[attr-defined]
+    rout = rq._rout
+    expected = len(rq.items) * ROUT_ITEMS_PER_RQ_ITEM
+    assert len(rout.items) == expected, (
+        f"expected {expected} Rout items for {len(rq.items)} RQ items, "
+        f"got {len(rout.items)}"
+    )
+    assert rout.count == len(rout.items), (
+        f"Rout.count={rout.count} != len(items)={len(rout.items)}"
+    )
+
+
+class TestRoutChunkIntegrity:
+    """Regression tests: the Rout chunk stays consistent across mutations.
+
+    These guard the 5-items-per-RQ-item invariant; len(items)-only checks
+    miss a corrupt Rout chunk because the item count comes from the render
+    settings ldat, not from Rout.
+    """
+
+    def test_parse_associates_per_item_block(self) -> None:
+        # Each RQ item owns its own contiguous, non-shared Rout block.
+        app = parse_aep(SAMPLES_DIR / "2_rqitems.aep")
+        rq = app.project.render_queue
+        _assert_rout_consistent(app)
+        block0 = rq.items[0]._rout_items
+        block1 = rq.items[1]._rout_items
+        assert len(block0) == ROUT_ITEMS_PER_RQ_ITEM
+        assert len(block1) == ROUT_ITEMS_PER_RQ_ITEM
+        assert not any(a is b for a in block0 for b in block1)
+
+    def test_remove_keeps_rout_consistent(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "2_rqitems.aep")
+        app.project.render_queue.items[0].remove()
+        _assert_rout_consistent(app)
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        _assert_rout_consistent(parse_aep(out))
+
+    def test_duplicate_keeps_rout_consistent(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "base.aep")
+        app.project.render_queue.items[0].duplicate()
+        _assert_rout_consistent(app)
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        _assert_rout_consistent(parse_aep(out))
+
+
+class TestRQItemRemove:
+    """Tests for RenderQueueItem.remove()."""
+
+    def test_remove_first_item(self, tmp_path: Path) -> None:
+        """Removing the first RQ item leaves one item, roundtrips."""
+        app = parse_aep(SAMPLES_DIR / "2_rqitems.aep")
+        rq = app.project.render_queue
+        assert len(rq.items) == 2
+        _comp0 = rq.items[0].comp
+        comp1 = rq.items[1].comp
+
+        rq.items[0].remove()
+        assert len(rq.items) == 1
+        assert rq.items[0].comp is comp1
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == 1
+
+    def test_remove_second_item(self, tmp_path: Path) -> None:
+        """Removing the second RQ item leaves one item, roundtrips."""
+        app = parse_aep(SAMPLES_DIR / "2_rqitems.aep")
+        rq = app.project.render_queue
+        comp0 = rq.items[0].comp
+
+        rq.items[1].remove()
+        assert len(rq.items) == 1
+        assert rq.items[0].comp is comp0
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == 1
+
+    def test_remove_all_items(self, tmp_path: Path) -> None:
+        """Removing all items empties the render queue, roundtrips."""
+        app = parse_aep(SAMPLES_DIR / "2_rqitems.aep")
+        rq = app.project.render_queue
+        assert rq._arsi.queue_nonempty == 1
+
+        rq.items[1].remove()
+        rq.items[0].remove()
+        assert len(rq.items) == 0
+        # Emptying the queue clears the ARsi non-empty marker AE set.
+        assert rq._arsi.queue_nonempty == 0
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        rq2 = app2.project.render_queue
+        assert len(rq2.items) == 0
+        assert rq2._arsi.queue_nonempty == 0
+
+    def test_remove_item_with_comment(self, tmp_path: Path) -> None:
+        """Removing an item with a comment works correctly."""
+        app = parse_aep(SAMPLES_DIR / "comment_aaaaa.aep")
+        rq = app.project.render_queue
+        assert len(rq.items) == 1
+        assert rq.items[0].comment == "aaaaa"
+
+        rq.items[0].remove()
+        assert len(rq.items) == 0
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == 0
+
+
+class TestRQItemDuplicate:
+    """Tests for RenderQueueItem.duplicate()."""
+
+    def test_duplicate_basic(self, tmp_path: Path) -> None:
+        """Duplicating an item increases count by one, roundtrips."""
+        app = parse_aep(SAMPLES_DIR / "base.aep")
+        rq = app.project.render_queue
+        orig_count = len(rq.items)
+        orig_comp = rq.items[0].comp
+
+        new_item = rq.items[0].duplicate()
+        assert len(rq.items) == orig_count + 1
+        assert new_item.comp is orig_comp
+        assert new_item is rq.items[1]
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == orig_count + 1
+
+    def test_duplicate_preserves_output_modules(self, tmp_path: Path) -> None:
+        """Duplicated item has the same number of output modules."""
+        app = parse_aep(SAMPLES_DIR / "base.aep")
+        rq = app.project.render_queue
+        orig_om_count = len(rq.items[0].output_modules)
+
+        new_item = rq.items[0].duplicate()
+        assert len(new_item.output_modules) == orig_om_count
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items[1].output_modules) == orig_om_count
+
+    def test_duplicate_from_two_items(self, tmp_path: Path) -> None:
+        """Duplicating from a file with 2 items produces 3 items, roundtrips."""
+        app = parse_aep(SAMPLES_DIR / "2_rqitems.aep")
+        rq = app.project.render_queue
+        assert len(rq.items) == 2
+
+        rq.items[0].duplicate()
+        assert len(rq.items) == 3
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == 3
+
+    def test_duplicate_then_remove(self, tmp_path: Path) -> None:
+        """Duplicate then remove the original leaves the duplicate."""
+        app = parse_aep(SAMPLES_DIR / "base.aep")
+        rq = app.project.render_queue
+
+        new_item = rq.items[0].duplicate()
+        rq.items[0].remove()
+        assert len(rq.items) == 1
+        assert rq.items[0] is new_item
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == 1
+
+
+@pytest.mark.skipif(not AE_PREFS_DIR, reason="AE_PREFS_DIR env var not set")
+class TestRQAdd:
+    """Tests for RenderQueue.add()."""
+
+    def test_add_to_existing(self, tmp_path: Path) -> None:
+        """Adding a comp to RQ with existing items increases count."""
+        app = parse_aep(SAMPLES_DIR / "base.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = rq.items[0].comp
+        orig_count = len(rq.items)
+
+        new_item = rq.add(comp)
+        assert len(rq.items) == orig_count + 1
+        assert new_item.comp is comp
+        assert len(new_item.output_modules) == 1
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == orig_count + 1
+
+    def test_add_returns_rqitem(self) -> None:
+        """add() returns a RenderQueueItem."""
+        app = parse_aep(SAMPLES_DIR / "base.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = rq.items[0].comp
+        new_item = rq.add(comp)
+        assert isinstance(new_item, RenderQueueItem)
+
+    def test_add_after_remove_all(self, tmp_path: Path) -> None:
+        """Adding to an emptied queue works and roundtrips."""
+        app = parse_aep(SAMPLES_DIR / "base.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = rq.items[0].comp
+
+        rq.items[0].remove()
+        assert len(rq.items) == 0
+
+        rq.add(comp)
+        assert len(rq.items) == 1
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert len(app2.project.render_queue.items) == 1
+
+
+class TestRQAddWithoutPreferences:
+    """RenderQueue.add() builds a valid TIFF image-sequence item with no prefs.
+
+    These run in CI (no AE_PREFS_DIR needed): add() no longer raises or warns
+    without ae_preferences_dir - it builds a fresh "TIFF Sequence with Alpha"
+    output module whose chunks match what After Effects writes for a freshly
+    added item.
+    """
+
+    def test_add_without_prefs_builds_tiff_item(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "custom.aep")  # no ae_preferences_dir
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        orig = rq.num_items
+
+        rqi = rq.add(comp)
+
+        assert rq.num_items == orig + 1
+        assert rqi.name == "Best Settings"
+        # Fresh item has no output file set yet -> NEEDS_OUTPUT, like AE.
+        assert rqi.status == RQItemStatus.NEEDS_OUTPUT
+        assert rqi.num_output_modules == 1
+        assert rqi.output_modules[0].name == "TIFF Sequence with Alpha"
+
+    def test_fresh_om_structure_matches_ae(self) -> None:
+        # AE's freshly added OM has no Als2 alias; its LOm is Roou, Ropt,
+        # hdrm, Utf8x3. The Ropt is the 602-byte TIFF format options.
+        import io
+
+        from py_aep.binary.render_chunks import TiffRoptChunk
+
+        app = parse_aep(SAMPLES_DIR / "custom.aep")
+        rqi = app.project.render_queue.add(app.project.compositions[0])
+        lom_types = [
+            getattr(c, "list_type", None) or c.chunk_type for c in rqi._lom.chunks
+        ]
+        assert "Als2" not in lom_types
+        assert lom_types == ["Roou", "Ropt", "hdrm", "Utf8", "Utf8", "Utf8"]
+        ropt = next(c for c in rqi._lom.chunks if c.chunk_type == "Ropt")
+        assert isinstance(ropt, TiffRoptChunk)
+        buf = io.BytesIO()
+        ropt.write(buf)
+        assert len(buf.getvalue()) == 602
+
+    def test_add_without_prefs_roundtrips(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "custom.aep")
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        orig = rq.num_items
+
+        rq.add(comp)
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        rq2 = app2.project.render_queue
+        assert rq2.num_items == orig + 1
+        assert rq2.items[-1].output_modules[0].name == "TIFF Sequence with Alpha"
+
+    def test_add_to_empty_queue_roundtrips(self, tmp_path: Path) -> None:
+        # A project whose render queue starts empty: the settings 'list'
+        # has only an lhd3, so add() must attach the ldat to the tree.
+        app = parse_aep(SAMPLES_DIR / "empty.aep")
+        rq = app.project.render_queue
+        assert rq.num_items == 0
+        comp = app.project.compositions[0]
+
+        rq.add(comp)
+        assert rq.num_items == 1
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        rq2 = app2.project.render_queue
+        assert rq2.num_items == 1
+        assert rq2.items[0].output_modules[0].name == "TIFF Sequence with Alpha"
+
+    def test_image_sequence_chunk_defaults(self) -> None:
+        # Field defaults reproduce AE's fresh "TIFF Sequence with Alpha" item
+        # (values captured from After Effects 26). The reserved-region values
+        # are the bytes AE writes; without them AE reports "missing data".
+        from py_aep.binary.render_chunks import (
+            OutputModuleSettingsItem,
+            RenderSettingsItem,
+            RouuChunk,
+        )
+
+        rouu = RouuChunk()
+        assert rouu.format_id == "TIF "
+        assert rouu.depth == 32
+        assert rouu.audio_disabled_hi == 255
+        assert rouu.audio_channels == 0
+        # The full image-sequence body is 154 bytes (114 typed + 40 trailing).
+        assert len(rouu.tobytes()) == 154
+
+        rs = RenderSettingsItem()
+        assert rs._reserved_00 == b"\x00\x01\x00\x00\x00\x00\x00"
+        assert rs._reserved_06 == b"\x00\x03\x00\x00"
+        assert rs._reserved_39 == b"\xff\xff\xff\xff\x00\xb4" + b"\x00" * 8
+        assert rs._reserved_45 == b"\x00\x00\x00\x02\xff\xff"
+        assert rs._remaining == b"\x00" * 19 + b"\x02\x00\x00\x00\x0f" + b"\x00" * 16
+
+        om = OutputModuleSettingsItem()
+        assert om.convert_to_linear_light == 2
+        assert om.output_color_space_working == 1
+        assert om.channels == 1
+
+    def test_tiff_ropt_default_is_602_bytes(self) -> None:
+        # A default TiffRoptChunk reproduces AE's exact 602-byte TIFF Ropt
+        # (the markers, incl. 0x025A = 602, are split across _pad + chunk_size).
+        import io
+
+        from py_aep.binary.render_chunks import TiffRoptChunk
+
+        buf = io.BytesIO()
+        TiffRoptChunk().write(buf)
+        data = buf.getvalue()
+        assert len(data) == 602
+        assert data[:4] == b"TIF "
+        assert TiffRoptChunk().chunk_size == 602
+
+    def test_ropt_variant_defaults_are_valid_chunks(self) -> None:
+        # Each variant's field defaults reproduce AE's real Ropt for that
+        # format: correct full length, format code, and a construct -> parse
+        # round-trip back to the same variant and bytes.
+        from py_aep.binary.render_chunks import (
+            CineonRoptChunk,
+            JpegRoptChunk,
+            OpenExrRoptChunk,
+            PngRoptChunk,
+            RoptChunk,
+            TargaRoptChunk,
+        )
+
+        cases = [
+            (CineonRoptChunk, b"sDPX", 48),
+            (JpegRoptChunk, b"JPEG", 58),
+            (OpenExrRoptChunk, b"oEXR", 78),
+            (PngRoptChunk, b"png!", 322),
+            (TargaRoptChunk, b"TPIC", 84),
+        ]
+        for cls, code, size in cases:
+            data = cls().tobytes()
+            assert len(data) == size, code
+            assert data[:4] == code
+            # RoptChunk dispatch re-parses the bytes to the same variant + bytes
+            parsed = RoptChunk.frombytes(data, chunk_type="Ropt")
+            assert isinstance(parsed, cls), code
+            assert parsed.tobytes() == data, code
+
+    def test_arsi_chunk_named_fields(self) -> None:
+        # The ARsi state chunk parses to a typed ArsiChunk (fixed 1872 bytes)
+        # whose queue_nonempty flag (offset 3) tracks whether the queue has
+        # items.
+        from py_aep.binary.render_chunks import ArsiChunk
+        from py_aep.binary.utils import recursive_find
+
+        app = parse_aep(SAMPLES_DIR / "field_render.aep")
+        rq = app.project.render_queue
+        arsi = recursive_find(rq._lrdr.chunks, chunk_type="ARsi")[0]
+        assert isinstance(arsi, ArsiChunk)
+        assert len(arsi.tobytes()) == 1872
+        assert arsi.queue_nonempty == (1 if rq.num_items else 0)
+
+    def test_parse_id_hex_section_is_bounded(self) -> None:
+        # The section parser must decode AE's hex/ASCII encoding and never
+        # leak continuation lines across section boundaries.
+        from py_aep.parsers.templates import _parse_id_hex_section
+
+        text = (
+            '["Output File Info Preference Section v28"]\n'
+            '\t"Output File Info ID # 0" = "AB"00"CD"\\\n'
+            '\t\t01"EF"\n'
+            '["Output File Options Preference Section v28"]\n'
+            '\t"Output File Options ID # 0" = "XY"FF\n'
+        )
+        info = _parse_id_hex_section(
+            text, "Output File Info Preference Section", "Output File Info"
+        )
+        opts = _parse_id_hex_section(
+            text, "Output File Options Preference Section", "Output File Options"
+        )
+        # Info entry stops at the section boundary (no Options bytes leak in).
+        assert info[0] == b"AB\x00CD\x01EF"
+        assert opts[0] == b"XY\xff"
+
+
+class TestOMRemove:
+    """Tests for OutputModule.remove()."""
+
+    def test_remove_last_om_raises(self) -> None:
+        """Cannot remove the only output module."""
+        app = parse_aep(SAMPLES_DIR / "base.aep")
+        rq = app.project.render_queue
+        rqi = rq.items[0]
+        assert len(rqi.output_modules) == 1
+
+        with pytest.raises(RuntimeError):
+            rqi.output_modules[0].remove()
+
+
+@pytest.mark.skipif(not AE_PREFS_DIR, reason="AE_PREFS_DIR env var not set")
+class TestRenderQueueAdd:
+    """Tests for RenderQueue.add()."""
+
+    def test_add_returns_rq_item(self) -> None:
+        """RenderQueue.add() returns a RenderQueueItem."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert isinstance(rqi, RenderQueueItem)
+
+    def test_add_increments_num_items(self) -> None:
+        """Adding a comp increases num_items by 1."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        n = rq.num_items
+        rq.add(comp)
+        assert rq.num_items == n + 1
+
+    def test_add_sets_comp_reference(self) -> None:
+        """The new RQ item references the correct comp."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert rqi.comp is comp
+
+    def test_add_default_status_queued(self) -> None:
+        """New item has QUEUED status by default."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert rqi.status == RQItemStatus.QUEUED
+
+    def test_add_default_time_span(self) -> None:
+        """New item has LENGTH_OF_COMP time span source."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert rqi._ldat.time_span_source == int(TimeSpanSource.LENGTH_OF_COMP)
+
+    def test_add_has_one_output_module(self) -> None:
+        """New item has exactly 1 output module."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert len(rqi.output_modules) == 1
+
+    def test_add_to_empty_queue(self) -> None:
+        """Adding to an empty render queue works."""
+        app = parse_aep(SAMPLES_DIR / "empty.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        assert rq.num_items == 0
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert rq.num_items == 1
+        assert rqi.comp is comp
+
+    def test_add_to_existing_queue(self) -> None:
+        """Adding to a queue that already has items works."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        n = rq.num_items
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert rq.num_items == n + 1
+        assert rq.items[-1] is rqi
+
+    def test_add_roundtrip(self, tmp_path: Path) -> None:
+        """Save + reparse preserves the new RQ item."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        rq.add(comp)
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+        rq2 = app2.project.render_queue
+        assert rq2.num_items == 2
+        assert rq2.items[-1].comp.name == comp.name
+
+    def test_add_then_remove(self) -> None:
+        """Add then remove leaves RQ in original state."""
+        app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
+        rq = app.project.render_queue
+        original_count = rq.num_items
+        comp = app.project.compositions[0]
+        rqi = rq.add(comp)
+        assert rq.num_items == original_count + 1
+        rqi.remove()
+        assert rq.num_items == original_count
