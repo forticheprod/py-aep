@@ -1,41 +1,82 @@
 from __future__ import annotations
 
+import copy
 import logging
 import math
 from typing import TYPE_CHECKING, Union, cast
 
+from py_aep.cos import cos_get
 from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
-from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdmnChunk, TdsbChunk
+from ...binary.chunk import ListChunk
+from ...binary.ldat_chunks import LdatItemType, ShapePoint
+from ...binary.mutations import (
+    ITEM_SIZE_BY_TYPE,
+    build_keyframe_list,
+    build_kf_data,
+    build_ldat_item,
+    build_parallel_ldat_item,
+    build_shap,
+)
+from ...binary.property_chunks import (
+    CdatChunk,
+    Tdb4Chunk,
+    TdmnChunk,
+    TdsbChunk,
+    TdsnChunk,
+    TdumChunk,
+    tdb4_apply_animated_template,
+    tdb4_apply_static_template,
+)
 from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.utils import (
+    ChunkNotFoundError,
+    find_by_list_type,
+    find_by_type,
+    index_by_identity,
+)
 from ...data.units import UNITS_TEXT_MAP
 from ...synthesis.specs import _USE_VALUE
 from ..descriptors import ChunkField
-from ..validators import _validate_number, validate_sequence, validate_string
+from ..text.text_document import TextDocument
+from ..validators import (
+    _validate_number,
+    validate_number,
+    validate_sequence,
+    validate_string,
+)
+from .gradient import Gradient
+from .keyframe import Keyframe
+from .marker import MarkerValue
 from .overrides import (
     _ALWAYS_MODIFIED,
     _CANVARY_OVERRIDES,
     _ISSPATIAL_OVERRIDES,
     _NAME_OVERRIDES,
 )
+from .parallel import (
+    GRADIENT_KIND,
+    MARKER_KIND,
+    ORIENTATION_KIND,
+    SHAPE_KIND,
+    TEXT_KIND,
+    ParallelKind,
+)
 from .property_base import _TDSN_SENTINEL, PropertyBase
+from .shape import Shape
 
 if TYPE_CHECKING:
     from typing import Any
 
-    from ...binary.property_chunks import TdumChunk
+    from ...binary.chunk import Chunk
+    from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+    from ...binary.misc_chunks import ShphChunk
     from ...binary.scalar_chunks import S4Chunk
     from ...synthesis.specs import _PropSpec
     from ..items.composition import CompItem
-    from ..text.text_document import TextDocument
-    from .gradient import Gradient
-    from .keyframe import Keyframe
-    from .marker import MarkerValue
     from .property_group import PropertyGroup
-    from .shape import Shape
 
     _ValueType = Union[
         list[float],
@@ -325,11 +366,10 @@ class Property(PropertyBase):
             _tdb4.vector = spec.dimensions > 1
             _tdb4.can_vary_over_time = can_vary
 
-        display = spec.auto_name or _TDSN_SENTINEL
-        name_utf8 = Utf8Chunk(value=display, synthetic=synthetic)
-        tdsn = ContainerChunk(
-            chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
-        )
+        # AE writes the unnamed sentinel; the display name resolves
+        # from auto_name on the model.
+        tdsn = TdsnChunk.new(_TDSN_SENTINEL, synthetic=synthetic)
+        name_utf8 = tdsn.utf8
         _tdbs = ListChunk(
             list_type="tdbs",
             chunks=[_tdsb, tdsn, _tdb4],
@@ -385,6 +425,15 @@ class Property(PropertyBase):
             prop._min_value_fallback = spec.min_value
         if spec.max_value is not None:
             prop._max_value_fallback = spec.max_value
+        if spec.bound_chunks is not None:
+            prop._bound_chunks_hint = spec.bound_chunks
+        else:
+            prop._bound_chunks_hint = (
+                (spec.min_value is not None or spec.max_value is not None)
+                and not spec.integer
+                and not spec.color
+                and not spec.is_spatial
+            )
 
         return prop
 
@@ -434,7 +483,26 @@ class Property(PropertyBase):
         self._tdpi = _tdpi
         self._composition = _composition
 
+        # Whether AE writes tdum/tduM placeholder bounds for this property
+        # when materialized. Set from the synthesis spec in `_new`.
+        self._bound_chunks_hint = False
+
+        # Parallel per-keyframe value container for complex value types
+        # (otky / mrky / omks / GCky). Set by the specialized parsers.
+        # Holds one value chunk per keyframe, aligned with `keyframes`.
+        self._kf_value_container: ListChunk | None = None
+
+        # The wrapper LIST holding this property's tdbs + value container
+        # (otst / mrst / om-s / GCst / btds). Set by the specialized
+        # parsers; None for ordinary numeric properties and for complex
+        # properties whose pristine state stores a bare tdbs.
+        self._wrapper: ListChunk | None = None
+
         self._can_vary_over_time = can_vary_over_time
+
+        # Expressions can never be set on this parameter (from the pard
+        # definition header flag; set by _apply_param_def_metadata).
+        self._expressions_disabled = False
 
         self._dimensions_separated = dimensions_separated
 
@@ -488,6 +556,20 @@ class Property(PropertyBase):
             if i < len(self.keyframes) - 1:
                 kf._next = self.keyframes[i + 1]
 
+    def _link_inserted_key(self, idx: int) -> None:
+        """Re-link only the keyframe inserted at `idx` and its neighbours.
+
+        Equivalent to `_link_keyframes` after a single insertion, but O(1)
+        so bulk additions (`set_values_at_times`) stay linear.
+        """
+        kf = self.keyframes[idx]
+        if idx > 0:
+            kf._prev = self.keyframes[idx - 1]
+            self.keyframes[idx - 1]._next = kf
+        if idx + 1 < len(self.keyframes):
+            kf._next = self.keyframes[idx + 1]
+            self.keyframes[idx + 1]._prev = kf
+
     def _ensure_materialized(self) -> None:
         """Flip synthetic flags so backing chunks become visible to write_aep().
 
@@ -512,6 +594,195 @@ class Property(PropertyBase):
             if hasattr(c, "chunks"):
                 for cc in c.chunks:
                     cc.synthetic = False
+
+        self._ensure_time_base()
+        self._complete_static_value_chunks()
+        self._reposition_canonically()
+        self._ensure_bound_chunks()
+        self._materialize_static_orientation()
+
+    def _ensure_time_base(self) -> None:
+        """Stamp the containing comp's timebase into a py-created tdb4.
+
+        AE writes `cdta.internal_timebase` (e.g. 24576 for 24 fps) into
+        every layer-level tdb4 and rejects the file with "zero denominator
+        converting ratio denominators" when the field is 0. Synthesized
+        tdb4 chunks start at 0 (or the 30 fps placeholder 0x7800), so fix
+        them up the moment they become visible to `write_aep`. Chunks
+        parsed from a real file never reach this method (the synthetic
+        early-return above), preserving byte identity.
+        """
+        if self._tdb4 is None:
+            return
+        comp = self._composition
+        if comp is None:
+            node = self.parent_property
+            while node is not None:
+                comp = getattr(node, "_containing_comp", None)
+                if comp is not None:
+                    break
+                node = node.parent_property
+        if comp is not None:
+            self._tdb4._time_base = comp._cdta.internal_timebase
+            if (
+                self._tdb4._spatial_marker
+                and not self._tdb4.color
+                and not self._tdb4.no_value
+            ):
+                # AE writes the comp's pixel aspect into spatial point
+                # tdb4s (not orientation / color).
+                self._tdb4.pixel_aspect = comp._cdta.pixel_aspect
+
+    def _ensure_bound_chunks(self) -> None:
+        """Append the `tdum`/`tduM` min/max chunks AE requires for
+        multi-dimensional non-spatial vector properties (e.g. Scale) and
+        for bounded scalar properties (percentage coefficients, position
+        followers, time remap).
+
+        After Effects writes these `[0.0]` placeholder bounds for such
+        properties and rejects the materialized property ("missing data
+        in file") when they are absent. Spatial (Position, Anchor Point),
+        unbounded 1D (Rotation), integer and color properties do not
+        need them.
+        """
+        if self._tdum is not None or self._tduM is not None:
+            return
+        multi_dim_vector = (
+            not self._color
+            and not self.is_spatial
+            and self._vector
+            and self.dimensions > 1
+        )
+        fallback_bounded = (
+            (
+                self._min_value_fallback is not _UNSET
+                or self._max_value_fallback is not _UNSET
+            )
+            and not self._color
+            and not self.is_spatial
+            and not self._tdb4.integer
+            and not self.is_effect
+        )
+        if (
+            not multi_dim_vector
+            and not self._bound_chunks_hint
+            and not fallback_bounded
+        ):
+            return
+        if any(c.chunk_type in ("tdum", "tduM") for c in self._tdbs.chunks):
+            return
+        self._tdbs.chunks.append(TdumChunk(chunk_type="tdum", values=[0.0]))
+        self._tdbs.chunks.append(TdumChunk(chunk_type="tduM", values=[0.0]))
+
+    _NUMERIC_PVTS = frozenset(
+        {
+            PropertyValueType.OneD,
+            PropertyValueType.TwoD,
+            PropertyValueType.ThreeD,
+            PropertyValueType.TwoD_SPATIAL,
+            PropertyValueType.ThreeD_SPATIAL,
+            PropertyValueType.COLOR,
+            PropertyValueType.NO_VALUE,
+        }
+    )
+
+    def _complete_static_value_chunks(self) -> None:
+        """Give a materialized property the `cdat` AE writes: present,
+        padded to AE's canonical length, and in raw binary units.
+
+        AE pads cdat to `5 * dims` doubles for scalar / vector
+        properties and `3 * dims` for color and spatial ones, and
+        refuses materialized properties without a value chunk
+        ("missing data in file"). Complex kinds (orientation, marker,
+        shape, gradient, text) manage their own value containers.
+        """
+        if self._parallel_kind() is not None or self._tdb4 is None:
+            return
+        if self.property_value_type not in self._NUMERIC_PVTS:
+            return
+        if self._tdb4.no_value:
+            # No-value properties (e.g. Layer Source Alternate) carry a
+            # 4-zero-byte empty cdat; a padded double block makes AE fail
+            # with "chunk in file too big".
+            if self._cdat is None:
+                cdat = CdatChunk(pad=b"\x00\x00\x00\x00")
+                self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, cdat)
+                self._cdat = cdat
+            return
+        if self.match_name in ("ADBE Anchor Point", "ADBE Position"):
+            # AE writes static transform spatials with vector-style flags
+            # (measured on addCamera / addLight output, AE 2026).
+            self._tdb4._spatial_static_flags = 0x0F
+            self._tdb4._value_hint_type = 0xFFFF
+            self._tdb4._value_hint_flag = 0xFF
+            self._tdb4._cvot_flags = 0xFF
+            self._tdb4._type_flags = 0x08
+            self._tdb4._property_category = 0x09
+            self._tdb4._spatial_marker = True
+        elif (
+            not self._color
+            and not self.is_spatial
+            and not self._tdb4.integer
+            and not self.is_effect
+            and self._tdb4._value_hint_type == 0
+            and self._tdb4._property_category == 0
+        ):
+            # Plain numeric properties synthesized without a time base
+            # carry default flag bytes; AE writes them with the standard
+            # vector canon (Scale, Rotate Z, Opacity, Z Position...).
+            self._tdb4._value_hint_type = 1
+            self._tdb4._value_hint_flag = 0xFF
+            self._tdb4._cvot_flags = 0xFF
+            self._tdb4._type_flags |= 0x08
+            self._tdb4._property_category = 0x09
+        dims = self._tdb4.dimensions
+        value = self._value
+        if not isinstance(value, (int, float, list)):
+            value = self.default_value
+        if not isinstance(value, (int, float, list)):
+            value = 0.0 if dims <= 1 else [0.0] * dims
+        mult = 3 if (self._color or self.is_spatial) else 5
+        target = dims * mult
+        if self._cdat is None:
+            cdat = CdatChunk(values=[0.0] * target)
+            self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, cdat)
+            self._cdat = cdat
+        elif len(self._cdat.values) < target:
+            self._cdat.values = list(self._cdat.values) + [0.0] * (
+                target - len(self._cdat.values)
+            )
+        self._write_cdat(value)
+
+    def _materialize_static_orientation(self) -> None:
+        """Wrap a materialized static Orientation in the `otst` subtree
+        AE writes: `otst[tdbs(cdat le) + otky[otda]]` with a 1-dim tdb4.
+
+        AE rejects a bare big-endian Orientation tdbs with "missing data
+        in file".
+        """
+        kind = self._parallel_kind()
+        if kind is None or kind.name != "orientation":
+            return
+        if self._wrapper is not None or self.keyframes:
+            return
+        value = self._value
+        if not isinstance(value, list):
+            value = (
+                self.default_value
+                if isinstance(self.default_value, list)
+                else [0.0, 0.0, 0.0]
+            )
+        container = self._materialize_parallel_container(kind)
+        container.chunks.append(kind.build_value_chunk(self, value))
+        new_cdat = kind.static_cdat(value)
+        if self._cdat is not None and self._cdat in self._tdbs.chunks:
+            self._tdbs.chunks[self._tdbs.chunks.index(self._cdat)] = new_cdat
+        else:
+            self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, new_cdat)
+        self._cdat = new_cdat
+
+    def _chunk_body(self) -> ListChunk | None:
+        return self._tdbs
 
     @staticmethod
     def _read_tdum(body: TdumChunk) -> int | float | list[float]:
@@ -618,8 +889,8 @@ class Property(PropertyBase):
         raw = list(self._cdat.values)
         if isinstance(raw_value, list):
             raw[: len(raw_value)] = raw_value
-        else:
-            raw[0] = raw_value  # type: ignore[assignment]
+        elif isinstance(raw_value, (int, float)):
+            raw[0] = raw_value
         self._cdat.values = raw
 
     @property
@@ -650,7 +921,7 @@ class Property(PropertyBase):
                 return 0
             return self._composition._layer_id_to_index.get(layer_id, -1) + 1
         if self._value is not None:
-            return self._value
+            return self._wire_text_version(self._value)
         if self.keyframes:
             return self.value_at_time(0)
         if self._cdat is not None:
@@ -666,10 +937,79 @@ class Property(PropertyBase):
         # re-assigned must still be written to the cdat chunk.
         if value is self._value and not isinstance(value, (int, float, list)):
             return
+        if self.keyframes:
+            # ExtendScript: "Can not call setValue() on a property with
+            # keyframes." Writing a static value alongside keyframe data
+            # produces a file AE refuses to open.
+            raise ValueError(
+                "Cannot set value on a property with keyframes. "
+                "Use set_value_at_time() instead."
+            )
         _validate_value(self, value)
         self._ensure_materialized()
+        if not isinstance(value, (int, float, list, type(None))):
+            # A new complex value object (Shape, Gradient, TextDocument,
+            # MarkerValue) assigned to a static property: `_write_cdat`
+            # only writes numeric values, so the static value container
+            # must be rebuilt.
+            self._value = self._write_static_complex_value(value)
+            return
         self._write_cdat(value)
         self._value = value
+
+    def _cache_value(self, value: _ValueType) -> None:
+        """Cache a value decoded from chunks (parser-only).
+
+        Unlike the public `value` setter this never rebuilds value
+        containers, never enforces the keyframe guard, and skips
+        validation: the value comes from the file and the chunks
+        already hold it. `_write_cdat` keeps the numeric path
+        byte-faithful (a no-op write-back of the values just read).
+        """
+        self._write_cdat(value)
+        self._value = value
+
+    def _write_static_complex_value(self, value: Any) -> Any:
+        """Rebuild a static complex property's value container chunk.
+
+        Static shapes / gradients store their single value chunk as the
+        only entry of the parallel container (omks / GCky); rebuild it
+        from `value` and return the model rebound to the inserted chunk
+        (so later in-place edits reach the serialized form, not the
+        caller's chunk). Orientation stores its value in the
+        (little-endian) cdat, which `_write_cdat` handles, so it is left
+        to the numeric path. Text (byte-format-sensitive btdk COS) and
+        markers (no static value) have no clean from-scratch container
+        build and are rejected.
+        """
+        kind = self._parallel_kind()
+        if kind is None or kind.name == "orientation":
+            self._write_cdat(value)
+            return value
+        if kind.name == "text":
+            raise ValueError(
+                "Cannot replace a static text value with a new TextDocument. "
+                "Mutate the existing prop.value in place (e.g. prop.value.text = ...)."
+            )
+        if kind.name == "marker":
+            raise ValueError("Markers have no static value to set.")
+        container = self._kf_value_container
+        if container is None or not container.chunks:
+            raise ValueError(
+                f"static {self.match_name!r} property has no value container to update"
+            )
+        value_chunk = kind.build_value_chunk(self, value)
+        container.chunks[0] = value_chunk
+        wrapped = kind.wrap_value_chunk(self, value_chunk)
+        return wrapped if wrapped is not None else value
+
+    def _wire_text_version(self, value: _ValueType) -> _ValueType:
+        """Give a [TextDocument][] value a path to the project head so its
+        version-gated attributes can resolve the AE major version. No-op for
+        other value types or when the containing comp is unknown."""
+        if isinstance(value, TextDocument) and self._composition is not None:
+            value._head = self._composition._project._head
+        return value
 
     @property
     def min_value(self) -> Any:
@@ -967,7 +1307,7 @@ class Property(PropertyBase):
         """
         return min(
             range(len(self.keyframes)),
-            key=lambda i: abs(self.keyframes[i].frame_time - time),
+            key=lambda i: abs(self.keyframes[i].time - time),
         )
 
     def nearest_key(self, time: float) -> Keyframe:
@@ -1078,6 +1418,719 @@ class Property(PropertyBase):
             return self.value
 
         return interpolate_keyframes(time, self.keyframes, self.is_spatial)
+
+    # -- Keyframe mutation -------------------------------------------------
+
+    def _time_units(self) -> tuple[float, float]:
+        """Return `(time_scale, frame_rate)` for keyframe time conversion."""
+        if self.keyframes:
+            kf = self.keyframes[0]
+            return kf._time_scale, kf._frame_rate
+        comp = self._composition
+        if comp is None:
+            comp = self._containing_layer.containing_comp
+        return comp.time_scale, comp.frame_rate
+
+    def _keyframe_inner(self) -> ListChunk | None:
+        """The `LIST:list` holding the keyframe header chunks, or None."""
+        try:
+            return find_by_list_type(chunks=self._tdbs.chunks, list_type="list")
+        except ChunkNotFoundError:
+            return None
+
+    def _parallel_kind(self) -> ParallelKind | None:
+        """The complex-value kind storing keyframe values in a parallel
+        container, or `None` for ordinary numeric properties.
+        """
+        if self.match_name == "ADBE Orientation":
+            return ORIENTATION_KIND
+        if self.match_name == "ADBE Marker":
+            return MARKER_KIND
+        # By match name as well as by value: a never-edited gradient has no
+        # Gradient value to sample (no GCst data in the binary).
+        if self.match_name == "ADBE Vector Grad Colors":
+            return GRADIENT_KIND
+        pvt = self.property_value_type
+        if pvt == PropertyValueType.SHAPE:
+            return SHAPE_KIND
+        if pvt == PropertyValueType.TEXT_DOCUMENT:
+            return TEXT_KIND
+        sample = self.keyframes[0].value if self.keyframes else self._value
+        if isinstance(sample, Gradient):
+            return GRADIENT_KIND
+        return None
+
+    def _keyframe_item_type(self) -> LdatItemType:
+        """The `LdatItemType` for this property's keyframe header data."""
+        kind = self._parallel_kind()
+        if kind is not None:
+            return kind.header_item_type
+        if self._color:
+            return LdatItemType.color
+        if self._no_value:
+            return LdatItemType.no_value
+        dims = self.dimensions
+        if dims >= 3:
+            return (
+                LdatItemType.three_d_spatial
+                if self.is_spatial
+                else LdatItemType.three_d
+            )
+        if dims == 2:
+            return LdatItemType.two_d_spatial if self.is_spatial else LdatItemType.two_d
+        return LdatItemType.one_d
+
+    def _animate_tdb4(self) -> None:
+        """Set tdb4 metadata to AE's animated-property state.
+
+        Static and animated properties differ in several `tdb4` fields, not
+        just the `animated` bit; After Effects rejects (drops) the layer when
+        they are inconsistent. Values were reverse-engineered from AE 2026
+        output across 1D / 2D / 3D / spatial / color properties.
+
+        Complex (parallel-container) properties keep their value-hint
+        metadata as-is: AE only flips the static / animated / spatial-marker
+        fields (verified against AE 2026 static-vs-one-keyframe pairs for
+        text / shape / orientation / marker / gradient).
+        """
+        t = self._tdb4
+        if self._parallel_kind() is not None:
+            t.static = False
+            t.animated = True
+            t._spatial_marker = False
+            # AE clears the opaque interpolation residue it leaves in these
+            # fields when a complex property went static.
+            t._pad7b = 0
+            t._pad7c = 0
+            return
+        tdb4_apply_animated_template(
+            t, color=bool(self._color), spatial=self.is_spatial
+        )
+
+    def _ensure_animated(self) -> tuple[Lhd3Chunk, LdatChunk]:
+        """Return the keyframe `(lhd3, ldat)`, creating them if static.
+
+        Transitioning a static property to animated replaces its `cdat`
+        with a `LIST:list` keyframe container and rewrites the `tdb4`
+        metadata to AE's animated state.
+        """
+        inner = self._keyframe_inner()
+        if inner is None:
+            item_type = self._keyframe_item_type()
+            inner, lhd3, ldat = build_keyframe_list(
+                item_type, ITEM_SIZE_BY_TYPE[item_type]
+            )
+            self._animate_tdb4()
+            chunks = self._tdbs.chunks
+            if self._cdat is not None:
+                chunks[chunks.index(self._cdat)] = inner
+                self._cdat = None
+            else:
+                chunks.insert(chunks.index(self._tdb4) + 1, inner)
+            return lhd3, ldat
+        lhd3 = cast("Lhd3Chunk", find_by_type(chunks=inner.chunks, chunk_type="lhd3"))
+        ldat = cast("LdatChunk", find_by_type(chunks=inner.chunks, chunk_type="ldat"))
+        return lhd3, ldat
+
+    def _keyframe_insert_index(self, frame_time: int) -> tuple[int, bool]:
+        """Locate `frame_time` among the keyframes.
+
+        Returns `(index, exists)`: when a keyframe already sits at
+        `frame_time`, `exists` is True and `index` is its position;
+        otherwise `exists` is False and `index` is the sorted insertion
+        point.
+        """
+        for i, kf in enumerate(self.keyframes):
+            if kf.frame_time == frame_time:
+                return i, True
+        idx = 0
+        while idx < len(self.keyframes) and self.keyframes[idx].frame_time < frame_time:
+            idx += 1
+        return idx, False
+
+    def add_key(self, time: float) -> int:
+        """Add a keyframe at the given time and return its 0-based index.
+
+        The new keyframe takes the property's value at `time` (the
+        interpolated value when already animated, or the static value
+        otherwise), matching ExtendScript `Property.addKey()`. Adding the
+        first keyframe converts a static property to an animated one.
+
+        Args:
+            time: The composition time, in seconds.
+
+        Raises:
+            ValueError: If the property cannot vary over time, or has no
+                value to keyframe.
+        """
+        return self._add_key(time)
+
+    def _add_key(self, time: float, value: Any = _USE_VALUE) -> int:
+        """Add a keyframe at `time`, seeding its value when supplied.
+
+        When `value` is omitted, the keyframe takes the property's value at
+        `time` (interpolated when animated, the static value otherwise).
+        """
+        validate_number(time)
+        if not self.can_vary_over_time:
+            raise ValueError(f"property {self.match_name!r} cannot vary over time")
+        kind = self._parallel_kind()
+        if kind is not None:
+            return self._add_parallel_key(time, kind, value=value)
+        # A no-value numeric property has no value slot to keyframe; building
+        # a numeric keyframe item for it produces a wrong-size ldat item.
+        # (Complex kinds above store their value in a sibling container and
+        # legitimately report no_value=True, so this only guards the numeric
+        # path.)
+        if self._no_value:
+            raise ValueError(f"property {self.match_name!r} has no value to keyframe")
+        new_value = self.value_at_time(time) if value is _USE_VALUE else value
+        time_scale, frame_rate = self._time_units()
+        self._ensure_materialized()
+        lhd3, ldat = self._ensure_animated()
+
+        item_type = self._keyframe_item_type()
+        kf_data = build_kf_data(item_type, self.dimensions)
+        ldat_item = build_ldat_item(kf_data, spatial=self.is_spatial)
+
+        kf = Keyframe(
+            _ldat_item=ldat_item,
+            _time_scale=time_scale,
+            _frame_rate=frame_rate,
+        )
+        kf._bind_property(self)
+        kf.time = time
+        new_ft = kf.frame_time
+
+        idx, exists = self._keyframe_insert_index(new_ft)
+        if exists:
+            return idx
+        ldat.items.insert(idx, ldat_item)
+        self.keyframes.insert(idx, kf)
+        lhd3.count = len(self.keyframes)
+        kf.value = new_value
+        self._link_inserted_key(idx)
+        return idx
+
+    def remove_key(self, key_index: int) -> None:
+        """Remove the keyframe at `key_index` (0-based).
+
+        Removing the last remaining keyframe reverts the property to a
+        static value (the removed keyframe's value), matching ExtendScript
+        `Property.removeKey()`. Markers have no static value: removing the
+        last marker leaves the property empty.
+
+        Args:
+            key_index: The 0-based index of the keyframe to remove.
+
+        Raises:
+            IndexError: If the property has no keyframes.
+            ValueError: If `key_index` is out of range.
+        """
+        if not self.keyframes:
+            raise IndexError("property has no keyframes")
+        _validate_number(integer=True, min=0, max=len(self.keyframes) - 1)(key_index)
+        kind = self._parallel_kind()
+        if kind is not None:
+            if len(self.keyframes) == 1:
+                self._deanimate_parallel(kind)
+                return
+            self._remove_parallel_key(key_index, kind)
+            return
+        self._ensure_materialized()
+        lhd3, ldat = self._ensure_animated()
+        removed = self.keyframes[key_index]
+        removed_value = removed.value
+        del ldat.items[key_index]
+        del self.keyframes[key_index]
+        lhd3.count = len(self.keyframes)
+        self._link_keyframes()
+        if not self.keyframes:
+            self._deanimate(removed_value)
+
+    def _static_tdb4(self) -> None:
+        """Revert tdb4 metadata to AE's static (non-animated) state.
+
+        Inverse of `_animate_tdb4`. `_type_flags` is left untouched because
+        its non-`animated` bits (vector / color) are property-intrinsic and
+        differ per type.
+        """
+        t = self._tdb4
+        if self._parallel_kind() is not None:
+            # AE re-derives _spatial_marker when a complex property goes
+            # static: observed 1 for shape / orientation / gradient (whose
+            # _spatial_static_flags carry bit 1) and 0 for text / marker.
+            t.static = True
+            t.animated = False
+            t._spatial_marker = bool(t._spatial_static_flags & 0x02)
+            return
+        tdb4_apply_static_template(t, color=bool(self._color), spatial=self.is_spatial)
+
+    def _deanimate(self, value: _ValueType) -> None:
+        """Revert an emptied animated property to a static `value`."""
+        inner = self._keyframe_inner()
+        chunks = self._tdbs.chunks
+        self._static_tdb4()
+        raw = (
+            self._unresolve_value(value)
+            if isinstance(value, (int, float, list))
+            else None
+        )
+        if isinstance(raw, (int, float)):
+            raw_vals = [float(raw)]
+        elif isinstance(raw, list):
+            raw_vals = [float(v) for v in raw]
+        else:
+            raw_vals = [0.0]
+        cdat = CdatChunk(values=raw_vals)
+        if inner is not None:
+            chunks[chunks.index(inner)] = cdat
+        else:
+            chunks.insert(chunks.index(self._tdb4) + 1, cdat)
+        self._cdat = cdat
+        self._value = None
+
+    # -- Complex (parallel-container) keyframe mutation ------------------
+
+    def _build_shap_chunk(self, shape: Shape) -> Chunk:
+        """Build a `shap` LIST chunk from a [Shape][].
+
+        For a mask property, a pixel-space (from-scratch) shape is
+        converted to the normalized `[0, 1]`-of-composition bounding box AE
+        uses (dividing the box by the composition size leaves the points,
+        which are normalized to that box, unchanged). A shape already in
+        mask space (parsed) is used as-is.
+        """
+        points = [ShapePoint(x=p.x, y=p.y) for p in (shape._points or [])]
+        src = shape._shph
+        if src is not None:
+            bbox = [
+                src.top_left_x,
+                src.top_left_y,
+                src.bottom_right_x,
+                src.bottom_right_y,
+            ]
+        else:
+            bbox = [0.0, 0.0, 0.0, 0.0]
+        if self.match_name == "ADBE Mask Shape" and not shape._is_mask:
+            comp = self._containing_layer.containing_comp
+            w, h = float(comp.width), float(comp.height)
+            bbox = [bbox[0] / w, bbox[1] / h, bbox[2] / w, bbox[3] / h]
+        shap = build_shap(
+            (bbox[0], bbox[1], bbox[2], bbox[3]),
+            open_path=not shape.closed,
+            points=points,
+        )
+        if src is not None:
+            # Carry over the source header's unknown flag bits; build_shap
+            # only knows the open/closed bit.
+            new_shph = cast(
+                "ShphChunk", find_by_type(chunks=shap.chunks, chunk_type="shph")
+            )
+            new_shph._flags = src._flags
+            new_shph.open = not shape.closed
+        return shap
+
+    def _build_text_view(self, doc: Any, template: TextDocument) -> TextDocument:
+        """Wrap a COS doc dict as a [TextDocument][] sharing `template`'s
+        COS data / btdk chunk."""
+        char = cos_get(doc, "0", "6", "0", 0, "0", "0", "6")
+        para = cos_get(doc, "0", "5", "0", 0, "0", "0", "5")
+        view = TextDocument._from_binary(
+            _char_style=char if isinstance(char, dict) else None,
+            _para_style=para if isinstance(para, dict) else None,
+            _doc=doc,
+            _fonts=template._fonts,
+            _cos_data=template._cos_data,
+            _btdk_body=template._btdk_body,
+        )
+        return cast("TextDocument", self._wire_text_version(view))
+
+    def _animate_static_text(self, time: float, value: Any = _USE_VALUE) -> int:
+        """Add the first Source Text keyframe to a static text property.
+
+        The static document already lives in the shared `btdk` COS blob
+        (`cos["1"]["1"][0]`) and becomes the keyframe's value as-is; AE
+        only swaps the empty `cdat` for a keyframe `LIST:list` and flips
+        the tdb4 static / animated flags (the COS blob is byte-identical
+        between the static and one-keyframe states in AE 2026 output).
+        """
+        template = self._value
+        if not isinstance(template, TextDocument):
+            raise NotImplementedError(
+                "text property has no TextDocument value to animate"
+            )
+        time_scale, frame_rate = self._time_units()
+        self._ensure_materialized()
+        lhd3, ldat = self._ensure_animated()
+        ldat_item = build_parallel_ldat_item(self._keyframe_item_type())
+        kf = Keyframe(
+            _ldat_item=ldat_item, _time_scale=time_scale, _frame_rate=frame_rate
+        )
+        kf._bind_property(self)
+        kf.time = time
+        ldat.items.append(ldat_item)
+        self.keyframes.append(kf)
+        lhd3.count = 1
+        kf._value = template
+        self._value = None
+        if isinstance(value, str):
+            template.text = value
+        elif isinstance(value, TextDocument):
+            template.text = value.text
+        self._link_keyframes()
+        return 0
+
+    def _add_text_key(self, time: float, value: Any = _USE_VALUE) -> int:
+        """Add a Source Text keyframe.
+
+        Text keyframes share a single `btdk` COS blob holding one document
+        per keyframe (`cos["1"]["1"]`). A new keyframe deep-copies the
+        nearest document (inheriting its styling); pass a string or
+        [TextDocument][] to override the text content. After Effects
+        recomputes the per-keyframe box-frame / glyph caches on open, so
+        they are left untouched.
+        """
+        if self._keyframe_inner() is None or not self.keyframes:
+            return self._animate_static_text(time, value)
+        lhd3, ldat = self._ensure_animated()
+        time_scale, frame_rate = self._time_units()
+        nearest = self.nearest_key_index(time)
+        template = self.keyframes[nearest].value
+        if not isinstance(template, TextDocument):
+            raise NotImplementedError("text keyframe value is not a TextDocument")
+        doc_array = cos_get(template._cos_data, "1", "1")
+        new_doc = copy.deepcopy(doc_array[nearest])
+
+        ldat_item = build_parallel_ldat_item(self._keyframe_item_type())
+        kf = Keyframe(
+            _ldat_item=ldat_item, _time_scale=time_scale, _frame_rate=frame_rate
+        )
+        kf._bind_property(self)
+        kf.time = time
+        new_ft = kf.frame_time
+        idx, exists = self._keyframe_insert_index(new_ft)
+        if exists:
+            return idx
+        self._ensure_materialized()
+        ldat.items.insert(idx, ldat_item)
+        doc_array.insert(idx, new_doc)
+        self.keyframes.insert(idx, kf)
+        td = self._build_text_view(new_doc, template)
+        kf._value = td
+        if isinstance(value, str):
+            td.text = value
+        elif isinstance(value, TextDocument):
+            td.text = value.text
+        else:
+            # The text setter above already re-serializes the COS blob; when
+            # no text was supplied, propagate the structural insert ourselves.
+            td._propagate_cos()
+        lhd3.count = len(self.keyframes)
+        self._link_inserted_key(idx)
+        return idx
+
+    def _remove_text_key(self, key_index: int) -> None:
+        """Remove a Source Text keyframe (its COS document + header item).
+
+        The per-keyframe box-frame / glyph caches are left untouched -
+        After Effects recomputes them on open.
+        """
+        lhd3, ldat = self._ensure_animated()
+        removed = self.keyframes[key_index].value
+        if not isinstance(removed, TextDocument):
+            raise NotImplementedError("text keyframe value is not a TextDocument")
+        doc_array = cos_get(removed._cos_data, "1", "1")
+        self._ensure_materialized()
+        del ldat.items[key_index]
+        if key_index < len(doc_array):
+            del doc_array[key_index]
+        del self.keyframes[key_index]
+        lhd3.count = len(self.keyframes)
+        removed._propagate_cos()
+        self._link_keyframes()
+
+    def _materialize_parallel_container(self, kind: ParallelKind) -> ListChunk:
+        """Create the missing wrapper subtree / value container for a
+        complex property that stores nothing in the binary.
+
+        AE omits the wrapper entirely for pristine state (a never-marked
+        layer, a never-edited gradient, a never-modified orientation);
+        the property is backed by a bare `tdbs` (synthesized, or parsed
+        directly for orientation). Keying it wraps the `tdbs` in the
+        kind's wrapper LIST holding the per-keyframe value container,
+        with kind-specific `tdb4` baselines (AE 2026 output).
+        """
+        if not kind.can_materialize_wrapper or kind.container_type is None:
+            raise NotImplementedError(
+                f"animating a static {self.match_name!r} property is not yet supported"
+            )
+        # Materialize while the bare tdbs is still the property's body in
+        # the parent tdgp, so canonical repositioning can anchor it.
+        self._ensure_materialized()
+        parent = self.parent_property
+        assert parent is not None and parent._tdgp is not None
+        chunks = parent._tdgp.chunks
+        container = ListChunk(list_type=kind.container_type, chunks=[])
+        wrapper = self._wrapper
+        if wrapper is None:
+            wrapper = next(
+                (
+                    c
+                    for c in chunks
+                    if isinstance(c, ListChunk) and self._tdbs in c.chunks
+                ),
+                None,
+            )
+        if wrapper is not None:
+            # The wrapper exists but has no value container: add it after
+            # the tdbs.
+            wrapper.chunks.insert(wrapper.chunks.index(self._tdbs) + 1, container)
+        elif self._tdbs in chunks:
+            wrapper = ListChunk(
+                list_type=kind.wrapper_type, chunks=[self._tdbs, container]
+            )
+            chunks[chunks.index(self._tdbs)] = wrapper
+            # AE writes the unnamed sentinel into tdsn when it wraps the
+            # property (synthesis seeds the auto-name; a pristine
+            # orientation stores its real name).
+            if self._name_utf8 is not None:
+                self._name_utf8.value = _TDSN_SENTINEL
+            kind.on_wrap(self)
+        else:
+            raise NotImplementedError(
+                f"animating a static {self.match_name!r} property is not yet supported"
+            )
+        self._wrapper = wrapper
+        self._kf_value_container = container
+        return container
+
+    def _add_parallel_key(
+        self, time: float, kind: ParallelKind, value: Any = _USE_VALUE
+    ) -> int:
+        """Add a keyframe to a complex (parallel-container) property.
+
+        When `value` is omitted, the value is taken from the kind's
+        `held_value` (interpolated for orientation, held otherwise).
+        """
+        if kind is TEXT_KIND:
+            return self._add_text_key(time, value)
+        container = self._kf_value_container
+        if container is None:
+            container = self._materialize_parallel_container(kind)
+        time_scale, frame_rate = self._time_units()
+        # Resolve the held value before _ensure_animated: for a static
+        # orientation it reads the cdat that the swap removes.
+        new_value = kind.held_value(self, time) if value is _USE_VALUE else value
+        new_value = kind.coerce(new_value)
+        ldat_item = kind.build_header_item(new_value)
+        value_chunk = kind.build_value_chunk(self, new_value)
+
+        kf = Keyframe(
+            _ldat_item=ldat_item, _time_scale=time_scale, _frame_rate=frame_rate
+        )
+        kf._bind_property(self)
+        kf.time = time
+        new_ft = kf.frame_time
+        idx, exists = self._keyframe_insert_index(new_ft)
+        if exists:
+            return idx
+        was_static = not self.keyframes
+        self._ensure_materialized()
+        lhd3, ldat = self._ensure_animated()
+        ldat.items.insert(idx, ldat_item)
+        self.keyframes.insert(idx, kf)
+        if was_static and container.chunks:
+            # A static property's container already holds its single value
+            # chunk; the first keyframe takes its place.
+            container.chunks[0] = value_chunk
+        else:
+            container.chunks.insert(idx, value_chunk)
+        lhd3.count = len(self.keyframes)
+        # The header item already carries the value (`build_header_item`) and
+        # the container chunk is inserted above, so set the shadow directly:
+        # the public `kf.value` setter would re-route complex kinds back into
+        # the container write path, rebuilding the just-inserted chunk.
+        kf._value = new_value
+        # Re-bind the keyframe's model to the chunk just inserted (when the
+        # kind wraps); new_value (held or user-supplied) is backed by a
+        # different chunk, so edits to it would never reach the serialized
+        # keyframe.
+        wrapped = kind.wrap_value_chunk(self, value_chunk)
+        if wrapped is not None:
+            kf._value = wrapped
+        kind.bind_keyframe(kf._value, kf)
+        if was_static:
+            # Match the parsers: an animated shape keeps `value` aliased to
+            # the first keyframe's Shape; other kinds read through keyframes.
+            self._value = (
+                cast("_ValueType", kf._value) if kind.aliases_static_value else None
+            )
+        self._link_inserted_key(idx)
+        return idx
+
+    def _remove_parallel_key(self, key_index: int, kind: ParallelKind) -> None:
+        """Remove a keyframe from a complex (parallel-container) property."""
+        if kind is TEXT_KIND:
+            self._remove_text_key(key_index)
+            return
+        lhd3, ldat = self._ensure_animated()
+        container = self._kf_value_container
+        self._ensure_materialized()
+        del ldat.items[key_index]
+        del self.keyframes[key_index]
+        if container is not None and key_index < len(container.chunks):
+            del container.chunks[key_index]
+        lhd3.count = len(self.keyframes)
+        self._link_keyframes()
+
+    def _deanimate_parallel(self, kind: ParallelKind) -> None:
+        """Revert a complex property with one keyframe to its static state.
+
+        Mirrors AE 2026 output for removing the last keyframe: the keyframe
+        `LIST:list` is replaced by a `cdat` (the empty 4-byte form for most
+        kinds, the angle values for orientation) and the parallel container
+        keeps the removed keyframe's value chunk as the static value (a
+        text property's COS document likewise stays in place). Markers have
+        no static value, so the container entry is removed, leaving the
+        zero-marker state AE writes. AE itself also discards a gradient's
+        value (reverting it to the default gradient); keeping it matches
+        the persisted static-gradient form and `removeKey` semantics.
+        """
+        removed_value = self.keyframes[0].value
+        self._ensure_materialized()
+        inner = self._keyframe_inner()
+        del self.keyframes[0]
+        self._link_keyframes()
+        container = self._kf_value_container
+        if (
+            not kind.keeps_value_on_revert
+            and container is not None
+            and container.chunks
+        ):
+            del container.chunks[0]
+        cdat = kind.static_cdat(removed_value)
+        # Assign the static value before _static_tdb4: _parallel_kind()
+        # detects gradients by sampling it once the keyframes are gone.
+        self._value = removed_value if kind.keeps_value_on_revert else None
+        self._static_tdb4()
+        chunks = self._tdbs.chunks
+        if inner is not None:
+            chunks[chunks.index(inner)] = cdat
+        else:
+            chunks.insert(chunks.index(self._tdb4) + 1, cdat)
+        self._cdat = cdat
+
+    def set_value_at_time(self, time: float, new_value: _ValueType) -> None:
+        """Set the property's value at `time`, adding a keyframe if needed.
+
+        If a keyframe already exists at `time` its value is replaced;
+        otherwise a new keyframe is created (via [add_key][]). Matches
+        ExtendScript `Property.setValueAtTime()`.
+
+        Args:
+            time: The composition time, in seconds.
+            new_value: The value to set at that time.
+        """
+        validate_number(time)
+        kind = self._parallel_kind()
+        if kind is not None:
+            self._set_parallel_value_at(time, new_value, kind)
+            return
+        _, frame_rate = self._time_units()
+        target_ft = round(time * frame_rate)
+        idx, exists = self._keyframe_insert_index(target_ft)
+        if exists:
+            self.keyframes[idx].value = new_value
+            return
+        self._add_key(time, new_value)
+
+    def _set_parallel_value_at(
+        self, time: float, value: _ValueType, kind: ParallelKind
+    ) -> None:
+        """Set / replace the value at `time` for a complex property.
+
+        Unlike numeric properties, the value lives in the parallel
+        container, so an existing key's value chunk is rebuilt rather than
+        written through a descriptor.
+        """
+        _, frame_rate = self._time_units()
+        target_ft = round(time * frame_rate)
+        if kind is TEXT_KIND:
+            new_text = value.text if isinstance(value, TextDocument) else value
+            for kf in self.keyframes:
+                if kf.frame_time == target_ft:
+                    td = kf.value
+                    if isinstance(td, TextDocument) and isinstance(new_text, str):
+                        # The text setter already re-serializes the COS blob.
+                        td.text = new_text
+                        self._ensure_materialized()
+                    return
+            self._add_text_key(time, value)
+            return
+        value = cast("_ValueType", kind.coerce(value))
+        for kf in self.keyframes:
+            if kf.frame_time == target_ft:
+                self._write_parallel_kf_value(kf, value, kind)
+                return
+        self._add_parallel_key(time, kind, value=value)
+
+    def _write_parallel_kf_value(
+        self, kf: Keyframe, value: Any, kind: ParallelKind
+    ) -> None:
+        """Persist `value` into an existing complex keyframe's container
+        chunk and mirrored header item, then rebind the keyframe model.
+
+        Shared by `set_value_at_time` (targeting an existing key) and the
+        `Keyframe.value` setter (BUG 3): a complex keyframe's real value
+        lives in the parallel container, so writing through `kf_data`
+        alone never reaches the serialized form.
+        """
+        kind.update_header_item(kf._ldat_item, value)
+        container = self._kf_value_container
+        if container is not None:
+            try:
+                i = index_by_identity(self.keyframes, kf)
+            except ValueError:
+                i = -1
+            if 0 <= i < len(container.chunks):
+                value_chunk = kind.build_value_chunk(self, value)
+                container.chunks[i] = value_chunk
+                # Re-bind the keyframe's model to the chunk actually
+                # inserted (mirrors `_add_parallel_key`); `value` is backed
+                # by a different chunk, so editing the keyframe's value
+                # afterwards would otherwise reach the caller's chunk -
+                # corrupting any other keyframe that shares it.
+                wrapped = kind.wrap_value_chunk(self, value_chunk)
+                kf._value = wrapped if wrapped is not None else value
+            else:
+                kf._value = value
+        else:
+            kf._value = value
+        kind.bind_keyframe(kf._value, kf)
+        self._ensure_materialized()
+
+    def set_values_at_times(
+        self,
+        times: list[float],
+        new_values: list[_ValueType],
+    ) -> None:
+        """Set values at multiple times, adding keyframes as needed.
+
+        Matches ExtendScript `Property.setValuesAtTimes()`.
+
+        Args:
+            times: Composition times, in seconds.
+            new_values: Values to set, one per entry in `times`.
+
+        Raises:
+            ValueError: If `times` and `new_values` differ in length.
+        """
+        if len(times) != len(new_values):
+            raise ValueError("times and new_values must have the same length")
+        validate_sequence()(times)
+        for time, value in zip(times, new_values):
+            self.set_value_at_time(time, value)
 
     @property
     def _frame_offset(self) -> int:

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.property_chunks import TdmnChunk, TdsbChunk
-from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.chunk import ListChunk
+from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...enums import LayerType
 from .av_layer import AVLayer
 
@@ -53,10 +52,13 @@ class TextLayer(AVLayer):
             list_type="tdgp",
             chunks=[
                 TdsbChunk(),
-                ContainerChunk(chunk_type="tdsn", chunks=[Utf8Chunk(value="")]),
+                TdsnChunk.new(),
                 tdmn,
                 btds,
                 btgu,
+                # AE terminates the group's match-name stream; without it
+                # the file fails with "missing data in file".
+                TdmnChunk(value="ADBE Group End"),
             ],
         )
 

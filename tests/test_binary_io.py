@@ -1097,6 +1097,34 @@ class TestRoutChunk:
         assert item._flags == 0x40
 
 
+class TestRouuChunk:
+    """Roou bodies: 154 bytes (modern AE) and the legacy 114-byte form
+    without the optional `_reserved_72` tail must both round-trip
+    byte-identically."""
+
+    def test_fresh_chunk_writes_154_bytes(self) -> None:
+        from py_aep.binary.render_chunks import RouuChunk
+
+        assert len(RouuChunk().tobytes()) == 154
+
+    def test_154_byte_body_roundtrips(self) -> None:
+        from py_aep.binary.render_chunks import RouuChunk
+
+        full = RouuChunk().tobytes()
+        chunk = RouuChunk.frombytes(full, chunk_type="Roou")
+        assert chunk._reserved_72 is not None
+        assert chunk.tobytes() == full
+
+    def test_114_byte_body_roundtrips(self) -> None:
+        from py_aep.binary.render_chunks import RouuChunk
+
+        short = RouuChunk().tobytes()[:114]
+        chunk = RouuChunk.frombytes(short, chunk_type="Roou")
+        assert chunk._reserved_72 is None
+        assert chunk.audio_channels == 0  # last required field still parsed
+        assert chunk.tobytes() == short
+
+
 # ---------------------------------------------------------------------------
 # OptiChunk variants
 # ---------------------------------------------------------------------------
@@ -1354,18 +1382,37 @@ class TestPardChunk:
 
         body = (
             struct.pack(">i", 50)
-            + b"\x00" * 72
-            + struct.pack(">h", 0)
-            + b"\x00" * 2
-            + struct.pack(">h", 100)
+            + b"\x00" * 64
+            + struct.pack(">ii", 0, 100 * 65536)
+            + struct.pack(">ii", 0, 100 * 65536)
         )
         data = self._build_pard(2, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, ScalarPardChunk)
         assert chunk.last_value == 50
-        assert chunk.min_value == 0
-        assert chunk.max_value == 100
+        assert chunk.valid_min_raw == 0
+        assert chunk.valid_max_raw == 100 * 65536
+        assert chunk.slider_min_raw == 0
+        assert chunk.slider_max_raw == 100 * 65536
+
+        out = BytesIO()
+        chunk.write(out)
+        assert out.getvalue() == data
+
+    def test_integer_roundtrip(self) -> None:
+        import struct
+
+        from py_aep.binary.misc_chunks import IntegerPardChunk, PardChunk
+
+        body = struct.pack(">i", 5) + b"\x00" * 64 + struct.pack(">ii", 3, 999)
+        data = self._build_pard(1, body)
+        buf = BytesIO(data)
+        chunk = PardChunk.read(buf, len(data), chunk_type="pard")
+        assert isinstance(chunk, IntegerPardChunk)
+        assert chunk.last_value == 5
+        assert chunk.valid_min == 3
+        assert chunk.valid_max == 999
 
         out = BytesIO()
         chunk.write(out)
@@ -1427,13 +1474,23 @@ class TestPardChunk:
 
         from py_aep.binary.misc_chunks import PardChunk, SliderPardChunk
 
-        body = struct.pack(">d", 50.0) + b"\x00" * 52 + struct.pack(">f", 100.0)
+        body = (
+            struct.pack(">d", 50.0)
+            + b"\x00" * 40
+            + struct.pack(">ff", 0.0, 1000.0)
+            + b"\x00" * 4
+            + struct.pack(">f", 100.0)
+        )
         data = self._build_pard(10, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, SliderPardChunk)
         assert chunk.last_value == 50.0
-        assert chunk.max_value == 100.0
+        assert chunk.phase == 0.0
+        assert chunk.valid_min == 0.0
+        assert chunk.valid_max == 1000.0
+        assert chunk.slider_min == 0.0
+        assert chunk.slider_max == 100.0
 
         out = BytesIO()
         chunk.write(out)
@@ -1508,10 +1565,10 @@ class TestPardChunk:
         assert chunk.data == data
 
     def test_generic_pard_roundtrip(self) -> None:
-        """All 8 generic control types dispatch to GenericPardChunk and round-trip."""
+        """All 7 generic control types dispatch to GenericPardChunk and round-trip."""
         from py_aep.binary.misc_chunks import GenericPardChunk, PardChunk
 
-        for ct in (0, 1, 9, 11, 12, 13, 14, 15):
+        for ct in (0, 9, 11, 12, 13, 14, 15):
             body = bytes(range(92))  # non-trivial 92-byte body
             data = self._build_pard(ct, body)
             assert len(data) == 148, f"type {ct}: expected 148, got {len(data)}"
@@ -1785,7 +1842,7 @@ class TestLdatItem:
     def _build_item(
         self,
         item_type: int,
-        time_raw: int = 0,
+        time_units: int = 0,
         in_interp: int = 2,
         out_interp: int = 2,
         label: int = 0,
@@ -1795,9 +1852,7 @@ class TestLdatItem:
         import struct
 
         return (
-            b"\x00"
-            + struct.pack(">h", time_raw)
-            + b"\x00"
+            struct.pack(">i", time_units)
             + struct.pack(">BBBB", in_interp, out_interp, label, flags)
             + payload
         )
@@ -1810,13 +1865,13 @@ class TestLdatItem:
         # 5 doubles for 1D multidimensional
         payload = struct.pack(">ddddd", 50.0, 1.0, 33.3, 2.0, 66.6)
         data = self._build_item(
-            LdatItemType.one_d, time_raw=30, in_interp=2, out_interp=1
+            LdatItemType.one_d, time_units=30 * 256, in_interp=2, out_interp=1
         )
         data = data + payload
         # total = 8 header + 40 payload = 48
 
         item = LdatItem.frombytes(data, item_type=LdatItemType.one_d)
-        assert item.time_raw == 30
+        assert item.time_units == 30 * 256
         assert item.in_interpolation_type == 2
         assert item.out_interpolation_type == 1
         assert item.kf_data.value == pytest.approx([50.0])
@@ -1954,7 +2009,7 @@ class TestLdatChunk:
         )
         assert len(chunk.items) == 1
         assert isinstance(chunk.items[0], LdatItem)
-        assert chunk.items[0].time_raw == 15
+        assert chunk.items[0].time_units == 15 * 256
         assert chunk.items[0].kf_data.value == pytest.approx([100.0])
 
         out = BytesIO()

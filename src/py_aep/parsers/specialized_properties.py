@@ -17,10 +17,8 @@ from ..binary.utils import (
     find_by_type,
 )
 from ..cos import CosParser
-from ..enums import (
-    PropertyControlType,
-    PropertyValueType,
-)
+from ..enums import PropertyValueType
+from ..models.properties.parallel import ORIENTATION_KIND
 from ..models.properties.shape import FeatherPoint, Shape
 from .gradient import parse_gradient_xml
 from .property_value import (
@@ -69,13 +67,8 @@ def parse_orientation(
         property_depth=property_depth,
         tdmn=tdmn,
     )
-    # Orientation uses an angle dial control.  ExtendScript reports
-    # propertyValueType as ThreeD_SPATIAL and isSpatial as True, even
-    # though the binary stores is_spatial=False.
-    prop._property_control_type = PropertyControlType.ANGLE
-    prop._property_value_type = PropertyValueType.ThreeD_SPATIAL
-    prop.__dict__["dimensions"] = 3
-    prop.__dict__["_vector"] = True
+    prop._wrapper = otst_chunk
+    ORIENTATION_KIND.apply_model_metadata(prop)
 
     # cdat is parameterized with is_le; .value returns the correctly-
     # endian doubles regardless of context.
@@ -86,9 +79,9 @@ def parse_orientation(
         values = list(cdat.values)
         while len(values) < 3:
             values.append(0.0)
-        prop.value = values[:3]
+        prop._cache_value(values[:3])
     except ChunkNotFoundError:
-        prop.value = None
+        prop._cache_value(None)
 
     # Animated orientation keyframes store their 3-component values in
     # otky > otda chunks (one otda per keyframe), a sibling of tdbs inside
@@ -97,13 +90,14 @@ def parse_orientation(
     # otda data.
     try:
         otky_chunk = find_by_list_type(chunks=otst_chunk.chunks, list_type="otky")
+        prop._kf_value_container = otky_chunk
         otda_chunks = cast(
             "list[OtdaChunk]",
             filter_by_type(chunks=otky_chunk.chunks, chunk_type="otda"),
         )
         for idx, kf in enumerate(prop.keyframes):
             if idx < len(otda_chunks):
-                kf.value = list(otda_chunks[idx].values)
+                kf._cache_value(list(otda_chunks[idx].values))
     except ChunkNotFoundError:
         pass
 
@@ -157,7 +151,7 @@ def _parse_shape_shap(
     except ChunkNotFoundError:
         feather_points = []
 
-    return Shape(
+    return Shape._from_binary(
         _shph=shph_chunk,
         _points=points,
         _is_mask=is_mask_shape,
@@ -200,14 +194,17 @@ def parse_shape(
         tdmn=tdmn,
     )
 
+    prop._wrapper = oms_chunk
     prop._property_value_type = PropertyValueType.SHAPE
     # Shape properties always carry a value (from omks), even though
-    # tdb4 may report no_value=True (there is no cdat for shapes).
+    # tdb4 may report no_value=True (a static shape's cdat is the empty
+    # 4-byte form).
     prop.__dict__["_no_value"] = False
 
     # Collect shape values from omks > shap LISTs
     try:
         omks_chunk = find_by_list_type(chunks=oms_chunk.chunks, list_type="omks")
+        prop._kf_value_container = omks_chunk
         shape_values: list[Shape] = []
         is_mask = match_name == "ADBE Mask Shape"
         for shap_chunk in filter_by_list_type(
@@ -222,11 +219,11 @@ def parse_shape(
     # so that is_modified detects any real mask path as modified.
     prop.default_value = Shape(closed=False)
     if shape_values:
-        prop.value = shape_values[0]
+        prop._cache_value(shape_values[0])
 
     for idx, kf in enumerate(prop.keyframes):
         if idx < len(shape_values):
-            kf.value = shape_values[idx]
+            kf._cache_value(shape_values[idx])
 
     return prop
 
@@ -261,6 +258,7 @@ def parse_text_document(
         property_depth=property_depth,
         tdmn=tdmn,
     )
+    prop._wrapper = btds_chunk
     prop._property_value_type = PropertyValueType.TEXT_DOCUMENT
 
     try:
@@ -283,12 +281,17 @@ def parse_text_document(
         return prop
 
     text_documents, _fonts = parse_btdk_cos(cos_data, btdk_chunk)
+    # Wire each document to the project head so version-gated attributes
+    # (e.g. the box-text setters) can resolve the AE major version.
+    project_head = composition._project._head
+    for doc in text_documents:
+        doc._head = project_head
     if text_documents:
         if prop.keyframes:
             for kf, doc in zip(prop.keyframes, text_documents):
-                kf._value = doc
+                kf._cache_value(doc)
         else:
-            prop.value = text_documents[0]
+            prop._cache_value(text_documents[0])
 
     return prop
 
@@ -322,6 +325,7 @@ def parse_gradient(
         tdmn=tdmn,
     )
 
+    prop._wrapper = gcst_chunk
     try:
         gcky_chunk = find_by_list_type(
             chunks=gcst_chunk.chunks,
@@ -330,6 +334,7 @@ def parse_gradient(
     except ChunkNotFoundError:
         return prop
 
+    prop._kf_value_container = gcky_chunk
     utf8_chunks = cast(
         "list[Utf8Chunk]",
         filter_by_type(chunks=gcky_chunk.chunks, chunk_type="Utf8"),
@@ -343,8 +348,8 @@ def parse_gradient(
     if gradient_values:
         if prop.keyframes:
             for kf, gdata in zip(prop.keyframes, gradient_values):
-                kf._value = gdata
+                kf._cache_value(gdata)
         else:
-            prop.value = gradient_values[0]
+            prop._cache_value(gradient_values[0])
 
     return prop

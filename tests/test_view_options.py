@@ -22,11 +22,13 @@ from py_aep import (
     ChannelType,
     FastPreviewType,
     ViewerType,
+    ViewOptions,
 )
 from py_aep import parse as parse_aep
+from py_aep.binary.misc_chunks import FipsChunk
 
 if TYPE_CHECKING:
-    from py_aep import Application, ViewOptions
+    from py_aep import Application
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "view"
 
@@ -669,7 +671,11 @@ class TestRoiValidation:
             opts.roi_top = 50.5  # type: ignore[assignment]
 
     def test_roi_accepts_valid_values(self) -> None:
-        opts = _get_active_view_options(SAMPLES_DIR / "roi_base.aep")
+        # Must parse a fresh (uncached) copy: this test writes valid ROI
+        # values, and parse_app is lru_cached for the session, so mutating
+        # the shared roi_base.aep app would corrupt the read-only ROI tests
+        # (e.g. test_roi_base) when they land on the same xdist worker.
+        _, opts = _get_active_app_and_options(SAMPLES_DIR / "roi_base.aep")
         opts.roi_top = 0
         opts.roi_left = 0
         opts.roi_bottom = 500
@@ -678,3 +684,30 @@ class TestRoiValidation:
         assert opts.roi_left == 0
         assert opts.roi_bottom == 500
         assert opts.roi_right == 500
+
+
+class TestViewOptionsWithoutItem:
+    """Version-gated fields work when the viewer's item is no AVItem.
+
+    parsers/view.py creates `ViewOptions(_item=None)` for such viewers;
+    the `min_version` gate must be skipped (write allowed) when no AE
+    version can be determined, instead of raising TypeError.
+    """
+
+    def test_set_and_read_gated_fields_with_item_none(self) -> None:
+        opts = ViewOptions(_fips=FipsChunk(), _item=None)
+
+        opts.rulers = True
+        assert opts.rulers is True
+        opts.guides_locked = True
+        assert opts.guides_locked is True
+        opts.guides_snap = True
+        assert opts.guides_snap is True
+        opts.guides_visibility = True
+        assert opts.guides_visibility is True
+
+    def test_gated_enum_field_with_item_none(self) -> None:
+        opts = ViewOptions(_fips=FipsChunk(), _item=None)
+
+        opts.fast_preview = FastPreviewType.FP_WIREFRAME
+        assert opts.fast_preview == FastPreviewType.FP_WIREFRAME

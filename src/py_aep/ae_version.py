@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
-
-if TYPE_CHECKING:
-    pass
+from typing import Any, Callable, TypeVar, cast
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -15,17 +12,23 @@ def get_ae_version_major(obj: Any) -> int:
     """Navigate from a model object to the AE version major number.
 
     Supports Layer (via `containing_comp`), Item (via `_project`),
-    and Project (via `_head`).
+    ViewOptions (via `_item`), and Project (via `_head`).
     """
     # Layer -> CompItem -> Project -> HeadChunk
     if hasattr(obj, "_containing_comp"):
         return int(obj._containing_comp._project._head.ae_version_major)
-    # Item -> Project -> HeadChunk
+    # Item / RenderQueueItem -> Project -> HeadChunk
     if hasattr(obj, "_project"):
         return int(obj._project._head.ae_version_major)
-    # Project -> HeadChunk
-    if hasattr(obj, "_head"):
-        return int(obj._head.ae_version_major)
+    # ViewOptions -> AVItem -> Project -> HeadChunk
+    item = getattr(obj, "_item", None)
+    if item is not None:
+        return int(item._project._head.ae_version_major)
+    # Project / TextDocument -> HeadChunk (TextDocument's is wired lazily, so
+    # may be None until the document is handed out via a Property)
+    head = getattr(obj, "_head", None)
+    if head is not None:
+        return int(head.ae_version_major)
     raise TypeError(f"Cannot determine AE version from {type(obj).__name__}")
 
 
@@ -50,6 +53,6 @@ def requires_version(min_major: int) -> Callable[[F], F]:
                 )
             return method(self, *args, **kwargs)
 
-        return wrapper  # type: ignore[return-value]
+        return cast(F, wrapper)
 
     return decorator

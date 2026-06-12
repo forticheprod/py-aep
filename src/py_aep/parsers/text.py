@@ -143,7 +143,7 @@ def parse_text_documents(
         para_style = _get_first_para_style(doc_entry)
 
         documents.append(
-            TextDocument(
+            TextDocument._from_binary(
                 _char_style=char_style,
                 _para_style=para_style,
                 _doc=doc_entry,

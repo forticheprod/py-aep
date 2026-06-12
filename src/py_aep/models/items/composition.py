@@ -1,18 +1,31 @@
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING, Any, List, cast
 
-from ...binary.chunk import Chunk, ContainerChunk, DeferredListChunk, ListChunk
-from ...binary.composition_chunks import CdtaChunk, CsctChunk
-from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
+from ...ae_version import requires_version
+from ...binary.chunk import Chunk, DeferredListChunk, ListChunk
+from ...binary.comp_skeleton import (
+    build_cps2,
+    build_item_view_chunks,
+    build_layer_view_block,
+    build_new_comp_item,
+)
+from ...binary.composition_chunks import CdtaChunk
+from ...binary.item_chunks import IdtaChunk
 from ...binary.layer_chunks import (
     _LDTA_SOURCE_ID_END,
     _LDTA_SOURCE_ID_OFFSET,
     LdtaChunk,
 )
-from ...binary.misc_chunks import PrdaChunk, PrinChunk
-from ...binary.property_chunks import CdatChunk, Tdb4Chunk, TdmnChunk, TdsbChunk
+from ...binary.misc_chunks import PguiChunk, PrinChunk
+from ...binary.mutations import build_ovg2, build_source_alternate_extras
+from ...binary.property_chunks import (
+    CdatChunk,
+    Tdb4Chunk,
+    TdmnChunk,
+    TdsbChunk,
+    TdsnChunk,
+)
 from ...binary.scalar_chunks import F8Chunk, U1Chunk, U4Chunk, Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
@@ -20,9 +33,11 @@ from ...binary.utils import (
     filter_by_list_type,
     find_by_list_type,
     find_by_type,
+    index_by_identity,
 )
 from ...enums import LineOrientation
 from ...parsers.essential_graphics import parse_essential_graphics
+from ...synthesis.specs import _CAMERA_LIGHT_TRANSFORM_SKIP, _OMITTED_EMPTY_GROUPS
 from ..descriptors import ChunkField
 from ..layers.av_layer import AVLayer
 from ..layers.camera_layer import CameraLayer
@@ -88,28 +103,90 @@ def _materialize_layer(layer: Layer) -> None:
     """Materialize properties for a newly created layer.
 
     Walks the full property tree and:
-    1. Materializes all PropertyGroup shells (not children).
+    1. Materializes all PropertyGroup shells (not children), except the
+       empty groups AE itself omits (trackers / masks / effects / shape
+       contents).
     2. Materializes only Property items whose tdb4 has a non-zero
-       time-base field.  Properties without a time base stay
-       synthetic; writing them causes AE "zero denominator" errors.
+       time-base field, matching the property set AE writes for a new
+       layer. Camera and light layers use a fixed two-node transform
+       set instead. Other properties stay synthetic.
+    3. Inserts the loose skeleton chunks AE writes around specific
+       groups (`OvG2` for Layer Overrides, `blsv`/`blsi` for the
+       Source Alternate entry).
 
     Group end markers are already present in each tdgp (added during
     synthesis) and get flipped to non-synthetic by _ensure_materialized().
     """
+    cam_light = layer.match_name in ("ADBE Camera Layer", "ADBE Light Layer")
+
+    def _materialize_prop(prop: Property, in_transform: bool) -> None:
+        if cam_light and in_transform:
+            if prop.match_name not in _CAMERA_LIGHT_TRANSFORM_SKIP:
+                prop._ensure_materialized()
+        elif prop._tdb4.has_time_base:
+            prop._ensure_materialized()
 
     def _materialize_tree(group: PropertyGroup) -> None:
         group._ensure_materialized()
+        in_transform = group.match_name == "ADBE Transform Group"
         for child in group.properties:
             if isinstance(child, PropertyGroup):
+                if child.match_name in _OMITTED_EMPTY_GROUPS and not child.properties:
+                    continue
                 _materialize_tree(child)
-            elif isinstance(child, Property) and child._tdb4.has_time_base:
-                child._ensure_materialized()
+            elif isinstance(child, Property):
+                _materialize_prop(child, in_transform)
 
     for top in layer.properties:
         if isinstance(top, PropertyGroup):
+            if top.match_name in _OMITTED_EMPTY_GROUPS and not top.properties:
+                continue
             _materialize_tree(top)
-        elif isinstance(top, Property) and top._tdb4.has_time_base:
-            top._ensure_materialized()
+        elif isinstance(top, Property):
+            _materialize_prop(top, False)
+
+    _insert_layer_skeleton_extras(layer)
+
+
+def _insert_layer_skeleton_extras(layer: Layer) -> None:
+    """Insert the loose chunks AE writes inside a new layer's tdgp:
+    `LIST:OvG2(CprC)` after the Layer Overrides tdmn and `blsv`/`blsi`
+    after the Layer Source Alternate tdmn."""
+    root = layer._tdgp
+    if root is None:
+        return
+
+    def has_following(chunks: list[Chunk], i: int, kind: str) -> bool:
+        nxt = chunks[i + 1] if i + 1 < len(chunks) else None
+        return getattr(nxt, "list_type", getattr(nxt, "chunk_type", None)) == kind
+
+    chunks = root.chunks
+    for i, ch in enumerate(chunks):
+        if (
+            isinstance(ch, TdmnChunk)
+            and ch.value == "ADBE Layer Overrides"
+            and not has_following(chunks, i, "OvG2")
+        ):
+            chunks.insert(i + 1, build_ovg2())
+            break
+    for i, ch in enumerate(chunks):
+        if (
+            isinstance(ch, TdmnChunk)
+            and ch.value == "ADBE Source Options Group"
+            and i + 1 < len(chunks)
+            and isinstance(chunks[i + 1], ListChunk)
+            and cast("ListChunk", chunks[i + 1]).list_type == "tdgp"
+        ):
+            inner = cast("ListChunk", chunks[i + 1]).chunks
+            for j, c in enumerate(inner):
+                if (
+                    isinstance(c, TdmnChunk)
+                    and c.value == "ADBE Layer Source Alternate"
+                    and not has_following(inner, j, "blsv")
+                ):
+                    inner[j + 1 : j + 1] = build_source_alternate_extras()
+                    break
+            break
 
 
 class CompItem(AVItem):
@@ -396,24 +473,18 @@ class CompItem(AVItem):
 
         new_id = project._allocate_item_id()
 
-        iide = IideChunk(value=new_id)
-        idpc = IdpcChunk()
-        idta = IdtaChunk(item_type=4, item_id=new_id)
-        name_utf8 = Utf8Chunk(value=name)
-
-        cdta = CdtaChunk(width=width, height=height)
-        cdta.frame_rate = frame_rate
-        cdta.duration = duration
-        cdta.pixel_aspect = pixel_aspect
-
-        prin_list = ListChunk(
-            list_type="PRin",
-            chunks=[PrinChunk(), PrdaChunk()],
-        )
-
-        item_list = ListChunk(
-            list_type="Item",
-            chunks=[iide, idpc, idta, name_utf8, cdta, prin_list],
+        # AE hard-crashes opening a comp item without the full view-state
+        # skeleton (~180 chunks of viewer pseudo-layers and panel state),
+        # so the whole item is built by the typed skeleton builder.
+        item_list, idta, name_utf8, gide = build_new_comp_item(
+            item_id=new_id,
+            name=name,
+            width=width,
+            height=height,
+            pixel_aspect=pixel_aspect,
+            duration=duration,
+            frame_rate=frame_rate,
+            allocate_layer_id=project._allocate_layer_id,
         )
 
         # View data chunks that AE expects after every comp's LIST:Item
@@ -421,14 +492,14 @@ class CompItem(AVItem):
             list_type="FEE ",
             chunks=[F8Chunk(chunk_type="ppSn")],
         )
-        view_data: list[Chunk] = [fee, *AVItem._build_view_data()]
+        view_data: list[Chunk] = [fee, *build_item_view_chunks()]
 
         comp = cls(
             _child_chunks=item_list.chunks,
             _cmta=None,
             _idta=idta,
             _item_list=item_list,
-            _gide=None,
+            _gide=gide,
             _pin_chunks=[],
             _name_utf8=name_utf8,
             project=project,
@@ -528,7 +599,9 @@ class CompItem(AVItem):
         comp_id = self.id
         for rqi in list(rq.items):
             if rqi.comp is self:
-                rq.items.remove(rqi)
+                # Full chunk-level removal keeps rs_ldat/Rout/LItm bookkeeping
+                # in sync; a model-list drop alone would orphan its chunks.
+                rqi.remove()
                 continue
             for om in rqi.output_modules:
                 if om._om_ldat.post_render_target_comp_id == comp_id:
@@ -733,21 +806,14 @@ class CompItem(AVItem):
         return self._eg_template_name_utf8.value
 
     @motion_graphics_template_name.setter
+    @requires_version(15)
     def motion_graphics_template_name(self, value: str) -> None:
         validate_name(value)
         self._ensure_comp_parsed()
         if self._eg_template_name_utf8 is not None:
             self._eg_template_name_utf8.value = value
         else:
-            utf8_chunk = Utf8Chunk(value=value)
-            cps2 = ListChunk(
-                list_type="CpS2",
-                chunks=[
-                    CsctChunk(),
-                    utf8_chunk,
-                    Utf8Chunk(value="en_US"),
-                ],
-            )
+            cps2, utf8_chunk = build_cps2(value)
             cif3 = ListChunk(
                 list_type="CIF3",
                 chunks=[
@@ -1013,24 +1079,17 @@ class CompItem(AVItem):
         Handles view block creation, chunk insertion, materialization,
         and layer list bookkeeping.
         """
-        view_block: list[Chunk] = [
-            ListChunk(list_type="Ewst", chunks=[]),
-            *AVItem._build_view_data(),
-            *AVItem._build_view_data(),
-        ]
+        view_block = build_layer_view_block()
 
-        chunk_idx = (
-            next(
-                (
-                    i
-                    for i, c in enumerate(self._item_list.chunks)
-                    if c is self.layers[0]._layer_list
-                ),
-                self._find_first_layer_position(),
-            )
-            if self.layers
-            else self._find_first_layer_position()
-        )
+        if self.layers:
+            try:
+                chunk_idx = index_by_identity(
+                    self._item_list.chunks, self.layers[0]._layer_list
+                )
+            except ValueError:
+                chunk_idx = self._find_first_layer_position()
+        else:
+            chunk_idx = self._find_first_layer_position()
         self._item_list.chunks[chunk_idx:chunk_idx] = [layer._layer_list, *view_block]
 
         _materialize_layer(layer)
@@ -1060,7 +1119,6 @@ class CompItem(AVItem):
         solid_source = SolidSource._new(name=name)
         solids_folder = self._project._solids_folder
         footage = FootageItem._new(
-            name=name,
             source=solid_source,
             project=self._project,
             parent_folder=solids_folder,
@@ -1070,8 +1128,10 @@ class CompItem(AVItem):
         self._project.items[footage.id] = footage
         solids_folder.items.append(footage)
 
+        # AE leaves the layer name empty for source-named layers (the
+        # name resolves from the footage item).
         layer = AVLayer._new(
-            name=name,
+            name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=footage.id,
             duration=duration if duration is not None else self.duration,
@@ -1134,7 +1194,8 @@ class CompItem(AVItem):
         )
         self._insert_layer(layer)
 
-        zoom = self.width / CameraLayer._zoom_dividend
+        # AE rounds the zoom to 8 decimals before storing it.
+        zoom = round(self.width * self.pixel_aspect / CameraLayer._zoom_dividend, 8)
 
         transform = layer.transform
         anchor_point = cast("Property", transform["ADBE Anchor Point"])
@@ -1143,12 +1204,10 @@ class CompItem(AVItem):
             center_point[1],
             0.0,
         ]
+        # ExtendScript reports a new two-node camera's position as
+        # [0, 0, -zoom] (the point of interest carries the center).
         position = cast("Property", transform["ADBE Position"])
-        position.value = [
-            center_point[0],
-            center_point[1],
-            -zoom,
-        ]
+        position.value = [0.0, 0.0, -zoom]
 
         return layer
 
@@ -1186,14 +1245,20 @@ class CompItem(AVItem):
         )
         self._insert_layer(layer)
 
-        zoom = self.width / LightLayer._zoom_dividend
+        # AE rounds the zoom to 8 decimals before storing it.
+        zoom = round(self.width * self.pixel_aspect / LightLayer._zoom_dividend, 8)
 
-        position = cast("Property", layer.transform["ADBE Position"])
-        position.value = [
+        transform = layer.transform
+        anchor_point = cast("Property", transform["ADBE Anchor Point"])
+        anchor_point.value = [
             center_point[0],
             center_point[1],
-            -zoom / 2,
+            0.0,
         ]
+        # Like cameras, lights report position [0, 0, -zoom/2] with the
+        # point of interest at the center.
+        position = cast("Property", transform["ADBE Position"])
+        position.value = [0.0, 0.0, -zoom / 2]
 
         return layer
 
@@ -1218,8 +1283,9 @@ class CompItem(AVItem):
         if duration is not None:
             validate_duration(duration)
 
+        # AE leaves the layer name empty for source-named layers.
         layer = AVLayer._new(
-            name=item.name,
+            name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=item.id,
             duration=duration if duration is not None else self.duration,
@@ -1257,6 +1323,10 @@ class CompItem(AVItem):
         Returns:
             The newly created [AVLayer][].
         """
+        # Validate before the auto-name subscripts the color, so malformed
+        # input raises ValueError instead of TypeError/IndexError.
+        validate_rgb_color(color)
+
         if name is None:
             existing = {item.name for item in self._project.items.values()}
             solid_name = SolidSource._color_name(color[0], color[1], color[2])
@@ -1276,7 +1346,6 @@ class CompItem(AVItem):
         )
         solids_folder = self._project._solids_folder
         footage = FootageItem._new(
-            name=name,
             source=solid_source,
             project=self._project,
             parent_folder=solids_folder,
@@ -1286,8 +1355,10 @@ class CompItem(AVItem):
         self._project.items[footage.id] = footage
         solids_folder.items.append(footage)
 
+        # AE leaves the layer name empty for source-named layers (the
+        # name resolves from the solid footage item).
         layer = AVLayer._new(
-            name=name,
+            name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=footage.id,
             duration=duration if duration is not None else self.duration,
@@ -1319,9 +1390,7 @@ class CompItem(AVItem):
         Returns:
             A `(LIST:btds, btgu, tdmn)` tuple to inject into the root tdgp.
         """
-        td = TextDocument._new(
-            text, box_size=box_size, line_orientation=line_orientation
-        )
+        td = TextDocument(text, box_size=box_size, line_orientation=line_orientation)
         btdk = td._btdk_body
 
         # Text-document tdbs carries an empty cdat with 4 trailing zero
@@ -1329,7 +1398,7 @@ class CompItem(AVItem):
         cdat = CdatChunk(pad=b"\x00\x00\x00\x00")
         tdb4 = Tdb4Chunk(
             dimensions=1,
-            time_base=0x7800,
+            time_base=self._cdta.internal_timebase,
             no_value_flags=1,
             type_flags=0x08,
             cvot_flags=0x04,
@@ -1339,9 +1408,7 @@ class CompItem(AVItem):
             list_type="tdbs",
             chunks=[
                 TdsbChunk(),
-                ContainerChunk(
-                    chunk_type="tdsn", chunks=[Utf8Chunk(value=_TDSN_SENTINEL)]
-                ),
+                TdsnChunk.new(_TDSN_SENTINEL),
                 tdb4,
                 cdat,
             ],
@@ -1349,10 +1416,7 @@ class CompItem(AVItem):
         btds = ListChunk(list_type="btds", chunks=[tdbs, btdk])
         btgu = ListChunk(
             list_type="btgu",
-            chunks=[
-                Chunk(chunk_type="pgui", data=uuid.uuid4().bytes),
-                Chunk(chunk_type="pgui", data=b"\x00" * 16),
-            ],
+            chunks=[PguiChunk.new(), PguiChunk()],
         )
         tdmn = TdmnChunk(value="ADBE Text Document")
         return btds, btgu, tdmn
@@ -1422,6 +1486,7 @@ class CompItem(AVItem):
         """
         return self._add_text_layer(text=text, box=True, box_size=box_size)
 
+    @requires_version(24)
     def add_vertical_text(
         self,
         text: str = "",
@@ -1443,6 +1508,7 @@ class CompItem(AVItem):
             line_orientation=LineOrientation.VERTICAL_RIGHT_TO_LEFT,
         )
 
+    @requires_version(24)
     def add_vertical_box_text(
         self,
         box_size: list[float] | None = None,

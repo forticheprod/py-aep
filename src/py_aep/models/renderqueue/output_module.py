@@ -32,7 +32,8 @@ from ...binary.render_chunks import (
     TiffRoptChunk,
 )
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import find_by_type
+from ...binary.utils import find_by_type, index_by_identity
+from ...parsers.format_options import parse_format_options
 from ...resolvers.output import (
     FORMAT_ID_EXTENSIONS,
     VIDEO_CODEC_NAMES,
@@ -354,7 +355,7 @@ class OutputModule:
         name_utf8 = Utf8Chunk(value="TIFF Sequence with Alpha")
         # A freshly added module has no output file: AE leaves the file name
         # empty and writes no Als2 alias (it is created when a path is set).
-        file_name_utf8 = Utf8Chunk(value="")
+        file_name_utf8 = Utf8Chunk()
 
         lom_chunks: list[Chunk] = [
             roou,
@@ -554,13 +555,10 @@ class OutputModule:
         """Apply the runtime touches AE adds to a freshly built/applied Rouu.
 
         After Effects writes two things on top of the stored format header:
-        the `_reserved_2a` marker bit (byte 15), and the comp-resolved output
-        dimensions for video formats (audio-only formats keep width/height=0).
+        the `applied_marker` byte, and the comp-resolved output dimensions
+        for video formats (audio-only formats keep width/height=0).
         """
-        pad = bytearray(self._roou._reserved_2a)
-        if len(pad) > 15:
-            pad[15] = 1
-            self._roou._reserved_2a = bytes(pad)
+        self._roou.applied_marker = 1
         if self._roou.width > 0:  # video format; audio keeps 0
             self._update_output_dimensions()
 
@@ -862,6 +860,22 @@ class OutputModule:
         names = [t.name for t in templates]
         raise ValueError(f"Template {name!r} not found. Available: {names}")
 
+    def _block_span(self, lom_chunks: list[Chunk]) -> tuple[int, int]:
+        """Return `[start, end)` indices of this module's chunk block in LOm.
+
+        The block starts at this module's `Roou` (located by identity, as
+        attrs `__eq__` is structural) and runs to the next `Roou` or the
+        end of the list - the same span the parser builds with
+        `split_on_type(lom_chunks, "Roou")`.
+        """
+        start = index_by_identity(lom_chunks, self._roou)
+        end = len(lom_chunks)
+        for i in range(start + 1, len(lom_chunks)):
+            if lom_chunks[i].chunk_type == "Roou":
+                end = i
+                break
+        return start, end
+
     def _apply_output_template(self, template: OutputModuleTemplate) -> None:
         """Apply a parsed output-module template to this module's chunks.
 
@@ -878,24 +892,35 @@ class OutputModule:
         lom_chunks = self._parent_rqi._lom.chunks
         self._om_ldat.copy_settings_from(template.settings)
 
+        # The LOm list holds every output module of the RQ item back to back.
+        # Locate this module's own block (its Roou up to the next Roou) by
+        # identity so edits below never touch a sibling module.
+        roou_idx, block_end = self._block_span(lom_chunks)
+
         if template.format_info is not None:
             new_roou = RouuChunk.frombytes(template.format_info, chunk_type="Roou")
             assert isinstance(new_roou, RouuChunk)
-            lom_chunks[lom_chunks.index(self._roou)] = new_roou
+            lom_chunks[roou_idx] = new_roou
             self._roou = new_roou
             self._finalize_roou()  # marker bit + comp-resolved dimensions
 
         # Replace the Ropt with the template's format options (or an empty
-        # Ropt for formats that have none, e.g. AIFF).
+        # Ropt for formats that have none, e.g. AIFF). Scope the search to
+        # this module's block so a sibling module's Ropt is never hit.
         new_ropt: Chunk = (
             RoptChunk.frombytes(template.format_options, chunk_type="Ropt")
             if template.format_options is not None
             else RoptChunk(data=b"")
         )
-        for i, chunk in enumerate(lom_chunks):
-            if chunk.chunk_type == "Ropt":
+        for i in range(roou_idx, block_end):
+            if lom_chunks[i].chunk_type == "Ropt":
                 lom_chunks[i] = new_ropt
                 break
+
+        # The new Ropt may be a different format from the one _format_options
+        # wrapped at parse time, so re-derive it from this module's block the
+        # same way parsing does.
+        self._format_options = parse_format_options(lom_chunks[roou_idx:block_end])
 
         if self._name_utf8 is not None:
             self._name_utf8.value = template.name
@@ -913,17 +938,11 @@ class OutputModule:
         rqi = self._parent_rqi
         om_idx = rqi._output_modules.index(self)
 
-        # Remove chunks from LOm: from this Roou to the next Roou (or end)
+        # Remove this module's chunk block from LOm (its Roou to the next Roou
+        # or end). Located by identity and bounded the same way the parser
+        # splits modules, so byte-equal sibling modules are never hit.
         lom_chunks = rqi._lom.chunks
-        roou_idx = lom_chunks.index(self._roou)
-
-        # Find the end: next Roou or end of list
-        end_idx = len(lom_chunks)
-        for i in range(roou_idx + 1, len(lom_chunks)):
-            if getattr(lom_chunks[i], "chunk_type", None) == "Roou":
-                end_idx = i
-                break
-
+        roou_idx, end_idx = self._block_span(lom_chunks)
         del lom_chunks[roou_idx:end_idx]
 
         om_ldat = cast(

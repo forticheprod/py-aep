@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -716,12 +715,7 @@ Output shows for each different byte:
     # ── Multi-file comparison (3+ AEP files) ──────────────────────
 
     if len(files) > 2:
-        try:
-            multi_diffs, missing, all_data = compare_multi_aep_files(files)
-        except Exception as e:
-            print(f"Error comparing files: {e}", file=sys.stderr)
-            traceback.print_exc()
-            return 1
+        multi_diffs, missing, all_data = compare_multi_aep_files(files)
 
         if args.filter:
             pattern = args.filter.lower()
@@ -741,18 +735,13 @@ Output shows for each different byte:
 
     file1, file2 = files[0], files[1]
 
-    try:
-        # Parse once and reuse for both comparison and context
-        data1 = extract_leaf_chunks(file1)
-        data2 = extract_leaf_chunks(file2)
-        diffs, only1, only2 = _compare_chunk_dicts(data1, data2)
-        struct_diffs = compare_structure(file1, file2)
-        ctx1: dict[str, bytes] | None = data1 if args.context > 0 else None
-        ctx2: dict[str, bytes] | None = data2 if args.context > 0 else None
-    except Exception as e:
-        print(f"Error comparing files: {e}", file=sys.stderr)
-        traceback.print_exc()
-        return 1
+    # Parse once and reuse for both comparison and context
+    data1 = extract_leaf_chunks(file1)
+    data2 = extract_leaf_chunks(file2)
+    diffs, only1, only2 = _compare_chunk_dicts(data1, data2)
+    struct_diffs = compare_structure(file1, file2)
+    ctx1: dict[str, bytes] | None = data1 if args.context > 0 else None
+    ctx2: dict[str, bytes] | None = data2 if args.context > 0 else None
 
     # Apply filter
     if args.filter:

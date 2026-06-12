@@ -10,6 +10,7 @@ from ..binary.utils import (
     find_by_list_type,
     find_by_type,
 )
+from ..models.descriptors import _suppress_materialization
 from ..models.renderqueue.output_module import OutputModule
 from ..models.renderqueue.render_queue_item import RenderQueueItem
 from .format_options import parse_format_options
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from ..binary.render_chunks import OutputModuleSettingsItem
 
 
+@_suppress_materialization()
 def parse_output_module(
     chunks: list[Chunk],
     om_ldat_data: OutputModuleSettingsItem,

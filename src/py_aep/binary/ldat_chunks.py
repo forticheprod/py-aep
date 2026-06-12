@@ -308,11 +308,14 @@ class KfPosition:
 
 @define
 class LdatItem:
-    """A single keyframe item with 8-byte header and typed payload."""
+    """A single keyframe item with 8-byte header and typed payload.
 
-    _pad1: bytes = b"\x00"
-    time_raw: int = 0
-    _pad2: bytes = b"\x00"
+    `time_units` is the keyframe time as a signed 32-bit count of the
+    comp's `internal_timebase` units per second (e.g. 24576 for 24 fps;
+    measured on AE 2026 keyframes up to 10000 s).
+    """
+
+    time_units: int = 0
     in_interpolation_type: int = 0
     out_interpolation_type: int = 0
     label: int = 0
@@ -327,9 +330,7 @@ class LdatItem:
     @classmethod
     def frombytes(cls, data: bytes, *, item_type: LdatItemType) -> LdatItem:
         # 8-byte header
-        pad1 = data[0:1]
-        time_raw = struct.unpack(">h", data[1:3])[0]
-        pad2 = data[3:4]
+        time_units = struct.unpack(">i", data[0:4])[0]
         in_interp = data[4]
         out_interp = data[5]
         label_val = data[6]
@@ -366,9 +367,7 @@ class LdatItem:
             trailing = b""
 
         return cls(
-            pad1=pad1,
-            time_raw=time_raw,
-            pad2=pad2,
+            time_units=time_units,
             in_interpolation_type=in_interp,
             out_interpolation_type=out_interp,
             label=label_val,
@@ -378,17 +377,13 @@ class LdatItem:
         )
 
     def tobytes(self) -> bytes:
-        header = (
-            self._pad1
-            + struct.pack(">h", self.time_raw)
-            + self._pad2
-            + struct.pack(
-                ">BBBB",
-                self.in_interpolation_type,
-                self.out_interpolation_type,
-                self.label,
-                self._temporal_flags,
-            )
+        header = struct.pack(
+            ">iBBBB",
+            self.time_units,
+            self.in_interpolation_type,
+            self.out_interpolation_type,
+            self.label,
+            self._temporal_flags,
         )
         if isinstance(self.kf_data, bytes):
             payload = self.kf_data

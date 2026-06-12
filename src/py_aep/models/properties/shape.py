@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ...binary.ldat_chunks import ShapePoint
+from ...binary.misc_chunks import ShphChunk
 from ..descriptors import ChunkField
 from ..validators import (
     validate_normalized_float,
@@ -12,11 +14,7 @@ from ..validators import (
 )
 
 if TYPE_CHECKING:
-    from ...binary.ldat_chunks import ShapePoint
-    from ...binary.misc_chunks import (
-        FeatherPointItem,
-        ShphChunk,
-    )
+    from ...binary.misc_chunks import FeatherPointItem
     from ..items.composition import CompItem
 
 
@@ -140,22 +138,101 @@ class Shape:
 
     def __init__(
         self,
+        vertices: list[list[float]] | None = None,
+        in_tangents: list[list[float]] | None = None,
+        out_tangents: list[list[float]] | None = None,
         *,
-        _shph: ShphChunk | None = None,
-        _points: list[ShapePoint] | None = None,
-        _is_mask: bool = False,
-        _composition: CompItem | None = None,
-        closed: bool | None = None,
+        closed: bool = True,
         feather_points: list[FeatherPoint] | None = None,
     ) -> None:
-        self._shph = _shph
-        self._points = _points
-        self._is_mask = _is_mask
-        self._composition = _composition
-        if _shph is None and closed is not None:
-            self._closed_fallback = closed
+        """Create a shape from scratch.
+
+        Coordinates are absolute (pixel-space), matching a shape-layer
+        path. When this shape is later assigned to a mask property, the
+        property normalizes the coordinates to the composition.
+
+        Args:
+            vertices: Anchor points as `[x, y]` pairs.
+            in_tangents: Incoming tangent offsets relative to each vertex,
+                same length as `vertices`. Defaults to `[0, 0]` (straight
+                line in) for every vertex.
+            out_tangents: Outgoing tangent offsets relative to each vertex,
+                same length as `vertices`. Defaults to `[0, 0]` (straight
+                line out) for every vertex.
+            closed: When `True`, the first and last vertices are connected.
+            feather_points: Variable-width mask feather points.
+        """
+        self._shph: ShphChunk | None = ShphChunk()
+        self._shph.open = not closed
+        self._is_mask = False
+        self._composition: CompItem | None = None
+        self._closed_fallback = closed
         self.feather_points = feather_points if feather_points is not None else []
         """List of variable-width mask feather points."""
+
+        verts = vertices if vertices is not None else []
+        n = len(verts)
+        in_t = in_tangents if in_tangents is not None else [[0.0, 0.0]] * n
+        out_t = out_tangents if out_tangents is not None else [[0.0, 0.0]] * n
+        if len(in_t) != n or len(out_t) != n:
+            raise ValueError(
+                "in_tangents and out_tangents must match the number of vertices"
+            )
+        # Validate the coordinate pairs up front so the bounding-box pass
+        # below fails cleanly rather than on a tuple-unpack error.
+        for coords in (verts, in_t, out_t):
+            for pt in coords:
+                validate_vector2(pt)
+        # Three points per vertex: vertex, out-tangent, in-tangent-of-next.
+        self._points: list[ShapePoint] | None = [ShapePoint() for _ in range(3 * n)]
+        if n:
+            self._init_bounding_box(verts, in_t, out_t)
+            # Vertices first - tangent setters read back the vertex positions.
+            self.vertices = verts
+            self.in_tangents = in_t
+            self.out_tangents = out_t
+
+    def _init_bounding_box(
+        self,
+        vertices: list[list[float]],
+        in_tangents: list[list[float]],
+        out_tangents: list[list[float]],
+    ) -> None:
+        """Set the shph bounding box to span all absolute control points.
+
+        Vertex coordinates are stored normalized to this box, so it must
+        be non-degenerate in any axis that carries a tangent offset for
+        the normalize / denormalize round-trip to be lossless.
+        """
+        assert self._shph is not None
+        xs: list[float] = []
+        ys: list[float] = []
+        for (vx, vy), (ix, iy), (ox, oy) in zip(vertices, in_tangents, out_tangents):
+            xs.extend([vx, vx + ix, vx + ox])
+            ys.extend([vy, vy + iy, vy + oy])
+        self._shph.top_left_x = min(xs)
+        self._shph.top_left_y = min(ys)
+        self._shph.bottom_right_x = max(xs)
+        self._shph.bottom_right_y = max(ys)
+
+    @classmethod
+    def _from_binary(
+        cls,
+        *,
+        _shph: ShphChunk,
+        _points: list[ShapePoint],
+        _is_mask: bool = False,
+        _composition: CompItem | None = None,
+        feather_points: list[FeatherPoint] | None = None,
+    ) -> Shape:
+        """Wrap parsed shape chunks as a `Shape` view."""
+        obj = cls.__new__(cls)
+        obj._shph = _shph
+        obj._points = _points
+        obj._is_mask = _is_mask
+        obj._composition = _composition
+        obj.feather_points = feather_points if feather_points is not None else []
+        return obj
 
     @property
     def _comp_size(self) -> tuple[float, float] | None:

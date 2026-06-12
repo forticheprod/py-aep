@@ -1,29 +1,17 @@
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
-from ...binary.chunk import Chunk, ListChunk
-from ...binary.misc_chunks import (
-    ApidChunk,
-    DcuiChunk,
-    DropChunk,
-    EmbpChunk,
-    EpidChunk,
-    HdrmChunk,
-    IpwsChunk,
-    LinlChunk,
-    McspChunk,
-    OcspChunk,
-    PrgbChunk,
-    StrtChunk,
-)
-from ...binary.scalar_chunks import U1Chunk, U2Chunk, U4Chunk, Utf8Chunk
+from ...binary.chunk import ListChunk
+from ...binary.mutations import build_pin_list
+from ...binary.scalar_chunks import Utf8Chunk
 from ..descriptors import ChunkField
 from ..naming import auto_name
 from .item import Item
 
 if TYPE_CHECKING:
+    import os
+
     from ...binary.item_chunks import CmtaChunk, IdtaChunk
     from ..project import Project
     from ..sources.file import FileSource
@@ -257,67 +245,87 @@ class AVItem(Item):
         source = SolidSource._new(name, color, width, height, pixel_aspect)
         self._set_proxy(source)
 
-    @staticmethod
-    def _build_view_data() -> list[Chunk]:
-        """Build the view data chunks AE expects after LIST:Item."""
-        return [
-            U4Chunk(chunk_type="fvdv", value=3),
-            U1Chunk(chunk_type="fiop"),
-            U4Chunk(chunk_type="ftts"),
-            U1Chunk(chunk_type="foac"),
-            U1Chunk(chunk_type="fiac"),
-            U2Chunk(chunk_type="fipc"),
-            U4Chunk(chunk_type="fifl"),
-        ]
+    def set_proxy(self, file: str | os.PathLike[str]) -> None:
+        """Sets a file as the proxy of this AVItem.
+
+        Loads the specified file into a new `FileSource` object, sets this as the value
+        of the `proxy_source` attribute, and sets `use_proxy` to true.
+
+        It does not preserve the interpretation parameters, instead using the user
+        preferences.
+
+        This differs from setting a `FootageItem`'s `main_source`, but both actions are
+        performed as in the user interface.
+
+        Note:
+            Unlike ExtendScript, if the specified file has an unlabeled alpha channel,
+            this method does not estimate the alpha interpretation.
+
+        Args:
+            file: Path to the proxy source file.
+
+        Raises:
+            ValueError: If the extension is not a supported footage format.
+            NotImplementedError: If After Effects requires a format-specific
+                `opti` header not implemented for this format.
+        """
+        from ..sources.file import FileSource
+
+        self._set_proxy(FileSource._from_file(file))
+
+    def set_proxy_with_sequence(
+        self, file: str | os.PathLike[str], force_alphabetical: bool = False
+    ) -> None:
+        """Sets a sequence of files as the proxy of this `AVItem`, with the option of
+        forcing alphabetical order. Loads the specified file sequence into a new
+        `FileSource` object, sets this as the value of the `proxy_source` attribute, and
+        sets `use_proxy` to true.
+
+        It does not preserve the interpretation parameters, instead using the user
+        preferences.
+
+        Note:
+            Unlike ExtendScript, if the specified file has an unlabeled alpha channel,
+            this method does not estimate the alpha interpretation.
+
+        Args:
+            file: Path to a representative frame; sibling frames in the same
+                folder are gathered into the sequence.
+            force_alphabetical: Order frames alphabetically rather than
+                numerically.
+
+        Raises:
+            ValueError: If the extension is not a supported footage format.
+            NotImplementedError: If After Effects requires a format-specific
+                `opti` header not implemented for this format.
+        """
+        from ..sources.file import FileSource
+
+        self._set_proxy(
+            FileSource._from_file(
+                file, sequence=True, force_alphabetical=force_alphabetical
+            )
+        )
 
     @staticmethod
-    def _build_pin_list(
-        sspc: Chunk,
-        opti: Chunk,
-        *,
-        is_solid: bool = False,
+    def _pin_for_source(
+        source: FileSource | SolidSource | PlaceholderSource,
     ) -> ListChunk:
-        """Build a complete `LIST:Pin` with required companion chunks."""
-        pgui = Chunk(chunk_type="pgui", data=uuid.uuid4().bytes)
+        """Return the `LIST:Pin` for a footage source.
 
-        clrs_chunks: list[Chunk] = [
-            EpidChunk(),
-            ApidChunk(),
-            LinlChunk(),
-            EmbpChunk(),
-            IpwsChunk(),
-        ]
-        if is_solid:
-            clrs_chunks.append(DcuiChunk())
-            clrs_chunks.append(PrgbChunk())
-        clrs_chunks.extend(
-            [
-                McspChunk(),
-                Utf8Chunk(),
-                OcspChunk(),
-                Utf8Chunk(),
-                HdrmChunk(),
-                Utf8Chunk(value="{}"),
-            ]
-        )
-        clrs = ListChunk(list_type="CLRS", chunks=clrs_chunks)
+        A `FileSource` already carries its complete Pin (with the Als2 path
+        and any sequence prefix/ext); solid/placeholder sources are built
+        from sspc+opti.
+        """
+        from ..sources.file import FileSource
+        from ..sources.solid import SolidSource
 
-        mnfo = ListChunk(
-            list_type="mnfo",
-            chunks=[StrtChunk(), DropChunk()],
-        )
-
-        return ListChunk(
-            list_type="Pin ",
-            chunks=[
-                sspc,
-                Utf8Chunk(),
-                opti,
-                pgui,
-                clrs,
-                mnfo,
-                Utf8Chunk(),
-            ],
+        if isinstance(source, FileSource):
+            return source._pin
+        return build_pin_list(
+            source._sspc,
+            source._opti,
+            is_solid=isinstance(source, SolidSource),
         )
 
     def _replace_pin(self, pin_index: int, new_pin: ListChunk) -> None:
@@ -336,13 +344,6 @@ class AVItem(Item):
         source: FileSource | SolidSource | PlaceholderSource,
     ) -> None:
         """Set a proxy LIST:Pin chunk (add or replace)."""
-        from ..sources.solid import SolidSource as _SolidSource
-
-        new_pin = AVItem._build_pin_list(
-            source._sspc,
-            source._opti,
-            is_solid=isinstance(source, _SolidSource),
-        )
-        self._replace_pin(1, new_pin)
+        self._replace_pin(1, self._pin_for_source(source))
         self._proxy_source = source
         self.use_proxy = True

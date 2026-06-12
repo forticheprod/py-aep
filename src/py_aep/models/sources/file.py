@@ -1,25 +1,68 @@
 from __future__ import annotations
 
+import io
 import re
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, cast
 
-from ...binary.footage_chunks import PsdOptiChunk
+from ...binary.footage_chunks import (
+    OptiChunk,
+    PsdOptiChunk,
+    SspcChunk,
+    build_generic_opti_data,
+    build_psd_opti_data,
+    build_tiff_opti_data,
+)
+from ...binary.mutations import build_pin_list
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import (
     UNDEFINED_FRAME,
     ChunkNotFoundError,
+    build_als2_list,
     filter_by_type,
     find_by_list_type,
+    find_by_type,
     find_chunks_before,
     parse_alas_data,
 )
+from ...data.file_formats import FileFormat, get_file_format
+from ...resolvers.media_probe import probe_media
+from ..validators import validate_path_exists
 from .footage import FootageSource
 
 if TYPE_CHECKING:
-    from ...binary.chunk import ListChunk
-    from ...binary.footage_chunks import OptiChunk, SspcChunk
+    import os
+
+    from ...binary.chunk import Chunk, ListChunk
     from ...binary.scalar_chunks import U1Chunk
+    from ...resolvers.media_probe import MediaInfo
+
+
+def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
+    """Select the `opti` asset-info body for a file source.
+
+    Rules verified against AE 2026:
+
+    - TIFF (still or sequence): always needs the 602-byte `TIF ` header;
+      an empty or generic header crashes AE for TIFF regardless of whether
+      it is a still or a sequence.
+    - PSD: AE writes an empty opti for both stills and sequences; our code
+      generates a `PsdOptiChunk` with typed fields whose `write()` produces
+      the 602-byte header, which AE accepts on re-open.
+    - PNG/EXR singles: empty opti is fine (AE re-reads the located file).
+    - PNG/EXR sequences and all audio/video formats: need the 58-byte
+      generic header so AE recognises the item as a sequence or media file
+      rather than missing footage.
+    """
+    if fmt.opti == "tiff":
+        return build_tiff_opti_data(info.width, info.height)
+    if fmt.opti == "psd":
+        return build_psd_opti_data(
+            info.width, info.height, info.bit_depth, info.layer_count
+        )
+    if fmt.opti == "empty" and not sequence:
+        return b""
+    return build_generic_opti_data(fmt.source_format)
 
 
 class FileSource(FootageSource):
@@ -185,6 +228,239 @@ class FileSource(FootageSource):
             }
         else:
             self._file_attributes = {}
+
+    @classmethod
+    def _new(
+        cls,
+        file: str | os.PathLike[str],
+        *,
+        source_format: str,
+        width: int,
+        height: int,
+        duration: float,
+        frame_rate: float,
+        pixel_aspect: float = 1.0,
+        has_alpha: bool = False,
+        alpha_premultiplied: bool = False,
+        audio_sample_rate: float = 0.0,
+        sequence_prefix: str | None = None,
+        sequence_ext: str | None = None,
+        start_frame: int = 0,
+        end_frame: int = 0,
+        frame_padding: int = 0,
+        opti_data: bytes = b"",
+    ) -> FileSource:
+        """Create a new file footage source with backing chunks.
+
+        AE caches all of this metadata in `sspc` and does not re-read the
+        media on open, so the caller must supply correct values (see
+        `resolvers.media_probe`). The `opti` asset-info chunk is left empty;
+        AE locates the file via the `alas` path.
+
+        Args:
+            file: Path to the source file (single), or to a representative
+                frame (sequence; the containing folder is stored).
+            source_format: 4-char `sspc` source-format code (see
+                `data/file_formats.py`).
+            width: Pixel width (0 for audio-only media).
+            height: Pixel height (0 for audio-only media).
+            duration: Duration in seconds (0 for a still image).
+            frame_rate: Native frame rate in fps (0 for stills/audio).
+            pixel_aspect: Pixel aspect ratio.
+            has_alpha: Whether the footage has an alpha channel.
+            alpha_premultiplied: When `has_alpha`, select PREMULTIPLIED
+                rather than the STRAIGHT default.
+            audio_sample_rate: Audio sample rate in Hz (0 = no audio).
+            sequence_prefix: Filename text before the frame number. When not
+                `None`, the source is an image sequence.
+            sequence_ext: Filename extension including the dot (sequence only).
+            start_frame: First frame number (sequence only).
+            end_frame: Last frame number (sequence only).
+            frame_padding: Zero-padded digit width of the frame number
+                (sequence only).
+            opti_data: Raw `opti` asset-info bytes. Empty is accepted by AE
+                for single still images; sequences and audio need the
+                generic header (see `build_generic_opti_data`).
+        """
+        is_sequence = sequence_prefix is not None
+        path = Path(file)
+
+        if not has_alpha:
+            alpha_raw = 3
+        elif alpha_premultiplied:
+            alpha_raw = 1
+        else:
+            alpha_raw = 0
+
+        sspc = SspcChunk(
+            source_format_type=source_format,
+            width=width,
+            height=height,
+            alpha_mode_raw=alpha_raw,
+            footage_missing_at_save=False,
+            is_synthetic_a=0,
+            is_synthetic_b=0,
+            is_synthetic_c=0,
+        )
+        sspc.native_frame_rate = frame_rate
+        sspc.duration = duration
+        sspc.pixel_aspect = pixel_aspect
+        sspc.audio_sample_rate = audio_sample_rate
+        if is_sequence:
+            sspc.start_frame = start_frame
+            sspc.end_frame = end_frame
+            sspc.frame_padding = frame_padding
+            # AE tags image sequences with these flags; without them it
+            # treats the folder reference as missing footage on open.
+            # (Values reverse-engineered from AE 2026 sequence imports.)
+            sspc._reserved_a8 = b"\x00\x00\x00\x02"
+            sspc._reserved_b8 = b"\x01\x00\x01\x01"
+            sspc._reserved_6f = b"\x00\x00\x00\x00\x08"
+
+        # Route through variant dispatch so a recognized asset type (e.g.
+        # 8BPS -> PsdOptiChunk) is stored as its typed subclass and exposes
+        # file_attributes immediately, not just after a save/reparse.
+        if opti_data:
+            opti = OptiChunk.read(
+                io.BytesIO(opti_data), len(opti_data), chunk_type="opti"
+            )
+        else:
+            opti = OptiChunk(chunk_type="opti", data=b"")
+
+        fullpath = str(path.parent) if is_sequence else str(path)
+        path_chunks: list[Chunk] = [
+            build_als2_list(fullpath, target_is_folder=is_sequence)
+        ]
+        if is_sequence:
+            path_chunks.append(Utf8Chunk(value=sequence_prefix or ""))
+            path_chunks.append(Utf8Chunk(value=sequence_ext or ""))
+
+        pin = build_pin_list(sspc, opti, path_chunks=path_chunks)
+        clrs = find_by_list_type(chunks=pin.chunks, list_type="CLRS")
+        linl = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
+
+        return cls(_pin=pin, _sspc=sspc, _opti=opti, _linl=linl, _clrs=clrs)
+
+    @classmethod
+    def _from_file(
+        cls,
+        file: str | os.PathLike[str],
+        *,
+        sequence: bool = False,
+        force_alphabetical: bool = False,
+    ) -> FileSource:
+        """Build a `FileSource` by probing a media file's header.
+
+        Shared by `Project.import_file`, `FootageItem.replace*`, and
+        `AVItem.set_proxy*`.
+
+        Args:
+            file: Path to the source file, or a representative frame for a
+                sequence.
+            sequence: When `True`, import as a numbered image sequence.
+            force_alphabetical: For a sequence, order frames alphabetically
+                rather than numerically.
+
+        Raises:
+            ValueError: If the extension is not a supported footage format.
+            NotImplementedError: If After Effects requires a format-specific
+                `opti` header that is not implemented yet, or header probing
+                is unavailable for the format.
+        """
+        validate_path_exists(file)
+        path = Path(file)
+        fmt = get_file_format(path.suffix)
+        if fmt.opti == "unsupported":
+            raise NotImplementedError(
+                f"footage import does not yet support {path.suffix}: After "
+                "Effects requires a format-specific opti header that has not "
+                "been reverse-engineered yet."
+            )
+        if sequence:
+            return cls._build_sequence(path, fmt, force_alphabetical)
+        info = probe_media(path)
+        opti_data = _opti_data(fmt, info, sequence=False)
+        return cls._new(
+            path,
+            source_format=fmt.source_format,
+            width=info.width,
+            height=info.height,
+            duration=info.duration,
+            frame_rate=info.frame_rate,
+            pixel_aspect=info.pixel_aspect,
+            has_alpha=info.has_alpha,
+            alpha_premultiplied=fmt.alpha_premultiplied,
+            audio_sample_rate=info.audio_sample_rate,
+            opti_data=opti_data,
+        )
+
+    @classmethod
+    def _build_sequence(
+        cls,
+        file: Path,
+        fmt: FileFormat,
+        force_alphabetical: bool,
+    ) -> FileSource:
+        """Build a sequence `FileSource` by scanning sibling frames."""
+        stem = file.stem
+        m = re.search(r"(\d+)$", stem)
+        if m is None:
+            raise ValueError(
+                f"Sequence import requires a numbered filename, got {file.name!r}"
+            )
+        prefix = stem[: m.start()]
+        ext = file.suffix
+        padding = len(m.group(1))
+
+        frame_re = re.compile(re.escape(prefix) + r"(\d+)$")
+        frames: list[tuple[int, str]] = []
+        for sibling in file.parent.iterdir():
+            if sibling.suffix.lower() != ext.lower():
+                continue
+            sm = frame_re.match(sibling.stem)
+            if sm is not None:
+                frames.append((int(sm.group(1)), sibling.name))
+        if not frames:
+            frames = [(int(m.group(1)), file.name)]
+
+        frames.sort(key=lambda fr: fr[1] if force_alphabetical else fr[0])
+
+        info = probe_media(file)
+        frame_rate = info.frame_rate or 30.0
+        duration = len(frames) / frame_rate
+
+        return cls._new(
+            file,
+            source_format=fmt.source_format,
+            width=info.width,
+            height=info.height,
+            duration=duration,
+            frame_rate=frame_rate,
+            pixel_aspect=info.pixel_aspect,
+            has_alpha=info.has_alpha,
+            alpha_premultiplied=fmt.alpha_premultiplied,
+            audio_sample_rate=0.0,
+            sequence_prefix=prefix,
+            sequence_ext=ext,
+            start_frame=frames[0][0],
+            end_frame=frames[-1][0],
+            frame_padding=padding,
+            opti_data=_opti_data(fmt, info, sequence=True),
+        )
+
+    def _idta_flags17(self) -> int:
+        """Footage-kind flags for `IdtaChunk._flags_17`: bit 5 = has video,
+        bit 4 = single still image, bit 2 = has audio. AE rejects an
+        audio-only (0x0) file flagged as video, so this is set from the
+        source's actual kind."""
+        flags = 0
+        if self._width > 0:
+            flags |= 0x20
+        if self.is_still:
+            flags |= 0x10
+        if self._has_audio:
+            flags |= 0x04
+        return flags
 
     def _resolve_name(self, raw_name: str) -> str:
         """Resolve the display name for a file-type footage item.

@@ -51,13 +51,17 @@ def parse_markers(
         property_depth=property_depth,
         tdmn=tdmn,
     )
+    marker_prop._wrapper = mrst_chunk
     mrky_chunk = find_by_list_type(chunks=mrst_chunk.chunks, list_type="mrky")
+    marker_prop._kf_value_container = mrky_chunk
     nmrd_chunks = filter_by_list_type(chunks=mrky_chunk.chunks, list_type="Nmrd")
     for i, nmrd_chunk in enumerate(nmrd_chunks):
         kf = marker_prop.keyframes[i]
-        marker_prop.keyframes[i].value = parse_marker(
-            nmrd_chunk=nmrd_chunk,
-            keyframe=kf,
+        kf._cache_value(
+            parse_marker(
+                nmrd_chunk=nmrd_chunk,
+                keyframe=kf,
+            )
         )
     return marker_prop
 
@@ -86,7 +90,7 @@ def parse_marker(
     # Collect cue point param Utf8 chunks
     param_utf8s: list[Utf8Chunk] = utf8_chunks[5:]
 
-    return MarkerValue(
+    return MarkerValue._from_binary(
         _nmhd=nmhd_chunk,
         _comment_utf8=utf8_chunks[0],
         _chapter_utf8=utf8_chunks[1],
@@ -96,4 +100,5 @@ def parse_marker(
         _keyframe=keyframe,
         frame_time=frame_time,
         _param_utf8s=param_utf8s,
+        _nmrd=nmrd_chunk,
     )

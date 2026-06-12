@@ -520,3 +520,42 @@ class TestRegisterFont:
 
         _project2, doc2 = _get_text_document(out, "type_text")
         assert doc2.font == "Arial-BoldMT"
+
+
+class TestColorAndLeadingNone:
+    """Setting fill/stroke color or leading to `None` clears, not raises.
+
+    Regression: the setters validated unconditionally, so the documented
+    `None` branch (popping the COS char-style key) raised TypeError.
+    """
+
+    def test_fill_color_none_pops_cos_key(self, tmp_path: Path) -> None:
+        project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.fill_color is not None
+
+        doc.fill_color = None
+        assert doc._char_style is not None
+        assert "53" not in doc._char_style
+        assert doc.fill_color is None
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        _project2, doc2 = _get_text_document(out, "type_text")
+        assert doc2.fill_color is None
+
+    def test_stroke_color_none_pops_cos_key(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.stroke_color is not None
+
+        doc.stroke_color = None
+        assert doc._char_style is not None
+        assert "54" not in doc._char_style
+        assert doc.stroke_color is None
+
+    def test_leading_none_does_not_raise(self) -> None:
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+
+        doc.leading = None
+        # The explicit-leading branch is skipped; auto-leading still
+        # resolves the displayed value (font_size * 1.2).
+        assert doc.leading == pytest.approx(43.2)

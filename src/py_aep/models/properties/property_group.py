@@ -8,8 +8,8 @@ from py_aep.resolvers.can_add_property import (
     can_add_property as _can_add_property,
 )
 
-from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.property_chunks import TdmnChunk, TdsbChunk
+from ...binary.chunk import ListChunk
+from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ...synthesis.specs import (
     _GROUP_CHILD_SPECS,
@@ -235,11 +235,10 @@ class PropertyGroup(PropertyBase):
                 (skipped during serialization).
         """
         _tdsb = TdsbChunk(synthetic=synthetic)
-        display = auto_name or _TDSN_SENTINEL
-        name_utf8 = Utf8Chunk(value=display, synthetic=synthetic)
-        tdsn = ContainerChunk(
-            chunk_type="tdsn", chunks=[name_utf8], synthetic=synthetic
-        )
+        # AE writes the unnamed sentinel; the display name resolves
+        # from auto_name on the model.
+        tdsn = TdsnChunk.new(_TDSN_SENTINEL, synthetic=synthetic)
+        name_utf8 = tdsn.utf8
         group_end = TdmnChunk(value="ADBE Group End", synthetic=synthetic)
         _tdgp = ListChunk(
             list_type="tdgp",
@@ -353,6 +352,11 @@ class PropertyGroup(PropertyBase):
             if c.chunk_type == "tdmn" and getattr(c, "value", None) == "ADBE Group End":
                 c.synthetic = False
                 break
+
+        self._reposition_canonically()
+
+    def _chunk_body(self) -> ListChunk | None:
+        return self._tdgp
 
     def _ensure_children_synthesized(self) -> None:
         """Run deferred child synthesis exactly once, on first access."""

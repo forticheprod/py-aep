@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 from conftest import (
@@ -15,11 +14,9 @@ from conftest import (
     parse_project,
 )
 
-from py_aep import Project
+from py_aep import MarkerValue, Project
+from py_aep import parse as parse_aep
 from py_aep.enums import Label
-
-if TYPE_CHECKING:
-    from py_aep import MarkerValue
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "marker"
 
@@ -380,3 +377,111 @@ class TestRoundtripMarkerCuePointName:
         project.save(out)
         marker2 = get_first_comp_marker(parse_project(out), "cuePointName")
         assert marker2.cue_point_name == "modified_cue"
+
+
+class TestMarkerParams:
+    """Tests for MarkerValue cue-point params."""
+
+    def test_constructor_params(self) -> None:
+        marker = MarkerValue(comment="c", params={"k1": "v1", "k2": "v2"})
+        assert marker.params == {"k1": "v1", "k2": "v2"}
+
+    def test_constructor_params_default_empty(self) -> None:
+        assert MarkerValue().params == {}
+
+    def test_constructor_params_invalid(self) -> None:
+        with pytest.raises(ValueError, match="string key-value pairs"):
+            MarkerValue(params={"k": 1})  # type: ignore[dict-item]
+
+    def test_constructor_params_roundtrip(self, tmp_path: Path) -> None:
+        project = parse_project(SAMPLES_DIR / "layer_marker.aep")
+        comp = get_comp(project, "layer_multiple_markers")
+        mp = comp.layers[0]["ADBE Marker"]
+        mp.set_value_at_time(
+            mp.keyframes[-1].time + 1.0,
+            MarkerValue(comment="with params", params={"k1": "v1", "k2": "v2"}),
+        )
+        out = tmp_path / "marker_params.aep"
+        project.save(out)
+        comp2 = get_comp(parse_project(out), "layer_multiple_markers")
+        mp2 = comp2.layers[0]["ADBE Marker"]
+        marker2 = next(
+            k.value for k in mp2.keyframes if k.value.comment == "with params"
+        )
+        assert marker2.params == {"k1": "v1", "k2": "v2"}
+        # AE ignores params unless NmHd carries the pair count.
+        assert marker2._nmhd.num_params == 2
+
+    def test_params_grow_and_shrink_on_parsed_marker(self, tmp_path: Path) -> None:
+        project = parse_project(SAMPLES_DIR / "layer_marker.aep")
+        marker = get_first_layer_marker(project, "layer_multiple_markers")
+        assert marker.params == {}
+
+        marker.params = {"k1": "v1", "k2": "v2"}
+        out = tmp_path / "marker_params_grow.aep"
+        project.save(out)
+        project2 = parse_project(out)
+        marker2 = get_first_layer_marker(project2, "layer_multiple_markers")
+        assert marker2.params == {"k1": "v1", "k2": "v2"}
+        # AE ignores params unless NmHd carries the pair count.
+        assert marker2._nmhd.num_params == 2
+
+        marker2.params = {"k1": "x"}
+        out2 = tmp_path / "marker_params_shrink.aep"
+        project2.save(out2)
+        project3 = parse_project(out2)
+        marker3 = get_first_layer_marker(project3, "layer_multiple_markers")
+        assert marker3.params == {"k1": "x"}
+        assert marker3._nmhd.num_params == 1
+
+        marker3.params = {}
+        out3 = tmp_path / "marker_params_clear.aep"
+        project3.save(out3)
+        marker4 = get_first_layer_marker(parse_project(out3), "layer_multiple_markers")
+        assert marker4.params == {}
+        assert marker4._nmhd.num_params == 0
+
+    def test_params_set_after_keyframe_binding(self, tmp_path: Path) -> None:
+        project = parse_project(SAMPLES_DIR / "layer_marker.aep")
+        comp = get_comp(project, "layer_multiple_markers")
+        mp = comp.layers[0]["ADBE Marker"]
+        mp.set_value_at_time(mp.keyframes[-1].time + 1.0, MarkerValue(comment="late"))
+        bound = next(k.value for k in mp.keyframes if k.value.comment == "late")
+        bound.params = {"a": "1", "b": "2"}
+        out = tmp_path / "marker_params_late.aep"
+        project.save(out)
+        comp2 = get_comp(parse_project(out), "layer_multiple_markers")
+        mp2 = comp2.layers[0]["ADBE Marker"]
+        marker2 = next(k.value for k in mp2.keyframes if k.value.comment == "late")
+        assert marker2.params == {"a": "1", "b": "2"}
+
+    def test_params_set_on_unbound_marker(self, tmp_path: Path) -> None:
+        project = parse_project(SAMPLES_DIR / "layer_marker.aep")
+        comp = get_comp(project, "layer_multiple_markers")
+        mp = comp.layers[0]["ADBE Marker"]
+        marker = MarkerValue(comment="unbound")
+        marker.params = {"p": "q"}
+        assert marker.params == {"p": "q"}
+        mp.set_value_at_time(mp.keyframes[-1].time + 1.0, marker)
+        out = tmp_path / "marker_params_unbound.aep"
+        project.save(out)
+        comp2 = get_comp(parse_project(out), "layer_multiple_markers")
+        mp2 = comp2.layers[0]["ADBE Marker"]
+        marker2 = next(k.value for k in mp2.keyframes if k.value.comment == "unbound")
+        assert marker2.params == {"p": "q"}
+
+
+class TestMarkerLazyParseRoundtrip:
+    """Regression: comp markers parse lazily on first access; that
+    access must not alter the saved bytes."""
+
+    def test_access_then_save_is_byte_identical(self, tmp_path: Path) -> None:
+        src = (SAMPLES_DIR / "comp_marker.aep").read_bytes()
+        # Parse fresh: the conftest parse_project cache returns projects
+        # other tests may have mutated.
+        project = parse_aep(SAMPLES_DIR / "comp_marker.aep").project
+        for comp in project.compositions:
+            _ = comp.markers
+        out = tmp_path / "out.aep"
+        project.save(out)
+        assert out.read_bytes() == src

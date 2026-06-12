@@ -203,6 +203,10 @@ class BlendingMode(IntEnum):
         return _BLENDING_MODE_TO_BINARY[self]
 
 
+# Binary values match the AE SDK `PF_Xfer` transfer-mode enum
+# (AE_EffectCB.h): 17-22 are MULTIPLY_(NOT_)ALPHA(_LUMA)/ADDITIVE_PREMUL
+# (= stencil/silhouette/luminescent premul), 12/23/24 the classic
+# (< PS 5.5) difference/dodge/burn and 26-28 their PS >= 6.0 variants.
 _BLENDING_MODE_BINARY_MAP: dict[int, BlendingMode] = {
     0: BlendingMode.NORMAL,  # cameras, lights, and null layers
     2: BlendingMode.NORMAL,

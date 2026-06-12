@@ -24,11 +24,11 @@ from py_aep.enums import (
 )
 
 from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.ldat_chunks import LdatChunk, LdatItemType, Lhd3Chunk
-from ...binary.mutations import clone_chunk_tree
+from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ...binary.mutations import build_om_container, build_rout_block, clone_chunk_tree
 from ...binary.render_chunks import RenderSettingsItem, RoutItem
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import find_by_type, split_on_type
+from ...binary.utils import find_by_type, index_by_identity, split_on_type
 from ..descriptors import (
     ChunkField,
 )
@@ -129,7 +129,7 @@ class RenderQueueItem:
     """The name of the render settings template used for this item.
     Read / Write."""
 
-    queue_item_notify = ChunkField[bool]("_ldat", "queue_item_notify")
+    queue_item_notify = ChunkField[bool]("_ldat", "queue_item_notify", min_version=22)
     """When `True`, a user notification is enabled for this render queue
     item, signaling the user upon render completion. Read / Write."""
 
@@ -270,7 +270,7 @@ class RenderQueueItem:
         comp: CompItem,
         *,
         parent: RenderQueue,
-    ) -> tuple[RenderQueueItem, RenderSettingsItem, list[RoutItem]]:
+    ) -> RenderQueueItem:
         """Create a new RenderQueueItem for a composition.
 
         Constructs all backing chunks from scratch with default render
@@ -282,8 +282,7 @@ class RenderQueueItem:
             parent: The parent RenderQueue.
 
         Returns:
-            A tuple of (RenderQueueItem model, render settings item,
-            list of RoutItem entries for this RQ item).
+            The new RenderQueueItem model.
         """
         project = parent.parent
 
@@ -311,31 +310,14 @@ class RenderQueueItem:
             if default_idx is not None and default_idx < len(templates):
                 rs_item.copy_settings_from(templates[default_idx])
 
-        # Rout items: 5 per RQ item (1 render flag + 4 slot entries).
-        # _state is a position-dependent slot type code: 0x11 at positions
-        # 0/1/3, 0x7B at position 2, 0x88 at position 4.
-        rout_items = [
-            RoutItem(flags=0x40, state=0x11),
-            RoutItem(flags=0x80, state=0x11),
-            RoutItem(flags=0xA0, state=0x7B),
-            RoutItem(flags=0x80, state=0x11),
-            RoutItem(flags=0xA0, state=0x88),
-        ]
-
-        # Build empty OM metadata container (lhd3 + ldat); add() fills it.
-        # count_b/counter_a/counter_b stay at 1 to match real files (see
-        # RenderQueue.add); only `count` tracks the OM count.
-        om_lhd3 = Lhd3Chunk(count=0, item_size=128, item_type_raw=1, counter_b=1)
-        om_ldat = LdatChunk(items=[], item_type=LdatItemType.litm, item_size=128)
-
         rqi = cls(
             _ldat=rs_item,
             _litm=parent._litm,
-            _list_chunk=ListChunk(list_type="list", chunks=[om_lhd3, om_ldat]),
+            _list_chunk=build_om_container(),
             _lom=ListChunk(list_type="LOm ", chunks=[]),
             _rcom=None,
             _rcom_utf8=None,
-            _rout_items=rout_items,
+            _rout_items=build_rout_block(),
             parent=parent,
             comp=comp,
             output_modules=[],
@@ -343,7 +325,7 @@ class RenderQueueItem:
 
         rqi.add()
 
-        return rqi, rs_item, rout_items
+        return rqi
 
     def add(self) -> OutputModule:
         """Add an output module to this render queue item.
@@ -775,21 +757,16 @@ class RenderQueueItem:
         # AE stores a fixed block of Rout items per RQ item. Delete the whole
         # contiguous block (located by identity of its first entry) and refresh
         # the count, mirroring RenderQueue.add.
-        rout_start = next(
-            i for i, v in enumerate(rq._rout.items) if v is self._rout_items[0]
-        )
+        rout_start = index_by_identity(rq._rout.items, self._rout_items[0])
         del rq._rout.items[rout_start : rout_start + len(self._rout_items)]
         rq._rout.count = len(rq._rout.items)
 
         # RCom, list, LOm chunks removed from LItm by identity
         chunks = self._litm.chunks
         if self._rcom is not None:
-            rcom_idx = next(i for i, c in enumerate(chunks) if c is self._rcom)
-            del chunks[rcom_idx]
-        list_idx = next(i for i, c in enumerate(chunks) if c is self._list_chunk)
-        del chunks[list_idx]
-        lom_idx = next(i for i, c in enumerate(chunks) if c is self._lom)
-        del chunks[lom_idx]
+            del chunks[index_by_identity(chunks, self._rcom)]
+        del chunks[index_by_identity(chunks, self._list_chunk)]
+        del chunks[index_by_identity(chunks, self._lom)]
 
         del rq._items[idx]
 
@@ -800,6 +777,10 @@ class RenderQueueItem:
         # UI state with no fixed empty value, so they are left as-is.
         if not rq._items:
             rq._arsi.queue_nonempty = 0
+            # An empty queue's settings 'list' holds only an lhd3 (AE writes no
+            # ldat). Re-hide the now-empty ldat so the written shape matches a
+            # freshly-empty AE queue. add() flips it back on the next add.
+            rq._rs_ldat.synthetic = True
 
     def duplicate(self) -> RenderQueueItem:
         """Create a duplicate of this item in the render queue.
@@ -812,8 +793,13 @@ class RenderQueueItem:
 
         new_rsi = copy.deepcopy(self._ldat)
 
-        if new_rsi.status in (RQItemStatus.DONE, RQItemStatus.ERR_STOPPED):
-            new_rsi.status = RQItemStatus.QUEUED
+        # status holds the raw binary value (ExtendScript value minus 3013),
+        # so compare and assign in that encoding via to_binary().
+        if RQItemStatus.from_binary(new_rsi.status) in (
+            RQItemStatus.DONE,
+            RQItemStatus.ERR_STOPPED,
+        ):
+            new_rsi.status = RQItemStatus.QUEUED.to_binary()
 
         new_rout_items = [copy.deepcopy(ri) for ri in self._rout_items]
 
@@ -832,15 +818,13 @@ class RenderQueueItem:
 
         # Insert the duplicated Rout block right after this item's block
         # (located by identity of its first entry) and refresh the count.
-        rout_start = next(
-            i for i, v in enumerate(rq._rout.items) if v is self._rout_items[0]
-        )
+        rout_start = index_by_identity(rq._rout.items, self._rout_items[0])
         insert_at = rout_start + len(self._rout_items)
         rq._rout.items[insert_at:insert_at] = new_rout_items
         rq._rout.count = len(rq._rout.items)
 
         # Insert chunks into LItm after this item's chunks (by identity)
-        lom_idx = next(i for i, c in enumerate(self._litm.chunks) if c is self._lom)
+        lom_idx = index_by_identity(self._litm.chunks, self._lom)
         insert_at = lom_idx + 1
         if new_rcom is not None:
             self._litm.chunks.insert(insert_at, new_rcom)

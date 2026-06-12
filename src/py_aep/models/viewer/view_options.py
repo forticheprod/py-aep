@@ -73,12 +73,14 @@ class ViewOptions:
     guides_locked = ChunkField[bool](
         "_fips",
         "guides_locked",
+        min_version=16,
     )
     """When `True`, indicates guides are locked in the view. Read / Write."""
 
     guides_snap = ChunkField[bool](
         "_fips",
         "guides_snap",
+        min_version=16,
     )
     """When `True`, indicates layers snap to guides when dragged in the view.
     Read / Write."""
@@ -86,6 +88,7 @@ class ViewOptions:
     guides_visibility = ChunkField[bool](
         "_fips",
         "guides_visibility",
+        min_version=16,
     )
     """
     When `True`, indicates guides are visible in the view. Read / Write.
@@ -161,6 +164,7 @@ class ViewOptions:
     rulers = ChunkField[bool](
         "_fips",
         "rulers",
+        min_version=16,
     )
     """When `True`, indicates rulers are shown in the view. Read / Write."""
 
@@ -196,6 +200,7 @@ class ViewOptions:
         FastPreviewType,
         "_fips",
         "fast_preview_type",
+        min_version=12,
     )
     """The state of the Fast Previews menu. Read / Write."""
 

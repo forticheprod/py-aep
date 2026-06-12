@@ -5,15 +5,22 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, cast
 
-from ..binary.chunk import ContainerChunk, ListChunk
+from ..binary.chunk import ListChunk
 from ..binary.ldat_chunks import LdatChunk
-from ..binary.property_chunks import CdatChunk, Tdb4Chunk, TdsbChunk, TdumChunk
+from ..binary.property_chunks import (
+    CdatChunk,
+    Tdb4Chunk,
+    TdsbChunk,
+    TdsnChunk,
+    TdumChunk,
+)
 from ..binary.scalar_chunks import S4Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
     find_by_type,
 )
+from ..models.descriptors import _suppress_materialization
 from ..models.properties.keyframe import Keyframe
 from ..models.properties.property import Property
 
@@ -25,6 +32,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@_suppress_materialization()
 def parse_property(
     tdbs_chunk: ListChunk,
     match_name: str,
@@ -112,11 +120,8 @@ def parse_property(
     )
 
     # Resolve _name_utf8 from the LIST:tdbs tdsn child.
-    # tdsn is a ContainerChunk with a Utf8 child.
-    tdsn = cast(
-        "ContainerChunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsn")
-    )
-    name_utf8 = cast("Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8"))
+    tdsn = cast("TdsnChunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsn"))
+    name_utf8 = tdsn.utf8
 
     prop = Property(
         _tdmn=tdmn,

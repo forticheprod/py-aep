@@ -1,7 +1,6 @@
 ---
 description: "Use when implementing add, remove, duplicate, or move methods on model classes - any mutation that creates, deletes, reorders, or clones chunks in the binary tree. Examples: Item.add_guide, CompItem.add_layer, Layer.duplicate, PropertyGroup.add_property."
-tools: [execute, read, edit, search, agent, todo, web]
-model: ["Claude Opus 4.6", "Claude Sonnet 4.6", "Claude Haiku 4.5"]
+tools: [vscode/memory, vscode/resolveMemoryFileUri, vscode/runCommand, vscode/switchAgent, vscode/vscodeAPI, vscode/askQuestions, execute/runNotebookCell, execute/getTerminalOutput, execute/killTerminal, execute/sendToTerminal, execute/runTask, execute/createAndRunTask, execute/runInTerminal, execute/runTests, execute/testFailure, read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/readNotebookCellOutput, read/terminalSelection, read/terminalLastCommand, read/getTaskOutput, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, search/usages, web/fetch, web/githubTextSearch, browser/openBrowserPage, browser/readPage, browser/screenshotPage, browser/navigatePage, browser/clickElement, browser/dragElement, browser/hoverElement, browser/typeInPage, browser/runPlaywrightCode, browser/handleDialog, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, the0807.uv-toolkit/uv-init, the0807.uv-toolkit/uv-sync, the0807.uv-toolkit/uv-add, the0807.uv-toolkit/uv-add-dev, the0807.uv-toolkit/uv-upgrade, the0807.uv-toolkit/uv-clean, the0807.uv-toolkit/uv-lock, the0807.uv-toolkit/uv-venv, the0807.uv-toolkit/uv-run, the0807.uv-toolkit/uv-script-dep, the0807.uv-toolkit/uv-python-install, the0807.uv-toolkit/uv-python-pin, the0807.uv-toolkit/uv-tool-install, the0807.uv-toolkit/uvx-run, the0807.uv-toolkit/uv-activate-venv, the0807.uv-toolkit/uv-pep723, the0807.uv-toolkit/uv-install, the0807.uv-toolkit/uv-remove, the0807.uv-toolkit/uv-search, todo]
 argument-hint: "Describe the mutation method to implement (e.g. 'Item.add_guide', 'CompItem.remove_layer') and relevant sample files"
 ---
 
@@ -40,11 +39,12 @@ Model code should provide **only domain-relevant values** when creating chunks. 
 lhd3 = Lhd3Chunk(
     chunk_type="lhd3",
     count=1,
-    gap=b"\x00\x00\x00\x01\x00\x00",
+    count_copy=1,
+    gap_b=b"\x00\x00",
     item_size=16,
     gap2=b"\x00\x00\x00",
     item_type_raw=2,
-    trailing=b"\x00\x00\x00\x01\x00\x00\x00\x02" + b"\x00" * 20,
+    trailing=b"\x00" * 20,
 )
 
 # RIGHT - chunk class has defaults; model sets only what matters
@@ -68,13 +68,24 @@ SspcChunk(width=1920)
 
 Input validation (bounds, types) should happen inside `_new()` classmethods, reusing validators that may already exist on setters or ChunkField descriptors. Do not validate in the calling method (`add_thing()`). This keeps validation logic centralized and DRY.
 
+### `_new()` (structural) vs `__init__`/`_from_binary` (value objects)
+
+Two construction conventions coexist - pick by what is being created:
+- **Structural objects** created through a parent `add_*()` method (`CompItem`, `FolderItem`, `Layer`, `Property`, `PropertyGroup`, footage/sources, render-queue items) use a **`_new()` classmethod** that builds fresh chunks. `__init__` stays as the chunk-wrapper. This is the dominant pattern for mutations - keep using it.
+- **Value objects** a user constructs directly with `new` in ExtendScript (`MarkerValue`, `Shape`, `TextDocument`, `KeyframeEase`, `ImportOptions`) use a public **`__init__(domain values)`** that synthesizes chunks, plus a **`_from_binary(cls, *, _chunk refs)`** classmethod (via `cls.__new__`) for the parse path. These have no `_new()`.
+- Do NOT convert structural `_new()` factories into public `__init__`, and do NOT apply the `__init__`/`_from_binary` split globally.
+
 ### Do Not Call Parsers from Models
 
 Models must **never** import or call parser functions (`parse_source()`, `parse_footage()`, `parse_layer()`, etc.). Instead, use `_new()` classmethods to construct model instances directly from chunks. Parsers are for the initial `parse()` pipeline only. The only exception is `duplicate()` / `copy_to_comp()` methods where cloning + parsing is the intended semantic.
 
-### No Chunk Cloning for New Objects
+### No Chunk Cloning for New Objects - CRITICAL RULE
 
-Never copy/clone existing chunks to create a new object. Always construct fresh chunks with explicit field values. The only exception is `duplicate()` / `copy_to_comp()` methods where cloning is the intended semantic.
+**NEVER** copy/clone existing chunks to create a new object. Always construct fresh chunks with explicit field values. This includes `add()`, `_new()`, and any method that creates new items. Cloning (`clone_chunk_tree`, `copy.deepcopy`) produces fragile code that breaks when the donor is removed or when the queue is empty.
+
+The **only** exceptions are `duplicate()` / `copy_to_comp()` methods where cloning is the intended semantic.
+
+If you find yourself writing `clone_chunk_tree(donor_...)` in an `add()` method, STOP. You are doing it wrong. Use `_new()` classmethods to build fresh chunks from scratch.
 
 ### Get-or-Create Pattern
 
@@ -200,7 +211,7 @@ Verification **must** compare the output of a file modified via ExtendScript wit
 2. Re-saves as baseline files (removes re-save noise)
 3. Performs mutations on baselines
 4. Saves output `.aep` files
-5. Run: `& "C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.com" -noui -r <script_path>`
+5. Run: `& "C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.com" -noui -ro <script_path>`
 
 **Python mutation script** (`scripts/_tmp_<feature>_inspect.py`):
 1. Opens the same baseline files

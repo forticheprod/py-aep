@@ -12,6 +12,7 @@ from ..binary.utils import (
     find_by_list_type,
     find_by_type,
 )
+from ..models.descriptors import _suppress_materialization
 from ..models.project import Project
 from .effect import parse_effect_definitions
 from .item import parse_folder
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from ..binary.chunk import ListChunk
 
 
+@_suppress_materialization()
 def parse_project(
     rifx: ListChunk,
     xmp: str,

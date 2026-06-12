@@ -279,6 +279,97 @@ class SspcChunk(Chunk):
 # ---------------------------------------------------------------------------
 
 
+def build_generic_opti_data(source_format: str) -> bytes:
+    """Build the 58-byte generic `opti` asset-info body for a file source.
+
+    AE accepts an empty `opti` for single still images (it re-reads the
+    located file), but requires this header to recognize non-TIFF/PSD
+    image sequences and audio/video. The layout is the format 4-char code,
+    a version word, the chunk length, the reversed code, and importer
+    markers - matching what AE writes for WAV/MOV/etc.
+
+    Note: TIFF sequences use `build_tiff_opti_data` instead (AE 2026
+    measured); PSD sequences use an empty opti via `PsdOptiChunk`.
+    """
+    code = source_format.encode("ascii")[:4].ljust(4, b" ")
+    return (
+        code
+        + b"\x00\x05"
+        + b"\x00\x00\x00\x3a"  # 58 = total length
+        + b"\x00" * 20
+        + code[::-1]
+        + b"\xff\xff\xff\xff"
+        + b"\x00\x00\x00\x00"  # codec fourcc (unknown / not needed)
+        + b"\x01\x00\x00\x00"
+        + b"\x01"
+        + b"\x00" * 11
+    )
+
+
+def _build_still_opti(
+    code: bytes, width: int, height: int, bit_depth: int, tail: bytes
+) -> bytes:
+    """Build the 602-byte still-importer `opti` body shared by TIFF and PSD.
+
+    Reverse-engineered from AE 2026. `code` is the 4-char format code (also
+    embedded reversed mid-header); `tail` is the format-specific trailing
+    field. The channel count is always 4 (AE composites the merge to RGBA).
+    """
+    return (
+        code
+        + b"\x01\x09"
+        + struct.pack(">I", 602)  # total length (big-endian)
+        + b"\x00\x00\x01\x01"
+        + b"\xff\xff\xff\xff"
+        + code[::-1]
+        + b"\x01\x00\x00\x00"
+        + b"\x00\x00\x00\x00"
+        + b"\x04\x00"
+        + struct.pack("<I", height)
+        + struct.pack("<I", width)
+        + struct.pack("<H", bit_depth)
+        + b"\x03\x00"
+        + b"\x00\x00\x00\x00"
+        + tail
+    ).ljust(602, b"\x00")
+
+
+def build_tiff_opti_data(width: int, height: int, bit_depth: int = 8) -> bytes:
+    """Build the 602-byte TIFF `opti` asset-info body.
+
+    Unlike PNG/EXR, AE does not re-read a TIFF from the located file, so it
+    needs this header for both stills and image sequences (an empty or generic
+    header crashes AE in both cases - AE 2026 measured). The header is
+    identical for 3- and 4-channel TIFFs.
+    """
+    return _build_still_opti(b"TIF ", width, height, bit_depth, b"\x02\x00")
+
+
+def build_psd_opti_data(
+    width: int, height: int, bit_depth: int = 8, layer_count: int = 1
+) -> bytes:
+    """Build the 602-byte merged-PSD/PSB `opti` asset-info body.
+
+    AE 2026 measured: AE itself writes an empty opti for PSD imports (both
+    stills and sequences), but it also accepts the 602-byte header produced
+    here on re-open without error. This function is used by `PsdOptiChunk`
+    via `write()` and for the `file_attributes` round-trip; it stores layer
+    metadata (index, dimensions, bit depth, layer count) that AE exposes in
+    its "Interpret Footage" dialog. Uses the same still-importer template as
+    `build_tiff_opti_data` but with the `8BPS`/`SPB8` codes and the layer
+    count in the trailing field.
+
+    Args:
+        width: Full PSD canvas width in pixels.
+        height: Full PSD canvas height in pixels.
+        bit_depth: Bits per channel (8, 16, or 32).
+        layer_count: Number of layers in the PSD. A flattened document (0
+            layers) is stored as 1, matching AE.
+    """
+    tail = struct.pack("<B", min(max(layer_count, 1), 255))
+    return _build_still_opti(b"8BPS", width, height, bit_depth, tail)
+
+
 @register("opti")
 @define
 class OptiChunk(Chunk):
@@ -345,7 +436,7 @@ class SoliOptiChunk(OptiChunk):
     color_b: float = f4_field()
     """Solid color blue component (0.0-1.0)."""
 
-    solid_name: str = str_field(256, default="", encoding="windows-1252")
+    solid_name: str = str_field(256, default="", encoding="utf-8")
     """Solid item name."""
 
     @property
@@ -409,8 +500,11 @@ class PsdOptiChunk(OptiChunk):
 
     @property
     def psd_group_name(self) -> str:
-        """PSD group/folder name (variable-length UTF-8 at end of chunk)."""
-        return self._trailing.decode("utf-8") if self._trailing else ""
+        """PSD group/folder name (NUL-terminated UTF-8 at end of chunk).
+
+        Empty for a merged import, where the trailing region is all-NUL.
+        """
+        return self._trailing.split(b"\x00", 1)[0].decode("utf-8")
 
     @psd_group_name.setter
     def psd_group_name(self, value: str) -> None:
@@ -424,8 +518,8 @@ class PlaceholderOptiChunk(OptiChunk):
     asset_type: str = ascii_field(4, default="")
     asset_type_int: int = u2_field(default=2)
     _pad: bytes = bytes_field(4, default=b"\x00\x00\x01\x0a", repr=False)
-    placeholder_name: str = str_field(256, default="", encoding="windows-1252")
-    """Placeholder name (256-byte NUL-padded windows-1252)."""
+    placeholder_name: str = str_field(256, default="", encoding="utf-8")
+    """Placeholder name (256-byte NUL-padded UTF-8)."""
 
 
 _OPTI_VARIANTS: dict[str, type[OptiChunk]] = {

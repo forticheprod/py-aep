@@ -14,10 +14,11 @@ from attrs import Factory, define
 
 from .bin_utils import read_bytes, write_bytes
 from .bitfield import BitField
-from .chunk import Chunk
+from .chunk import Chunk, ContainerChunk
 from .fmt_field import bool_field, f8_field, u1_field, u2_field, u4_field, u8_field
 from .registry import register
-from .scalar_chunks import _StringChunkBase
+from .scalar_chunks import Utf8Chunk, _StringChunkBase
+from .utils import find_by_type
 
 if TYPE_CHECKING:
     from typing import IO, Any
@@ -110,7 +111,9 @@ class Tdb4Chunk(Chunk):
     _pad3a: int = u2_field(repr=False)
     _time_base: int = u2_field(repr=False)
     _unknown_float_0: float = f8_field(default=0.0001, repr=False)
-    _unknown_float_1: float = f8_field(default=1.0, repr=False)
+    pixel_aspect: float = f8_field(default=1.0, repr=False)
+    """The containing comp's pixel aspect ratio (AE writes it into
+    every spatial property's tdb4; 1.0 elsewhere)."""
     _unknown_float_2: float = f8_field(default=1.0, repr=False)
     _unknown_float_3: float = f8_field(default=1.0, repr=False)
     _unknown_float_4: float = f8_field(default=1.0, repr=False)
@@ -150,6 +153,88 @@ class Tdb4Chunk(Chunk):
     @property
     def has_time_base(self) -> bool:
         return self._time_base != 0
+
+
+# ---------------------------------------------------------------------------
+# tdb4 state-template helpers
+#
+# These encode AE's exact animated / static field sets for the three
+# property classes (color / spatial / plain numeric).  They are free
+# functions rather than methods because the business logic lives in the
+# model layer; chunk classes are data containers.
+#
+# Both helpers were reverse-engineered from AE 2026 output across 1D /
+# 2D / 3D / spatial / color property pairs; `_animate_tdb4` and
+# `_static_tdb4` in property.py are the primary callers and must match
+# these tables exactly.
+# ---------------------------------------------------------------------------
+
+
+def tdb4_apply_animated_template(t: Tdb4Chunk, *, color: bool, spatial: bool) -> None:
+    """Apply AE's animated-property tdb4 field set in-place.
+
+    Sets the fields that differ between static and animated state for the
+    three property classes:
+    - color  (`color=True, spatial=False`)
+    - spatial (`color=False, spatial=True`)
+    - plain numeric / vector (`color=False, spatial=False`)
+
+    Args:
+        t: The `Tdb4Chunk` to mutate.
+        color: `True` for color properties.
+        spatial: `True` for spatial (position / point) properties.
+    """
+    t.animated = True
+    t._cvot_flags = 0xFF
+    t._value_hint_flag = 0xFF
+    t._time_base = 0x6000
+    if color:
+        t._property_category = 0x01
+        t._value_hint_type = 2
+        t._spatial_static_flags = 6
+        t._pad2a = 1
+    elif spatial:
+        t._property_category = 0x09
+        t._type_flags |= 0x08
+        t._value_hint_type = 0xFFFF
+        t._spatial_static_flags = 14
+        t._pad2a = 3
+    else:
+        t._property_category = 0x09
+        t._type_flags |= 0x08
+        t._value_hint_type = 1
+        t._spatial_static_flags = 0
+        t._pad2a = 0
+
+
+def tdb4_apply_static_template(t: Tdb4Chunk, *, color: bool, spatial: bool) -> None:
+    """Apply AE's static-property tdb4 field set in-place.
+
+    Inverse of `tdb4_apply_animated_template`: restores the fields to the static
+    state AE writes when a property has no keyframes.  `_type_flags` is
+    intentionally left unchanged because its non-`animated` bits
+    (vector / color) are property-intrinsic.
+
+    Args:
+        t: The `Tdb4Chunk` to mutate.
+        color: `True` for color properties.
+        spatial: `True` for spatial (position / point) properties.
+    """
+    t.animated = False
+    t._cvot_flags = 0x02
+    t._value_hint_flag = 0
+    t._value_hint_type = 0
+    t._time_base = 0
+    t._property_category = 0
+    if color:
+        t._spatial_static_flags = 6
+        t._pad2a = 1
+    elif spatial:
+        t._spatial_static_flags = 9
+        t._pad2a = 0
+    else:
+        t._spatial_static_flags = 1
+        t._pad2a = 0
 
 
 # ---------------------------------------------------------------------------
@@ -340,3 +425,35 @@ class TdmnChunk(_StringChunkBase):
         encoded = self.value.encode("UTF-8")[:40]
         padded = encoded.ljust(40, b"\x00")
         return write_bytes(fp, padded)
+
+
+@register("tdsn")
+@define
+class TdsnChunk(ContainerChunk):
+    """Display-name container (`tdsn`) wrapping a single `Utf8` child.
+
+    AE writes the `-_0_/-` sentinel for unnamed properties; the display
+    name then resolves from the match name.
+    """
+
+    chunk_type: str = "tdsn"
+
+    @classmethod
+    def new(cls, name: str = "", *, synthetic: bool = False) -> TdsnChunk:
+        """Build a tdsn wrapping `name`."""
+        return cls(
+            chunks=[Utf8Chunk(value=name, synthetic=synthetic)],
+            synthetic=synthetic,
+        )
+
+    @property
+    def utf8(self) -> Utf8Chunk:
+        """The `Utf8` child holding the display name.
+
+        Raises:
+            ChunkNotFoundError: If the tdsn has no Utf8 child, so callers
+                can degrade to the auto-name like any missing chunk.
+        """
+        chunk = find_by_type(chunks=self.chunks, chunk_type="Utf8")
+        assert isinstance(chunk, Utf8Chunk)
+        return chunk

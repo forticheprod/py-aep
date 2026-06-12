@@ -1346,9 +1346,9 @@ class TestRemoveGuide:
     def test_remove_guide_invalid_index_raises(self) -> None:
         project = parse_aep(SAMPLES_DIR / "guides.aep").project
         comp = get_comp(project, "guides_horizontal")
-        with pytest.raises(ValueError):
+        with pytest.raises(IndexError):
             comp.remove_guide(5)
-        with pytest.raises(ValueError):
+        with pytest.raises(IndexError):
             comp.remove_guide(-1)
 
     def test_remove_guide_invariant(self) -> None:

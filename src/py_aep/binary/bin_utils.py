@@ -51,6 +51,11 @@ def write_fmt(fp: IO[bytes], fmt: str, *args: Any, endian: str = ">") -> int:
     return len(data)
 
 
+def to_f4(value: float) -> float:
+    """Round a Python float (f8) to float32 (f4) precision."""
+    return float(struct.unpack("<f", struct.pack("<f", value))[0])
+
+
 def read_bytes(fp: IO[bytes], size: int) -> bytes:
     """Read exactly `size` bytes from `fp`.
 

@@ -36,7 +36,7 @@ class LdtaChunk(Chunk):
     """Layer descriptor chunk (160-164 bytes).
 
     Contains layer identity, timing, flags, and type info. The 32-byte
-    `layer_name` is a windows-1252 null-terminated string. The optional
+    `layer_name` is a UTF-8 null-terminated string. The optional
     `matte_layer_id` is present only in AE >= 23.
     """
 
@@ -74,9 +74,9 @@ class LdtaChunk(Chunk):
     label: int = u1_field()
     _reserved_3e: bytes = bytes_field(2, repr=False)
 
-    # -- Layer name (bytes 64-95, 32-byte windows-1252 strz) ---------------
-    layer_name: str = str_field(32, default="", encoding="windows-1252")
-    """32-byte windows-1252 null-terminated string."""
+    # -- Layer name (bytes 64-95, 32-byte UTF-8 strz) ---------------
+    layer_name: str = str_field(32, default="", encoding="utf-8")
+    """32-byte UTF-8 null-terminated string."""
 
     # -- Post-name fields (bytes 96-159) -----------------------------------
     _reserved_60: bytes = bytes_field(3, repr=False)
