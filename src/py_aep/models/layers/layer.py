@@ -5,15 +5,16 @@ from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import AutoOrientType, Label, LayerType
 
-from ...binary.chunk import ContainerChunk, ListChunk
+from ...binary.chunk import ListChunk
 from ...binary.item_chunks import CmtaChunk
 from ...binary.mutations import build_gide_list, clone_chunk_tree
-from ...binary.property_chunks import TdsbChunk
+from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import find_by_type
+from ...binary.utils import find_by_type, index_by_identity
 from ...parsers.property import parse_properties
 from ...parsers.utils import get_chunks_by_match_name
 from ...resolvers.transform import (
+    Mat4,
     build_world_matrix,
     decompose_transform,
 )
@@ -188,10 +189,14 @@ class Layer(PropertyGroup):
         name_utf8 = Utf8Chunk(value=name)
         tdgp_chunks: list[Any] = [
             TdsbChunk(),
-            ContainerChunk(chunk_type="tdsn", chunks=[Utf8Chunk(value="")]),
+            TdsnChunk.new(),
         ]
         if root_tdgp_extra:
             tdgp_chunks.extend(root_tdgp_extra)
+        # AE terminates every tdgp match-name stream with ADBE Group End
+        # and rejects layers whose root tdgp lacks it ("missing data in
+        # file"). Synthesized children are inserted before this marker.
+        tdgp_chunks.append(TdmnChunk(value="ADBE Group End"))
         root_tdgp = ListChunk(list_type="tdgp", chunks=tdgp_chunks)
         gide, _lhd3, _inner = build_gide_list()
         layer_list = ListChunk(
@@ -479,6 +484,29 @@ class Layer(PropertyGroup):
             return group
         return None
 
+    def _validate_parent(self, new_parent: Layer | None) -> None:
+        """Reject parent assignments ExtendScript refuses: a layer from
+        another comp, the layer itself, or any of its own descendants
+        (which would create a parenting cycle)."""
+        if new_parent is None:
+            return
+        if not isinstance(new_parent, Layer):
+            raise ValueError("parent must be a Layer or None")
+        if new_parent.containing_comp is not self.containing_comp:
+            raise ValueError("parent must be a layer in the same composition")
+        # Walk up from the candidate; hitting self means a cycle. The
+        # visited set keeps this terminating even on a file that already
+        # contains a parenting cycle.
+        seen = {id(self)}
+        current: Layer | None = new_parent
+        while current is not None:
+            if id(current) in seen:
+                raise ValueError(
+                    "cannot parent a layer to itself or to one of its descendants"
+                )
+            seen.add(id(current))
+            current = current.parent
+
     @property
     def parent(self) -> Layer | None:
         """The parent of this layer; can be `None`.
@@ -500,8 +528,7 @@ class Layer(PropertyGroup):
 
     @parent.setter
     def parent(self, value: Layer | None) -> None:
-        if value is not None and not isinstance(value, Layer):
-            raise ValueError("parent must be a Layer or None")
+        self._validate_parent(value)
         old_parent = self.parent
         new_parent = value
 
@@ -509,14 +536,20 @@ class Layer(PropertyGroup):
             return
 
         child_world = build_world_matrix(self)
+        old_parent_world = (
+            build_world_matrix(old_parent)
+            if old_parent is not None
+            else Mat4.identity()
+        )
+        new_parent_world = (
+            build_world_matrix(new_parent)
+            if new_parent is not None
+            else Mat4.identity()
+        )
 
         self._parent_id = value.id if value is not None else 0
 
-        if new_parent is None:
-            new_local = child_world
-        else:
-            new_parent_world = build_world_matrix(new_parent)
-            new_local = new_parent_world.inverse() @ child_world
+        new_local = new_parent_world.inverse() @ child_world
 
         # Decompose into AE transform components, keeping anchor fixed.
         anchor = cast(
@@ -528,22 +561,46 @@ class Layer(PropertyGroup):
         )
 
         transform = self.transform
-        # Only write values that actually changed to avoid materializing
-        # synthetic properties unnecessarily.
-        if cast("Property", transform["ADBE Position"]).value != new_pos:
-            cast("Property", transform["ADBE Position"]).value = new_pos
-        if cast("Property", transform["ADBE Scale"]).value != new_scale:
-            cast("Property", transform["ADBE Scale"]).value = new_scale
-        if cast("Property", transform["ADBE Rotate Z"]).value != new_rz:
-            cast("Property", transform["ADBE Rotate Z"]).value = new_rz
+
+        def write_compensation(match_name: str, new_value: Any) -> None:
+            # Only write values that actually changed to avoid materializing
+            # synthetic properties unnecessarily. Keyframed scale / rotation
+            # values are left untouched, matching ExtendScript (the layer
+            # may visually jump for those).
+            prop = cast("Property", transform[match_name])
+            if prop.keyframes:
+                return
+            if prop.value != new_value:
+                prop.value = new_value
+
+        # ExtendScript remaps every POSITION keyframe into the new parent's
+        # space (measured in AE 2026); other keyframed properties keep
+        # their values.
+        pos = cast("Property", transform["ADBE Position"])
+        if pos.keyframes:
+            remap = new_parent_world.inverse() @ old_parent_world
+            for kf in pos.keyframes:
+                kf_value = cast("list[float]", kf.value)
+                dims = len(kf_value)
+                kf.value = remap.transform_point(kf_value)[:dims]
+                for tangent_attr in ("in_spatial_tangent", "out_spatial_tangent"):
+                    tangent = getattr(kf, tangent_attr)
+                    if tangent:
+                        setattr(
+                            kf,
+                            tangent_attr,
+                            remap.transform_vector(tangent)[: len(tangent)],
+                        )
+        else:
+            write_compensation("ADBE Position", new_pos)
+        write_compensation("ADBE Scale", new_scale)
+        write_compensation("ADBE Rotate Z", new_rz)
 
         # Only update 3D rotation properties if the layer is 3D.
         is_3d = getattr(self, "three_d_layer", False)
         if is_3d:
-            if cast("Property", transform["ADBE Rotate X"]).value != new_rx:
-                cast("Property", transform["ADBE Rotate X"]).value = new_rx
-            if cast("Property", transform["ADBE Rotate Y"]).value != new_ry:
-                cast("Property", transform["ADBE Rotate Y"]).value = new_ry
+            write_compensation("ADBE Rotate X", new_rx)
+            write_compensation("ADBE Rotate Y", new_ry)
 
     def set_parent_with_jump(self, new_parent: Layer | None) -> None:
         """Sets the parent of this layer to the specified layer, without changing the
@@ -559,7 +616,12 @@ class Layer(PropertyGroup):
 
         Args:
             new_parent: The new parent layer, or `None` to unparent.
+
+        Raises:
+            ValueError: If `new_parent` is this layer itself, one of its
+                descendants, or a layer in another composition.
         """
+        self._validate_parent(new_parent)
         self._parent_id = new_parent.id if new_parent is not None else 0
 
     def active_at_time(self, time: float) -> bool:
@@ -709,11 +771,8 @@ class Layer(PropertyGroup):
             cloned_ldta.matte_layer_id = 0
             model_idx = 0
             if into_comp.layers:
-                # Identity scan - see _layer_block_slice for why .index() is unsafe.
-                chunk_idx = next(
-                    i
-                    for i, c in enumerate(into_comp._item_list.chunks)
-                    if c is into_comp.layers[0]._layer_list
+                chunk_idx = index_by_identity(
+                    into_comp._item_list.chunks, into_comp.layers[0]._layer_list
                 )
             else:
                 chunk_idx = into_comp._find_first_layer_position()
@@ -807,11 +866,8 @@ class Layer(PropertyGroup):
 
         # Find chunk insertion point
         if target_index < len(comp._layers):
-            # Identity scan - see _layer_block_slice for why .index() is unsafe.
-            chunk_idx = next(
-                i
-                for i, c in enumerate(comp._item_list.chunks)
-                if c is comp._layers[target_index]._layer_list
+            chunk_idx = index_by_identity(
+                comp._item_list.chunks, comp._layers[target_index]._layer_list
             )
         elif comp._layers:
             _, last_end = comp._layer_block_slice(comp._layers[-1])

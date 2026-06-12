@@ -37,6 +37,10 @@ class _PropSpec(NamedTuple):
     spatial_flags: int | None = None
     cvot: int | None = None
     value_hint_type: int | None = None
+    bound_chunks: bool | None = None
+    """Whether AE writes `tdum`/`tduM` placeholder bound chunks for this
+    property when materialized. `None` derives it from `min_value` /
+    `max_value` (bounded, non-integer, non-color, non-spatial)."""
 
 
 class _GroupSpec(NamedTuple):
@@ -365,13 +369,8 @@ _MASK_ATOM_SPECS: list[_PropSpec] = [
 ]
 
 # Canonical children of "ADBE Light Options Group" as reported by ExtendScript.
-_LIGHT_SPECS: list[_PropSpec] = [
-    _PropSpec(
-        "ADBE Light Env Atom",
-        "Source",
-        None,
-        PropertyValueType.NO_VALUE,
-    ),
+_LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
+    _GroupSpec("ADBE Light Env Atom", "Source"),
     _PropSpec(
         "ADBE Light Backgd Visible",
         "Background Visible",
@@ -2315,6 +2314,7 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         None,
         PropertyValueType.OneD,
         has_time_base=True,
+        bound_chunks=True,
     ),
     _PropSpec(
         "ADBE Position_1",
@@ -2322,8 +2322,15 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         None,
         PropertyValueType.OneD,
         has_time_base=True,
+        bound_chunks=True,
     ),
-    _PropSpec("ADBE Position_2", "Z Position", None, PropertyValueType.OneD),
+    _PropSpec(
+        "ADBE Position_2",
+        "Z Position",
+        None,
+        PropertyValueType.OneD,
+        bound_chunks=True,
+    ),
     _PropSpec(
         "ADBE Scale",
         "Scale",
@@ -2393,6 +2400,8 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Mask Parade", "Masks"),
     _GroupSpec("ADBE Effect Parade", "Effects"),
     _GroupSpec("ADBE Transform Group", "Transform"),
+    _GroupSpec("ADBE Camera Options Group", "Camera Options"),
+    _GroupSpec("ADBE Light Options Group", "Light Options"),
     _GroupSpec("ADBE Layer Styles", "Layer Styles"),
     _GroupSpec("ADBE Plane Options Group", "Geometry Options"),
     _GroupSpec("ADBE Extrsn Options Group", "Geometry Options"),
@@ -2403,6 +2412,14 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Layer Sets", "Sets"),
     _GroupSpec("ADBE Source Options Group", "Replace Source"),
 ]
+
+# Groups only present on camera / light layers.
+_CAMERA_LIGHT_GROUPS: frozenset[str] = frozenset(
+    {
+        "ADBE Camera Options Group",
+        "ADBE Light Options Group",
+    }
+)
 
 # Groups only present on regular AVLayers, NOT on TextLayer or ShapeLayer.
 _REGULAR_AV_ONLY_GROUPS: frozenset[str] = frozenset(
@@ -2419,3 +2436,26 @@ _REGULAR_AV_ONLY_GROUPS: frozenset[str] = frozenset(
 # Layer-type-specific groups that should be skipped for other types.
 _TEXT_ONLY_GROUPS: frozenset[str] = frozenset({"ADBE Text Properties"})
 _SHAPE_ONLY_GROUPS: frozenset[str] = frozenset({"ADBE Root Vectors Group"})
+
+# Empty groups AE omits from a freshly created layer (it writes them only
+# once they have content).
+_OMITTED_EMPTY_GROUPS: frozenset[str] = frozenset(
+    {
+        "ADBE MTrackers",
+        "ADBE Mask Parade",
+        "ADBE Effect Parade",
+        "ADBE Root Vectors Group",
+        "ADBE Text Animators",
+    }
+)
+
+# Transform properties AE does NOT write for a new camera / light layer
+# (two-node cameras auto-orient, so the orientation trio stays unset);
+# everything else in the Transform group is written.
+_CAMERA_LIGHT_TRANSFORM_SKIP: frozenset[str] = frozenset(
+    {
+        "ADBE Orientation",
+        "ADBE Rotate X",
+        "ADBE Rotate Y",
+    }
+)

@@ -6,11 +6,13 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from ..ae_version import requires_version
 from ..binary.chunk import ListChunk, write_aep
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     filter_by_type,
     find_by_list_type,
+    recursive_find,
     toggle_flag_chunk,
 )
 from ..enums import (
@@ -20,13 +22,17 @@ from ..enums import (
     FootageTimecodeDisplayStartType,
     FramesCountType,
     GpuAccelType,
+    ImportAsType,
     LutInterpolationMethod,
     TimeDisplayType,
 )
 from .descriptors import ChunkField
+from .import_options import ImportOptions
 from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
+from .items.item import Item
+from .sources.file import FileSource
 from .validators import (
     _validate_number,
     validate_enum,
@@ -34,18 +40,17 @@ from .validators import (
     validate_path,
     validate_path_does_not_exist,
 )
-from .version import requires_version
 
 if TYPE_CHECKING:
     from typing import ClassVar, Iterator
 
     from ..binary.chunk import Chunk
     from ..binary.item_chunks import HeadChunk, NhedChunk, NnhdChunk
+    from ..binary.layer_chunks import LdtaChunk
     from ..binary.misc_chunks import DwgaChunk
     from ..binary.render_chunks import RenderSettingsItem
     from ..binary.scalar_chunks import F8Chunk, U1Chunk
     from ..parsers.templates import OutputModuleTemplate
-    from .items.item import Item
     from .layers.layer import Layer
     from .renderqueue.render_queue import RenderQueue
 
@@ -164,7 +169,7 @@ class Project:
     """
 
     compensate_for_scene_referred_profiles = ChunkField[bool](
-        "_acer", "value", transform=bool, reverse=int
+        "_acer", "value", transform=bool, reverse=int, min_version=16
     )
     """When True, After Effects compensates for scene-referred profiles when
     rendering."""
@@ -193,6 +198,7 @@ class Project:
         GpuAccelType,
         "_gpug_utf8",
         "value",
+        min_version=13,
     )
     """The GPU acceleration type for the project. None if not
     recognised. Read / Write."""
@@ -260,7 +266,6 @@ class Project:
         self._render_templates_cache: list[RenderSettingsItem] | None = None
         self._output_templates_cache: list[OutputModuleTemplate] | None = None
         self._default_render_template_index: int | None = None
-        self._default_output_template_index: int | None = None
 
     def __repr__(self) -> str:
         return f"Project(file={self._file!r})"
@@ -337,6 +342,7 @@ class Project:
         return any(c.chunk_type == "lnrp" for c in self._root_chunks)
 
     @linearize_working_space.setter
+    @requires_version(16)
     def linearize_working_space(self, value: bool) -> None:
         toggle_flag_chunk(self._rifx, "lnrp", value)
 
@@ -349,6 +355,7 @@ class Project:
         return "extendscript"
 
     @expression_engine.setter
+    @requires_version(16)
     def expression_engine(self, value: str) -> None:
         _validate_expression_engine(value)
         if self._exen_utf8 is not None:
@@ -510,13 +517,54 @@ class Project:
 
         source = PlaceholderSource._new(name, width, height, frame_rate, duration)
         item = FootageItem._new(
-            name,
             source,
             project=self,
             parent_folder=self.root_folder,
         )
 
         # Insert into root folder's chunk tree and register
+        container = self.root_folder._children_container
+        container.append(item._item_list)
+        container.extend(item._view_data)
+        self.items[item.id] = item
+        self.root_folder.items.append(item)
+        return item
+
+    def import_file(self, options: ImportOptions) -> FootageItem:
+        """Imports the file specified in the specified ImportOptions object, using the
+        specified options. Same as the File > Import File command.
+
+        Creates and returns a new FootageItem object from the file, and adds it to the
+        project's items array.
+
+        Args:
+            options: The import settings. Only `ImportAsType.FOOTAGE`
+                is supported.
+
+        Returns:
+            The newly created [FootageItem][].
+
+        Raises:
+            ValueError: If `import_as` is not `ImportAsType.FOOTAGE`, or the
+                file extension is not a supported footage format.
+            NotImplementedError: If media-header probing is not implemented
+                for the file's format.
+        """
+        if not isinstance(options, ImportOptions):
+            raise ValueError(f"Expected ImportOptions, got {type(options).__name__}")
+        if options.import_as != ImportAsType.FOOTAGE:
+            raise ValueError(
+                "import_file supports only ImportAsType.FOOTAGE, "
+                f"got {options.import_as.name}"
+            )
+
+        source = FileSource._from_file(
+            options.file,
+            sequence=options.sequence,
+            force_alphabetical=options.force_alphabetical,
+        )
+
+        item = FootageItem._new(source, project=self, parent_folder=self.root_folder)
         container = self.root_folder._children_container
         container.append(item._item_list)
         container.extend(item._view_data)
@@ -552,6 +600,8 @@ class Project:
         Returns:
             The total number of items removed.
         """
+        if not all(isinstance(item, Item) for item in items_to_keep):
+            raise ValueError("All items_to_keep must be Item instances")
         keep_ids: set[int] = {0}
         queue = list(items_to_keep)
         while queue:
@@ -603,6 +653,10 @@ class Project:
                     for layer in comp.av_layers:
                         if layer._source_id == dup.id:
                             layer._source_id = kept.id
+                            # Refresh the layer's cached source so a prior
+                            # `layer.source` access doesn't keep returning
+                            # the removed duplicate.
+                            layer._source = kept
                             kept._used_in.add(comp)
                 dup.remove()
                 removed += 1
@@ -614,13 +668,38 @@ class Project:
 
         Warning:
             This is highly experimental for now.
+
+        Raises:
+            FileExistsError: If `path` already exists; overwriting is not
+                allowed while saving is experimental.
         """
         validate_path_does_not_exist(path)
         path_obj = Path(path)
         path_obj.parent.mkdir(parents=True, exist_ok=True)
-        with path_obj.open("wb") as f:
-            write_aep(f, self._rifx, self._xmp)
+        # Write to a sibling temp file then rename, so a serialization
+        # error can never leave a truncated .aep at the target path.
+        tmp_path = path_obj.with_name(path_obj.name + ".tmp")
+        try:
+            with tmp_path.open("wb") as f:
+                write_aep(f, self._rifx, self._xmp)
+        except BaseException:
+            if tmp_path.exists():  # missing_ok needs Python 3.8
+                tmp_path.unlink()
+            raise
+        os.replace(tmp_path, path_obj)
         self._file = str(path)
+
+    def _require_prefs_dir(self, label: str) -> Path:
+        """Return the AE preferences directory or raise if none was given."""
+        if self._ae_preferences_dir is None:
+            raise ValueError(
+                "No 'ae_preferences_dir' provided to parse(); "
+                f"{label} templates are required for adding items "
+                "to the render queue. Pass ae_preferences_dir pointing to "
+                "the AE preferences directory (e.g. "
+                "C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0)"
+            )
+        return self._ae_preferences_dir
 
     def _get_render_templates(self) -> list[RenderSettingsItem]:
         """Lazily parse render settings templates from AE preferences.
@@ -633,18 +712,10 @@ class Project:
         if self._render_templates_cache is not None:
             return self._render_templates_cache
 
-        if self._ae_preferences_dir is None:
-            raise ValueError(
-                "No 'ae_preferences_dir' provided to parse(); "
-                "render settings templates are required for adding items "
-                "to the render queue. Pass ae_preferences_dir pointing to "
-                "the AE preferences directory (e.g. "
-                "C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0)"
-            )
-
         from ..parsers.templates import parse_render_templates
 
-        templates, default_index = parse_render_templates(self._ae_preferences_dir)
+        prefs_dir = self._require_prefs_dir("render settings")
+        templates, default_index = parse_render_templates(prefs_dir)
         self._default_render_template_index = default_index
 
         self._render_templates_cache = templates
@@ -663,19 +734,10 @@ class Project:
         if self._output_templates_cache is not None:
             return self._output_templates_cache
 
-        if self._ae_preferences_dir is None:
-            raise ValueError(
-                "No 'ae_preferences_dir' provided to parse(); "
-                "output module templates are required for adding items "
-                "to the render queue. Pass ae_preferences_dir pointing to "
-                "the AE preferences directory (e.g. "
-                "C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0)"
-            )
-
         from ..parsers.templates import parse_output_templates
 
-        templates, default_index = parse_output_templates(self._ae_preferences_dir)
-        self._default_output_template_index = default_index
+        prefs_dir = self._require_prefs_dir("output module")
+        templates, _ = parse_output_templates(prefs_dir)
 
         self._output_templates_cache = templates
         return self._output_templates_cache
@@ -693,8 +755,17 @@ class Project:
     def _allocate_layer_id(self) -> int:
         """Return the next unique layer ID and update the counter."""
         if self._max_layer_id == -1:
+            # AE allocates viewer pseudo-layer IDs (DLay/SLay/CLay/SecL
+            # lists) from the same project-wide counter as real layers, so
+            # scan every ldta in each comp's item tree, not just LIST:Layr.
             self._max_layer_id = max(
-                (lyr.id for comp in self.compositions for lyr in comp.layers),
+                (
+                    cast("LdtaChunk", ldta).layer_id
+                    for comp in self.compositions
+                    for ldta in recursive_find(
+                        comp._item_list.chunks, chunk_type="ldta"
+                    )
+                ),
                 default=0,
             )
         self._max_layer_id += 1

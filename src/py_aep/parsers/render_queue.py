@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk, ListChunk
 from ..binary.ldat_chunks import LdatChunk, Lhd3Chunk
-from ..binary.render_chunks import ROUT_ITEMS_PER_RQ_ITEM, RoutChunk
+from ..binary.render_chunks import ROUT_ITEMS_PER_RQ_ITEM, ArsiChunk, RoutChunk
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
+    ChunkNotFoundError,
     find_by_list_type,
     find_by_type,
     split_on_type,
@@ -18,7 +19,7 @@ from .output_module import parse_output_module
 
 if TYPE_CHECKING:
     from ..binary.chunk import Chunk
-    from ..binary.render_chunks import ArsiChunk, RenderSettingsItem, RoutItem
+    from ..binary.render_chunks import RenderSettingsItem, RoutItem
     from ..models.project import Project
 
 
@@ -39,34 +40,57 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
         "Lhd3Chunk", find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3")
     )
 
-    rout_chunk = cast(
-        "RoutChunk", find_by_type(chunks=lrdr_child_chunks, chunk_type="Rout")
-    )
+    # Legacy/minimal files may omit the queue scaffolding (Rout, LItm,
+    # LSIf/ARsi). Substitute synthetic placeholders attached to the tree so
+    # the parse still yields an (empty) render queue; write_aep() skips
+    # synthetic chunks, so untouched files round-trip byte-identically.
+    try:
+        rout_chunk = cast(
+            "RoutChunk", find_by_type(chunks=lrdr_child_chunks, chunk_type="Rout")
+        )
+    except ChunkNotFoundError:
+        rout_chunk = RoutChunk(synthetic=True)
+        lrdr_child_chunks.append(rout_chunk)
 
-    litm_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="LItm")
+    try:
+        litm_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="LItm")
+    except ChunkNotFoundError:
+        litm_chunk = ListChunk(list_type="LItm", synthetic=True)
+        lrdr_child_chunks.append(litm_chunk)
 
-    lsif_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="LSIf")
-    arsi_chunk = cast(
-        "ArsiChunk", find_by_type(chunks=lsif_chunk.chunks, chunk_type="ARsi")
-    )
+    try:
+        lsif_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="LSIf")
+    except ChunkNotFoundError:
+        lsif_chunk = ListChunk(list_type="LSIf", synthetic=True)
+        lrdr_child_chunks.append(lsif_chunk)
+    try:
+        arsi_chunk = cast(
+            "ArsiChunk", find_by_type(chunks=lsif_chunk.chunks, chunk_type="ARsi")
+        )
+    except ChunkNotFoundError:
+        arsi_chunk = ArsiChunk(synthetic=True)
+        lsif_chunk.chunks.append(arsi_chunk)
 
     if settings_lhd3.count == 0:
-        # Empty render queue - ldat may not exist yet
-        settings_ldat = LdatChunk(chunk_type="ldat")
-        return RenderQueue(
-            _lrdr=lrdr_chunk,
-            _rs_lhd3=settings_lhd3,
-            _rs_ldat=settings_ldat,
-            _rout=rout_chunk,
-            _litm=litm_chunk,
-            _arsi=arsi_chunk,
-            parent=project,
-            items=[],
+        # Empty render queue: AE writes the settings 'list' with only an lhd3
+        # (no ldat). Create a synthetic ldat and attach it to the tree so the
+        # model and tree agree. write_aep() skips synthetic chunks, so an
+        # untouched empty queue still round-trips byte-identically; the first
+        # add() flips it to non-synthetic. (AE may instead write an empty ldat
+        # with count==0; reuse it when present.)
+        try:
+            settings_ldat = cast(
+                "LdatChunk",
+                find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat"),
+            )
+        except ChunkNotFoundError:
+            settings_ldat = LdatChunk(chunk_type="ldat", synthetic=True)
+            list_settings_chunk.chunks.append(settings_ldat)
+    else:
+        settings_ldat = cast(
+            "LdatChunk",
+            find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat"),
         )
-
-    settings_ldat = cast(
-        "LdatChunk", find_by_type(chunks=list_settings_chunk.chunks, chunk_type="ldat")
-    )
 
     render_queue = RenderQueue(
         _lrdr=lrdr_chunk,
@@ -79,14 +103,14 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
         items=[],
     )
 
-    items = parse_render_queue_items(
-        litm_chunk=litm_chunk,
-        render_settings=settings_ldat.items,
-        rout_items=rout_chunk.items,
-        project=project,
-        render_queue=render_queue,
-    )
-    render_queue._items = items
+    if settings_lhd3.count > 0:
+        render_queue._items = parse_render_queue_items(
+            litm_chunk=litm_chunk,
+            render_settings=settings_ldat.items,
+            rout_items=rout_chunk.items,
+            project=project,
+            render_queue=render_queue,
+        )
     return render_queue
 
 

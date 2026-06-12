@@ -92,6 +92,10 @@ def resolve_can_set_expression(prop: Property) -> bool:
     if mn in _CANSETEXPR_TRUE_OVERRIDES:
         return True
 
+    # Effect parameters whose pard definition disables expressions.
+    if prop._expressions_disabled:
+        return False
+
     if pvt in _PVT_ALWAYS_FALSE:
         return False
 

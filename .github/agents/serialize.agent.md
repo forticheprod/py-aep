@@ -1,7 +1,6 @@
 ---
 description: "Use when implementing chunk-backed descriptor classes for serialization, moving parser logic into model constructors, replacing attributes with ChunkField/ChunkField[bool]/ChunkField.enum descriptors, or adding validators to model fields."
 tools: [execute, read, edit, search, agent, todo, web]
-model: ["Claude Opus 4.6", "Claude Sonnet 4.6", "Claude Haiku 4.5"]
 argument-hint: "Name the model class to convert (e.g. RenderQueueItem, SolidSource)"
 ---
 
@@ -16,10 +15,10 @@ Read these files to understand the patterns. They are the source of truth - this
 | File | What to learn |
 |------|---------------|
 | `src/py_aep/models/project.py` | **Primary reference.** Multiple chunk bodies, ChunkField, ChunkField.enum, reverse helpers, custom `@property` setters (linear_blending, expression_engine), validators, `__init__` layout |
-| `src/py_aep/models/items/composition.py` | Many descriptors on one `_cdta` body, `validate_number` with dynamic `lambda self:` bounds, `default=` on ChunkField |
+| `src/py_aep/models/items/composition.py` | Many descriptors on one `_cdta` body, `_validate_number` with dynamic `lambda self:` bounds, `default=` on ChunkField |
 | `src/py_aep/models/application.py` | Minimal example - ChunkField with validate, chunk `@property` for multi-field writes |
 | `src/py_aep/models/descriptors.py` | ChunkField / ChunkField.enum API, materialization context management |
-| `src/py_aep/models/validators.py` | `validate_number`, `validate_sequence`, `validate_one_of` |
+| `src/py_aep/models/validators.py` | `_validate_number`, `validate_sequence`, `validate_one_of` |
 | `tests/test_models_composition.py` | **Roundtrip test pattern** - `TestRoundtrip*` classes: parse -> modify -> save -> re-parse -> assert |
 
 ## Procedure
@@ -64,7 +63,7 @@ Refactor to a thin chunk-locator: find chunks, pass chunks to the model. Remove 
 - **Identity-typed fields** (int->int, float->float, str->str, list->list): No `reverse` needed - only set `read_only=True` if read-only, otherwise omit both `reverse` and `read_only`.
 - **Multi-field writes** (computed from multiple fields): Use `ChunkField` with `reverse_multi` - a 2-arg callable `(value, body)` that returns a `dict` of `{field_name: value}` pairs.
 - **Reverses**: Only add `reverse` (scalar) or `reverse_multi` (multi-field) when actual conversion is needed (bool->int, enum->binary, custom decomposition).
-- **Validators**: `validate_number(min=, max=, integer=)`, `validate_sequence(length=, min=, max=)`, `validate_one_of(values)`. Dynamic bounds use `lambda self:`. Located in `models/validators.py`.
+- **Validators**: `_validate_number(min=, max=, integer=)`, `validate_sequence(length=, min=, max=)`, `validate_one_of(values)`. Dynamic bounds use `lambda self:`. Located in `models/validators.py`.
 
 ### 6. Write roundtrip tests
 Follow `tests/test_models_composition.py` `TestRoundtrip*` pattern: parse sample -> modify descriptor field -> `project.save(tmp_path)` -> re-parse -> assert. Add validation tests for every field with `validate=`.

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk
 from ..binary.misc_chunks import PardChunk
-from ..binary.property_chunks import TdmnChunk, TdsbChunk
+from ..binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
@@ -21,7 +22,8 @@ from ..enums import (
     PropertyType,
     PropertyValueType,
 )
-from ..models.properties.overrides import _PROPERTY_DEFAULTS
+from ..models.descriptors import _suppress_materialization
+from ..models.properties.overrides import _CANVARY_OVERRIDES, _PROPERTY_DEFAULTS
 from ..models.properties.property import Property
 from ..models.properties.property_group import PropertyGroup
 from ..synthesis.specs import _PropSpec
@@ -111,12 +113,15 @@ def _resolve_effect_value(
     if control_type == PropertyControlType.BOOLEAN:
         value = param_def.get("default_value", param_def.get("last_value"))
         return value, value
-    # General case: last_value > default_value > _PROPERTY_DEFAULTS
+    # General case: last_value > default_value > override table > pard
+    # dephault.
     value = param_def.get("last_value")
     if value is None:
         value = param_def.get("default_value")
     if value is None:
         value = _PROPERTY_DEFAULTS.get(match_name)
+    if value is None:
+        value = param_def.get("dephault")
     default_value: Any = param_def.get("default_value")
     if default_value is None:
         default_value = value
@@ -146,6 +151,14 @@ def _apply_param_def_metadata(
         prop._max_value_fallback = max_val
     prop.nb_options = param_def.get("nb_options")
     prop.property_parameters = param_def.get("property_parameters")
+    # The pard param flags carry the authoritative can-vary bit; the
+    # residue table keeps the rare params where they disagree with
+    # ExtendScript (e.g. the Puppet Engine dropdown).
+    can_vary = param_def.get("can_vary_over_time")
+    if can_vary is not None and prop.match_name not in _CANVARY_OVERRIDES:
+        prop._can_vary_over_time = can_vary
+    if param_def.get("expressions_disabled"):
+        prop._expressions_disabled = True
 
 
 def _scale_2d_point(prop: Property, width: int, height: int) -> None:
@@ -214,11 +227,12 @@ def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
     prop._property_value_type = param_def.get(
         "property_value_type", prop.property_value_type
     )
-    # Prefer the static lookup for defaults - pard defaults may be
-    # incorrect (e.g. 0 for properties whose real AE default is non-zero).
-    # For LAYER references, pard stores a meaningless 0 and we have no
-    # static override, so leave default_value unset entirely.
+    # Prefer the override table, then the pard dephault field. For LAYER
+    # references, pard stores a meaningless 0 and we have no static
+    # override, so leave default_value unset entirely.
     static_default = _PROPERTY_DEFAULTS.get(prop.match_name)
+    if static_default is None:
+        static_default = param_def.get("dephault")
     if static_default is not None:
         prop.default_value = static_default
     elif param_def["property_control_type"] != PropertyControlType.LAYER:
@@ -371,6 +385,7 @@ def _parse_effect_properties(
     return ordered
 
 
+@_suppress_materialization()
 def parse_effect(
     sspc_chunk: ListChunk,
     group_match_name: str,
@@ -425,12 +440,8 @@ def parse_effect(
     if param_defs and group_match_name not in effect_param_defs:
         effect_param_defs[group_match_name] = param_defs
     # Resolve _name_utf8 from the effect tdgp's tdsn child
-    tdsn = cast(
-        "ContainerChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn")
-    )
-    effect_name_utf8 = cast(
-        "Utf8Chunk", find_by_type(chunks=tdsn.chunks, chunk_type="Utf8")
-    )
+    tdsn = cast("TdsnChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn"))
+    effect_name_utf8 = tdsn.utf8
 
     try:
         effect_tdsb = cast(
@@ -491,6 +502,8 @@ def _pard_extractor(
 @_pard_extractor(PropertyControlType.ANGLE)
 def _extract_angle(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value / 65536
+    if body.dephault_raw is not None:
+        result["dephault"] = _intify(body.dephault_raw / 65536)
     result["property_value_type"] = PropertyValueType.OneD
 
 
@@ -526,17 +539,38 @@ def _extract_enum(body: Any, result: dict[str, Any]) -> None:
     result["max_value"] = nb_options
 
 
+def _intify(value: float) -> int | float:
+    """Return integral floats as int, matching ExtendScript output."""
+    return int(value) if float(value).is_integer() else value
+
+
+@_pard_extractor(PropertyControlType.INTEGER)
+def _extract_integer(body: Any, result: dict[str, Any]) -> None:
+    if body.dephault is not None:
+        result["dephault"] = body.dephault
+    result["min_value"] = body.valid_min
+    result["max_value"] = body.valid_max
+
+
 @_pard_extractor(PropertyControlType.SCALAR)
 def _extract_scalar(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value / 65536
-    result["min_value"] = body.min_value
-    result["max_value"] = body.max_value
+    if body.dephault_raw is not None:
+        result["dephault"] = _intify(body.dephault_raw / 65536)
+    result["min_value"] = _intify(body.valid_min_raw / 65536)
+    result["max_value"] = _intify(body.valid_max_raw / 65536)
 
 
 @_pard_extractor(PropertyControlType.SLIDER)
 def _extract_slider(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value
-    result["max_value"] = body.max_value
+    if body.dephault is not None and math.isfinite(body.dephault):
+        result["dephault"] = _intify(body.dephault)
+    # Non-finite bounds mean the side is unbounded.
+    if math.isfinite(body.valid_min):
+        result["min_value"] = _intify(body.valid_min)
+    if math.isfinite(body.valid_max):
+        result["max_value"] = _intify(body.valid_max)
 
 
 @_pard_extractor(PropertyControlType.THREE_D)
@@ -589,6 +623,10 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
     result: dict[str, Any] = {
         "name": pard_chunk.name,
         "property_control_type": control_type,
+        # PF param flags bit 1 = CANNOT_TIME_VARY (the tdb4 byte is
+        # unreliable for effect parameters).
+        "can_vary_over_time": not (pard_chunk.param_flags & 0x02),
+        "expressions_disabled": pard_chunk.expressions_disabled,
     }
 
     extractor = _PARD_EXTRACTORS.get(control_type)

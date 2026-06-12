@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from .chunk import Chunk, ListChunk
 from .scalar_chunks import Utf8Chunk
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, Sequence
+
+_T = TypeVar("_T")
 
 
 class ChunkNotFoundError(Exception):
@@ -54,6 +56,21 @@ def filter_by_list_type(chunks: list[Chunk], list_type: str) -> list[ListChunk]:
     return [c for c in chunks if isinstance(c, ListChunk) and c.list_type == list_type]
 
 
+def index_by_identity(chunks: Sequence[_T], target: object) -> int:
+    """Index of `target` in `chunks` by object identity.
+
+    attrs `@define` chunks compare structurally, so `list.index()` can
+    match a different, byte-equal chunk; identity avoids that.
+
+    Raises:
+        ValueError: If `target` is not found in `chunks`.
+    """
+    for i, c in enumerate(chunks):
+        if c is target:
+            return i
+    raise ValueError("target chunk not found in chunk list")
+
+
 def block_slice(
     chunks: list[Chunk],
     target: Chunk,
@@ -74,12 +91,7 @@ def block_slice(
     Raises:
         ValueError: If `target` is not found in `chunks`.
     """
-    start = next(
-        (i for i, c in enumerate(chunks) if c is target),
-        None,
-    )
-    if start is None:
-        raise ValueError("target chunk not found in chunk list")
+    start = index_by_identity(chunks, target)
     for end in range(start + 1, len(chunks)):
         c = chunks[end]
         if isinstance(c, ListChunk) and c.list_type in boundary_list_types:
@@ -226,6 +238,36 @@ def parse_alas_data(parent_chunks: list[Chunk]) -> dict[str, Any]:
         return {}
     result = json.loads(alas_text)
     return result if isinstance(result, dict) else {}
+
+
+def build_als2_list(
+    fullpath: str,
+    *,
+    target_is_folder: bool,
+) -> ListChunk:
+    """Build a `LIST:Als2 -> alas` chunk holding a footage source path.
+
+    Inverse of `parse_alas_data`. AE locates the file via the absolute
+    `fullpath`; `ascendcount_*` (relative-path resolution depth) are set
+    equal so no relative offset is applied.
+
+    Args:
+        fullpath: Absolute path to the file, or the containing folder for
+            an image sequence.
+        target_is_folder: `True` when `fullpath` is a sequence folder.
+    """
+    data = {
+        "ascendcount_base": 0,
+        "ascendcount_target": 0,
+        "fullpath": fullpath,
+        "platform": 1,  # 1 = Windows
+        "server_name": "",
+        "server_volume_name": "",
+        "target_is_folder": target_is_folder,
+    }
+    text = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    alas = Utf8Chunk(chunk_type="alas", value=text)
+    return ListChunk(list_type="Als2", chunks=[alas])
 
 
 def chunk_tree(

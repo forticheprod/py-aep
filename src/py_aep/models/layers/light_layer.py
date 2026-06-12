@@ -40,7 +40,9 @@ class LightLayer(Layer):
 
     _auto_name: str = "Light"
     _fov_rad: float = 39.5978 * math.pi / 180
-    _zoom_dividend: float = 2 * math.tan(_fov_rad / 2)
+    # AE's default 50mm camera: zoom = width / 0.72 exactly
+    # (2 * tan(fov/2) rounds to 0.72; AE uses the exact ratio).
+    _zoom_dividend: float = 0.72
 
     light_type = ChunkField.enum(
         LightType,

@@ -86,6 +86,38 @@ a 1-based key index. py_aep exposes keyframes as a list of `Keyframe` objects on
 The `Keyframe` object bundles all keyframe attributes together, so you don't
 need separate method calls for each attribute.
 
+The keyframe mutation methods mirror ExtendScript but use **0-based**
+key indices:
+
+=== "ExtendScript"
+
+    ```javascript
+    prop.addKey(1.0);
+    prop.setValueAtTime(1.0, value);
+    prop.setValuesAtTimes(times, values);
+    prop.removeKey(1);
+    ```
+
+=== "py_aep"
+
+    ```python
+    prop.add_key(1.0)
+    prop.set_value_at_time(1.0, value)
+    prop.set_values_at_times(times, values)
+    prop.remove_key(0)
+    ```
+
+These work on every property kind, including the complex ones (mask
+paths, source text, markers, orientation, gradients). Adding the first
+keyframe converts a static property to an animated one, and removing the
+last keyframe reverts it to a static value holding the removed keyframe's
+value, matching After Effects' on-disk forms. Marker properties accept a
+plain string as a comment shorthand:
+
+```python
+layer["ADBE Marker"].set_value_at_time(2.0, "my comment")
+```
+
 ## Feather Points
 
 ExtendScript exposes mask feather data as parallel arrays on `Shape`

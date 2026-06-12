@@ -208,6 +208,16 @@ class TestAddCamera:
         assert anchor.value[0] == pytest.approx(comp.width / 2)
         assert anchor.value[1] == pytest.approx(comp.height / 2)
 
+    def test_zoom_uses_pixel_aspect(self) -> None:
+        # AE's default-50mm zoom is width * pixel_aspect / 0.72 (see the
+        # "ZV" formula in binary/comp_skeleton.py).
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        comp.pixel_aspect = 2.0
+        cam = comp.add_camera("Cam")
+        pos = cast("Property", cam.transform["ADBE Position"])
+        assert pos.value[2] == pytest.approx(-comp.width * 2.0 / 0.72)
+
     def test_roundtrip(self, tmp_path: Path) -> None:
         app = parse_aep(EMPTY_COMP_AEP)
         comp = app.project.compositions[0]
@@ -251,6 +261,16 @@ class TestAddLight:
         light = comp.add_light("L", [300, 400])
         pos = cast("Property", light.transform["ADBE Position"])
         assert pos.value[2] == pytest.approx(-69.4444, rel=1e-3)
+
+    def test_zoom_uses_pixel_aspect(self) -> None:
+        # Lights share the camera's width * pixel_aspect / 0.72 zoom and
+        # report position z as -zoom/2.
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        comp.pixel_aspect = 2.0
+        light = comp.add_light("L")
+        pos = cast("Property", light.transform["ADBE Position"])
+        assert pos.value[2] == pytest.approx(-comp.width * 2.0 / 0.72 / 2)
 
     def test_roundtrip(self, tmp_path: Path) -> None:
         app = parse_aep(EMPTY_COMP_AEP)
@@ -318,6 +338,18 @@ class TestAddSolid:
         comp = app.project.compositions[0]
         with pytest.raises(ValueError):
             comp.add_solid([2.0, 0.0, 0.0], "BadColor")
+
+    def test_malformed_color_with_auto_name_raises(self) -> None:
+        # The auto-name path subscripts the color; malformed input must
+        # still surface as a validation error, not TypeError/IndexError.
+        app = parse_aep(EMPTY_COMP_AEP)
+        comp = app.project.compositions[0]
+        with pytest.raises(ValueError):
+            comp.add_solid([0.2, 0.3])
+        with pytest.raises(ValueError):
+            comp.add_solid([2.0, 0.0, 0.0])
+        with pytest.raises(TypeError):
+            comp.add_solid(0.5)
 
     def test_solid_in_solids_folder(self) -> None:
         app = parse_aep(EMPTY_COMP_AEP)

@@ -10,7 +10,13 @@ import pytest
 from conftest import get_rqi, load_expected, parse_project
 
 from py_aep import parse as parse_aep
-from py_aep.binary.render_chunks import ROUT_ITEMS_PER_RQ_ITEM
+from py_aep.binary.chunk import ListChunk, read_aep, write_aep
+from py_aep.binary.render_chunks import (
+    ROUT_ITEMS_PER_RQ_ITEM,
+    OutputModuleSettingsItem,
+    RenderSettingsItem,
+)
+from py_aep.binary.utils import find_by_list_type
 from py_aep.enums import (
     ConvertToLinearLight,
     FieldRender,
@@ -28,6 +34,7 @@ from py_aep.enums import (
 )
 from py_aep.models.renderqueue import OutputModule
 from py_aep.models.renderqueue.render_queue_item import RenderQueueItem
+from py_aep.parsers.templates import parse_output_templates, parse_render_templates
 from py_aep.resolvers.output import resolve_output_filename
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "renderqueue"
@@ -1596,8 +1603,9 @@ class TestRQAddWithoutPreferences:
         assert rq2.items[-1].output_modules[0].name == "TIFF Sequence with Alpha"
 
     def test_add_to_empty_queue_roundtrips(self, tmp_path: Path) -> None:
-        # A project whose render queue starts empty: the settings 'list'
-        # has only an lhd3, so add() must attach the ldat to the tree.
+        # A project whose render queue starts empty: the settings 'list' has
+        # only an lhd3 and a synthetic (unwritten) ldat. add() materializes
+        # the ldat so the new settings get written.
         app = parse_aep(SAMPLES_DIR / "empty.aep")
         rq = app.project.render_queue
         assert rq.num_items == 0
@@ -1612,6 +1620,38 @@ class TestRQAddWithoutPreferences:
         rq2 = app2.project.render_queue
         assert rq2.num_items == 1
         assert rq2.items[0].output_modules[0].name == "TIFF Sequence with Alpha"
+
+    def test_empty_queue_unchanged_roundtrip_is_byte_identical(
+        self, tmp_path: Path
+    ) -> None:
+        # The synthetic ldat attached by the parser must be skipped on write,
+        # so parsing then saving an untouched empty queue is byte-identical.
+        src = SAMPLES_DIR / "empty.aep"
+        app = parse_aep(src)
+        assert app.project.render_queue.num_items == 0
+
+        out = tmp_path / "roundtrip.aep"
+        app.project.save(out)
+        assert out.read_bytes() == src.read_bytes()
+
+    def test_add_to_empty_queue_reparse_links_comp(self, tmp_path: Path) -> None:
+        # Regression: adding to a queue-less project, saving, then reparsing
+        # must yield exactly one item linked to the original comp. (See
+        # project memory "renderqueue-add-known-bug".)
+        app = parse_aep(SAMPLES_DIR / "empty.aep")
+        rq = app.project.render_queue
+        assert rq.num_items == 0
+        comp = app.project.compositions[0]
+
+        rq.add(comp)
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        rq2 = app2.project.render_queue
+        assert rq2.num_items == 1
+        assert rq2.items[0].comp.name == comp.name
+        assert rq2.items[0].comp.id == comp.id
 
     def test_image_sequence_chunk_defaults(self) -> None:
         # Field defaults reproduce AE's fresh "TIFF Sequence with Alpha" item
@@ -1766,21 +1806,21 @@ class TestRenderQueueAdd:
         rqi = rq.add(comp)
         assert rqi.comp is comp
 
-    def test_add_default_status_queued(self) -> None:
-        """New item has QUEUED status by default."""
+    def test_add_default_status_needs_output(self) -> None:
+        """New item has NEEDS_OUTPUT status (no output file path set yet)."""
         app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
         rq = app.project.render_queue
         comp = app.project.compositions[0]
         rqi = rq.add(comp)
-        assert rqi.status == RQItemStatus.QUEUED
+        assert rqi.status == RQItemStatus.NEEDS_OUTPUT
 
     def test_add_default_time_span(self) -> None:
-        """New item has LENGTH_OF_COMP time span source."""
+        """New item has WORK_AREA_ONLY time span source (matches AE add())."""
         app = parse_aep(SAMPLES_DIR / "custom.aep", ae_preferences_dir=AE_PREFS_DIR)
         rq = app.project.render_queue
         comp = app.project.compositions[0]
         rqi = rq.add(comp)
-        assert rqi._ldat.time_span_source == int(TimeSpanSource.LENGTH_OF_COMP)
+        assert rqi._ldat.time_span_source == int(TimeSpanSource.WORK_AREA_ONLY)
 
     def test_add_has_one_output_module(self) -> None:
         """New item has exactly 1 output module."""
@@ -1833,3 +1873,241 @@ class TestRenderQueueAdd:
         assert rq.num_items == original_count + 1
         rqi.remove()
         assert rq.num_items == original_count
+
+
+class TestOMRemoveIdenticalModules:
+    """Removing one of two byte-identical output modules hits the right block."""
+
+    def test_remove_second_of_identical_modules(self, tmp_path: Path) -> None:
+        # numOutputModules_2 has two structurally-equal H.264 modules; with a
+        # value-based lookup remove() would delete the first module's chunks.
+        app = parse_aep(OM_SAMPLES_DIR / "numOutputModules_2.aep")
+        rqi = app.project.render_queue.items[0]
+        om0, om1 = rqi.output_modules
+        # Distinguish the two modules by a per-module Roou value.
+        om0._roou.starting_number = 7
+        om1._roou.starting_number = 99
+
+        om1.remove()
+        assert len(rqi.output_modules) == 1
+        # The surviving module is module 0, with its chunks intact.
+        assert rqi.output_modules[0] is om0
+        assert rqi.output_modules[0]._roou.starting_number == 7
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        rqi2 = parse_aep(out).project.render_queue.items[0]
+        assert len(rqi2.output_modules) == 1
+        assert rqi2.output_modules[0]._roou.starting_number == 7
+
+
+@pytest.mark.skipif(not AE_PREFS_DIR, reason="AE_PREFS_DIR env var not set")
+class TestOMApplyTemplate:
+    """apply_template targets only the module it is called on."""
+
+    def test_apply_template_leaves_sibling_untouched(self) -> None:
+        # Applying a template to module 1 must not rewrite module 0's Ropt
+        # (the shared LOm list holds both modules' chunks back to back).
+        app = parse_aep(
+            OM_SAMPLES_DIR / "numOutputModules_2.aep",
+            ae_preferences_dir=AE_PREFS_DIR,
+        )
+        rqi = app.project.render_queue.items[0]
+        om0, om1 = rqi.output_modules
+        om0_ropt_before = om0.format_options._body.tobytes()
+        om0_format_before = om0._roou.format_id
+
+        om1.apply_template("TIFF Sequence with Alpha")
+
+        # Module 1 switched to TIFF; module 0 still H.264 with the same Ropt.
+        assert om1._roou.format_id == "TIF "
+        assert om0._roou.format_id == om0_format_before
+        assert om0.format_options._body.tobytes() == om0_ropt_before
+
+    def test_apply_template_refreshes_format_options(self, tmp_path: Path) -> None:
+        # After apply_template the format_options must wrap the NEW Ropt, so
+        # an edit through it serializes (the old chunk was detached/unwritten).
+        app = parse_aep(
+            OM_SAMPLES_DIR / "numOutputModules_2.aep",
+            ae_preferences_dir=AE_PREFS_DIR,
+        )
+        rqi = app.project.render_queue.items[0]
+        om1 = rqi.output_modules[1]
+        om1.apply_template("TIFF Sequence with Alpha")
+
+        fo = om1.format_options
+        assert type(fo).__name__ == "TiffFormatOptions"
+        new_value = not fo.lzw_compression
+        fo.lzw_compression = new_value
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        rqi2 = parse_aep(
+            out, ae_preferences_dir=AE_PREFS_DIR
+        ).project.render_queue.items[0]
+        assert rqi2.output_modules[1].format_options.lzw_compression == new_value
+
+
+class TestRQItemDuplicateStatus:
+    """duplicate() resets a finished item's status to QUEUED."""
+
+    @pytest.mark.parametrize(
+        "done_status", [RQItemStatus.DONE, RQItemStatus.ERR_STOPPED]
+    )
+    def test_duplicate_resets_finished_status(self, done_status: RQItemStatus) -> None:
+        app = parse_aep(SAMPLES_DIR / "base.aep")
+        rqi = app.project.render_queue.items[0]
+        # status stores the raw binary value, so set it via to_binary().
+        rqi._ldat.status = done_status.to_binary()
+
+        dup = rqi.duplicate()
+
+        assert RQItemStatus.from_binary(dup._ldat.status) == RQItemStatus.QUEUED
+
+
+class TestCompRemoveWithRenderQueue:
+    """Removing a comp also removes its render-queue items (chunks and all)."""
+
+    def test_remove_comp_clears_its_rq_item(self, tmp_path: Path) -> None:
+        # numItems_2 renders two distinct comps; the active item is neither,
+        # so removing one rendered comp leaves a parseable project.
+        app = parse_aep(SAMPLES_DIR / "numItems_2.aep")
+        rq = app.project.render_queue
+        assert len(rq.items) == 2
+        comp0 = rq.items[0].comp
+        comp1 = rq.items[1].comp
+        assert comp0 is not comp1
+
+        comp0.remove()
+
+        assert len(rq.items) == 1
+        assert rq.items[0].comp is comp1
+        # Chunk-level bookkeeping stays in sync (no orphaned settings entry).
+        assert rq._rs_lhd3.count == 1
+        assert rq._rout.count == ROUT_ITEMS_PER_RQ_ITEM
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        rq2 = parse_aep(out).project.render_queue
+        assert len(rq2.items) == 1
+        assert rq2._rs_lhd3.count == 1
+
+    def test_remove_comp_keeps_remaining_item_removable(self, tmp_path: Path) -> None:
+        # After comp.remove(), the rs_ldat index bookkeeping must still line up
+        # so a later rqi.remove() deletes the correct settings entry.
+        app = parse_aep(SAMPLES_DIR / "numItems_2.aep")
+        app.project.render_queue.items[0].comp.remove()
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        rq2 = app2.project.render_queue
+        assert len(rq2.items) == 1
+
+        rq2.items[0].remove()
+        assert len(rq2.items) == 0
+        assert rq2._rs_lhd3.count == 0
+        assert rq2._rout.count == 0
+
+
+class TestRenderTemplatesDefaultIndex:
+    """The prefs default index is remapped to the filtered template list.
+
+    Regression: parse_render_templates filtered out empty-named entries
+    but returned the raw "Default RS Index", so any skipped entry before
+    the default shifted the selection to the wrong template.
+    """
+
+    @staticmethod
+    def _write_render_prefs(
+        prefs_dir: Path, default_idx: int, names: list[str]
+    ) -> None:
+        # The prefs item is the 2246-byte AEP layout minus the last 64 bytes.
+        raw = b"\x00" * 32
+        for name in names:
+            raw += RenderSettingsItem(template_name=name).tobytes()[:2182]
+        (prefs_dir / "Adobe After Effects 26.0 Prefs-indep-render.txt").write_text(
+            '["Render Settings Preference Section"]\n'
+            '\t"Render Settings List" = ' + raw.hex() + "\n"
+            '\t"Default RS Index" = "' + str(default_idx) + '"\n',
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_output_prefs(
+        prefs_dir: Path, default_idx: int, names: list[str]
+    ) -> None:
+        raw = b"\x00" * 32 + OutputModuleSettingsItem().tobytes() * len(names)
+        lines = [
+            '["Output Module Preference Section"]',
+            '\t"Output Module List v28" = ' + raw.hex(),
+            '\t"Default OM Index" = "' + str(default_idx) + '"',
+        ]
+        for i, name in enumerate(names):
+            lines.append(f'\t"Output Module Spec Strings Name #{i}" = "{name}"')
+        (prefs_dir / "Adobe After Effects 26.0 Prefs-indep-output.txt").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def test_render_default_shifts_past_filtered_entry(self, tmp_path: Path) -> None:
+        # Empty-named entry at raw index 0; raw default index 2 ("Best").
+        self._write_render_prefs(tmp_path, 2, ["", "Draft", "Best"])
+        templates, default = parse_render_templates(tmp_path)
+        assert [t.clean_template_name for t in templates] == ["Draft", "Best"]
+        assert default == 1
+        assert templates[default].clean_template_name == "Best"
+
+    def test_render_default_filtered_out_yields_none(self, tmp_path: Path) -> None:
+        # The default entry itself has an empty name -> no default.
+        self._write_render_prefs(tmp_path, 0, ["", "Draft", "Best"])
+        _templates, default = parse_render_templates(tmp_path)
+        assert default is None
+
+    def test_output_default_shifts_past_hidden_entry(self, tmp_path: Path) -> None:
+        # _HIDDEN entry at raw index 0; raw default index 1 ("Lossless").
+        self._write_output_prefs(tmp_path, 1, ["_HIDDEN X", "Lossless", "TIFF"])
+        templates, default = parse_output_templates(tmp_path)
+        assert [t.name for t in templates] == ["Lossless", "TIFF"]
+        assert default == 0
+        assert templates[default].name == "Lossless"
+
+
+class TestRenderQueueMissingScaffolding:
+    """An LRdr lacking Rout/LItm/LSIf still parses as an empty queue.
+
+    Regression: parse_render_queue required those chunks unconditionally,
+    so a legacy/minimal file failed the entire parse() with
+    ChunkNotFoundError instead of yielding an empty RenderQueue.
+    """
+
+    @staticmethod
+    def _strip_scaffolding(tmp_path: Path) -> Path:
+        src = SAMPLES_DIR / "empty.aep"
+        with src.open("rb") as f:
+            rifx, xmp = read_aep(f)
+        lrdr = find_by_list_type(chunks=rifx.chunks, list_type="LRdr")
+        lrdr.chunks = [
+            c
+            for c in lrdr.chunks
+            if c.chunk_type != "Rout"
+            and not (isinstance(c, ListChunk) and c.list_type in ("LItm", "LSIf"))
+        ]
+        out = tmp_path / "stripped.aep"
+        with out.open("wb") as f:
+            write_aep(f, rifx, xmp)
+        return out
+
+    def test_parse_yields_empty_queue(self, tmp_path: Path) -> None:
+        stripped = self._strip_scaffolding(tmp_path)
+        app = parse_aep(stripped)
+        rq = app.project.render_queue
+        assert rq.num_items == 0
+        assert list(rq) == []
+
+    def test_untouched_roundtrip_is_byte_identical(self, tmp_path: Path) -> None:
+        # The synthetic placeholder chunks must be skipped on write.
+        stripped = self._strip_scaffolding(tmp_path)
+        app = parse_aep(stripped)
+        out = tmp_path / "roundtrip.aep"
+        app.project.save(out)
+        assert out.read_bytes() == stripped.read_bytes()

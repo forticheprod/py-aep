@@ -250,8 +250,7 @@ def test_g_stroke_synthesized_properties(gradient_comp) -> None:
 
 
 def test_serialize_gradient_xml_roundtrip() -> None:
-    """parse > serialize > parse produces identical gradient data."""
-    fake_utf8 = _FakeUtf8("")  # type: ignore[arg-type]
+    """serialize > parse produces identical gradient data."""
     original = Gradient(
         color_stops=[
             GradientColorStop(0.0, 0.5, color=(1.0, 0.0, 0.0)),
@@ -261,13 +260,139 @@ def test_serialize_gradient_xml_roundtrip() -> None:
             GradientAlphaStop(0.0, 0.5, 1.0),
             GradientAlphaStop(1.0, 0.5, 0.5),
         ],
-        _utf8=fake_utf8,
         version="1.0",
     )
-    # Trigger serialization, then re-parse from the utf8
-    original._serialize()
-    result = parse_gradient_xml(_FakeUtf8(fake_utf8.value))  # type: ignore[arg-type]
+    result = parse_gradient_xml(_FakeUtf8(original._utf8.value))  # type: ignore[arg-type]
     assert result == original
+
+
+# The gradient XML AE 2026 writes for a fresh, never-edited gradient
+# (white > black, full alpha). Ground truth for Gradient() serialization.
+DEFAULT_AE_GRADIENT_XML = (
+    "<?xml version='1.0'?>\n"
+    "<prop.map version='4'>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Gradient Color Data</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Alpha Stops</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stops List</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stop-0</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stops Alpha</key>\n"
+    "<array>\n"
+    "<array.type><float/></array.type>\n"
+    "<float>0</float>\n"
+    "<float>0.5</float>\n"
+    "<float>1</float>\n"
+    "</array>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "<prop.pair>\n"
+    "<key>Stop-1</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stops Alpha</key>\n"
+    "<array>\n"
+    "<array.type><float/></array.type>\n"
+    "<float>1</float>\n"
+    "<float>0.5</float>\n"
+    "<float>1</float>\n"
+    "</array>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "<prop.pair>\n"
+    "<key>Stops Size</key>\n"
+    "<int type='unsigned' size='32'>2</int>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "<prop.pair>\n"
+    "<key>Color Stops</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stops List</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stop-0</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stops Color</key>\n"
+    "<array>\n"
+    "<array.type><float/></array.type>\n"
+    "<float>0</float>\n"
+    "<float>0.5</float>\n"
+    "<float>1</float>\n"
+    "<float>1</float>\n"
+    "<float>1</float>\n"
+    "<float>1</float>\n"
+    "</array>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "<prop.pair>\n"
+    "<key>Stop-1</key>\n"
+    "<prop.list>\n"
+    "<prop.pair>\n"
+    "<key>Stops Color</key>\n"
+    "<array>\n"
+    "<array.type><float/></array.type>\n"
+    "<float>1</float>\n"
+    "<float>0.5</float>\n"
+    "<float>0</float>\n"
+    "<float>0</float>\n"
+    "<float>0</float>\n"
+    "<float>1</float>\n"
+    "</array>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "<prop.pair>\n"
+    "<key>Stops Size</key>\n"
+    "<int type='unsigned' size='32'>2</int>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.pair>\n"
+    "<prop.pair>\n"
+    "<key>Gradient Colors</key>\n"
+    "<string>1.0</string>\n"
+    "</prop.pair>\n"
+    "</prop.list>\n"
+    "</prop.map>\n"
+)
+
+
+def test_default_gradient_matches_ae_bytes() -> None:
+    """Gradient() serializes to AE's default gradient XML, byte for byte."""
+    assert Gradient()._utf8.value == DEFAULT_AE_GRADIENT_XML
+
+
+def test_reserialize_matches_ae_bytes(gradient_comp) -> None:
+    """Re-serializing a parsed (AE-written) gradient reproduces its bytes."""
+    layer = gradient_comp.layers[0]
+    contents = layer.property("ADBE Root Vectors Group")
+    gfill = contents.property("ADBE Vector Graphic - G-Fill")
+    colors = gfill.property("ADBE Vector Grad Colors")
+    gradient = colors.value
+    assert isinstance(gradient, Gradient)
+
+    original = gradient._utf8.value
+    gradient._serialize()
+    assert gradient._utf8.value == original
 
 
 def test_gradient_value_write_through(gradient_comp) -> None:

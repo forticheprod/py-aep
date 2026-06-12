@@ -11,12 +11,12 @@ from py_aep.enums import (
     TrackMatteType,
 )
 
+from ...ae_version import requires_version
 from ...binary.layer_chunks import LdtaChunk
 from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
 from ..validators import validate_enum, validate_number
-from ..version import requires_version
 from .layer import Layer
 
 if TYPE_CHECKING:
@@ -150,7 +150,7 @@ class AVLayer(Layer):
     """The layer's draft quality setting. Read / Write."""
 
     sampling_quality = ChunkField.enum(
-        LayerSamplingQuality, "_ldta", "sampling_quality"
+        LayerSamplingQuality, "_ldta", "sampling_quality", min_version=12
     )
     """The layer's sampling method. Read / Write."""
 

@@ -4,13 +4,23 @@ from typing import TYPE_CHECKING
 
 from py_aep.enums import Label
 
+from ...binary.misc_chunks import NmhdChunk
+from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.utils import index_by_identity
 from ..descriptors import ChunkField
-from ..validators import validate_int, validate_positive_int
+from ..validators import validate_int, validate_positive_int, validate_string
 
 if TYPE_CHECKING:
-    from ...binary.misc_chunks import NmhdChunk
-    from ...binary.scalar_chunks import Utf8Chunk
+    from ...binary.chunk import ListChunk
     from .keyframe import Keyframe
+
+
+def _validate_params(value: dict[str, str]) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("params must be a dictionary of string key-value pairs")
+    for key, val in value.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            raise ValueError("params must be a dictionary of string key-value pairs")
 
 
 class MarkerValue:
@@ -87,6 +97,36 @@ class MarkerValue:
 
     def __init__(
         self,
+        comment: str = "",
+        chapter: str = "",
+        url: str = "",
+        frame_target: str = "",
+        cue_point_name: str = "",
+        params: dict[str, str] | None = None,
+    ) -> None:
+        for arg in (comment, chapter, url, frame_target, cue_point_name):
+            validate_string(arg)
+        if params is not None:
+            _validate_params(params)
+        self._nmhd = NmhdChunk()
+        self._comment_utf8 = Utf8Chunk(value=comment)
+        self._chapter_utf8 = Utf8Chunk(value=chapter)
+        self._url_utf8 = Utf8Chunk(value=url)
+        self._frame_target_utf8 = Utf8Chunk(value=frame_target)
+        self._cue_point_name_utf8 = Utf8Chunk(value=cue_point_name)
+        self._keyframe: Keyframe | None = None
+        self._nmrd: ListChunk | None = None
+        self._frame_time = 0
+        self._param_utf8s: list[Utf8Chunk] = []
+        if params:
+            for key, val in params.items():
+                self._param_utf8s.append(Utf8Chunk(value=key))
+                self._param_utf8s.append(Utf8Chunk(value=val))
+            self._nmhd.num_params = len(params)
+
+    @classmethod
+    def _from_binary(
+        cls,
         *,
         _nmhd: NmhdChunk,
         _comment_utf8: Utf8Chunk,
@@ -97,22 +137,25 @@ class MarkerValue:
         _keyframe: Keyframe | None = None,
         frame_time: int = 0,
         _param_utf8s: list[Utf8Chunk] | None = None,
-    ) -> None:
-        self._nmhd = _nmhd
-        self._comment_utf8 = _comment_utf8
-        self._chapter_utf8 = _chapter_utf8
-        self._url_utf8 = _url_utf8
-        self._frame_target_utf8 = _frame_target_utf8
-        self._cue_point_name_utf8 = _cue_point_name_utf8
-        self._keyframe = _keyframe
-
-        self._frame_time = frame_time
-
-        self._param_utf8s = _param_utf8s or []
+        _nmrd: ListChunk | None = None,
+    ) -> MarkerValue:
+        """Wrap parsed marker chunks as a `MarkerValue`."""
+        obj = cls.__new__(cls)
+        obj._nmhd = _nmhd
+        obj._comment_utf8 = _comment_utf8
+        obj._chapter_utf8 = _chapter_utf8
+        obj._url_utf8 = _url_utf8
+        obj._frame_target_utf8 = _frame_target_utf8
+        obj._cue_point_name_utf8 = _cue_point_name_utf8
+        obj._keyframe = _keyframe
+        obj._nmrd = _nmrd
+        obj._frame_time = frame_time
+        obj._param_utf8s = _param_utf8s or []
+        return obj
 
     @property
     def params(self) -> dict[str, str]:
-        """Key-value pairs for Flash Video cue-point parameters."""
+        """Key-value pairs for Flash Video cue-point parameters. Read / Write."""
         result: dict[str, str] = {}
         for i in range(0, len(self._param_utf8s) - 1, 2):
             key = self._param_utf8s[i].value
@@ -122,20 +165,37 @@ class MarkerValue:
 
     @params.setter
     def params(self, value: dict[str, str]) -> None:
-        if not isinstance(value, dict):
-            raise ValueError("params must be a dictionary of string key-value pairs")
-        for key, val in value.items():
-            if not isinstance(key, str) or not isinstance(val, str):
-                raise ValueError(
-                    "params must be a dictionary of string key-value pairs"
-                )
-        bodies = self._param_utf8s
-        idx = 0
-        for key, val in value.items():
-            if idx + 1 < len(bodies):
-                bodies[idx].value = key
-                bodies[idx + 1].value = val
-            idx += 2
+        _validate_params(value)
+        old = self._param_utf8s
+        new: list[Utf8Chunk] = []
+        for i, (key, val) in enumerate(value.items()):
+            if 2 * i + 1 < len(old):
+                # Reuse existing chunk pairs in place (keeps tree position).
+                old[2 * i].value = key
+                old[2 * i + 1].value = val
+                new.extend((old[2 * i], old[2 * i + 1]))
+            else:
+                new.extend((Utf8Chunk(value=key), Utf8Chunk(value=val)))
+        removed = old[len(new) :]
+        added = new[len(old) :]
+        if self._nmrd is not None and (removed or added):
+            # Splice grown / shrunk pairs into the backing Nmrd list.
+            chunks = self._nmrd.chunks
+            for chunk in removed:
+                try:
+                    del chunks[index_by_identity(chunks, chunk)]
+                except ValueError:
+                    pass
+            if added:
+                kept = new[: len(new) - len(added)]
+                anchor = kept[-1] if kept else self._cue_point_name_utf8
+                try:
+                    pos = index_by_identity(chunks, anchor)
+                except ValueError:
+                    pos = len(chunks) - 1
+                chunks[pos + 1 : pos + 1] = added
+        self._param_utf8s = new
+        self._nmhd.num_params = len(value)
 
     @property
     def frame_time(self) -> int:

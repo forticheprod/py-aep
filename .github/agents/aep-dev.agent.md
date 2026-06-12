@@ -1,7 +1,6 @@
 ---
 description: "Use when implementing new AEP binary parsing features, reverse-engineering After Effects .aep file format, adding ExtendScript API attributes/methods to the parser, comparing binary chunks, or investigating unknown bytes/bits in .aep files."
 tools: [execute, read, edit, search, agent, todo, web]
-model: ["Claude Opus 4.6", "Claude Sonnet 4.6", "Claude Haiku 4.5"]
 argument-hint: "Describe the attribute, method, or binary field to implement or investigate and samples to use"
 ---
 

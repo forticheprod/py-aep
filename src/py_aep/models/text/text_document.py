@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING
 
+from ...ae_version import requires_version
 from ...binary.chunk import ListChunk
 from ...cos import CosField, CosName, cos_get, get_cos_template, serialize
 from ...enums import (
@@ -24,6 +25,7 @@ from ...enums import (
     ParagraphJustification,
 )
 from ..validators import (
+    validate_enum,
     validate_positive_number,
     validate_rgb_color,
     validate_string,
@@ -33,6 +35,8 @@ from .font_object import FontObject
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from ...binary.item_chunks import HeadChunk
 
 
 def _parse_color(paint: object) -> list[float] | None:
@@ -133,6 +137,11 @@ class TextDocument:
 
     # Explicit annotation so to_dict serializes it (bypasses SKIP_PROPERTIES)
     text: str
+
+    # Back-reference to the project HeadChunk for version gating. Wired
+    # lazily by the owning Property when the document is handed out (and at
+    # parse time); `None` until then. Underscore-prefixed, so to_dict skips it.
+    _head: HeadChunk | None = None
 
     # -- Character-style CosField descriptors (_char_style dict) -----------
 
@@ -286,6 +295,56 @@ class TextDocument:
 
     def __init__(
         self,
+        text: str = "",
+        box_size: list[float] | None = None,
+        line_orientation: LineOrientation | None = None,
+    ) -> None:
+        """Build a [TextDocument][] from the point-text COS template.
+
+        Creates a document whose `_cos_data` and `_btdk_body` are wired
+        together so that descriptor / setter writes propagate to the
+        backing `btdk` chunk.
+
+        Args:
+            text: Initial text content. When empty, the template's
+                placeholder text is left unchanged.
+            box_size: `[width, height]` for box (paragraph) text. When
+                given, converts the document to box text; `None` leaves
+                it as point text.
+            line_orientation: Text [LineOrientation][]. When given, sets
+                the layer's orientation (e.g. vertical); `None` leaves
+                the template's horizontal default.
+        """
+        validate_string(text)
+        if box_size is not None:
+            validate_vector2(box_size)
+        if line_orientation is not None:
+            validate_enum(LineOrientation)(line_orientation)
+        cos = copy.deepcopy(get_cos_template())
+        btdk = ListChunk(list_type="btdk", data=serialize(cos))
+        doc = cos["1"]["1"][0]
+        char_style = doc["0"]["6"]["0"][0]["0"]["0"]["6"]
+        para_style = doc["0"]["5"]["0"][0]["0"]["0"]["5"]
+        fonts = [
+            FontObject(_font_data=entry["0"]["0"], _font_entry=entry["0"])
+            for entry in cos["0"]["1"]["0"]
+        ]
+        self._char_style: dict[str, Any] | None = char_style
+        self._para_style: dict[str, Any] | None = para_style
+        self._doc: dict[str, Any] = doc
+        self._fonts: list[FontObject] = fonts
+        self._cos_data: dict[str, Any] = cos
+        self._btdk_body: ListChunk = btdk
+        if text:
+            self.text = text
+        if box_size is not None:
+            self.box_text_size = box_size
+        if line_orientation is not None:
+            self.line_orientation = line_orientation
+
+    @classmethod
+    def _from_binary(
+        cls,
         *,
         _char_style: dict[str, Any] | None = None,
         _para_style: dict[str, Any] | None = None,
@@ -301,89 +360,55 @@ class TextDocument:
         stroke_color: list[float] | None = None,
         paragraph_count: int | None = None,
         **kwargs: Any,
-    ) -> None:
-        self._char_style = _char_style
-        self._para_style = _para_style
-        self._doc = _doc
-        self._fonts = _fonts
-        self._cos_data = _cos_data
-        self._btdk_body = _btdk_body
-        # Instance overrides for non-descriptor fields
-        if text is not None:
-            self.__dict__["text"] = text
-        if font is not None:
-            self.__dict__["font"] = font
-        if font_object is not None:
-            self.__dict__["font_object"] = font_object
-        if fill_color is not None:
-            self.__dict__["fill_color"] = fill_color
-        if stroke_color is not None:
-            self.__dict__["stroke_color"] = stroke_color
-        if paragraph_count is not None:
-            self.__dict__["paragraph_count"] = paragraph_count
-        # Accept any CosField-backed kwargs as instance overrides
-        for key, val in kwargs.items():
-            if val is not None:
-                self.__dict__[key] = val
-
-    @classmethod
-    def _new(
-        cls,
-        text: str = "",
-        box_size: list[float] | None = None,
-        line_orientation: LineOrientation | None = None,
     ) -> TextDocument:
-        """Build a [TextDocument][] from the point-text COS template.
+        """Wrap parsed COS data as a `TextDocument`."""
+        obj = cls.__new__(cls)
+        obj._char_style = _char_style
+        obj._para_style = _para_style
+        obj._doc = _doc
+        obj._fonts = _fonts
+        obj._cos_data = _cos_data
+        obj._btdk_body = _btdk_body
+        # Instance overrides for non-descriptor fields, plus any
+        # CosField-backed kwargs
+        overrides = {
+            "text": text,
+            "font": font,
+            "font_object": font_object,
+            "fill_color": fill_color,
+            "stroke_color": stroke_color,
+            "paragraph_count": paragraph_count,
+            **kwargs,
+        }
+        for key, val in overrides.items():
+            if val is not None:
+                obj.__dict__[key] = val
+        return obj
 
-        Returns a document whose `_cos_data` and `_btdk_body` are wired
-        together so that descriptor / setter writes propagate to the
-        backing `btdk` chunk.
+    def _override(self, name: str) -> Any:
+        """Instance override stored when a field has no COS backing.
 
-        Args:
-            text: Initial text content. When empty, the template's
-                placeholder text is left unchanged.
-            box_size: `[width, height]` for box (paragraph) text. When
-                given, converts the document to box text; `None` leaves
-                it as point text.
-            line_orientation: Text [LineOrientation][]. When given, sets
-                the layer's orientation (e.g. vertical); `None` leaves
-                the template's horizontal default.
+        Set by `_from_binary` fallback kwargs and by setters when the
+        backing style dict is `None`. Returns `None` when absent.
         """
-        cos = copy.deepcopy(get_cos_template())
-        btdk = ListChunk(list_type="btdk", data=serialize(cos))
-        doc = cos["1"]["1"][0]
-        char_style = doc["0"]["6"]["0"][0]["0"]["0"]["6"]
-        para_style = doc["0"]["5"]["0"][0]["0"]["0"]["5"]
-        fonts = [
-            FontObject(_font_data=entry["0"]["0"], _font_entry=entry["0"])
-            for entry in cos["0"]["1"]["0"]
-        ]
-        td = cls(
-            _char_style=char_style,
-            _para_style=para_style,
-            _doc=doc,
-            _fonts=fonts,
-            _cos_data=cos,
-            _btdk_body=btdk,
-        )
-        if text:
-            td.text = text
-        if box_size is not None:
-            td.box_text_size = box_size
-        if line_orientation is not None:
-            td.line_orientation = line_orientation
-        return td
+        return self.__dict__.get(name)
+
+    def _set_override(self, name: str, value: Any) -> None:
+        """Store an instance override for a field without COS backing."""
+        self.__dict__[name] = value
 
     # -- Computed properties -----------------------------------------------
 
     @property  # type: ignore[no-redef]
     def text(self) -> str:
         """The text value for the Source Text property. Read / Write."""
-        if "text" in self.__dict__:
-            return str(self.__dict__["text"])
+        override: str | None = self._override("text")
+        if override is not None:
+            return override
         val = cos_get(self._doc, "0", "0")
         if val is not None:
-            return str(val).rstrip("\r\n")
+            # AE stores line breaks as CR; present them as LF to callers.
+            return str(val).rstrip("\r\n").replace("\r", "\n")
         return ""
 
     @text.setter
@@ -391,18 +416,18 @@ class TextDocument:
         validate_string(value)
         self.__dict__.pop("text", None)
         inner = self._doc.setdefault("0", {})
-        # AE normalizes every line break to LF and terminates the run with
-        # a trailing LF; without a terminator AE fails to read the layer.
-        normalized = value.replace("\r\n", "\n").replace("\r", "\n")
-        inner["0"] = normalized.rstrip("\n") + "\n"
+        # AE stores every line break and the run terminator as CR (\r);
+        # without a trailing CR terminator AE fails to read the layer.
+        normalized = value.replace("\r\n", "\r").replace("\n", "\r")
+        inner["0"] = normalized.rstrip("\r") + "\r"
         self._propagate_cos()
 
     @property
     def font(self) -> str | None:
         """The Text layer's font PostScript name. Read / Write."""
-        if "font" in self.__dict__:
-            result: str | None = self.__dict__["font"]
-            return result
+        override: str | None = self._override("font")
+        if override is not None:
+            return override
         if self._char_style is not None:
             font_idx = self._char_style.get("0")
             if isinstance(font_idx, int) and 0 <= font_idx < len(self._fonts):
@@ -413,7 +438,7 @@ class TextDocument:
     def font(self, value: str) -> None:
         validate_string(value)
         if self._char_style is None:
-            self.__dict__["font"] = value
+            self._set_override("font", value)
             return
         idx = self._font_index(value)
         if idx is None:
@@ -450,9 +475,9 @@ class TextDocument:
     @property
     def font_object(self) -> FontObject | None:
         """The Text layer's [FontObject][]. Read-only."""
-        if "font_object" in self.__dict__:
-            result: FontObject | None = self.__dict__["font_object"]
-            return result
+        override: FontObject | None = self._override("font_object")
+        if override is not None:
+            return override
         if self._char_style is not None:
             font_idx = self._char_style.get("0")
             if isinstance(font_idx, int) and 0 <= font_idx < len(self._fonts):
@@ -462,16 +487,17 @@ class TextDocument:
     @property
     def fill_color(self) -> list[float] | None:
         """The Text layer's fill color as `[r, g, b]`. Read / Write."""
-        if "fill_color" in self.__dict__:
-            result: list[float] | None = self.__dict__["fill_color"]
-            return result
+        override: list[float] | None = self._override("fill_color")
+        if override is not None:
+            return override
         if self._char_style is not None:
             return _parse_color(self._char_style.get("53"))
         return None
 
     @fill_color.setter
     def fill_color(self, value: list[float] | None) -> None:
-        validate_rgb_color(value)
+        if value is not None:
+            validate_rgb_color(value)
         self.__dict__.pop("fill_color", None)
         if self._char_style is not None:
             if value is None:
@@ -480,21 +506,22 @@ class TextDocument:
                 self._char_style["53"] = _build_color_paint(value)
             self._propagate_cos()
         else:
-            self.__dict__["fill_color"] = value
+            self._set_override("fill_color", value)
 
     @property
     def stroke_color(self) -> list[float] | None:
         """The Text layer's stroke color as `[r, g, b]`. Read / Write."""
-        if "stroke_color" in self.__dict__:
-            result: list[float] | None = self.__dict__["stroke_color"]
-            return result
+        override: list[float] | None = self._override("stroke_color")
+        if override is not None:
+            return override
         if self._char_style is not None:
             return _parse_color(self._char_style.get("54"))
         return None
 
     @stroke_color.setter
     def stroke_color(self, value: list[float] | None) -> None:
-        validate_rgb_color(value)
+        if value is not None:
+            validate_rgb_color(value)
         self.__dict__.pop("stroke_color", None)
         if self._char_style is not None:
             if value is None:
@@ -503,7 +530,7 @@ class TextDocument:
                 self._char_style["54"] = _build_color_paint(value)
             self._propagate_cos()
         else:
-            self.__dict__["stroke_color"] = value
+            self._set_override("stroke_color", value)
 
     @property
     def leading(self) -> float | None:
@@ -511,9 +538,9 @@ class TextDocument:
 
         When auto-leading is enabled, returns font_size * auto_leading_factor.
         """
-        if "leading" in self.__dict__:
-            result: float | None = self.__dict__["leading"]
-            return result
+        override: float | None = self._override("leading")
+        if override is not None:
+            return override
         if self._char_style is not None:
             raw = self._char_style.get("5")
             if isinstance(raw, (int, float)):
@@ -529,7 +556,8 @@ class TextDocument:
 
     @leading.setter
     def leading(self, value: float | None) -> None:
-        validate_positive_number(value)
+        if value is not None:
+            validate_positive_number(value)
         self.__dict__.pop("leading", None)
         if self._char_style is not None and value is not None:
             # Setting an explicit leading turns auto-leading off, matching AE.
@@ -537,14 +565,14 @@ class TextDocument:
             self._char_style["4"] = False
             self._propagate_cos()
         else:
-            self.__dict__["leading"] = value
+            self._set_override("leading", value)
 
     @property
     def paragraph_count(self) -> int | None:
         """The number of paragraphs in the text layer. Read-only."""
-        if "paragraph_count" in self.__dict__:
-            result: int | None = self.__dict__["paragraph_count"]
-            return result
+        override: int | None = self._override("paragraph_count")
+        if override is not None:
+            return override
         para_runs = cos_get(self._doc, "0", "5", "0")
         if isinstance(para_runs, list):
             return len(para_runs)
@@ -720,6 +748,7 @@ class TextDocument:
         return float(val) if isinstance(val, (int, float)) else 0.0
 
     @box_inset_spacing.setter
+    @requires_version(24)
     def box_inset_spacing(self, value: float) -> None:
         validate_positive_number(value)
         meta = self._ensure_frame().setdefault("2", {})
@@ -736,6 +765,7 @@ class TextDocument:
         return BoxVerticalAlignment.TOP
 
     @box_vertical_alignment.setter
+    @requires_version(24)
     def box_vertical_alignment(self, value: BoxVerticalAlignment) -> None:
         meta = self._ensure_frame().setdefault("2", {})
         meta["13"] = value.to_binary()
@@ -751,6 +781,7 @@ class TextDocument:
         return BoxAutoFitPolicy.NONE
 
     @box_auto_fit_policy.setter
+    @requires_version(24)
     def box_auto_fit_policy(self, value: BoxAutoFitPolicy) -> None:
         meta = self._ensure_frame().setdefault("2", {})
         meta["14"] = value.to_binary()
@@ -766,6 +797,7 @@ class TextDocument:
         return BoxFirstBaselineAlignment.ASCENT
 
     @box_first_baseline_alignment.setter
+    @requires_version(24)
     def box_first_baseline_alignment(self, value: BoxFirstBaselineAlignment) -> None:
         meta = self._ensure_frame().setdefault("2", {})
         sub = meta.setdefault("10", {})
@@ -784,6 +816,7 @@ class TextDocument:
         return 0.0
 
     @box_first_baseline_alignment_minimum.setter
+    @requires_version(24)
     def box_first_baseline_alignment_minimum(self, value: float) -> None:
         meta = self._ensure_frame().setdefault("2", {})
         sub = meta.setdefault("10", {})

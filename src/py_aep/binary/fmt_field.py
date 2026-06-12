@@ -10,12 +10,25 @@ from __future__ import annotations
 
 import struct
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from attrs import Attribute, Factory, field, fields
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, Callable
+
+    _StructInfo = tuple[
+        str,
+        tuple[Attribute, ...],
+        dict[int, str],
+        int,
+        dict[int, str],
+        "tuple[str, type, int] | None",
+        dict[int, type],
+        tuple[str, ...],
+        bool,
+        int,
+    ]
 
 _UNSET = object()
 
@@ -161,24 +174,7 @@ def bool_field(**kw: Any) -> Any:
     return fmt_field("B", coerce=bool, **kw)
 
 
-@lru_cache(maxsize=None)
-def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None on instances, but type objects are always hashable
-    cls: type,
-) -> (
-    tuple[
-        str,
-        tuple[Attribute, ...],
-        dict[int, str],
-        int,
-        dict[int, str],
-        tuple[str, type, int] | None,
-        dict[int, type],
-        tuple[str, ...],
-        bool,
-        int,
-    ]
-    | None
-):
+def _struct_info_uncached(cls: type) -> _StructInfo | None:
     """Derive struct layout metadata for a chunk class.
 
     Returns a 10-tuple `(fmt, data_fields, encodings,
@@ -290,6 +286,15 @@ def _struct_info(  # type: ignore[arg-type]  # attrs @define sets __hash__=None 
     )
 
 
+# attrs `@define` sets `__hash__ = None` in class stubs, so type objects
+# fail lru_cache's `Hashable` parameter check even though they are always
+# hashable at runtime. The cast restores the precise signature for callers.
+_struct_info = cast(
+    "Callable[[type], _StructInfo | None]",
+    lru_cache(maxsize=None)(_struct_info_uncached),
+)
+
+
 def _init_name(name: str) -> str:
     """Convert attrs field name to init parameter name.
 
@@ -317,7 +322,13 @@ def _decode_fields(
         enc = encodings.get(i)
         if enc is not None and value is not None:
             nul = value.find(b"\x00")
-            value = value[:nul].decode(enc) if nul >= 0 else value.decode(enc)
+            # surrogateescape keeps byte-exact round-trips even for
+            # legacy non-UTF-8 bytes in old files.
+            value = (
+                value[:nul].decode(enc, "surrogateescape")
+                if nul >= 0
+                else value.decode(enc, "surrogateescape")
+            )
         crc = coerces.get(i)
         if crc is not None and value is not None:
             value = crc(value)
@@ -342,7 +353,7 @@ def _encode_value(
     enc = encodings.get(idx)
     if enc is not None:
         field_size = struct.calcsize(endian + fmt_str)
-        encoded = value.encode(enc)[:field_size]
+        encoded = value.encode(enc, "surrogateescape")[:field_size]
         return encoded + b"\x00" * (field_size - len(encoded))
     if idx in coerces:
         return int(value)
@@ -355,7 +366,7 @@ class FmtItem:
     @classmethod
     def frombytes(cls, data: bytes) -> FmtItem:
         """Construct an item from bytes using its `_struct_info` metadata."""
-        info = _struct_info(cls)  # type: ignore[arg-type]
+        info = _struct_info(cls)
         if info is None:
             raise TypeError(f"{cls.__name__} has no fmt_field metadata")
         (
@@ -393,7 +404,7 @@ class FmtItem:
 
     def tobytes(self) -> bytes:
         """Serialize an item to bytes using its `_struct_info` metadata."""
-        info = _struct_info(type(self))  # type: ignore[arg-type]
+        info = _struct_info(type(self))
         if info is None:
             raise TypeError(f"{type(self).__name__} has no fmt_field metadata")
         fmt, data_fields, encodings, _, endians, _, coerces, _, _simple, _ = info

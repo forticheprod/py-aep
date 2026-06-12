@@ -1,7 +1,6 @@
 ---
 description: "Use when planning new parsing features, deciding where logic belongs (binary vs parser vs model), designing model hierarchies, evaluating serialization strategies, or making architectural decisions that span multiple layers of the parsing pipeline."
 tools: [read, search, agent, web]
-model: ["Claude Opus 4.6", "Claude Sonnet 4.6", "Claude Haiku 4.5"]
 argument-hint: "Describe the feature, refactor, or architectural question to evaluate"
 ---
 

@@ -40,17 +40,19 @@ def _validate_number(
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
         if integer and not isinstance(value, int):
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
-        try:
-            lo = min(instance) if callable(min) else min
-            hi = max(instance) if callable(max) else max
-            if lo is not None and value < lo:  # type: ignore[operator]
-                raise ValueError(f"must be >= {lo}, got {value}")
-            if hi is not None and value > hi:  # type: ignore[operator]
-                raise ValueError(f"must be <= {hi}, got {value}")
-        except TypeError:
-            raise TypeError(
-                f"expected {type_label}, got {type(value).__name__}"
-            ) from None
+        lo = min(instance) if callable(min) else min
+        hi = max(instance) if callable(max) else max
+        if lo is None and hi is None:
+            # Unbounded fields accept non-numeric values: complex property
+            # values (Gradient, Shape, ...) flow through this validator
+            # with dynamic bounds that resolve to None.
+            return
+        if not isinstance(value, (int, float)):
+            raise TypeError(f"expected {type_label}, got {type(value).__name__}")
+        if lo is not None and value < lo:
+            raise ValueError(f"must be >= {lo}, got {value}")
+        if hi is not None and value > hi:
+            raise ValueError(f"must be <= {hi}, got {value}")
 
     return _validator
 
@@ -79,14 +81,12 @@ def validate_sequence(
     _element_validator = _validate_number(min=min, max=max, integer=integer)
 
     def _validator(value: object, instance: object | None = None) -> None:
-        try:
-            items: list[object] = list(value)  # type: ignore[call-overload]
-        except TypeError:
-            n = length(instance) if callable(length) else length
+        n = length(instance) if callable(length) else length
+        if not isinstance(value, (list, tuple)):
             raise TypeError(
                 f"expected a sequence{f' of {n} elements' if n is not None else ''}"
-            ) from None
-        n = length(instance) if callable(length) else length
+            )
+        items = list(value)
         if n is not None and len(items) != n:
             raise ValueError(f"expected {n} elements, got {len(items)}")
         for i, v in enumerate(items):
@@ -176,20 +176,22 @@ def _validate_path(
     """Return a validator that checks a filesystem path.
 
     Args:
-        must_exist: When `True`, reject paths that don't exist.
-            When `False`, reject paths that do exist. When `None`, allow both.
+        must_exist: When `True`, reject paths that don't exist
+            (`ValueError`). When `False`, reject paths that do exist
+            (`FileExistsError`). When `None`, allow both.
     """
 
     def _validator(value: object, instance: object | None = None) -> None:
         if not isinstance(value, (str, os.PathLike)):
             raise TypeError(f"expected a file system path, got {type(value).__name__}")
         path = Path(value)
-        if must_exist:
+        if must_exist is True:
             if not path.exists():
                 raise ValueError(f"path does not exist: {path}")
-        else:
+        elif must_exist is False:
             if path.exists():
-                raise ValueError(f"path already exists: {path}")
+                raise FileExistsError(f"path already exists: {path}")
+        # must_exist is None: accept both existing and non-existing paths
 
     return _validator
 
@@ -226,5 +228,7 @@ validate_string = _validate_str()
 validate_name = _validate_str(allow_empty=False)
 
 validate_path = _validate_path()
+
+validate_path_exists = _validate_path(must_exist=True)
 
 validate_path_does_not_exist = _validate_path(must_exist=False)

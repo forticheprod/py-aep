@@ -12,6 +12,7 @@ from ..binary.utils import (
     find_by_list_type,
     find_by_type,
 )
+from ..models.descriptors import _suppress_materialization
 from ..models.essential_graphics import EssentialGraphicsController
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ def _parse_controller(cctl_chunk: ListChunk) -> EssentialGraphicsController:
     )
 
 
+@_suppress_materialization()
 def parse_essential_graphics(
     child_chunks: list[Chunk],
 ) -> tuple[Utf8Chunk, list[EssentialGraphicsController]] | None:

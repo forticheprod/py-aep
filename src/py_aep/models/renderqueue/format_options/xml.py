@@ -190,7 +190,12 @@ class XmlFormatOptions:
         """Set an Adobe parameter from an enum or int value."""
         if value is None:
             return
-        int_value = int(value)  # type: ignore[call-overload]
+        if not isinstance(value, int):
+            raise TypeError(
+                f"expected an int or IntEnum for {key!r}, got {type(value).__name__}"
+            )
+        # int() normalizes IntEnum members so str() yields the numeric form.
+        int_value = int(value)
         if enum_cls is not None and int_value not in enum_cls._value2member_map_:
             members = ", ".join(f"{m.name} ({m.value})" for m in enum_cls)
             raise ValueError(

@@ -31,13 +31,6 @@ _HEADER_SIZE = 32  # bytes before first item
 # Output module prefs format:
 # OutputModuleSettingsItem is 128 bytes (same in prefs and AEP).
 _OM_PREFS_ITEM_SIZE = 128
-_OM_AEP_ITEM_SIZE = 128
-
-# Output File Info format:
-# Each entry contains the Rouu chunk data (154 bytes for most formats).
-# Some formats (e.g. Photoshop) include additional Ropt data after the
-# Rouu bytes, making the total much larger.
-_ROU_PREFS_SIZE = 154  # Rouu chunk size in prefs
 
 
 @dataclass
@@ -131,8 +124,9 @@ def parse_render_templates(
     Returns:
         A tuple of (templates, default_index). Templates is a list of
         parsed [RenderSettingsItem][] objects. Default_index is the
-        index of the default render settings template, or None if not
-        found.
+        index of the default render settings template in the returned
+        list, or None if not found (or the default entry was filtered
+        out).
     """
     render_files = list(prefs_dir.glob("*-indep-render.txt"))
     if not render_files:
@@ -149,31 +143,29 @@ def parse_render_templates(
     # Pad to match the aep format.
     remaining = len(raw) - _HEADER_SIZE
 
+    raw_default_index = _extract_int_value(lines, "Default RS Index")
+
     count = remaining // _RS_PREFS_ITEM_SIZE
     templates: list[RenderSettingsItem] = []
+    default_index: int | None = None
     for idx in range(count):
         offset = _HEADER_SIZE + idx * _RS_PREFS_ITEM_SIZE
         item_data = raw[offset : offset + _RS_PREFS_ITEM_SIZE]
         item = RenderSettingsItem.frombytes(item_data + b"\x00" * _RS_ITEM_SIZE_DIFF)
         assert isinstance(item, RenderSettingsItem)
-        if item.clean_template_name:
-            templates.append(item)
+        if not item.clean_template_name:
+            continue
+        # The prefs default index counts raw entries; remap it to the
+        # filtered list. A filtered-out default yields None (no default).
+        if idx == raw_default_index:
+            default_index = len(templates)
+        templates.append(item)
 
-    default_index = _extract_int_value(lines, "Default RS Index")
     return templates, default_index
 
 
-def _extract_string_value(lines: list[str], key: str) -> str | None:
-    """Extract a plain string value from a preference line like ``"Key" = "value"``."""
-    for line in lines:
-        m = re.match(r'\s*"' + re.escape(key) + r'"\s*=\s*"(.*)"', line)
-        if m:
-            return m.group(1)
-    return None
-
-
 def _extract_int_value(lines: list[str], key: str) -> int | None:
-    """Extract an integer value from a preference line like ``"Key" = 42``."""
+    """Extract an integer value from a preference line like `"Key" = 42`."""
     for line in lines:
         m = re.match(r'\s*"' + re.escape(key) + r'"\s*=\s*"?(\d+)"?', line)
         if m:
@@ -193,8 +185,9 @@ def parse_output_templates(
     Returns:
         A tuple of (templates, default_index). Templates is a list of
         [OutputModuleTemplate][] objects. Default_index is the index
-        of the default output module template, or None if not found.
-        Templates whose name starts with ``_HIDDEN`` are excluded.
+        of the default output module template in the returned list, or
+        None if not found (or the default entry was filtered out).
+        Templates whose name starts with `_HIDDEN` are excluded.
     """
     output_files = list(prefs_dir.glob("*-indep-output.txt"))
     if not output_files:
@@ -218,9 +211,12 @@ def parse_output_templates(
         text, "Output File Options Preference Section", "Output File Options"
     )
 
+    raw_default_index = _extract_int_value(lines, "Default OM Index")
+
     remaining = len(raw) - _HEADER_SIZE
     count = remaining // _OM_PREFS_ITEM_SIZE
     templates: list[OutputModuleTemplate] = []
+    default_index: int | None = None
     for idx in range(count):
         offset = _HEADER_SIZE + idx * _OM_PREFS_ITEM_SIZE
         item_data = raw[offset : offset + _OM_PREFS_ITEM_SIZE]
@@ -229,6 +225,10 @@ def parse_output_templates(
         name = names.get(idx, "")
         if not name or name.startswith("_HIDDEN"):
             continue
+        # The prefs default index counts raw entries; remap it to the
+        # filtered list. A filtered-out default yields None (no default).
+        if idx == raw_default_index:
+            default_index = len(templates)
         templates.append(
             OutputModuleTemplate(
                 settings=item,
@@ -238,7 +238,6 @@ def parse_output_templates(
             )
         )
 
-    default_index = _extract_int_value(lines, "Default OM Index")
     return templates, default_index
 
 

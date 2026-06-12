@@ -323,7 +323,6 @@ def parse(
         ```
     """
     from .binary.chunk import read_aep
-    from .models.descriptors import _suppress_materialization
     from .parsers.application import parse_app
     from .parsers.project import parse_project
 
@@ -331,8 +330,7 @@ def parse(
 
     file_path = os.fspath(aep_file_path)
     prefs_path = Path(ae_preferences_dir) if ae_preferences_dir else None
-    with _suppress_materialization():
-        with open(file_path, "rb") as f:
-            rifx, xmp = read_aep(f, defer_list_types=_DEFERRED_LIST_TYPES)
-        project = parse_project(rifx, xmp, file_path, ae_preferences_dir=prefs_path)
-        return parse_app(rifx, project)
+    with open(file_path, "rb") as f:
+        rifx, xmp = read_aep(f, defer_list_types=_DEFERRED_LIST_TYPES)
+    project = parse_project(rifx, xmp, file_path, ae_preferences_dir=prefs_path)
+    return parse_app(rifx, project)

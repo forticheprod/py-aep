@@ -1,7 +1,6 @@
 ---
 description: "Use when stress-testing a design proposal, architecture plan, or technical RFC. Finds unstated assumptions, edge-case failures, scalability limits, and alternative paradigms. Does NOT write code or offer fixes - only critique."
 tools: [read, search]
-model: ["Claude Opus 4.6", "Claude Sonnet 4.6", "Claude Haiku 4.5"]
 argument-hint: "Describe or reference the proposal, design, or plan to critique"
 ---
 

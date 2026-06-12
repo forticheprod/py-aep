@@ -31,23 +31,40 @@ class KeyframeEase:
         ```
     """
 
-    def __init__(
-        self,
-        *,
-        speed: float = 0.0,
-        influence: float = 0.0,
-        _kf_data: Any = None,
-        _dimension_index: int = 0,
-        _direction: str = "",
-        _speed_factor: float = 1.0,
-    ) -> None:
-        self._kf_data = _kf_data
-        self._dimension_index = _dimension_index
-        self._direction = _direction
-        self._speed_factor = _speed_factor
-        if _kf_data is None:
-            self._speed = speed
-            self._influence = influence
+    def __init__(self, speed: float = 0.0, influence: float = 0.0) -> None:
+        validate_number(speed)
+        # The setter enforces the 0.1-100 user range, but 0.0 is the
+        # "no ease" sentinel the parser constructs with, so allow it here.
+        _validate_number(min=0.0, max=100.0)(influence)
+        self._kf_data: Any = None
+        self._dimension_index = 0
+        self._direction = ""
+        self._speed_factor = 1.0
+        self._speed = speed
+        self._influence = influence
+
+    @classmethod
+    def _from_binary(
+        cls,
+        kf_data: Any,
+        dimension_index: int,
+        direction: str,
+        speed_factor: float = 1.0,
+    ) -> KeyframeEase:
+        """Wrap binary keyframe data as a `KeyframeEase` view.
+
+        Args:
+            kf_data: The backing keyframe-data chunk body.
+            dimension_index: Index into per-dimension speed/influence arrays.
+            direction: Either `"in"` or `"out"`.
+            speed_factor: Unit-conversion factor applied to the raw speed.
+        """
+        obj = cls.__new__(cls)
+        obj._kf_data = kf_data
+        obj._dimension_index = dimension_index
+        obj._direction = direction
+        obj._speed_factor = speed_factor
+        return obj
 
     def _is_array(self) -> bool:
         """Whether the backing kf_data stores speed/influence as arrays."""

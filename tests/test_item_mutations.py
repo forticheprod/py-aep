@@ -369,6 +369,141 @@ class TestItemRemove:
 
 
 # -----------------------------------------------------------------------
+# Item.parent_folder (setter / move)
+# -----------------------------------------------------------------------
+
+
+class TestParentFolderSetter:
+    """Tests for moving items between folders via parent_folder."""
+
+    def _folders(self, app):  # type: ignore[no-untyped-def]
+        root = app.project.root_folder
+        fwi = next(f for f in root.folders if f.name == "FolderWithItems")
+        empty = next(f for f in root.folders if f.name == "EmptyFolder")
+        return root, fwi, empty
+
+    def test_move_updates_parent_folder(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        _, fwi, empty = self._folders(app)
+        comp1 = next(i for i in fwi.items if i.name == "Comp1")
+        comp1.parent_folder = empty
+        assert comp1.parent_folder is empty
+
+    def test_move_removes_from_old_items(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        _, fwi, empty = self._folders(app)
+        comp1 = next(i for i in fwi.items if i.name == "Comp1")
+        comp1.parent_folder = empty
+        assert comp1 not in fwi.items
+
+    def test_move_adds_to_new_items(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        _, fwi, empty = self._folders(app)
+        comp1 = next(i for i in fwi.items if i.name == "Comp1")
+        comp1.parent_folder = empty
+        assert comp1 in empty.items
+
+    def test_move_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        _, fwi, empty = self._folders(app)
+        comp1 = next(i for i in fwi.items if i.name == "Comp1")
+        comp1_id = comp1.id
+        comp1.parent_folder = empty
+
+        app.project.save(tmp_path / "out.aep")
+        app2 = parse_aep(tmp_path / "out.aep")
+
+        comp1_2 = app2.project.items[comp1_id]
+        empty2 = next(
+            f for f in app2.project.root_folder.folders if f.name == "EmptyFolder"
+        )
+        fwi2 = next(
+            f for f in app2.project.root_folder.folders if f.name == "FolderWithItems"
+        )
+        assert comp1_2.parent_folder is empty2
+        assert comp1_2 in empty2.items
+        assert comp1_2 not in fwi2.items
+
+    def test_move_to_root(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        fwi = next(f for f in root.folders if f.name == "FolderWithItems")
+        comp1 = next(i for i in fwi.items if i.name == "Comp1")
+        comp1.parent_folder = root
+        assert comp1.parent_folder is root
+        assert comp1 in root.items
+        assert comp1 not in fwi.items
+
+    def test_move_subtree_keeps_children(self) -> None:
+        """Moving a folder relocates its whole subtree."""
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        root_folder = next(f for f in root.folders if f.name == "RootFolder")
+        level1 = root_folder.folders[0]
+        level2 = level1.folders[0]
+        child_names = [f.name for f in level2.folders]
+
+        level2.parent_folder = root
+        assert level2 in root.items
+        assert level2 not in level1.items
+        assert [f.name for f in level2.folders] == child_names
+
+    def test_same_parent_noop(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        empty = next(f for f in root.folders if f.name == "EmptyFolder")
+        n = len(root.items)
+        empty.parent_folder = root
+        assert empty.parent_folder is root
+        assert len(root.items) == n
+
+    def test_self_move_raises(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        empty = next(f for f in root.folders if f.name == "EmptyFolder")
+        with pytest.raises(ValueError, match="cannot be moved inside itself"):
+            empty.parent_folder = empty
+
+    def test_move_into_descendant_raises(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        root_folder = next(f for f in root.folders if f.name == "RootFolder")
+        level2 = root_folder.folders[0].folders[0]
+        with pytest.raises(ValueError, match="cannot be moved inside itself"):
+            root_folder.parent_folder = level2
+
+    def test_move_root_raises(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        empty = next(f for f in root.folders if f.name == "EmptyFolder")
+        with pytest.raises(ValueError, match="Cannot move the root folder"):
+            root.parent_folder = empty
+
+    def test_non_folder_target_raises(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        root = app.project.root_folder
+        fwi = next(f for f in root.folders if f.name == "FolderWithItems")
+        comp1 = next(i for i in fwi.items if i.name == "Comp1")
+        with pytest.raises(TypeError, match="must be a FolderItem"):
+            comp1.parent_folder = comp1.id  # type: ignore[assignment]
+
+    def test_move_relocates_viewer(self) -> None:
+        """An item's open-panel viewer moves with it between folders."""
+        app = parse_aep(SAMPLES_DIR / "composition" / "selection_both_layers.aep")
+        root = app.project.root_folder
+        comp = next(
+            c for c in root.compositions if c._viewer is not None and c in root.items
+        )
+        viewer = comp._viewer
+        assert viewer in root._viewers
+
+        folder = root.add_folder("Bin")
+        comp.parent_folder = folder
+        assert viewer not in root._viewers
+        assert viewer in folder._viewers
+
+
+# -----------------------------------------------------------------------
 # Project.import_placeholder()
 # -----------------------------------------------------------------------
 

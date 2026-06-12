@@ -4,6 +4,7 @@ This page documents limitations of py_aep that arise from the nature of
 parsing a binary file format rather than querying a running After Effects
 instance.
 
+
 ## Property.value_at_time Accuracy on spatial Properties (~0.015 Maximum Error)
 
 `Property.value_at_time()` for spatial properties (position, 2D/3D) has a
@@ -36,7 +37,6 @@ be derived from the `.aep` file alone:
 | `Project.dirty` | Unsaved changes flag |
 | `RenderQueue.queueNotify` | Runtime state |
 | `RenderQueue.rendering` | Runtime state |
-| `RenderQueueItem.templates` | Local settings |
 | `Viewer.maximized` | Non-persisting window state |
 
 ## Expressions
@@ -65,7 +65,7 @@ information is not stored in the binary `.aep` file.
 
 ### Property.default_value
 
-Default values are set **heuristically** by the parser in `synthesis.py`, not
+Default values are set **heuristically** by the parser in `synthesis/`, not
 read from the binary format. They are used for `Property.is_modified` checks.
 Some default values may be inaccurate for non-standard property types.
 
@@ -77,29 +77,61 @@ even though After Effects displays a unit string in the UI.
 
 ### Property.canSetExpression
 
-`Property.can_set_expression` is implemented as a pure-logic resolver. This
-value is not stored in the `.aep` file - After Effects determines it at runtime
-based on context such as the layer type (camera, light, etc.), whether the
-layer is 3D, whether position dimensions are separated, and the light type.
-py_aep replicates this logic using match-name override tables and layer
-context inspection, validated against ExtendScript ground truth.
+`Property.can_set_expression` combines binary signals with a pure-logic
+resolver. For effect parameters, an expressions-disabled flag in the
+`pard` definition header is authoritative; the remaining logic covers
+what After Effects determines at runtime from context: the layer type
+(camera, light, etc.), whether the layer is 3D, whether position
+dimensions are separated, and the light type. Small match-name tables
+cover non-effect quirks (extrusion materials, text path options). The
+result matches ExtendScript ground truth on 99.9% of 51,000+ validated
+properties; the residual mismatches are instance-state cases (e.g.
+plugin-supervised parameters whose enablement depends on other
+parameter values).
 
 ### Property.canVaryOverTime
 
-`Property.can_vary_over_time` is parsed from the binary `tdb4` chunk using a
-combined rule: the `can_vary_over_time` flag (byte 11 bit 1) OR the `no_value`
-flag (byte 57 bit 0), since NO_VALUE properties always report
-`canVaryOverTime = true` in ExtendScript. This achieves 100% accuracy across
-all 800 test files, with two match-name overrides for edge cases
-(`ADBE Light Falloff Type`, `ADBE FreePin3 Outlines`).
+For effect parameters, `Property.can_vary_over_time` is derived from the
+parameter definition (`pard`) flags byte, which matches the After Effects
+SDK's `PF_ParamFlag_CANNOT_TIME_VARY`. For other properties it combines
+the `tdb4` `can_vary_over_time` flag with the `no_value` flag (NO_VALUE
+properties always report `canVaryOverTime = true` in ExtendScript). A
+six-entry override table covers the residue (one light option that has no
+pard, and the Puppet pin internals). Validated against ExtendScript ground
+truth across 51,000+ properties covering every bundled and several
+third-party effects, with zero mismatches.
+
+### Property.min_value / Property.max_value
+
+For effect parameters, the valid range is read from the parameter
+definition (`pard`): plain integers for Integer controls, 16.16 fixed
+point for Scalar controls, and 32-bit floats for Slider controls (a
+non-finite float means that side is unbounded). A small override table
+covers non-effect properties (transform, material, mask).
+
+Known mismatch: about a dozen non-effect properties report bounds where
+ExtendScript reports none - `ADBE Position_0`/`_1` and `ADBE Scale` carry
+placeholder `[0.0]` bound chunks in the binary, and a few layer-style and
+light properties carry synthesized bounds. Values are unaffected.
 
 ## Templates
 
-`OutputModule.templates` and `RenderQueueItem.templates` are not available.
-After Effects populates them at runtime with template names from the
-application preferences, but they are not stored in the `.aep` file. The actual
-render settings are available through `OutputModule.settings` and
-`RenderQueueItem.settings`.
+Render settings and output module templates are not stored in the `.aep`
+file - After Effects keeps them in the user preferences. Pass the AE
+preferences directory to `parse()` to make them available:
+
+```python
+app = py_aep.parse("myproject.aep", ae_preferences_dir=prefs_dir)
+rq_item = app.project.render_queue.add(comp)
+print(rq_item.templates)  # available render settings templates
+rq_item.output_modules[0].apply_template("TIFF Sequence with Alpha")
+```
+
+Without `ae_preferences_dir`, `RenderQueueItem.templates` and
+`OutputModule.templates` return an empty list, and `RenderQueue.add()`
+raises (it needs the default templates to build the new item's settings).
+The settings of items already in the queue remain available through
+`OutputModule.settings` and `RenderQueueItem.settings` either way.
 
 ## Color Space Profiles Are Read-Only
 
@@ -162,3 +194,48 @@ system. They may be platform-specific (Windows backslashes vs. Unix forward
 slashes) and may not resolve on the current system. `FileSource.file` returns
 the path as stored without modification. `FileSource.missing_footage_path`
 provides the path that After Effects would display for missing footage.
+
+## Importing Footage (Project.import_file)
+
+`Project.import_file()` creates footage from a file by reading the media
+header (see [media_probe][py_aep.resolvers.media_probe]). After Effects caches
+footage metadata (dimensions, duration, frame rate, alpha, audio) in the
+project and does not re-read the media when the project is opened, so these
+values are extracted from the source file at import time.
+
+- **Scope**: only `ImportAsType.FOOTAGE` is supported. `COMP`,
+  `COMP_CROPPED_LAYERS`, and `PROJECT` import types are not.
+- **Vector formats (SVG, AI, EPS) cannot be imported**: After Effects refuses
+  to import these as footage (`ImportOptions.canImportAs(FOOTAGE)` is `false`);
+  they are only importable as `COMP_CROPPED_LAYERS`, which converts the file
+  into a composition of native vector shape layers (`ADBE Vector Layer`) rather
+  than a file-referencing footage source. There is no footage `opti`/`sspc`
+  representation to write, so these raise `ValueError` like any other
+  unsupported extension.
+- **Supported formats** (verified to open in After Effects): PNG, JPEG, BMP,
+  GIF, TGA, TIFF, OpenEXR, PSD/PSB, QuickTime MOV, and WAV audio.
+  Image sequences are supported for those still-image formats. The same source
+  builder backs `FootageItem.replace()`/`replace_with_sequence()` and
+  `AVItem.set_proxy()`/`set_proxy_with_sequence()`.
+- **PSD/PSB import as merged footage only**: a `.psd`/`.psb` is imported as a
+  single flattened still (the `8BPS` merged-layer `opti` header is written so
+  AE resolves it without stalling on a layer-interpretation modal). Importing a
+  PSD as a layered composition is not supported (see the import-type scope
+  above). Other unrecognized extensions (and MP3, which has no duration prober)
+  raise.
+- **`has_alpha` is a per-format heuristic**, not a full media decode. After
+  Effects allocates an alpha channel for PNG/TIFF/BMP/PSD/GIF regardless of the
+  file's actual channel count, treats JPEG as opaque, and derives alpha from
+  the channel list (EXR), bit depth (TGA: 32-bit only), or codec depth (MOV).
+  These match AE's import for the tested samples.
+- **Image-sequence dimensions**: the created `opti` asset-info chunk is
+  minimal, so After Effects recomputes the sequence size from the first frame's
+  display window on open.
+
+## guessAlphaMode / guessPulldown
+
+`FootageSource.guess_alpha_mode()` and `guess_pulldown()` are not implemented.
+Both inspect the actual media at runtime (edge premultiplication detection,
+3:2 pulldown cadence), which requires decoding the footage. When creating
+footage, py_aep uses fixed defaults instead: alpha mode STRAIGHT (PREMULTIPLIED
+for EXR), and pulldown OFF.

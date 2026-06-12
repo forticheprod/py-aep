@@ -140,3 +140,4 @@ memory/
 .codegraph/
 .github/copilot-instructions.md
 .github/agents/
+scratch_*

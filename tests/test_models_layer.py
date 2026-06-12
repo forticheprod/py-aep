@@ -2817,6 +2817,43 @@ class TestLayerDuplicate:
         assert comp2.layers[0].id == dup_id
 
 
+class TestDuplicateComplexValueLayers:
+    """Regression: duplicate() re-parses cloned chunks; complex-value
+    properties (text, masks, keyframed transforms) must cache during
+    that re-parse instead of taking the user-write setter paths."""
+
+    PROPERTY_DIR = Path(__file__).parent.parent / "samples" / "models" / "property"
+    EG_DIR = Path(__file__).parent.parent / "samples" / "models" / "essential_graphics"
+
+    def test_duplicate_static_text_layer(self) -> None:
+        app = parse_aep(self.EG_DIR / "text_source_text.aep")
+        comp = get_comp(app.project, "primary")
+        original = comp.layers[0]
+        assert isinstance(original, TextLayer)
+        dup = original.duplicate()
+        src = original.text.property("ADBE Text Document").value
+        dup_src = dup.text.property("ADBE Text Document").value
+        assert dup_src.text == src.text
+
+    def test_duplicate_masked_layer(self) -> None:
+        app = parse_aep(self.PROPERTY_DIR / "shape_basic.aep")
+        comp = get_comp(app.project, "shape_closed_oval")
+        original = comp.layers[0]
+        dup = original.duplicate()
+        orig_shape = original.masks[0].property("ADBE Mask Shape").value
+        dup_shape = dup.masks[0].property("ADBE Mask Shape").value
+        assert dup_shape.vertices == orig_shape.vertices
+
+    def test_duplicate_every_layer_kind(self) -> None:
+        """All layers of the animated sample duplicate without error."""
+        app = parse_aep(self.PROPERTY_DIR / "all_animated.aep")
+        for comp in app.project.compositions:
+            count = len(comp.layers)
+            for layer in list(comp.layers):
+                layer.duplicate()
+            assert len(comp.layers) == 2 * count
+
+
 class TestCopyToComp:
     """Tests for Layer.copy_to_comp()."""
 

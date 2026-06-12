@@ -241,10 +241,10 @@ class AudioBitDepth(IntEnum):
 
     @classmethod
     def from_binary(cls, value: int) -> AudioBitDepth:
-        """Convert binary value to AudioBitDepth (defaults to SIXTEEN_BIT)."""
+        """Convert binary value to AudioBitDepth."""
         if value in cls._value2member_map_:
             return cls(value)
-        return cls.SIXTEEN_BIT
+        return cls.THIRTY_TWO_BIT
 
 
 _AUDIO_BIT_DEPTH_LABELS: dict[int, str] = {
@@ -319,7 +319,7 @@ class AudioSampleRate(IntEnum):
     Not documented in AE scripting reference.
     """
 
-    OFF = 0
+    OFF = -1
     RATE_8000 = 8000
     RATE_11025 = 11025
     RATE_16000 = 16000
@@ -334,7 +334,7 @@ class AudioSampleRate(IntEnum):
     @property
     def label(self) -> str:
         """ExtendScript STRING format label (e.g. `"48.000 kHz"`)."""
-        if self.value == 0:
+        if self.value <= 0:
             return ""
         return f"{self.value / 1000:.3f} kHz"
 

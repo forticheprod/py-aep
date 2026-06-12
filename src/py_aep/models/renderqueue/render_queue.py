@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Iterator
 
 from ...binary.chunk import ListChunk
 from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
-from ...binary.utils import find_by_list_type
 
 if TYPE_CHECKING:
     from ...binary.render_chunks import ArsiChunk, RoutChunk
@@ -96,24 +95,22 @@ class RenderQueue:
             raise TypeError("comp must be a CompItem")
 
         # Create the new RQ item with all backing chunks
-        rqi, rs_item, rout_items = RenderQueueItem._new(comp, parent=self)
+        rqi = RenderQueueItem._new(comp, parent=self)
 
-        # When the render queue started empty, the settings 'list' holds only
-        # an lhd3 and the parser created the ldat lazily (not in the tree).
-        # Attach it on first add so the new settings actually get written.
-        rs_list = find_by_list_type(chunks=self._lrdr.chunks, list_type="list")
-        if not any(c.chunk_type == "ldat" for c in rs_list.chunks):
-            rs_list.chunks.append(self._rs_ldat)
+        # When the render queue started empty, the parser attached a synthetic
+        # ldat to the settings 'list' (skipped on write). Materialize it so the
+        # new settings actually get written. Harmless when already non-synthetic.
+        self._rs_ldat.synthetic = False
 
         # Append render settings to LRdr's ldat. Only `count` tracks the
         # item count; AE keeps count_b/counter_a/counter_b at their seeded
         # value of 1 regardless of item count (verified against real files
         # and duplicate(), which bumps only `count`).
-        self._rs_ldat.items.append(rs_item)
+        self._rs_ldat.items.append(rqi._ldat)
         self._rs_lhd3.count += 1
 
         # Append Rout items (5 per RQ item) and update header
-        for ri in rout_items:
+        for ri in rqi._rout_items:
             self._rout.items.append(ri)
         self._rout.count = len(self._rout.items)
 

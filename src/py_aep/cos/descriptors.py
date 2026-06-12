@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
 
+from ..ae_version import get_ae_version_major
+
 if TYPE_CHECKING:
     from typing import Any, Callable
 
@@ -46,6 +48,10 @@ class CosField(Generic[T]):
             before any `reverse` transform.
         default: Value returned when the dict is `None` or the key is
             absent. Defaults to `None`.
+        min_version: Minimum AE major version required to *set* this
+            field. Writes to an older file raise `AttributeError`;
+            reads are always allowed. Mirrors
+            `models.descriptors.ChunkField`.
     """
 
     def __init__(
@@ -58,6 +64,7 @@ class CosField(Generic[T]):
         read_only: bool = False,
         validate: Callable[..., None] | None = None,
         default: Any = None,
+        min_version: int | None = None,
     ) -> None:
         self.dict_attr = dict_attr
         self.key = key
@@ -66,6 +73,7 @@ class CosField(Generic[T]):
         self.read_only = read_only
         self.validate = validate
         self.default = default
+        self.min_version = min_version
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.public_name = name
@@ -82,7 +90,7 @@ class CosField(Generic[T]):
         # Instance-dict overrides (set by parser or user when no dict)
         if self.public_name in obj.__dict__:
             return cast(T, obj.__dict__[self.public_name])
-        d: dict[str, Any] | None = getattr(obj, self.dict_attr, None)
+        d: dict[str, Any] | None = getattr(obj, self.dict_attr)
         if d is None:
             return cast(T, self.default)
         raw = d.get(self.key, _SENTINEL)
@@ -98,9 +106,14 @@ class CosField(Generic[T]):
     def __set__(self, obj: Any, value: T) -> None:
         if self.read_only:
             raise AttributeError(f"{self.public_name!r} is read-only.")
+        if self.min_version is not None:
+            if get_ae_version_major(obj) < self.min_version:
+                raise AttributeError(
+                    f"{self.public_name!r} requires AE {self.min_version}+ file format."
+                )
         # Clear any instance-dict override
         obj.__dict__.pop(self.public_name, None)
-        d: dict[str, Any] | None = getattr(obj, self.dict_attr, None)
+        d: dict[str, Any] | None = getattr(obj, self.dict_attr)
         if d is None:
             # No backing dict - store as instance override
             obj.__dict__[self.public_name] = value
@@ -129,12 +142,9 @@ class CosField(Generic[T]):
         Bakes in `transform=bool` and `reverse=bool` so call sites only
         need the dict attribute and key.
         """
-        return cls(  # type: ignore[return-value]
-            dict_attr,
-            key,
-            transform=bool,
-            reverse=bool,
-            **kwargs,
+        return cast(
+            "CosField[bool | None]",
+            cls(dict_attr, key, transform=bool, reverse=bool, **kwargs),
         )
 
     @classmethod
@@ -167,4 +177,6 @@ class CosField(Generic[T]):
         **kwargs: Any,
     ) -> CosField[float | None]:
         """Create a CosField that coerces to float."""
-        return cls(dict_attr, key, transform=float, **kwargs)  # type: ignore[return-value]
+        return cast(
+            "CosField[float | None]", cls(dict_attr, key, transform=float, **kwargs)
+        )

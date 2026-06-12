@@ -14,6 +14,7 @@ from ..binary.utils import (
     find_by_type,
 )
 from ..enums import LayerType
+from ..models.descriptors import _suppress_materialization
 from ..models.layers.av_layer import AVLayer
 from ..models.layers.camera_layer import CameraLayer
 from ..models.layers.light_layer import LightLayer
@@ -59,6 +60,7 @@ def _parse_ovg2_uuids(child_chunks: list[Chunk]) -> list[str]:
     return uuids
 
 
+@_suppress_materialization()
 def parse_layer(
     layer_chunk: ListChunk,
     composition: CompItem,

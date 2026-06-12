@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 from ..binary.item_chunks import HeadChunk
 from ..binary.utils import find_by_type
 from ..models.application import Application
+from ..models.descriptors import _suppress_materialization
 from ..models.items.folder import FolderItem
 from ..models.project import Project
 from ..models.viewer.viewer import Viewer
@@ -25,6 +26,7 @@ def _collect_viewers(folder: FolderItem) -> Iterator[Viewer]:
             yield from _collect_viewers(item)
 
 
+@_suppress_materialization()
 def parse_app(rifx: ListChunk, project: Project) -> Application:
     """Build an [Application][] from the parsed RIFX data and project.
 

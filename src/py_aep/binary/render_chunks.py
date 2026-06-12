@@ -80,9 +80,12 @@ class RouuChunk(Chunk):
     height: int = u2_field(default=100)
     """Output height (0 when video disabled)."""
 
-    _reserved_2a: bytes = bytes_field(
-        25, default=b"\x00" * 15 + b"\x01" + b"\x00" * 9, repr=False
-    )
+    _reserved_2a: bytes = bytes_field(15, repr=False)
+    applied_marker: int = u1_field(default=1)
+    """Set to 1 once AE applies the format header to a render queue item;
+    0 in prefs-stored output module templates."""
+
+    _reserved_3a: bytes = bytes_field(9, repr=False)
     frame_rate: int = u1_field(default=30)
     _reserved_44: bytes = bytes_field(3, repr=False)
     depth: int = u1_field(default=32)
@@ -114,10 +117,14 @@ class RouuChunk(Chunk):
 
     # The 40 bytes AE writes after the audio fields (offset 0x72..0x99); carries
     # a few audio-config sub-bytes that vary by codec. The default is the
-    # block AE writes for a fresh image-sequence output module.
-    _reserved_72: bytes = bytes_field(
+    # block AE writes for a fresh image-sequence output module. Older
+    # writers emit only the first 114 bytes; `optional=True` keeps short
+    # bodies parseable (the field reads as None and is skipped on write,
+    # so they round-trip), while newly built chunks still write 154 bytes.
+    _reserved_72: bytes | None = bytes_field(
         40,
         default=b"\x00" * 13 + b"\x01" + b"\x00" * 3 + b"\x01" + b"\x00" * 22,
+        optional=True,
         repr=False,
     )
 

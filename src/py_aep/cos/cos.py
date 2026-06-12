@@ -77,6 +77,25 @@ class IndirectReference:
     generation_number: int
 
 
+class CosString(str):
+    """A COS string literal that remembers its on-disk encoding.
+
+    After Effects writes some string literals as UTF-16 BE (with a BOM,
+    e.g. visible text) and others as raw ASCII / UTF-8 (e.g. bit-flag
+    strings like `00001000...`). The encoding cannot be inferred from
+    the decoded content, so it is preserved here for byte-faithful
+    re-serialization. Behaves exactly like `str` otherwise. New strings
+    created without this wrapper default to UTF-16 on write.
+    """
+
+    cos_utf16: bool
+
+    def __new__(cls, value: str, *, utf16: bool = True) -> CosString:
+        obj = super().__new__(cls, value)
+        obj.cos_utf16 = utf16
+        return obj
+
+
 @dataclass
 class CosName:
     """A COS name object used as a value (e.g. `/CoolTypeFont`).
@@ -416,9 +435,12 @@ class CosParser:
             encoding = "utf-16-le"
 
         try:
-            return Token(TokenType.String, string.decode(encoding))
+            decoded = string.decode(encoding)
         except UnicodeDecodeError:
             return Token(TokenType.String, string)
+        return Token(
+            TokenType.String, CosString(decoded, utf16=encoding == "utf-16-be")
+        )
 
     def lex_string_char(self) -> bytes | None:
         char = self.get_char()
@@ -428,15 +450,11 @@ class CosParser:
             return None
         elif char == b"\\":
             return self.lex_string_escape()
-        elif char == b"\r":
-            if self.get_char() != b"\n":
-                self.unget()
-            return b"\n"
-        elif char == b"\n":
-            if self.get_char() != b"\r":
-                self.unget()
-            return b"\n"
         else:
+            # AE's COS strings hold binary UTF-16 data, so a raw 0x0d / 0x0a
+            # byte is part of a character (e.g. U+300D), not a line ending.
+            # Preserve it verbatim - normalizing CR/CRLF to LF (per the COS
+            # spec for text) would corrupt the data and break round-trip.
             return char
 
     def lex_string_escape(self) -> bytes:

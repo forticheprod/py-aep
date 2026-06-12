@@ -192,22 +192,19 @@ class TestMaterializationLifecycle:
         blur2 = _find_synthesized_effect_prop(layer2, 0, "ADBE Gaussian Blur 2-0001")
         assert blur2.value == 42.0
 
-    def test_materialize_on_enabled_write(self, tmp_path: Path) -> None:
-        """Setting enabled materializes the property into the chunk tree."""
+    def test_enabled_read_only_on_effect_param(self) -> None:
+        """Effect-parameter `enabled` is read-only (AE `canSetEnabled` is
+        False), so the write is rejected and the property is left untouched."""
         app = parse_aep(PROPERTY_DIR / "2_gaussian.aep")
         layer = get_first_layer(app.project)
         blur = _find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         assert blur.enabled is True
+        assert blur.can_set_enabled is False
 
-        blur.enabled = False
+        with pytest.raises(AttributeError):
+            blur.enabled = False
 
-        out = tmp_path / "materialized.aep"
-        app.project.save(out)
-
-        app2 = parse_aep(out)
-        layer2 = get_first_layer(app2.project)
-        blur2 = _find_synthesized_effect_prop(layer2, 0, "ADBE Gaussian Blur 2-0001")
-        assert blur2.enabled is False
+        assert blur.enabled is True
 
     def test_materialize_on_name_write(self, tmp_path: Path) -> None:
         """Setting name materializes the property into the chunk tree."""

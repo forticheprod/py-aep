@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..ae_version import get_ae_version_major
 from ..enums import PropertyValueType
 from ..models.layers.av_layer import AVLayer
 from ..models.layers.camera_layer import CameraLayer
@@ -36,8 +37,8 @@ from ..models.properties.property_group import (
     _derive_layer_styles_enabled,
     _reorder_and_fill,
 )
-from ..models.version import get_ae_version_major
 from .specs import (
+    _CAMERA_LIGHT_GROUPS,
     _REGULAR_AV_ONLY_GROUPS,
     _SHAPE_ONLY_GROUPS,
     _TEXT_ONLY_GROUPS,
@@ -85,19 +86,26 @@ def _synthesize_missing_top_level_groups(layer: Layer, ae_major: int) -> None:
     groups and reorders all groups to match the canonical ExtendScript order.
     """
     if isinstance(layer, (CameraLayer, LightLayer)):
+        own_options = (
+            "ADBE Camera Options Group"
+            if isinstance(layer, CameraLayer)
+            else "ADBE Light Options Group"
+        )
         skip_groups = frozenset(
             s.match_name
             for s in _TOP_LEVEL_SPECS
-            if s.match_name not in ("ADBE Marker", "ADBE Transform Group")
+            if s.match_name not in ("ADBE Marker", "ADBE Transform Group", own_options)
         )
     elif not isinstance(layer, AVLayer):
         return
     elif isinstance(layer, TextLayer):
-        skip_groups = _REGULAR_AV_ONLY_GROUPS | _SHAPE_ONLY_GROUPS
+        skip_groups = (
+            _REGULAR_AV_ONLY_GROUPS | _SHAPE_ONLY_GROUPS | _CAMERA_LIGHT_GROUPS
+        )
     elif isinstance(layer, ShapeLayer):
-        skip_groups = _REGULAR_AV_ONLY_GROUPS | _TEXT_ONLY_GROUPS
+        skip_groups = _REGULAR_AV_ONLY_GROUPS | _TEXT_ONLY_GROUPS | _CAMERA_LIGHT_GROUPS
     else:
-        skip_groups = _TEXT_ONLY_GROUPS | _SHAPE_ONLY_GROUPS
+        skip_groups = _TEXT_ONLY_GROUPS | _SHAPE_ONLY_GROUPS | _CAMERA_LIGHT_GROUPS
 
     _reorder_and_fill(
         layer, _TOP_LEVEL_SPECS, 1, skip=skip_groups, tail_mode="all", ae_major=ae_major

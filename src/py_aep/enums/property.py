@@ -10,24 +10,26 @@ class PropertyControlType(IntEnum):
 
     Describes the UI control type exposed in the After Effects effect panel
     (scalar slider, color picker, angle dial, checkbox, dropdown, etc.).
+    Values match the AE SDK `PF_ParamType` enum (SDK name in comments
+    where it differs).
     """
 
     LAYER = 0
-    INTEGER = 1
-    SCALAR = 2
+    INTEGER = 1  # PF_Param_SLIDER (obsolete integer slider)
+    SCALAR = 2  # PF_Param_FIX_SLIDER (16.16 fixed-point slider)
     ANGLE = 3
-    BOOLEAN = 4
+    BOOLEAN = 4  # PF_Param_CHECKBOX
     COLOR = 5
-    TWO_D = 6
-    ENUM = 7
-    PAINT_GROUP = 9
-    SLIDER = 10
-    CURVE = 11
-    MASK = 12
-    GROUP = 13
-    UNKNOWN_14 = 14
-    UNKNOWN = 15
-    THREE_D = 18
+    TWO_D = 6  # PF_Param_POINT
+    ENUM = 7  # PF_Param_POPUP
+    PAINT_GROUP = 9  # PF_Param_NO_DATA
+    SLIDER = 10  # PF_Param_FLOAT_SLIDER
+    CURVE = 11  # PF_Param_ARBITRARY_DATA
+    MASK = 12  # PF_Param_PATH
+    GROUP = 13  # PF_Param_GROUP_START
+    UNKNOWN_14 = 14  # PF_Param_GROUP_END
+    UNKNOWN = 15  # PF_Param_BUTTON
+    THREE_D = 18  # PF_Param_POINT_3D
 
 
 class PropertyValueType(IntEnum):

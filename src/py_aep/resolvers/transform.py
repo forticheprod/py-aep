@@ -72,6 +72,30 @@ class Mat4:
             ]
         )
 
+    def transform_point(self, v: list[float]) -> list[float]:
+        """Transform a 3D point (translation applied)."""
+        x = v[0]
+        y = v[1]
+        z = v[2] if len(v) > 2 else 0.0
+        r = self._rows
+        return [
+            r[0][0] * x + r[0][1] * y + r[0][2] * z + r[0][3],
+            r[1][0] * x + r[1][1] * y + r[1][2] * z + r[1][3],
+            r[2][0] * x + r[2][1] * y + r[2][2] * z + r[2][3],
+        ]
+
+    def transform_vector(self, v: list[float]) -> list[float]:
+        """Transform a 3D direction vector (translation ignored)."""
+        x = v[0]
+        y = v[1]
+        z = v[2] if len(v) > 2 else 0.0
+        r = self._rows
+        return [
+            r[0][0] * x + r[0][1] * y + r[0][2] * z,
+            r[1][0] * x + r[1][1] * y + r[1][2] * z,
+            r[2][0] * x + r[2][1] * y + r[2][2] * z,
+        ]
+
     def inverse(self) -> Mat4:
         """Compute the inverse using cofactor expansion.
 

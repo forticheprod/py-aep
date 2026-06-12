@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from enum import IntEnum
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
 
-from .version import get_ae_version_major
+from ..ae_version import get_ae_version_major
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Iterator
@@ -22,9 +22,11 @@ T = TypeVar("T")
 
 _SENTINEL = object()
 
-# During `parse()` this is set to False so that `ChunkField.__set__`
-# rejects writes.  Outside `parse()` the default (True) lets end-user
-# writes through.
+# While a parser runs this is set to False so that `ChunkField.__set__`
+# rejects writes: parsers must not mutate chunk data through descriptors
+# (round-trip idempotency). Parsers cache values via `__dict__` overrides
+# or the private `_cache_value` helpers instead. Outside parsing the
+# default (True) lets end-user writes through.
 _materialization_allowed: ContextVar[bool] = ContextVar(
     "_materialization_allowed",
     default=True,
@@ -33,7 +35,13 @@ _materialization_allowed: ContextVar[bool] = ContextVar(
 
 @contextlib.contextmanager
 def _suppress_materialization() -> Iterator[None]:
-    """Context manager that disables materialization for the current context."""
+    """Forbid descriptor writes for the current context.
+
+    Parser entry points are decorated with this so any descriptor
+    write during parsing raises `RuntimeError` instead of silently
+    mutating chunk data. Usable as a decorator
+    (`@_suppress_materialization()`) or a `with` block.
+    """
     token = _materialization_allowed.set(False)
     try:
         yield
@@ -41,27 +49,30 @@ def _suppress_materialization() -> Iterator[None]:
         _materialization_allowed.reset(token)
 
 
-def _validate_enum(
-    transform: Callable[..., Any] | None, value: Any, public_name: str
-) -> None:
-    """Raise `ValueError` if `value` is not a valid IntEnum member.
+def _enum_class(transform: Callable[..., Any] | None) -> type[IntEnum] | None:
+    """Return the IntEnum class behind `transform`, if any.
 
-    When `transform` points to an IntEnum subclass (via `from_binary`
-    classmethod or direct class reference), non-member values are
-    rejected: raw ints must appear in the enum's value map; any other
-    type must already be an instance of the enum.
+    Detects a `from_binary` classmethod (via `__self__`) or a direct
+    enum class reference.
     """
     if transform is None:
-        return
+        return None
     enum_cls = getattr(transform, "__self__", None)
     if enum_cls is None and isinstance(transform, type):
         enum_cls = transform
-    if (
-        enum_cls is None
-        or not isinstance(enum_cls, type)
-        or not issubclass(enum_cls, IntEnum)
-    ):
-        return
+    if isinstance(enum_cls, type) and issubclass(enum_cls, IntEnum):
+        return enum_cls
+    return None
+
+
+def _validate_enum_member(
+    enum_cls: type[IntEnum], value: Any, public_name: str
+) -> None:
+    """Raise `ValueError` if `value` is not a valid member of `enum_cls`.
+
+    Raw ints must appear in the enum's value map; any other type must
+    already be an instance of the enum.
+    """
     if isinstance(value, enum_cls):
         return
     if isinstance(value, int):
@@ -122,6 +133,9 @@ class ChunkField(Generic[T]):
         self.default = default
         self.post_set = post_set
         self.min_version = min_version
+        # Derived once so __set__ validates membership without
+        # re-inspecting the transform on every write.
+        self._enum_cls = _enum_class(transform)
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.public_name = name
@@ -152,7 +166,13 @@ class ChunkField(Generic[T]):
         if self.read_only:
             raise AttributeError(f"{self.public_name!r} is read-only.")
         if self.min_version is not None:
-            if get_ae_version_major(obj) < self.min_version:
+            try:
+                major: int | None = get_ae_version_major(obj)
+            except TypeError:
+                # Version undeterminable (e.g. a ViewOptions whose viewer
+                # has no AVItem); skip the gate and allow the write.
+                major = None
+            if major is not None and major < self.min_version:
                 raise AttributeError(
                     f"{self.public_name!r} requires AE {self.min_version}+ file format."
                 )
@@ -172,7 +192,8 @@ class ChunkField(Generic[T]):
             body = getattr(obj, self.chunk_attr)
         if self.validate:
             self.validate(value, obj)
-        _validate_enum(self.transform, value, self.public_name)
+        if self._enum_cls is not None:
+            _validate_enum_member(self._enum_cls, value, self.public_name)
         if self.reverse is not None:
             setattr(body, self.field, self.reverse(value))
         else:

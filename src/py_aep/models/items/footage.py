@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...binary.chunk import Chunk, ListChunk
+from ...binary.comp_skeleton import build_item_view_chunks
 from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.misc_chunks import FtgiChunk
 from ...binary.scalar_chunks import Utf8Chunk
@@ -10,10 +11,11 @@ from ..naming import auto_name
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
-from ..validators import validate_string
 from .av_item import AVItem
 
 if TYPE_CHECKING:
+    import os
+
     from ...binary.item_chunks import CmtaChunk
     from ..project import Project
     from .folder import FolderItem
@@ -197,21 +199,21 @@ class FootageItem(AVItem):
     @classmethod
     def _new(
         cls,
-        name: str,
-        source: PlaceholderSource | SolidSource,
+        source: FileSource | PlaceholderSource | SolidSource,
         *,
         project: Project,
         parent_folder: FolderItem,
     ) -> FootageItem:
         """Create a new FootageItem with backing chunks.
 
+        The item name resolves from the source; like AE, the item-level
+        Utf8 chunk stays empty until the user renames the item.
+
         Args:
-            name: The item name.
-            source: The footage source (placeholder or solid).
+            source: The footage source (file, placeholder, or solid).
             project: The project that owns this item.
             parent_folder: The folder that will contain this item.
         """
-        validate_string(name)
         item_id = project._allocate_item_id()
 
         iide = IideChunk(value=item_id)
@@ -223,13 +225,15 @@ class FootageItem(AVItem):
         )
         idta.is_footage = True
         idta.is_solid = isinstance(source, SolidSource)
-        name_utf8 = Utf8Chunk(value=name)
+        # A file source carries the footage-kind flags; solid/placeholder
+        # sources keep the chunk default.
+        if isinstance(source, FileSource):
+            idta._flags_17 = source._idta_flags17()
+        # AE leaves the item-level Utf8 empty; the display name resolves
+        # from the source (solid / placeholder / file name).
+        name_utf8 = Utf8Chunk()
 
-        pin_list = AVItem._build_pin_list(
-            source._sspc,
-            source._opti,
-            is_solid=isinstance(source, SolidSource),
-        )
+        pin_list = AVItem._pin_for_source(source)
 
         ftgi = FtgiChunk()
 
@@ -239,7 +243,7 @@ class FootageItem(AVItem):
         )
 
         # View data chunks AE expects after LIST:Item in the parent folder
-        view_data: list[Chunk] = AVItem._build_view_data()
+        view_data: list[Chunk] = build_item_view_chunks()
 
         item = cls(
             _idta=idta,
@@ -318,21 +322,81 @@ class FootageItem(AVItem):
         )
         self._replace_main_source(source)
 
-    def _replace_main_source(self, source: PlaceholderSource | SolidSource) -> None:
+    def replace(self, file: str | os.PathLike[str]) -> None:
+        """Replace the footage source with a file on disk.
+
+        Changes the source of this `FootageItem` to the specified file.
+
+        In addition to loading the file, the method creates a new `FileSource` object
+        for the file and sets `main_source` to that object. In the new source object, it
+        sets the name, width, height, `frame_duration`, and duration attributes (see
+        `AVItem` object) based on the contents of the file.
+
+        The method preserves interpretation parameters from the previous `main_source`
+        object.
+
+        Note:
+            Unlike ExtendScript, if the specified file has an unlabeled alpha channel,
+            this method does not estimate the alpha interpretation.
+
+        Args:
+            file: Path to the new source file.
+
+        Raises:
+            ValueError: If the extension is not a supported footage format.
+            NotImplementedError: If After Effects requires a format-specific
+                `opti` header not implemented for this format.
+        """
+        self._replace_main_source(FileSource._from_file(file))
+
+    def replace_with_sequence(
+        self, file: str | os.PathLike[str], force_alphabetical: bool = False
+    ) -> None:
+        """Changes the source of this `FootageItem` to the specified image sequence.
+
+        In addition to loading the file, the method creates a new `FileSource` object
+        for the file and sets `main_source` to that object. In the new source object, it
+        sets the name, width, height, `frame_duration`, and duration attributes (see
+        `AVItem` object) based on the contents of the file.
+
+        The method preserves interpretation parameters from the previous `main_source`
+        object.
+
+        Note:
+            Unlike ExtendScript, if the specified file has an unlabeled alpha channel,
+            this method does not estimate the alpha interpretation.
+
+        Args:
+            file: Path to a representative frame; sibling frames in the same
+                folder are gathered into the sequence.
+            force_alphabetical: Order frames alphabetically rather than
+                numerically.
+
+        Raises:
+            ValueError: If the extension is not a supported footage format.
+            NotImplementedError: If After Effects requires a format-specific
+                `opti` header not implemented for this format.
+        """
+        self._replace_main_source(
+            FileSource._from_file(
+                file, sequence=True, force_alphabetical=force_alphabetical
+            )
+        )
+
+    def _replace_main_source(
+        self, source: FileSource | PlaceholderSource | SolidSource
+    ) -> None:
         """Replace the first LIST:Pin in _item_list with a new source."""
         is_solid = isinstance(source, SolidSource)
-        new_pin = AVItem._build_pin_list(
-            source._sspc,
-            source._opti,
-            is_solid=is_solid,
-        )
-        self._replace_pin(0, new_pin)
+        self._replace_pin(0, AVItem._pin_for_source(source))
 
         self._main_source = source
 
         assert self._idta is not None
         self._idta.is_footage = True
         self._idta.is_solid = is_solid
+        if isinstance(source, FileSource):
+            self._idta._flags_17 = source._idta_flags17()
 
         # AE updates item-level Utf8 with new source name
         self.name = source._resolve_name("")

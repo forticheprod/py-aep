@@ -6,38 +6,9 @@ import os
 import re
 from pathlib import Path
 
+from ..data.file_formats import get_file_format, get_import_as_types
 from ..enums import ImportAsType
 from .validators import validate_enum, validate_path
-
-# File extensions that can be imported as compositions (multi-layer).
-_COMP_IMPORTABLE_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        ".psd",
-        ".ai",
-        ".pdf",
-    }
-)
-
-# File extensions that support sequence import.
-_SEQUENCE_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        ".bmp",
-        ".cin",
-        ".dpx",
-        ".exr",
-        ".gif",
-        ".hdr",
-        ".iff",
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".psd",
-        ".sgi",
-        ".tga",
-        ".tif",
-        ".tiff",
-    }
-)
 
 # Pattern to match trailing digits in a filename stem (e.g. "frame001").
 _NUMBERED_RE = re.compile(r"(\d+)$")
@@ -116,25 +87,28 @@ class ImportOptions:
     def can_import_as(self, type: int | ImportAsType) -> bool:
         """Check whether the file can be imported as the given type.
 
+        Mirrors ExtendScript `ImportOptions.canImportAs()`, but additionally
+        gates on what py_aep can actually import: the per-extension
+        capability table (`get_import_as_types`) reflects After Effects,
+        while a file whose format py_aep does not implement (absent from
+        `data.file_formats`, or marked unsupported) returns `False` for
+        every type.
+
         Args:
             type: The import type to check.
 
         Returns:
             `True` if the file can be imported as `type`.
         """
+        validate_enum(ImportAsType)(type)
         type = ImportAsType(type)
-        suffix = self._file.suffix.lower()
-
-        if type == ImportAsType.FOOTAGE:
-            return True
-
-        if type == ImportAsType.PROJECT:
-            return suffix in (".aep", ".aet")
-
-        if type in (ImportAsType.COMP, ImportAsType.COMP_CROPPED_LAYERS):
-            return suffix in _COMP_IMPORTABLE_EXTENSIONS
-
-        return False
+        try:
+            fmt = get_file_format(self._file.suffix)
+        except ValueError:
+            return False
+        if fmt.opti == "unsupported":
+            return False
+        return type in get_import_as_types(self._file.suffix)
 
     def is_file_name_numbered(self) -> tuple[bool, int]:
         """Check whether the filename ends with a number.

@@ -16,7 +16,7 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
 
 1. **Binary parsing**: `parse_layer()` > `get_chunks_by_match_name()` > `parse_properties()` dispatches by chunk list_type (tdgp > PropertyGroup, tdbs > Property, sspc > Effect, etc.)
 2. **Effect enrichment**: `parse_effect()` merges param defs from `LIST:parT` (layer-level, with project-level fallback from `LIST:EfdG`) into parsed properties via `_merge_param_def()`, and synthesizes missing params via `_synthesize_effect_property()`
-3. **Post-processing**: `synthesize_layer_properties()` runs a single pass (in `synthesis.py`) handling transform defaults, top-level group ordering, recursive child synthesis via `_reorder_and_fill()`, and min/max bounds. Effect param synthesis remains a separate dynamic step inside `parse_effect()`. Synthesis uses `_PropSpec` (leaf Property) and `_GroupSpec` (empty PropertyGroup) with `synthetic=True` chunk backing.
+3. **Post-processing**: `synthesize_layer_properties()` runs a single pass (in `synthesis/core.py`) handling transform defaults, top-level group ordering, recursive child synthesis via `_reorder_and_fill()`, and min/max bounds. Effect param synthesis remains a separate dynamic step inside `parse_effect()`. Synthesis uses `_PropSpec` (leaf Property) and `_GroupSpec` (empty PropertyGroup) with `synthetic=True` chunk backing.
 
 ### Key Directories
 - **`src/py_aep/binary/`** - Binary I/O layer (attrs-based)
@@ -26,21 +26,25 @@ Properties go through three stages. See [CONTRIBUTING.md](../CONTRIBUTING.md#pro
   - `registry.py` - `@register` decorator + `CHUNK_TYPES` dispatch table
   - `bin_utils.py` - `read_fmt()`, `write_fmt()`, `read_bytes()`, `write_bytes()`
   - `utils.py` - Chunk navigation/mutation helpers: `find_by_type`, `find_by_list_type`, `filter_by_type`, `filter_by_list_type`, `find_chunks_before`, `find_chunks_after`, `group_chunks`, `split_on_type`, `toggle_flag_chunk`, `chunk_tree`, `recursive_find`
+  - `mutations.py` - chunk-tree mutation builders (new layers, keyframe lists, guides); `comp_skeleton.py` - baked new-comp chunk template
   - Chunk modules: `scalar_chunks.py`, `property_chunks.py`, `item_chunks.py`, `composition_chunks.py`, `layer_chunks.py`, `misc_chunks.py`, `footage_chunks.py`, `render_chunks.py`, `ldat_chunks.py`
   - **Chunk subclass rules**: use semantic field aliases (`u1_field`, `u4_field`, `f8_field`, etc.) for fixed-layout fields (generic `Chunk.read()`/`write()` handles I/O). Use `bool_field()` for 1-byte boolean fields. Use `BitField` for single-bit flags. Chunks with no typed fields (raw bytes only) do NOT override `read()` - base `Chunk.read()` stores body as `data: bytes`. Only override `read()` when the chunk needs context parameters (e.g. `is_le`, `is_color`) or polymorphic dispatch.
 - **`src/py_aep/__init__.py`** - Public API entry point: `parse()`
 - **`src/py_aep/parsers/`** - Transform raw chunks into models
-  - `application.py`, `project.py`, `layer.py`, `property.py`, `synthesis.py`, `effect.py`, ...
+  - `application.py`, `project.py`, `layer.py`, `property.py`, `effect.py`, `text.py`, `render_queue.py`, ...
   - Pattern: Each parser receives chunks + context, returns a model instance
+  - Parser entry points are decorated with `@_suppress_materialization()`: descriptor writes raise while a parser runs. Parsers fill in decoded values via `Property._cache_value()` / `Keyframe._cache_value()` or `__dict__` overrides, never public setters (those have user-write semantics: validation, keyframe guard, container rebuilds). Call sites that re-parse chunks (duplicate, deferred parsing) need no wrapping.
+- **`src/py_aep/synthesis/`** - Post-parse property synthesis
+  - `core.py` - `synthesize_layer_properties()` single pass; `specs.py` - `_PropSpec`/`_GroupSpec` tables
 - **`src/py_aep/models/`** - Typed model classes mirroring AE's object model
-  - `application.py`, `project.py`, `items/`, `layers/`, `properties/`, `sources/`, `renderqueue/`, `text/`, `viewer/`
+  - `application.py`, `project.py`, `guide.py`, `essential_graphics.py`, `import_options.py`, `naming.py`, `version.py`, `items/`, `layers/`, `properties/`, `sources/`, `renderqueue/` (incl. `format_options/`), `text/`, `viewer/`
   - `models/descriptors.py` - `ChunkField` descriptor, `_materialization_allowed`, `_suppress_materialization`. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `ChunkField.enum()` for IntEnum-backed fields.
   - `models/validators.py` - Validator factories for model field constraints
 - **`src/py_aep/data/`** - Static data tables
   - `match_names.py` - Match name constants; `units.py` - Unit definitions for properties
-- **`src/py_aep/enums/`** - Enumerations matching ExtendScript values (`general.py`, `property.py`, `mappings.py`, ...)
+- **`src/py_aep/enums/`** - Enumerations matching ExtendScript values (`general.py`, `property.py`, `mappings.py`, `text_document.py`, `font_object.py`, `render_queue.py`, `render_settings.py`, `output_module.py`, `format_options.py`)
 - **`src/py_aep/resolvers/`** - Business logic for computing derived values (`output.py` for render filenames, `interpolation.py` for keyframes)
-- **`src/py_aep/cli/`** - `visualize.py`, `validate.py`, `compare.py`
+- **`src/py_aep/cli/`** - `visualize.py`, `validate.py`, `compare.py`, `inspect.py`
 - **`src/py_aep/cos/`** - COS (PDF) format parser for embedded text data
 - **`scripts/`** - Dev/analysis scripts; `jsx/` has ExtendScript JSON exporters
 - **`samples/`** - Test .aep files covering specific features
@@ -60,7 +64,7 @@ uv run --python 3.7 python -m pytest -o "addopts=" 2>&1 | Select-Object -Last 60
 
 JSX scripts run in After Effects via VS Code debugger (see `.vscode/launch.json`) or from terminal:
 ```powershell
-& "C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.com" -noui -r <script_path>
+& "C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.com" -noui -ro <script_path>
 ```
 
 ## Code Conventions
@@ -96,10 +100,31 @@ JSX scripts run in After Effects via VS Code debugger (see `.vscode/launch.json`
 - **Model classes**: Use `ChunkField` descriptors for attributes backed by a single chunk field or chunk `@property`. Use `ChunkField[bool]()` for all boolean fields. For `BitField`-backed, `bool_field()`, and `@property`-returning-bool chunk fields, no transform is needed. For generic integer fields (e.g. U1Chunk), add `transform=bool, reverse=int`. Use `ChunkField.enum()` for IntEnum-backed fields. Use `@property` only when custom logic is needed (validation, multi-chunk updates, fallback behavior).
 - Never put business logic in chunk classes. Chunks are data containers.
 
+### Input Validation
+Any public surface that accepts a user-supplied value must validate its
+arguments with the factories in `models/validators.py` (`validate_string`,
+`validate_number`, `validate_vector2`, `validate_enum`, `validate_rgb_color`,
+`validate_path`, ...). This covers:
+- `ChunkField` / `CosField` descriptors - pass a `validate=` callable.
+- `@property` setters - call the validator on the incoming value.
+- Public `__init__` constructors (`MarkerValue`, `Shape`, `KeyframeEase`,
+  `TextDocument`, `ImportOptions`) - validate every domain argument up front.
+- Public methods that take domain values (e.g. `add_key`, `set_value_at_time`).
+
+`_from_binary` and other internal parse-path constructors do NOT validate -
+the binary is trusted. Prefer the shared validators over ad-hoc `isinstance`
+checks; add a new factory to `validators.py` rather than duplicating one.
+
 ### Synthesized Properties
 - `Property._new(spec, property_depth, *, parent_property, synthetic=False, ...)` - factory classmethod creating a `Property` with backing chunks. Pass `synthetic=True` to mark chunks as synthetic.
 - `PropertyGroup._new(match_name, auto_name, property_depth, *, parent_property=None, synthetic=False)` - factory classmethod creating an empty `PropertyGroup` with backing chunks.
 - When `synthetic=True`, all created chunks are skipped by `write_aep()`. On first user write (via ChunkField), `_ensure_materialized()` flips `synthetic=False` so chunks become visible.
+
+### Constructors: `__init__` vs `_from_binary`
+Two construction paths, kept separate (never conflate them into one signature with optional chunk params):
+- **`__init__(domain values)`** - the public, ExtendScript-style constructor that synthesizes backing chunks from domain values. Use ONLY for *value objects* a user can `new` in ExtendScript: `MarkerValue`, `Shape`, `TextDocument`, `KeyframeEase` (and `ImportOptions`, which has no chunk backing).
+- **`_from_binary(cls, *, _chunk refs)`** - classmethod that wraps already-parsed chunks; the parse path (parsers, keyframe/property accessors) calls this. Build via `obj = cls.__new__(cls)` then assign the backing attrs (it must skip the domain `__init__`).
+- Structural objects (`Layer`, `CompItem`, `Property`, `FootageItem`, sources, ...) are NOT user-constructed - users create them through parent `add_*()` methods. They keep `__init__(_chunk refs)`, and their synthesis factories stay as `_new()` classmethods. Do NOT turn those into public `__init__` or apply this convention globally.
 
 ### Adding New Parsed Data
 
@@ -129,6 +154,25 @@ Use `aep-compare` to investigate unknown binary fields by diffing `.aep` files t
 - id: hide_shy_layers
   type: b1
 ```
+
+### After Effects SDK (local reference)
+The AE 25.6 SDK is available at
+`C:\Users\aurore.delaunay\Downloads\AfterEffectsSDK_25.6_61_win\ae25.6_61.64bit.AfterEffectsSDK\`
+(`After_Effects_SDK_Guide.pdf` + `Examples\` with plugin sources and
+`Examples\Headers\`). The headers are the authority for chunk fields and
+flag bits before reverse-engineering from samples:
+
+- `AE_Effect.h` - `PF_ParamType` (= `PropertyControlType` values),
+  `PF_ParamFlags` (pard bytes 48-51: CANNOT_TIME_VARY, SUPERVISE, ...),
+  `PF_ParamUIFlags` (pard bytes 4-7: PF_PUI_INVISIBLE, ...), and the
+  per-type `PF_*Def` unions that match serialized pard bodies
+  (`PF_FixedSliderDef` is 16.16 `PF_Fixed`, valid then slider bounds).
+- `AE_GeneralPlug.h` - AEGP enums matching binary values: keyframe
+  interpolation (LINEAR=1, BEZIER=2, HOLD=3), `AEGP_LightType`
+  (PARALLEL=0, SPOT=1, POINT=2, AMBIENT=3), stream/mask/layer flags.
+
+The serialized project format itself (tdb4, ldat, ...) is not in the SDK,
+but param definitions (`pard`) mirror the SDK structs closely.
 
 ### Chunk Navigation Pattern
 ```python

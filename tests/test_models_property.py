@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from conftest import (
@@ -17,6 +17,8 @@ from conftest import (
 
 from py_aep import Project
 from py_aep import parse as parse_aep
+from py_aep.binary.chunk import ListChunk
+from py_aep.binary.property_chunks import TdmnChunk, TdsnChunk
 from py_aep.enums import (
     KeyframeInterpolationType,
     Label,
@@ -28,6 +30,7 @@ from py_aep.enums import (
     PropertyValueType,
 )
 from py_aep.models import Layer, MaskPropertyGroup, Property, PropertyGroup
+from py_aep.parsers.property import parse_property_group
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "models" / "property"
 BUGS_DIR = Path(__file__).parent.parent / "samples" / "bugs"
@@ -2576,6 +2579,115 @@ class TestPropertyDuplicate:
         assert len(layer2.effects.properties) == 2
 
 
+class TestMaskMutations:
+    """Mutations on mask atoms, which span three chunks in the parade
+    (`tdmn` + `mkif` + `tdgp`) instead of the usual `(tdmn, body)` pair."""
+
+    AEP = SAMPLES_DIR / "mask.aep"
+
+    @staticmethod
+    def _parade_chunk_types(parade: PropertyGroup) -> list[str]:
+        assert parade._tdgp is not None
+        return [
+            getattr(c, "list_type", None) or c.chunk_type for c in parade._tdgp.chunks
+        ]
+
+    def test_remove_mask_deletes_full_span(self) -> None:
+        """remove() deletes tdmn, mkif and tdgp - no orphaned chunks."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        masks = layer.masks
+        assert masks is not None
+        assert len(masks.properties) == 2
+        masks.properties[0].remove()
+        assert len(masks.properties) == 1
+        assert self._parade_chunk_types(masks) == [
+            "tdsb",
+            "tdsn",
+            "tdmn",
+            "mkif",
+            "tdgp",
+            "tdmn",
+        ]
+
+    def test_remove_mask_roundtrip(self, tmp_path: Path) -> None:
+        """Remove a mask, save, reload and verify."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.masks is not None
+        layer.masks.properties[0].remove()
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        layer2 = parse_aep(out).project.compositions[0].layers[0]
+        assert layer2.masks is not None
+        assert len(layer2.masks.properties) == 1
+        assert layer2.masks.properties[0].name == "Mask 2"
+
+    def test_duplicate_mask(self) -> None:
+        """Duplicate clones the mkif and rebuilds a MaskPropertyGroup."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        masks = layer.masks
+        assert masks is not None
+        original = masks.properties[0]
+        assert isinstance(original, MaskPropertyGroup)
+        new_prop = masks.properties[0].duplicate()
+        assert len(masks.properties) == 3
+        assert masks.properties[1] is new_prop
+        assert isinstance(new_prop, MaskPropertyGroup)
+        assert new_prop.is_mask
+        assert new_prop.mask_mode == original.mask_mode
+        assert new_prop.inverted == original.inverted
+        # The clone's mkif is an independent chunk.
+        new_prop.inverted = not original.inverted
+        assert new_prop.inverted != original.inverted
+
+    def test_duplicate_mask_synthesizes_children(self) -> None:
+        """The duplicate re-fills synthesized children like a fresh parse."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.masks is not None
+        new_prop = layer.masks.properties[0].duplicate()
+        assert isinstance(new_prop, MaskPropertyGroup)
+        assert [c.name for c in new_prop.properties] == [
+            "Mask Path",
+            "Mask Feather",
+            "Mask Opacity",
+            "Mask Expansion",
+        ]
+
+    def test_duplicate_mask_roundtrip(self, tmp_path: Path) -> None:
+        """Duplicate a mask, save, reload and verify."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.masks is not None
+        layer.masks.properties[0].duplicate()
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        layer2 = parse_aep(out).project.compositions[0].layers[0]
+        assert layer2.masks is not None
+        assert len(layer2.masks.properties) == 3
+        assert all(isinstance(m, MaskPropertyGroup) for m in layer2.masks.properties)
+        assert [m.name for m in layer2.masks.properties] == [
+            "Mask 1",
+            "Mask 1",
+            "Mask 2",
+        ]
+
+    def test_move_mask_roundtrip(self, tmp_path: Path) -> None:
+        """Move a mask, save, reload and verify the order."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.masks is not None
+        layer.masks.properties[1].move_to(0)
+        assert [m.name for m in layer.masks.properties] == ["Mask 2", "Mask 1"]
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        layer2 = parse_aep(out).project.compositions[0].layers[0]
+        assert layer2.masks is not None
+        assert [m.name for m in layer2.masks.properties] == ["Mask 2", "Mask 1"]
+
+
 class TestRoundtripName:
     """Roundtrip: modify PropertyBase.name and verify save/reload."""
 
@@ -2652,22 +2764,15 @@ class TestRoundtripProxyBody:
         assert blur2.value == 42.0
         assert blur2.value != original
 
-    def test_modify_synthesized_enabled(self, tmp_path: Path) -> None:
-        """Modify the enabled flag of a synthesized effect property."""
+    def test_synthesized_enabled_read_only(self) -> None:
+        """Effect-parameter `enabled` is read-only (AE `canSetEnabled` is False)."""
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
         layer = get_first_layer(project)
         blur = self._find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
         assert blur.enabled is True
-        blur.enabled = False
-        out = tmp_path / "proxy_enabled.aep"
-        project.save(out)
-
-        project2 = parse_aep(out).project
-        layer2 = get_first_layer(project2)
-        blur2 = self._find_synthesized_effect_prop(
-            layer2, 0, "ADBE Gaussian Blur 2-0001"
-        )
-        assert blur2.enabled is False
+        assert blur.can_set_enabled is False
+        with pytest.raises(AttributeError):
+            blur.enabled = False
 
     def test_modify_synthesized_name(self, tmp_path: Path) -> None:
         """Modify the name of a synthesized effect property."""
@@ -2686,6 +2791,13 @@ class TestRoundtripProxyBody:
         assert blur2.name == "Custom Blur Name"
 
 
+def _deanimate(prop) -> None:
+    """Remove all keyframes so the static `.value` setter is usable
+    (setting a value on a keyframed property raises, as in ExtendScript)."""
+    while prop.keyframes:
+        prop.remove_key(0)
+
+
 class TestValueValidation:
     """Tests for Property.value setter min/max validation."""
 
@@ -2695,6 +2807,7 @@ class TestValueValidation:
         layer = get_layer(project, "property_1D_opacity")
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
+        _deanimate(opacity)
         assert opacity.has_min
         assert opacity.min_value == 0
         with pytest.raises(ValueError, match="must be >= 0"):
@@ -2706,6 +2819,7 @@ class TestValueValidation:
         layer = get_layer(project, "property_1D_opacity")
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
+        _deanimate(opacity)
         assert opacity.has_max
         assert opacity.max_value == 100
         with pytest.raises(ValueError, match="must be <= 100"):
@@ -2717,6 +2831,7 @@ class TestValueValidation:
         layer = get_layer(project, "property_1D_opacity")
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
+        _deanimate(opacity)
         opacity.value = 50.0
         assert opacity.value == 50.0
 
@@ -2726,6 +2841,7 @@ class TestValueValidation:
         layer = get_layer(project, "property_3D_position")
         position = _find_property(layer, "ADBE Position")
         assert position is not None
+        _deanimate(position)
         assert position.dimensions == 3
         with pytest.raises(ValueError, match="expected 3 elements, got 2"):
             position.value = [100.0, 200.0]
@@ -2736,6 +2852,7 @@ class TestValueValidation:
         layer = get_layer(project, "property_1D_opacity")
         opacity = _find_property(layer, "ADBE Opacity")
         assert opacity is not None
+        _deanimate(opacity)
         assert opacity.dimensions == 1
         with pytest.raises(TypeError, match="expected a number, got list"):
             opacity.value = [50.0, 60.0]
@@ -2746,6 +2863,7 @@ class TestValueValidation:
         layer = get_layer(project, "property_3D_position")
         position = _find_property(layer, "ADBE Position")
         assert position is not None
+        _deanimate(position)
         assert position.dimensions == 3
         with pytest.raises(TypeError, match="expected a sequence of 3 elements"):
             position.value = 42.0
@@ -3080,3 +3198,28 @@ class TestValueInPlaceMutation:
         pos2 = _find_property(project2.compositions[0].layers[0], "ADBE Position")
         assert pos2 is not None
         assert pos2.value[0] == pytest.approx(original[0] + 123.0)
+
+
+class TestTdsnWithoutUtf8:
+    """A tdsn missing its Utf8 child degrades to the auto-name.
+
+    Regression: `TdsnChunk.utf8` raised ValueError, escaping
+    `parse_property_group`'s ChunkNotFoundError handler and failing
+    the whole parse instead of falling back to the auto-name.
+    """
+
+    def test_property_group_falls_back_to_auto_name(self) -> None:
+        tdgp = ListChunk(
+            list_type="tdgp",
+            chunks=[TdsnChunk(chunks=[])],  # no Utf8 child
+        )
+        group = parse_property_group(
+            tdgp_chunk=tdgp,
+            group_match_name="ADBE Transform Group",
+            property_depth=1,
+            effect_param_defs={},
+            composition=cast(Any, None),
+            tdmn=TdmnChunk(value="ADBE Transform Group"),
+        )
+        assert group._name_utf8 is None
+        assert group.name == "Transform"

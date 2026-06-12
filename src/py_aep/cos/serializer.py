@@ -29,6 +29,8 @@ def serialize(data: Any) -> bytes:
         The COS binary representation.
     """
     buf = io.BytesIO()
+    # AE's btdk blob begins with a leading space before the first token.
+    buf.write(b" ")
     _write_value(buf, data, top_level=True)
     return buf.getvalue()
 
@@ -94,8 +96,20 @@ def _write_value(buf: io.BytesIO, value: Any, *, top_level: bool = False) -> Non
 
 
 def _format_float(value: float) -> bytes:
-    """Format a float matching the COS parser's conventions."""
+    """Format a float matching After Effects' COS conventions.
+
+    Whole-valued floats keep a trailing `.0` (AE writes `0.0` / `9.0`,
+    not `0` / `9`), which distinguishes them from COS integers and keeps
+    the serialized blob byte-faithful.
+    """
     text = f"{value:.10g}"
+    if not any(c in text for c in ".eEni"):  # no '.', exponent, 'nan'/'inf'
+        text += ".0"
+    # AE omits the leading zero for |v| < 1 (".5", "-.5") but keeps "0.0".
+    if text.startswith("0.") and text != "0.0":
+        text = text[1:]
+    elif text.startswith("-0.") and text != "-0.0":
+        text = "-" + text[2:]
     return text.encode("ascii")
 
 
@@ -145,17 +159,29 @@ def _write_identifier(buf: io.BytesIO, name: str) -> None:
 def _write_string(buf: io.BytesIO, s: str) -> None:
     """Write a COS string literal: `(escaped content)`.
 
-    All strings are encoded as UTF-16 BE with a BOM prefix, matching
-    the convention used by After Effects for text document data.
+    Strings are encoded as UTF-16 BE with a BOM prefix (AE's convention
+    for text data) unless the value is a `CosString` that was parsed as
+    raw ASCII / UTF-8 (e.g. bit-flag strings), in which case the original
+    single-byte encoding is reproduced for byte fidelity.
     """
-    raw = b"\xfe\xff" + s.encode("utf-16-be")
+    if getattr(s, "cos_utf16", True):
+        raw = b"\xfe\xff" + s.encode("utf-16-be")
+    else:
+        raw = s.encode("utf-8")
     buf.write(b"(")
     buf.write(_escape_string(raw))
     buf.write(b")")
 
 
 def _escape_string(raw: bytes) -> bytes:
-    """Escape bytes for a COS string literal."""
+    """Escape bytes for a COS string literal.
+
+    Only the characters that affect COS string parsing are escaped:
+    the delimiters `(` / `)` and the escape character `\\`. After
+    Effects writes control bytes (newline, CR, backspace, form-feed)
+    raw inside string literals, so they are left unescaped to keep the
+    serialized blob byte-faithful.
+    """
     out = bytearray()
     for byte in raw:
         if byte == ord(b"("):
@@ -164,14 +190,6 @@ def _escape_string(raw: bytes) -> bytes:
             out.extend(b"\\)")
         elif byte == ord(b"\\"):
             out.extend(b"\\\\")
-        elif byte == ord(b"\n"):
-            out.extend(b"\\n")
-        elif byte == ord(b"\r"):
-            out.extend(b"\\r")
-        elif byte == ord(b"\x08"):  # backspace
-            out.extend(b"\\b")
-        elif byte == ord(b"\x0c"):  # form feed
-            out.extend(b"\\f")
         else:
             out.append(byte)
     return bytes(out)

@@ -165,6 +165,25 @@ class TestConsolidateFootage:
         assert removed == 1
         assert {layer._source_id for layer in comp.av_layers} == {survivor_id}
 
+    def test_retargets_cached_layer_source(self):
+        project = parse_aep(FOOTAGE_MISC).project
+        first = project.items[5]
+        second = project.items[6]
+        assert isinstance(first, FootageItem)
+        assert isinstance(second, FootageItem)
+        first.main_source.loop = second.main_source.loop
+
+        comp = project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        comp.add(first)
+        comp.add(second)
+        dup_layer = next(ly for ly in comp.av_layers if ly._source_id == second.id)
+        # Populate the layer's source cache before consolidating.
+        assert dup_layer.source is second
+
+        project.consolidate_footage()
+
+        assert dup_layer.source is first
+
     def test_solids_not_consolidated(self):
         project = parse_aep(SOLID_COLORS).project
 

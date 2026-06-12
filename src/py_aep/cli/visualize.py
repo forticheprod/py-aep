@@ -93,8 +93,8 @@ def build_item_node(
     else:
         return {
             "type": "Item",
-            "name": getattr(item, "name", "Unknown"),
-            "attrs": {"type_name": getattr(item, "type_name", "Unknown")},
+            "name": item.name,
+            "attrs": {"type_name": item.type_name},
             "children": [],
         }
 

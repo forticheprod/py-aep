@@ -7,6 +7,7 @@ PardChunk uses variant subclass dispatch for polymorphic layouts.
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from attrs import define
@@ -22,7 +23,6 @@ from .fmt_field import (
     f4_field,
     f8_field,
     items_field,
-    s2_field,
     s4_field,
     u1_field,
     u2_field,
@@ -74,6 +74,25 @@ class SfdtChunk(Chunk):
 
 
 # ---------------------------------------------------------------------------
+# pgui - 16-byte GUID
+# ---------------------------------------------------------------------------
+
+
+@register("pgui")
+@define
+class PguiChunk(Chunk):
+    """16-byte GUID chunk."""
+
+    chunk_type: str = "pgui"
+    guid: bytes = bytes_field(16)
+
+    @classmethod
+    def new(cls) -> PguiChunk:
+        """Build a pgui with a fresh random GUID."""
+        return cls(guid=uuid.uuid4().bytes)
+
+
+# ---------------------------------------------------------------------------
 # prda - renderer additional data (12 bytes)
 # ---------------------------------------------------------------------------
 
@@ -117,7 +136,8 @@ class MkifChunk(Chunk):
 
     _reserved_04: bytes = bytes_field(2, repr=False)
     mode: int = u2_field()
-    """0=None, 1=Add, 2=Subtract, 3=Intersect, 4=Darken, 5=Lighten, 6=Difference."""
+    """SDK `PF_MaskMode`: 0=None, 1=Add, 2=Subtract, 3=Intersect,
+    4=Lighten, 5=Darken, 6=Difference."""
 
     _reserved_08: bytes = bytes_field(37, repr=False)
     color_r: int = u1_field()
@@ -194,7 +214,13 @@ class NmhdChunk(Chunk):
     _marker_flags: int = u1_field(repr=False)
     """Byte 3: bit 2=unknown, bit 1=protected_region, bit 0=navigation."""
 
-    _reserved_04: bytes = bytes_field(4, repr=False)
+    num_params: int = u4_field()
+    """Number of cue-point parameter key/value pairs.
+
+    Must match the number of trailing Utf8 pairs in the Nmrd list or
+    AE ignores the parameters entirely.
+    """
+
     frame_duration: int = u4_field()
     """Duration in 600ths of a second."""
 
@@ -330,12 +356,14 @@ class FipsChunk(Chunk):
 class PardChunk(Chunk):
     """Effect property parameter definition (polymorphic).
 
-    Layout depends on `property_control_type` at byte 15. The base class
-    dispatches to variant subclasses; unknown control types fall back to
-    raw bytes.
+    Serialized form of the AE SDK `PF_ParamDef`. Layout depends on
+    `property_control_type` (the SDK `PF_ParamType`) at byte 15; the base
+    class dispatches to variant subclasses and unknown control types fall
+    back to raw bytes.
 
-    Common header (56 bytes): 15s pad, B property_control_type,
-    32s name (windows-1252), 8s pad.
+    Common header (56 bytes): 4s pad, u4 ui_flags (`PF_ParamUIFlags`),
+    7s pad, B property_control_type, 32s name (UTF-8),
+    u4 param_flags (`PF_ParamFlags`), 4s pad.
     """
 
     chunk_type: str = "pard"
@@ -373,6 +401,39 @@ class PardChunk(Chunk):
         return variant_cls.read(fp, size, chunk_type=chunk_type)
 
     @property
+    def param_flags(self) -> int:
+        """Low byte of the AE SDK `PF_ParamFlags` (u4 at offsets 48-51).
+
+        Bit 1 (0x02) is `PF_ParamFlag_CANNOT_TIME_VARY`, bit 6 (0x40) is
+        `PF_ParamFlag_SUPERVISE`. Validated against ExtendScript
+        `canVaryOverTime` ground truth across the sample corpus.
+        """
+        pad: bytes = getattr(self, "_pad_post", b"")
+        if len(pad) > 3:
+            return pad[3]
+        data = getattr(self, "data", b"")
+        if len(data) > 51:
+            return data[51]
+        return 0
+
+    @property
+    def expressions_disabled(self) -> bool:
+        """`PF_PUI_INVISIBLE` (bit 9 of the `PF_ParamUIFlags` u4 at
+        offsets 4-7): the parameter is hidden from the Effect Controls
+        and the Timeline, and expressions can never be set on it.
+
+        Empirical: across the sample corpus, ExtendScript reports
+        `canSetExpression = false` for every parameter with this bit set.
+        """
+        pre: bytes = getattr(self, "_pad_pre", b"")
+        if len(pre) > 6:
+            return bool(pre[6] & 0x02)
+        data = getattr(self, "data", b"")
+        if len(data) > 6:
+            return bool(data[6] & 0x02)
+        return False
+
+    @property
     def name(self) -> str:
         """Decoded parameter name (from `_raw_name` up to first NUL)."""
         raw: bytes = getattr(self, "_raw_name", b"")
@@ -380,12 +441,12 @@ class PardChunk(Chunk):
             return ""
         nul = raw.find(b"\x00")
         if nul >= 0:
-            return raw[:nul].decode("windows-1252")
-        return raw.decode("windows-1252")
+            return raw[:nul].decode("utf-8", "surrogateescape")
+        return raw.decode("utf-8", "surrogateescape")
 
     @name.setter
     def name(self, value: str) -> None:
-        encoded = value.encode("windows-1252")[:31]
+        encoded = value.encode("utf-8", "surrogateescape")[:31]
         self._raw_name = encoded + b"\x00" * (32 - len(encoded))  # type: ignore[misc]
 
 
@@ -393,8 +454,9 @@ class PardChunk(Chunk):
 class GenericPardChunk(PardChunk):
     """Generic pard for control types without specialized body parsing.
 
-    Covers types 0 (LAYER), 1 (CUSTOM), 9 (NONE), 11 (ARBITRARY_DATA),
-    12 (PATH), 13 (BUTTON), 14 (NO_DATA), 15 (GROUP_START).
+    Covers SDK `PF_ParamType` values 0 (LAYER), 9 (NO_DATA),
+    11 (ARBITRARY_DATA), 12 (PATH), 13 (GROUP_START), 14 (GROUP_END)
+    and 15 (BUTTON).
     All are 148 bytes: 56-byte header + 92-byte body.
     """
 
@@ -444,29 +506,69 @@ class ColorPardChunk(PardChunk):
 
 
 @define
+class IntegerPardChunk(PardChunk):
+    """Integer slider (type 1, SDK `PF_Param_SLIDER` / `PF_SliderDef`).
+
+    Body: s4 value, 32s value_str, 32s value_desc, s4 valid_min,
+    s4 valid_max, s4 slider_min, s4 slider_max, s4 dephault. The valid
+    range is what ExtendScript reports as `minValue`/`maxValue`;
+    `dephault` is the parameter's factory default value.
+    """
+
+    _pad_pre: bytes = bytes_field(15, repr=False)
+    property_control_type: int = u1_field(default=1)
+    _raw_name: bytes = bytes_field(32, repr=False)
+    _pad_post: bytes = bytes_field(8, repr=False)
+    last_value: int = s4_field()
+    _value_str: bytes = bytes_field(32, repr=False)
+    _value_desc: bytes = bytes_field(32, repr=False)
+    valid_min: int = s4_field()
+    valid_max: int = s4_field()
+    slider_min: int | None = s4_field(optional=True, default=None)
+    slider_max: int | None = s4_field(optional=True, default=None)
+    dephault: int | None = s4_field(optional=True, default=None)
+
+
+@define
 class ScalarPardChunk(PardChunk):
-    """Scalar control (type 2): s4 last_value, 72s pad, s2 min, 2s pad, s2 max."""
+    """Fixed-point slider (type 2, SDK `PF_Param_FIX_SLIDER` /
+    `PF_FixedSliderDef`).
+
+    Body: `PF_Fixed` (16.16 fixed point, `raw / 65536`) value, 32s
+    value_str, 32s value_desc, then PF_Fixed valid_min / valid_max
+    (what ExtendScript reports as `minValue`/`maxValue`), PF_Fixed
+    slider_min / slider_max (the UI slider range) and PF_Fixed
+    dephault (the parameter's factory default value).
+    """
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=2)
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value: int = s4_field()
-    _pad_body: bytes = bytes_field(72, repr=False)
-    min_value: int = s2_field()
-    _pad_mid: bytes = bytes_field(2, repr=False)
-    max_value: int = s2_field()
+    _value_str: bytes = bytes_field(32, repr=False)
+    _value_desc: bytes = bytes_field(32, repr=False)
+    valid_min_raw: int = s4_field()
+    valid_max_raw: int = s4_field()
+    slider_min_raw: int = s4_field()
+    slider_max_raw: int = s4_field()
+    dephault_raw: int | None = s4_field(optional=True, default=None)
 
 
 @define
 class AnglePardChunk(PardChunk):
-    """Angle control (type 3): s4 last_value."""
+    """Angle control (type 3, SDK `PF_AngleDef`).
+
+    Body: `PF_Fixed` (16.16 fixed point, `raw / 65536`) value, then
+    PF_Fixed dephault (the parameter's factory default value).
+    """
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=3)
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value: int = s4_field()
+    dephault_raw: int | None = s4_field(optional=True, default=None)
 
 
 @define
@@ -516,15 +618,28 @@ class EnumPardChunk(PardChunk):
 
 @define
 class SliderPardChunk(PardChunk):
-    """Slider control (type 10): f8 last_value, 52s pad, f4 max_value."""
+    """Float slider (type 10, SDK `PF_Param_FLOAT_SLIDER` /
+    `PF_FloatSliderDef`).
+
+    Body: f8 value, f8 phase, 32s value_desc, then f4 valid_min /
+    valid_max (what ExtendScript reports as `minValue`/`maxValue`;
+    non-finite means that side is unbounded), f4 slider_min /
+    slider_max (the UI slider range) and f4 dephault (the parameter's
+    factory default value).
+    """
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=10)
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value: float = f8_field()
-    _pad_body: bytes = bytes_field(52, repr=False)
-    max_value: float = f4_field()
+    phase: float = f8_field()
+    _value_desc: bytes = bytes_field(32, repr=False)
+    valid_min: float = f4_field()
+    valid_max: float = f4_field()
+    slider_min: float = f4_field()
+    slider_max: float = f4_field()
+    dephault: float | None = f4_field(optional=True, default=None)
 
 
 @define
@@ -654,7 +769,7 @@ class OtlnChunk(Chunk):
 
 _PARD_VARIANTS: dict[int, type[PardChunk]] = {
     0: GenericPardChunk,
-    1: GenericPardChunk,
+    1: IntegerPardChunk,
     2: ScalarPardChunk,
     3: AnglePardChunk,
     4: BooleanPardChunk,

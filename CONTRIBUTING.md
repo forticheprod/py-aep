@@ -158,13 +158,13 @@ stateDiagram-v2
     state Phase2 {
         direction TB
         state "synthesize_layer_properties()" as SLP
-        state "_set_transform_defaults()\ndefault_value + reorder + synthesize + bounds" as STD
         state "_synthesize_missing_top_level_groups()\nreorder + synthesize top-level" as SMTLG
+        state "_set_transform_defaults()\ndefault_value + reorder + synthesize + bounds" as STD
         state "synthesize_children()\nrecursive _reorder_and_fill()\n+ Layer Styles enabled\n+ min/max bounds" as SC
 
-        SLP --> STD
-        STD --> SMTLG
-        SMTLG --> SC
+        SLP --> SMTLG
+        SMTLG --> STD
+        STD --> SC
     }
 
     state Phase3 {
@@ -181,10 +181,10 @@ stateDiagram-v2
 
     [*] --> Phase1 : parse(aep_file)
     Phase1 --> Phase2
-    Phase2 --> Phase3 : _suppress_materialization released
+    Phase2 --> Phase3 : parser scope exits
 ```
 
-The entire parse pipeline runs inside `_suppress_materialization()`, which prevents writes from triggering materialization. After `parse()` returns, the context is released and end-user writes are allowed.
+Every parser entry point (`parse_layer`, `parse_properties`, `parse_effect`, ...) is decorated with `_suppress_materialization()`, which forbids descriptor writes while the parser runs - a guard for round-trip idempotency: parsers must never mutate chunk data. Parsers fill in decoded values with the private `Property._cache_value()` / `Keyframe._cache_value()` helpers (or `__dict__` overrides), never the public setters; the public setters always have user-write semantics (validation, keyframe guard, container rebuilds). Because the parsers own this scope, call sites that re-parse chunks (e.g. `Layer.duplicate()`, deferred layer parsing) need no wrapping. Once the parsers return, end-user writes are allowed.
 
 Each property in the tree is in one of two states:
 
@@ -197,28 +197,28 @@ Each property in the tree is in one of two states:
 
 **Phase 1 - Binary parsing**: Dispatch by `list_type` is shown in the overview flowchart above. Most dispatch targets produce properties with real chunk backing. The exception is `parse_effect()` (sspc), which produces a mix: existing params get real backing, missing params are synthesized with `synthetic=True` chunks via `_synthesize_effect_property()`.
 
-**Phase 2 - Post-processing** (single pass in `synthesis.py`):
+**Phase 2 - Post-processing** (single pass in `synthesis/core.py`):
 
-After `parse_properties` returns, `parse_layer` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use synthetic chunks and bypass materialization (the `_suppress_materialization` context is active).
+After `parse_properties` returns, `parse_layer` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use synthetic chunks (the `_suppress_materialization` scope opened by `parse_layer` is still active).
 
 ```
 parse_layer()
   |
-  +-- synthesize_layer_properties(layer)     # synthesis.py
+  +-- synthesize_layer_properties(layer)     # synthesis/core.py
         |
-        +-- _set_transform_defaults(layer)            # Site 1: Transform
+        +-- _synthesize_missing_top_level_groups()    # Site 1: Top-level groups
+        |     _reorder_and_fill() with _TOP_LEVEL_SPECS
+        |     - synthesizes missing groups (up to 17 for AVLayer)
+        |     - skips groups irrelevant to layer type (text-only, shape-only)
+        |     - reorders to canonical ExtendScript order
+        |
+        +-- _set_transform_defaults(layer)            # Site 2: Transform
         |     Phase 1: set default_value on parsed transform properties
         |     Phase 2: _reorder_and_fill() with _TRANSFORM_SPECS
         |              - synthesizes missing transform properties (up to 12)
         |              - reorders to canonical ExtendScript order
         |     Phase 3: context-dependent naming (2D/3D, Camera/Light)
         |     Phase 4: apply min/max bounds on transform leaf properties
-        |
-        +-- _synthesize_missing_top_level_groups()    # Site 2: Top-level groups
-        |     _reorder_and_fill() with _TOP_LEVEL_SPECS
-        |     - synthesizes missing groups (up to 17 for AVLayer)
-        |     - skips groups irrelevant to layer type (text-only, shape-only)
-        |     - reorders to canonical ExtendScript order
         |
         +-- for each top-level PropertyGroup:         # Site 3: Sub-properties
               synthesize_children(group)
@@ -235,7 +235,7 @@ Effect parameter synthesis (Site 4) remains a separate dynamic step inside `pars
 
 **Phase 3 - User API** (materialization on write):
 
-After `parse()` returns, `_suppress_materialization` is released and the property tree is ready for use. Properties with real chunk backing are directly readable and writable. Synthesized properties (synthetic=True) are readable immediately - writes trigger materialization:
+After the parsers return, the `_suppress_materialization` guard is released and the property tree is ready for use. Properties with real chunk backing are directly readable and writable. Synthesized properties (synthetic=True) are readable immediately - writes trigger materialization:
 
 ```
 user writes comp.layers[0].transform.opacity.value = 50
@@ -275,7 +275,7 @@ All static synthesis sites delegate to `_reorder_and_fill()` (in `models/propert
    - `"groups"` - keep only `PropertyGroup` children (default)
    - `"all"` - keep everything (top-level groups)
 
-#### Key Spec Tables (in `models/properties/specs.py`)
+#### Key Spec Tables (in `synthesis/specs.py`)
 
 - **`_PropSpec`** - Metadata for synthesizing a leaf `Property` (match_name, name, value, type, dimensions, spatial, color, min/max, default_value, can_vary_over_time)
 - **`_GroupSpec`** - Metadata for synthesizing an empty `PropertyGroup` (match_name, name)
@@ -283,6 +283,22 @@ All static synthesis sites delegate to `_reorder_and_fill()` (in `models/propert
 - **`_LAYER_STYLE_CHILD_SPECS`** - Maps Layer Style sub-group match_name to child specs (Drop Shadow, Inner Glow, etc.)
 - **`_TRANSFORM_SPECS`** / **`_TRANSFORM_FIXED_DEFAULTS`** - Transform property canonical order and fixed defaults
 - **`_TOP_LEVEL_SPECS`** - Canonical order and specs of top-level property groups on a layer
+
+#### Override Tables (in `models/properties/overrides.py`)
+
+Facts that once needed large hand-curated tables are derived from the
+binary wherever After Effects actually stores them; the override tables
+hold only the residue. Effect parameters read `canVaryOverTime` from the
+`pard` flags byte (`PardChunk.param_flags`) and their valid
+`minValue`/`maxValue` range from the pard bounds fields - the override
+tables cover non-effect properties and a handful of AE internals where
+the binary disagrees with ExtendScript.
+
+Before adding a new table entry, check whether the value can be derived
+from chunk data instead: create a sample exercising the property, export
+its ExtendScript JSON, and probe the pard/tdb4 bytes against it. A wrong
+value that repeats across many match names is usually an undecoded field,
+not a list of exceptions.
 
 #### Effect Parameter Definitions
 
@@ -295,6 +311,38 @@ During `_parse_effect_properties()`:
 - A single ordered walk over `param_defs` handles both cases: existing binary properties are enriched via `_merge_param_def()`, while missing parameters are synthesized via `_synthesize_effect_property()` (creates `Property` with `synthetic=True` chunks). Children come out in canonical `parT` order without a separate sort.
 - Tail children not in `param_defs` (e.g. `ADBE Effect Built In Params`) are appended in their original parsed order.
 - If `ADBE Effect Built In Params` (Compositing Options) is absent from the binary, it is synthesized as an empty `PropertyGroup` so that `synthesize_children()` can fill it from `_COMPOSITING_OPTIONS_SPECS` during post-processing.
+
+#### Keyframe Mutations & Complex Property Kinds
+
+Keyframe mutations (`add_key`, `remove_key`, `set_value_at_time`) must
+reproduce AE's on-disk forms exactly - After Effects silently drops
+layers whose `tdb4` metadata is inconsistent with their keyframe state.
+
+For numeric properties, animating swaps the `cdat` for a keyframe
+`LIST:list` (lhd3 + ldat) and rewrites `tdb4` to the animated state;
+removing the last keyframe reverts both.
+
+Orientation, marker, shape, gradient and text store per-keyframe values
+in a parallel sibling container instead of the ldat items. Everything
+kind-specific (wrapper / container LIST types, header item type, value
+chunk construction, static `cdat` form, materialization `tdb4`
+baselines) lives in one descriptor per kind in
+`models/properties/parallel.py`; the generic mutation algorithms in
+`Property` are written once against those descriptors. To change one
+kind's behavior or add binary knowledge, edit its `ParallelKind`
+subclass - not the algorithms.
+
+When changing mutation code, validate against AE itself, not just the
+Python round-trip:
+
+1. Generate ground truth: save AE file pairs differing only in the
+   mutation (e.g. static vs one keyframe) and diff with `aep-compare`.
+2. Replicate the mutation with py_aep and `aep-compare` the output
+   against AE's file - only save counters and opaque GUI caches should
+   differ.
+3. Open and re-save the py_aep output in AE headlessly (see
+   `scripts/jsx/ae_resave.jsx`), verifying the property's `numKeys` and
+   values survive - `save()` silently fails on damaged files.
 
 #### Chunk Types Reference
 
@@ -377,12 +425,22 @@ aep-compare file1.aep file2.aep
 
 # Multi-file comparison against a reference
 aep-compare ref.aep v1.aep v2.aep v3.aep
+```
 
-# List all chunks in a file
-aep-compare file.aep --list
+#### aep-inspect
+
+Single-file chunk inspection: item summary, chunk tree, hex dumps.
+
+```bash
+# Item summary / full chunk tree
+aep-inspect file.aep
+aep-inspect file.aep --tree
+
+# List all chunk paths in a file
+aep-inspect file.aep --list
 
 # Dump raw bytes of a specific chunk path
-aep-compare file.aep --dump "LIST:Fold/ftts"
+aep-inspect file.aep --dump "LIST:Fold/ftts"
 ```
 
 #### aep-visualize

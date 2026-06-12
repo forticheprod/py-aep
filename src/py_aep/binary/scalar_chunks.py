@@ -85,6 +85,8 @@ class U2Chunk(Chunk):
     "CprC",
     "CTyp",
     "StVS",
+    "blsi",
+    "blsv",
     "parn",
     "fovi",
     "fivi",

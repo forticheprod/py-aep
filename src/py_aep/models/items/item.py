@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import Label
 
+from ...ae_version import requires_version
 from ...binary.chunk import ListChunk
 from ...binary.item_chunks import CmtaChunk
 from ...binary.ldat_chunks import LdatChunk, LdatItemType, Lhd3Chunk
@@ -17,9 +18,10 @@ from ...binary.utils import (
 )
 from ..descriptors import ChunkField
 from ..guide import Guide
-from ..validators import _validate_number, validate_name, validate_string
+from ..validators import validate_name, validate_string
 
 if TYPE_CHECKING:
+    from ...binary.chunk import Chunk
     from ...binary.item_chunks import IdtaChunk
     from ..project import Project
     from .folder import FolderItem
@@ -127,8 +129,52 @@ class Item:
     @property
     def parent_folder(self) -> FolderItem | None:
         """The parent folder of this item. `None` for the root folder.
-        Read-only."""
+        Read / Write.
+
+        Setting this moves the item into another folder. The item's binary
+        chunk block is relocated from the old folder's container to the end
+        of the new folder's container, and both folders' `items` lists are
+        updated.
+
+        Raises:
+            ValueError: If this is the root folder, or if moving a folder
+                into itself or one of its own descendants.
+            TypeError: If the value is not a [FolderItem][].
+        """
         return self._parent_folder
+
+    @parent_folder.setter
+    def parent_folder(self, value: FolderItem) -> None:
+        from .folder import FolderItem
+
+        old_parent = self._parent_folder
+        if old_parent is None:
+            raise ValueError("Cannot move the root folder")
+        if not isinstance(value, FolderItem):
+            raise TypeError("parent_folder must be a FolderItem")
+        if value is old_parent:
+            return
+        # A folder cannot become its own descendant. Walking up from the
+        # target also covers value is self and value under the root.
+        ancestor: FolderItem | None = value
+        while ancestor is not None:
+            if ancestor is self:
+                raise ValueError("a folder cannot be moved inside itself")
+            ancestor = ancestor._parent_folder
+
+        block = self._remove_from_parent_chunks()
+        value._children_container.extend(block)
+
+        old_parent.items.remove(self)
+        value.items.append(self)
+
+        # Relocate the item's open-panel viewer (AVItem only).
+        viewer = getattr(self, "_viewer", None)
+        if viewer is not None:
+            old_parent._viewers.remove(viewer)
+            value._viewers.append(viewer)
+
+        self._parent_folder = value
 
     @property
     def selected(self) -> bool:
@@ -154,6 +200,7 @@ class Item:
         and a pixel position. Read-only."""
         return self._guides
 
+    @requires_version(16)
     def add_guide(self, orientation_type: int, position: int) -> int:
         """Adds a new guide to the item.
 
@@ -176,6 +223,7 @@ class Item:
         self._lhd3.count += 1
         return self._lhd3.count - 1
 
+    @requires_version(16)
     def remove_guide(self, guide_index: int) -> None:
         """Removes an existing guide by index.
 
@@ -187,7 +235,10 @@ class Item:
         """
         if not self._guides:
             raise IndexError("No guides to remove")
-        _validate_number(integer=True, min=0, max=len(self._guides) - 1)(guide_index)
+        if not 0 <= guide_index < len(self._guides):
+            raise IndexError(
+                f"Guide index {guide_index} out of range [0, {len(self._guides) - 1}]"
+            )
         assert self._lhd3 is not None
         assert self._ldat is not None
         del self._ldat.items[guide_index]
@@ -247,8 +298,12 @@ class Item:
     #: list_types that mark the start of the next item block.
     _ITEM_BOUNDARY_LIST_TYPES: frozenset[str] = frozenset({"Item"})
 
-    def _remove_from_parent_chunks(self) -> None:
-        """Remove this item's LIST:Item and trailing view-data chunks."""
+    def _remove_from_parent_chunks(self) -> list[Chunk]:
+        """Detach this item's LIST:Item and trailing view-data chunks.
+
+        Returns the removed block so callers can relocate it (e.g. the
+        `parent_folder` setter); `remove()` discards it.
+        """
         parent = self._parent_folder
         assert parent is not None
         container = parent._children_container
@@ -257,4 +312,6 @@ class Item:
             self._item_list,
             self._ITEM_BOUNDARY_LIST_TYPES,
         )
+        block = container[start:end]
         del container[start:end]
+        return block

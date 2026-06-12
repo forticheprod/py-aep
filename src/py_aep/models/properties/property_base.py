@@ -4,15 +4,18 @@ from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import PropertyType
 
+from ...ae_version import get_ae_version_major
 from ...binary.chunk import ListChunk
 from ...binary.mutations import clone_chunk_tree
 from ...binary.property_chunks import TdmnChunk
+from ...binary.utils import find_by_type, index_by_identity
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..descriptors import ChunkField
 from ..validators import validate_name
 
 if TYPE_CHECKING:
     from ...binary.chunk import Chunk
+    from ...binary.misc_chunks import MkifChunk
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from ..layers.layer import Layer
@@ -40,6 +43,21 @@ _INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset(
 def _validate_enabled(value: bool, obj: PropertyBase) -> None:
     if not obj.can_set_enabled:
         raise AttributeError("'enabled' is read-only when 'can_set_enabled' is False.")
+
+
+def _renumber_mask_auto_names(parent: PropertyGroup) -> None:
+    """Reassign positional `Mask {i}` fallback names after a mutation.
+
+    The parser numbers mask atoms by position, so a reparse after
+    remove/move/duplicate would renumber them; keep the in-memory
+    fallbacks consistent. Explicit user names (stored in tdsn) take
+    precedence and are unaffected.
+    """
+    i = 1
+    for child in parent._properties:
+        if child._is_mask:
+            child._auto_name = f"Mask {i}"
+            i += 1
 
 
 class PropertyBase:
@@ -93,6 +111,71 @@ class PropertyBase:
         `PropertyGroup` to flip synthetic flags on backing chunks on
         first user write.
         """
+
+    def _chunk_body(self) -> Chunk | None:
+        """The body chunk that follows this property's `tdmn` in the parent.
+
+        `tdbs` for a [Property][], `tdgp` for a [PropertyGroup][].
+        Overridden by subclasses; `None` on the base.
+        """
+        return None
+
+    def _is_live(self) -> bool:
+        """Whether this property's chunks are serialized (not synthetic)."""
+        return self._tdsb is None or not self._tdsb.synthetic
+
+    def _reposition_canonically(self) -> None:
+        """Move this property's `(tdmn, body)` chunks to canonical order.
+
+        Synthesized properties are appended just before the group-end
+        marker at synthesis time, which does not match After Effects'
+        canonical property order. When such a property is materialized,
+        re-anchor its chunk pair right before the nearest following
+        already-serialized (non-synthetic) sibling, so the written order
+        is what AE expects. Synthetic siblings (skipped on write) are
+        ignored as anchors.
+
+        Anchoring uses the sibling's `tdmn` (unique per property) rather
+        than its body chunk, because separation followers (e.g.
+        `ADBE Position_0` / `_1`) alias the same body chunk.
+        """
+        parent = self._parent_property
+        if parent is None:
+            return
+        tdgp = getattr(parent, "_tdgp", None)
+        tdmn = self._tdmn
+        body = self._chunk_body()
+        if tdgp is None or tdmn is None or body is None:
+            return
+        chunks = tdgp.chunks
+        if tdmn not in chunks or body not in chunks:
+            return
+        siblings = parent._properties
+        idx = next((i for i, s in enumerate(siblings) if s is self), None)
+        if idx is None:
+            return
+        chunks.remove(tdmn)
+        chunks.remove(body)
+
+        pos: int | None = None
+        # Insert right before the nearest following live sibling's tdmn.
+        for sib in siblings[idx + 1 :]:
+            if sib._is_live() and sib._tdmn is not None and sib._tdmn in chunks:
+                pos = chunks.index(sib._tdmn)
+                break
+        if pos is None:
+            # No live following sibling: insert before the group-end marker.
+            pos = len(chunks)
+            for i in range(len(chunks) - 1, -1, -1):
+                c = chunks[i]
+                if (
+                    c.chunk_type == "tdmn"
+                    and getattr(c, "value", None) == "ADBE Group End"
+                ):
+                    pos = i
+                    break
+        chunks.insert(pos, tdmn)
+        chunks.insert(pos + 1, body)
 
     @property
     def selected(self) -> bool:
@@ -220,7 +303,7 @@ class PropertyBase:
         """
         if self.property_depth == 0:
             return True
-        if self.is_effect or self._is_in_effect():
+        if self.is_effect:
             return True
         mn = self.match_name
         if mn == "ADBE Text Path Options":
@@ -319,13 +402,15 @@ class PropertyBase:
     def _find_chunk_span(self, parent_tdgp: ListChunk) -> tuple[int, int]:
         """Find the [start, end) index span of this property's chunks.
 
-        Returns the index range covering the preceding `tdmn` chunk and
-        the backing LIST chunk. The span is suitable for slice deletion.
+        Returns the index range covering the preceding `tdmn` chunk, any
+        auxiliary chunks between it and the backing LIST chunk (e.g.
+        `mkif` for masks), and the backing LIST chunk itself. The span
+        is suitable for slice deletion.
         """
-        # Identity scan - attrs __eq__ makes structurally-identical TdmnChunks
-        # compare equal, so .index() would find the wrong one.
-        start = next(i for i, c in enumerate(parent_tdgp.chunks) if c is self._tdmn)
-        return start, start + 2
+        start = index_by_identity(parent_tdgp.chunks, self._tdmn)
+        backing = self._backing_list_chunk(parent_tdgp)
+        end = index_by_identity(parent_tdgp.chunks, backing)
+        return start, end + 1
 
     def remove(self) -> None:
         """Remove this property from its parent group.
@@ -340,6 +425,8 @@ class PropertyBase:
         start, end = self._find_chunk_span(parent_tdgp)
         del parent_tdgp.chunks[start:end]
         parent.properties.remove(cast("Property | PropertyGroup", self))
+        if self._is_mask:
+            _renumber_mask_auto_names(parent)
 
     def move_to(self, new_index: int) -> None:
         """Move this property to a new 0-based index within its parent group.
@@ -382,6 +469,8 @@ class PropertyBase:
             for i, c in enumerate(chunk_span):
                 parent_tdgp.chunks.insert(target_start + i, c)
             parent.properties.insert(new_index, child)
+        if self._is_mask:
+            _renumber_mask_auto_names(parent)
 
     def duplicate(self) -> PropertyBase:
         """Duplicate this property within its parent group.
@@ -397,20 +486,17 @@ class PropertyBase:
         """
         parent, parent_tdgp = self._can_mutate()
 
-        # Clone the backing chunk tree
-        backing = self._backing_list_chunk(parent_tdgp)
-        cloned_backing = clone_chunk_tree(backing)
-
-        # Clone the tdmn
-        cloned_tdmn = TdmnChunk(value=self._match_name)
+        # Clone the full chunk span: tdmn, auxiliary chunks (e.g. mkif
+        # for masks) and the backing LIST chunk.
+        start, end = self._find_chunk_span(parent_tdgp)
+        cloned = [clone_chunk_tree(c) for c in parent_tdgp.chunks[start:end]]
 
         # Insert after original in parent's chunk list
-        _, end = self._find_chunk_span(parent_tdgp)
-        parent_tdgp.chunks.insert(end, cloned_tdmn)
-        parent_tdgp.chunks.insert(end + 1, cloned_backing)
+        for i, c in enumerate(cloned):
+            parent_tdgp.chunks.insert(end + i, c)
 
         # Re-parse the cloned chunks into a model
-        new_prop = self._parse_clone(cloned_tdmn, cloned_backing, parent)
+        new_prop = self._parse_clone(cloned, parent)
 
         # Insert in model list after original
         model_idx = parent.properties.index(cast("Property | PropertyGroup", self))
@@ -418,20 +504,28 @@ class PropertyBase:
             model_idx + 1, cast("Property | PropertyGroup", new_prop)
         )
 
+        if self._is_mask:
+            _renumber_mask_auto_names(parent)
         return new_prop
 
     def _parse_clone(
         self,
-        tdmn: TdmnChunk,
-        backing: Chunk,
+        cloned: list[Chunk],
         parent: PropertyGroup,
     ) -> PropertyBase:
         """Re-parse cloned chunks into a model instance.
 
         Uses the parser infrastructure to rebuild the correct model
         hierarchy from cloned binary chunks.
+
+        Args:
+            cloned: The cloned chunk span - the `tdmn` first, the
+                backing LIST chunk last, auxiliary chunks (e.g. `mkif`)
+                in between.
+            parent: The parent group of the clone.
         """
         from ...parsers.property import (  # noqa: PLC0415
+            _parse_mask_atom,
             parse_property_group,
         )
         from ...parsers.property_value import parse_property  # noqa: PLC0415
@@ -446,9 +540,23 @@ class PropertyBase:
         if project is not None:
             effect_param_defs = project._effect_param_defs
 
-        list_chunk = cast("ListChunk", backing)
-        if list_chunk.list_type == "tdbs":
-            result: PropertyBase = parse_property(
+        tdmn = cast("TdmnChunk", cloned[0])
+        list_chunk = cast("ListChunk", cloned[-1])
+        if self._is_mask:
+            mkif = cast(
+                "MkifChunk",
+                find_by_type(chunks=cloned, chunk_type="mkif"),
+            )
+            result: PropertyBase = _parse_mask_atom(
+                tdgp_chunk=list_chunk,
+                mkif_chunk=mkif,
+                property_depth=self._property_depth,
+                effect_param_defs=effect_param_defs,
+                composition=comp,
+                tdmn=tdmn,
+            )
+        elif list_chunk.list_type == "tdbs":
+            result = parse_property(
                 tdbs_chunk=list_chunk,
                 match_name=self._match_name,
                 composition=comp,
@@ -476,6 +584,15 @@ class PropertyBase:
                 tdmn=tdmn,
             )
         else:
-            raise ValueError(f"Unexpected backing chunk type '{list_chunk.list_type}'")
+            raise ValueError(
+                f"Unexpected backing chunk type '{list_chunk.list_type}'"
+            )
+        # clone_chunk_tree strips synthetic chunks, so synthesized children
+        # (e.g. Mask Feather/Opacity) are missing from the clone; re-arm
+        # deferred synthesis to fill them on first access, like a fresh parse.
+        from .property_group import PropertyGroup  # noqa: PLC0415
+
+        if isinstance(result, PropertyGroup):
+            result._deferred_ae_major = get_ae_version_major(comp)
         result._parent_property = parent
         return result

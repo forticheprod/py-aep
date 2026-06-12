@@ -43,46 +43,76 @@ class TestImportOptions:
         assert opts.force_alphabetical is True
 
     # --- can_import_as ---
+    # AE 2026 capability per extension (measured via
+    # scripts/jsx/can_import_as_matrix.jsx). can_import_as additionally gates
+    # on py_aep's own import support, so an extension that is AE-capable but
+    # whose format is unimplemented (absent from data.file_formats, e.g.
+    # .svg / .aep / .aet) returns False here for every type.
 
-    def test_can_import_as_footage_always_true(self) -> None:
-        opts = ImportOptions(Path("video.mp4"))
-        assert opts.can_import_as(ImportAsType.FOOTAGE) is True
+    _MATRIX: dict[str, set[ImportAsType]] = {
+        # Still images / audio / video: footage only.
+        ".png": {ImportAsType.FOOTAGE},
+        ".jpg": {ImportAsType.FOOTAGE},
+        ".tif": {ImportAsType.FOOTAGE},
+        ".tga": {ImportAsType.FOOTAGE},
+        ".bmp": {ImportAsType.FOOTAGE},
+        ".gif": {ImportAsType.FOOTAGE},
+        ".mp3": {ImportAsType.FOOTAGE},
+        ".wav": {ImportAsType.FOOTAGE},
+        # Layered Photoshop: footage, comp, and comp-cropped.
+        ".psd": {
+            ImportAsType.FOOTAGE,
+            ImportAsType.COMP,
+            ImportAsType.COMP_CROPPED_LAYERS,
+        },
+        ".psb": {
+            ImportAsType.FOOTAGE,
+            ImportAsType.COMP,
+            ImportAsType.COMP_CROPPED_LAYERS,
+        },
+        # Multi-channel EXR: footage or comp-cropped, but NOT plain comp.
+        ".exr": {ImportAsType.FOOTAGE, ImportAsType.COMP_CROPPED_LAYERS},
+        # SVG: comp-cropped only - not even footage.
+        ".svg": {ImportAsType.COMP_CROPPED_LAYERS},
+        # QuickTime: footage or project.
+        ".mov": {ImportAsType.FOOTAGE, ImportAsType.PROJECT},
+        # Project / template: project only - not footage.
+        ".aep": {ImportAsType.PROJECT},
+        ".aet": {ImportAsType.PROJECT},
+    }
 
-    def test_can_import_as_project_for_aep(self) -> None:
-        opts = ImportOptions(Path("project.aep"))
-        assert opts.can_import_as(ImportAsType.PROJECT) is True
+    def test_can_import_as_matches_matrix(self) -> None:
+        from py_aep.data.file_formats import get_file_format
 
-    def test_can_import_as_project_for_aet(self) -> None:
-        opts = ImportOptions(Path("template.aet"))
-        assert opts.can_import_as(ImportAsType.PROJECT) is True
+        all_types = [
+            ImportAsType.FOOTAGE,
+            ImportAsType.COMP,
+            ImportAsType.COMP_CROPPED_LAYERS,
+            ImportAsType.PROJECT,
+        ]
+        for ext, expected in self._MATRIX.items():
+            # can_import_as is gated by what py_aep can actually import, so an
+            # AE-capable extension with no implemented format yields False.
+            try:
+                get_file_format(ext)
+                implemented = True
+            except ValueError:
+                implemented = False
+            opts = ImportOptions(Path("asset" + ext))
+            for t in all_types:
+                want = (t in expected) if implemented else False
+                assert opts.can_import_as(t) is want, f"{ext} / {t.name}"
 
-    def test_can_import_as_project_for_png(self) -> None:
-        opts = ImportOptions(Path("image.png"))
+    def test_can_import_as_unknown_extension_all_false(self) -> None:
+        opts = ImportOptions(Path("data.xyz"))
+        assert opts.can_import_as(ImportAsType.FOOTAGE) is False
+        assert opts.can_import_as(ImportAsType.COMP) is False
+        assert opts.can_import_as(ImportAsType.COMP_CROPPED_LAYERS) is False
         assert opts.can_import_as(ImportAsType.PROJECT) is False
 
-    def test_can_import_as_comp_for_psd(self) -> None:
+    def test_can_import_as_accepts_int(self) -> None:
         opts = ImportOptions(Path("design.psd"))
-        assert opts.can_import_as(ImportAsType.COMP) is True
-
-    def test_can_import_as_comp_for_ai(self) -> None:
-        opts = ImportOptions(Path("vector.ai"))
-        assert opts.can_import_as(ImportAsType.COMP) is True
-
-    def test_can_import_as_comp_for_pdf(self) -> None:
-        opts = ImportOptions(Path("doc.pdf"))
-        assert opts.can_import_as(ImportAsType.COMP) is True
-
-    def test_can_import_as_comp_for_png(self) -> None:
-        opts = ImportOptions(Path("image.png"))
-        assert opts.can_import_as(ImportAsType.COMP) is False
-
-    def test_can_import_as_comp_cropped_for_psd(self) -> None:
-        opts = ImportOptions(Path("design.psd"))
-        assert opts.can_import_as(ImportAsType.COMP_CROPPED_LAYERS) is True
-
-    def test_can_import_as_comp_cropped_for_mp4(self) -> None:
-        opts = ImportOptions(Path("video.mp4"))
-        assert opts.can_import_as(ImportAsType.COMP_CROPPED_LAYERS) is False
+        assert opts.can_import_as(int(ImportAsType.COMP)) is True
 
     # --- is_file_name_numbered ---
 
@@ -126,5 +156,7 @@ class TestImportOptions:
         assert opts.can_import_as(ImportAsType.COMP) is True
 
     def test_can_import_as_project_case_insensitive(self) -> None:
-        opts = ImportOptions(Path("PROJECT.AEP"))
+        # .mov is the implemented format that accepts PROJECT; the extension
+        # match must be case-insensitive.
+        opts = ImportOptions(Path("CLIP.MOV"))
         assert opts.can_import_as(ImportAsType.PROJECT) is True

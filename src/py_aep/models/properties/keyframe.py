@@ -10,6 +10,7 @@ from ..text.text_document import TextDocument
 from ..validators import validate_int, validate_number, validate_sequence
 from .gradient import Gradient
 from .marker import MarkerValue
+from .parallel import TEXT_KIND
 from .shape import Shape
 
 if TYPE_CHECKING:
@@ -158,40 +159,16 @@ class Keyframe:
 
         if isinstance(kf_data.in_speed, list):
             in_ease = [
-                KeyframeEase(
-                    _kf_data=kf_data,
-                    _dimension_index=i,
-                    _direction="in",
-                    _speed_factor=factor,
-                )
+                KeyframeEase._from_binary(kf_data, i, "in", factor)
                 for i in range(len(kf_data.in_speed))
             ]
             out_ease = [
-                KeyframeEase(
-                    _kf_data=kf_data,
-                    _dimension_index=i,
-                    _direction="out",
-                    _speed_factor=factor,
-                )
+                KeyframeEase._from_binary(kf_data, i, "out", factor)
                 for i in range(len(kf_data.out_speed))
             ]
         else:
-            in_ease = [
-                KeyframeEase(
-                    _kf_data=kf_data,
-                    _dimension_index=0,
-                    _direction="in",
-                    _speed_factor=factor,
-                )
-            ]
-            out_ease = [
-                KeyframeEase(
-                    _kf_data=kf_data,
-                    _dimension_index=0,
-                    _direction="out",
-                    _speed_factor=factor,
-                )
-            ]
+            in_ease = [KeyframeEase._from_binary(kf_data, 0, "in", factor)]
+            out_ease = [KeyframeEase._from_binary(kf_data, 0, "out", factor)]
         return in_ease, out_ease
 
     def _ensure_ease(self) -> None:
@@ -286,9 +263,82 @@ class Keyframe:
             raise ValueError(
                 "value must be a number, list of numbers, Gradient, MarkerValue, Shape, TextDocument, or None"
             )
-        if self._property is not None and isinstance(value, (int, float, list)):
-            value = self._property._unresolve_value(value)
-        self._value = value
+        prop = self._property
+        # Complex (parallel-container) properties store their real value in a
+        # sibling container chunk (otda / Nmrd / shap / Utf8), not in kf_data;
+        # route the write through the property so the container - and any
+        # mirrored header bytes - are updated. Text (no container) keeps the
+        # shadow path: its documents live in the shared btdk COS blob.
+        if prop is not None and prop._kf_value_container is not None:
+            kind = prop._parallel_kind()
+            if kind is not None and kind is not TEXT_KIND:
+                prop._write_parallel_kf_value(self, kind.coerce(value), kind)
+                return
+        if prop is not None and isinstance(value, (int, float, list)):
+            raw = cast(
+                "list[float] | float | int | None",
+                prop._unresolve_value(value),
+            )
+            self._write_kf_value(raw)
+            self._value = raw
+        else:
+            self._value = value
+
+    def _cache_value(self, value: _ValueType) -> None:
+        """Cache a value decoded from chunks (parser-only).
+
+        Unlike the public `value` setter this never writes the
+        parallel value container: the chunks already hold the value,
+        only the in-memory shadow needs filling. Numeric values are
+        stored unresolved, matching `_extract_raw_value`; the write
+        through `_write_kf_value` is a no-op for parallel-kind
+        properties (component-count mismatch) and byte-faithful
+        otherwise.
+        """
+        prop = self._property
+        if prop is not None and isinstance(value, (int, float, list)):
+            raw = cast(
+                "list[float] | float | int | None",
+                prop._unresolve_value(value),
+            )
+            self._write_kf_value(raw)
+            self._value = raw
+        else:
+            self._value = value
+
+    def _write_kf_value(self, raw: list[float] | float | int | None) -> None:
+        """Persist a raw numeric value into the backing kf_data chunk.
+
+        Serialization reads from `kf_data`, not the in-memory `_value`
+        shadow, so numeric / color / spatial keyframe values must be
+        written through here to round-trip.
+
+        The write is skipped when the kf_data carries no value (markers)
+        or when the property keeps its real value in a parallel container
+        (orientation keeps a 1-component kf_data but a 3-component otda
+        value; the parser also assigns that 3-component value here at parse
+        time). For an ordinary numeric property a length mismatch is a
+        genuine dimension error from the caller and is raised.
+        """
+        kf_data = self._ldat_item.kf_data
+        if not hasattr(kf_data, "value"):
+            return
+        new = [float(raw)] if isinstance(raw, (int, float)) else None
+        if new is None and isinstance(raw, list):
+            new = [float(v) for v in raw]
+        if new is None:
+            return
+        if len(new) != len(kf_data.value):
+            if (
+                self._property is not None
+                and self._property._parallel_kind() is not None
+            ):
+                return
+            raise ValueError(
+                f"value has {len(new)} component(s) but this keyframe "
+                f"expects {len(kf_data.value)}"
+            )
+        kf_data.value = new
 
     @property
     def in_temporal_ease(self) -> list[KeyframeEase]:
@@ -437,7 +487,9 @@ class Keyframe:
         The `_frame_offset` on the owning [Property][] shifts the
         value to composition time.
         """
-        raw = int(round(self._ldat_item.time_raw / self._time_scale))
+        # time_units holds internal-timebase units (= frames * time_scale
+        # * 256, measured on AE 2026).
+        raw = int(round(self._ldat_item.time_units / (self._time_scale * 256.0)))
         if self._property is not None:
             return raw + self._property._frame_offset
         return raw
@@ -446,7 +498,13 @@ class Keyframe:
     def frame_time(self, value: int) -> None:
         validate_int(value)
         offset = self._property._frame_offset if self._property is not None else 0
-        self._ldat_item.time_raw = round((value - offset) * self._time_scale)
+        units = round((value - offset) * self._time_scale * 256.0)
+        if not -0x80000000 <= units <= 0x7FFFFFFF:
+            raise ValueError(
+                f"keyframe time out of supported range: frame {value} "
+                f"does not fit the 32-bit keyframe time field"
+            )
+        self._ldat_item.time_units = units
 
     @property
     def time(self) -> float:

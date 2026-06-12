@@ -27,8 +27,6 @@ from .registry import CHUNK_TYPES, register
 if TYPE_CHECKING:
     from typing import IO, Any, Callable, Iterator
 
-    from .ldat_chunks import Lhd3Chunk
-
 # ---------------------------------------------------------------------------
 # Chunk base (also serves as fallback for unregistered types)
 # ---------------------------------------------------------------------------
@@ -57,7 +55,7 @@ class Chunk:
         **kwargs: Any,
     ) -> Chunk:
         # Get fields
-        info = _struct_info(cls)  # type: ignore[arg-type]
+        info = _struct_info(cls)
         if info is None:
             data = read_bytes(fp, size)
             return cls(chunk_type=chunk_type, data=data)
@@ -164,7 +162,7 @@ class Chunk:
         return instance
 
     def write(self, fp: IO[bytes]) -> int:
-        info = _struct_info(type(self))  # type: ignore[arg-type]
+        info = _struct_info(type(self))
         if info is None:
             return write_bytes(fp, self.data)
         (
@@ -382,14 +380,14 @@ class DeferredListChunk(ListChunk):
         return written
 
 
-@register("tdsn", "fnam", "pdnm", "RCom")
+@register("fnam", "pdnm", "RCom")
 @define
 class ContainerChunk(Chunk):
     """Non-LIST chunk whose body contains child chunks without a list_type.
 
-    Used for tdsn, fnam, pdnm, RCom - wrapper chunks that hold a single
-    Utf8 child (or similar). Unlike ListChunk, there is no 4-byte list_type
-    prefix in the binary data.
+    Used for fnam, pdnm, RCom (and tdsn via the `TdsnChunk` subclass) -
+    wrapper chunks that hold a single Utf8 child (or similar). Unlike
+    ListChunk, there is no 4-byte list_type prefix in the binary data.
     """
 
     chunks: list[Chunk] = Factory(list)
@@ -466,17 +464,20 @@ def _resolve_ldat_context(
     siblings: list[Chunk],
     ctx: ReadContext,
 ) -> dict[str, int | bool]:
+    # Deferred import: ldat_chunks subclasses Chunk, so a top-level import
+    # would be circular.
+    from .ldat_chunks import Lhd3Chunk
+
     if not siblings:
         return {}
-    lhd3: Lhd3Chunk = siblings[0]  # type: ignore[assignment]
-    try:
-        result: dict[str, int | bool] = {
-            "item_type": lhd3.item_type,
-            "item_size": lhd3.item_size,
-            "count": lhd3.count,
-        }
-    except AttributeError:
+    lhd3 = siblings[0]
+    if not isinstance(lhd3, Lhd3Chunk):
         return {}
+    result: dict[str, int | bool] = {
+        "item_type": lhd3.item_type,
+        "item_size": lhd3.item_size,
+        "count": lhd3.count,
+    }
     # Check spatial flag for potential three_d -> three_d_spatial promotion
     if (
         ctx.grandparent_list_type == "tdbs"

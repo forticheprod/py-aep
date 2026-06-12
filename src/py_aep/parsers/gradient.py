@@ -61,7 +61,7 @@ def parse_gradient_xml(
     color_stops = _parse_color_stops(data_pairs.get("Color Stops"))
     alpha_stops = _parse_alpha_stops(data_pairs.get("Alpha Stops"))
 
-    return Gradient(
+    return Gradient._from_binary(
         color_stops=color_stops,
         alpha_stops=alpha_stops,
         version=version_str or "1.0",
