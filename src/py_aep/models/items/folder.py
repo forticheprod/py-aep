@@ -222,11 +222,45 @@ class FolderItem(Item):
             parent_folder=self,
         )
 
-        # Insert into parent container with required view data chunks
-        self._children_container.append(comp._item_list)
-        self._children_container.extend(comp._view_data)
+        # AE places a newly created/imported comp (its Item plus view-data
+        # chunks) at the FRONT of the folder - right after the root folder's
+        # `fdta` header, or at index 0 in a subfolder's Sfdr (verified in AE
+        # 2026 for both script addComp and SVG import). Match that ordering.
+        block = [comp._item_list, *comp._view_data]
+        container = self._children_container
+        insert_at = (
+            1 if container and container[0].chunk_type == "fdta" else 0
+        )
+        container[insert_at:insert_at] = block
 
         # Register in project and parent
         self._project.items[comp.id] = comp
-        self.items.append(comp)
+        self.items.insert(0, comp)
         return comp
+
+    def _sort_children_by_name(self) -> None:
+        """Reorder this folder's items case-insensitive alphabetically by name.
+
+        After Effects stores the `Sfdr` of an imported `<stem> Layers` folder
+        in the Project-panel alphabetical display order (verified against the
+        AE 2026 `grouped_layers`/`layer_bounds` fixtures, whose stored order
+        matches the alphabetical sort, not the document/creation order
+        py_aep builds the items in). This rebuilds both the model `items`
+        list and the backing `Sfdr` chunk blocks to match. Used only by the
+        layered-import path; it does not affect `add_comp`/`add_folder`.
+        """
+        container = self._children_container
+        by_item_list = {id(item._item_list): item for item in self.items}
+        header: list[Chunk] = []
+        blocks: list[tuple[Item, list[Chunk]]] = []
+        for chunk in container:
+            item = by_item_list.get(id(chunk))
+            if item is not None:
+                blocks.append((item, [chunk]))
+            elif blocks:
+                blocks[-1][1].append(chunk)
+            else:
+                header.append(chunk)
+        blocks.sort(key=lambda b: b[0].name.lower())
+        container[:] = header + [c for _, chunks in blocks for c in chunks]
+        self.items.sort(key=lambda item: item.name.lower())

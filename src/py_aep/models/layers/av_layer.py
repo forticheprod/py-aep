@@ -197,7 +197,9 @@ class AVLayer(Layer):
         ldta.out_point = duration
         ldta.null_layer = null_layer
         ldta.three_d_layer = three_d_layer
-        ldta._reserved_3c = 1
+        # AE writes _reserved_3b=1 (and _reserved_3c=0) for every AV layer
+        # (verified across 237/238 AE-native AV layers); cameras/lights use 0/0.
+        ldta._reserved_3b = 1
         return cast(
             "AVLayer",
             super()._new(

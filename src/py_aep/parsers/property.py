@@ -32,6 +32,7 @@ from .specialized_properties import (
 )
 from .utils import (
     get_chunks_by_match_name,
+    get_match_name_runs,
 )
 
 if TYPE_CHECKING:
@@ -91,19 +92,19 @@ def _property_parser(
 
 @_suppress_materialization()
 def parse_properties(
-    chunks_by_match_name: dict[str, list[Chunk]],
+    match_name_runs: list[tuple[str, list[Chunk]]],
     child_depth: int,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
 ) -> list[Property | PropertyGroup]:
     """Dispatch sub-property chunks into parsed Property/PropertyGroup items.
 
-    Iterates each match-name group, finds the first LIST chunk, and
+    Iterates each match-name run, finds the first LIST chunk, and
     dispatches to the appropriate parser based on its list type.
 
     Args:
-        chunks_by_match_name: Sub-property chunks grouped by match name
-            (from `get_chunks_by_match_name`).
+        match_name_runs: Sub-property chunks grouped into ordered
+            match-name runs (from `get_match_name_runs`).
         child_depth: The property depth for parsed child properties.
         effect_param_defs: Project-level effect parameter definitions.
         composition: The parent composition.
@@ -112,7 +113,7 @@ def parse_properties(
         Ordered list of parsed properties and property groups.
     """
     properties: list[Property | PropertyGroup] = []
-    for match_name, sub_prop_chunks in chunks_by_match_name.items():
+    for match_name, sub_prop_chunks in match_name_runs:
         # Find the first LIST chunk; non-LIST chunks (e.g. mkif for masks)
         # are auxiliary data that we skip when determining the property type.
         first_chunk = None
@@ -323,7 +324,7 @@ def parse_property_group(
         tdmn: The TDMN chunk for this property group.
     """
     properties = parse_properties(
-        chunks_by_match_name=get_chunks_by_match_name(tdgp_chunk),
+        match_name_runs=get_match_name_runs(tdgp_chunk),
         child_depth=property_depth + 1,
         effect_param_defs=effect_param_defs,
         composition=composition,

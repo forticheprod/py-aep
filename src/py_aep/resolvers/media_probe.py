@@ -10,7 +10,12 @@ This reads external media files (not `.aep` chunks), so `struct` is used here.
 
 from __future__ import annotations
 
+import json
+import lzma
+import re
 import struct
+import zlib
+from datetime import datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NamedTuple
 
@@ -35,6 +40,8 @@ class MediaInfo(NamedTuple):
     """Bits per channel (8, 16, 32). Currently read only for PSD/PSB."""
     layer_count: int = 0
     """Number of layers (PSD/PSB only; 0 for a flattened document)."""
+    channels: int = 0
+    """Channel count from the file header (PSD/PSB only; 3 for RGB, 4 RGBA)."""
 
 
 def probe_media(file: Path) -> MediaInfo:
@@ -237,7 +244,8 @@ def _exr_channels_have_alpha(value: bytes) -> bool:
 def _probe_tiff(fp: IO[bytes]) -> MediaInfo:
     bo = fp.read(2)
     en = "<" if bo == b"II" else ">"
-    fp.read(2)  # 42 magic
+    if struct.unpack(en + "H", fp.read(2))[0] != 42:
+        return MediaInfo()  # BigTIFF (magic 43) or not a classic TIFF
     ifd_offset = struct.unpack(en + "I", fp.read(4))[0]
     fp.seek(ifd_offset)
     count = struct.unpack(en + "H", fp.read(2))[0]
@@ -306,11 +314,16 @@ def _probe_tga(fp: IO[bytes]) -> MediaInfo:
 
 def _probe_bmp(fp: IO[bytes]) -> MediaInfo:
     fp.read(14)  # BITMAPFILEHEADER
-    fp.read(4)  # DIB header size
-    width = struct.unpack("<i", fp.read(4))[0]
-    height = struct.unpack("<i", fp.read(4))[0]
+    dib_size = struct.unpack("<I", fp.read(4))[0]
+    if dib_size == 12:
+        # Legacy OS/2 BITMAPCOREHEADER stores width/height as u2.
+        width, height = struct.unpack("<HH", fp.read(4))
+    else:
+        # BITMAPINFOHEADER (or later): width u4, height s4 (negative = top-down).
+        width = struct.unpack("<I", fp.read(4))[0]
+        height = abs(struct.unpack("<i", fp.read(4))[0])
     # AE allocates an alpha channel for BMP regardless of bit depth.
-    return MediaInfo(width=abs(width), height=abs(height), has_alpha=True)
+    return MediaInfo(width=width, height=height, has_alpha=True)
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +332,9 @@ def _probe_bmp(fp: IO[bytes]) -> MediaInfo:
 
 
 def _probe_gif(fp: IO[bytes]) -> MediaInfo:
-    fp.read(6)  # GIF87a / GIF89a
+    sig = fp.read(6)
+    if sig[:3] != b"GIF" or sig[3:] not in (b"87a", b"89a"):
+        raise ValueError("Not a valid GIF file (bad signature)")
     width, height = struct.unpack("<HH", fp.read(4))
     return MediaInfo(width=width, height=height, has_alpha=True)
 
@@ -334,7 +349,7 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
         raise ValueError("Not a valid PSD/PSB file (bad signature)")
     version = struct.unpack(">H", fp.read(2))[0]  # 1=PSD, 2=PSB
     fp.read(6)  # reserved
-    fp.read(2)  # channel count (ignored; AE composites the merge to RGBA)
+    channels = struct.unpack(">H", fp.read(2))[0]
     height, width = struct.unpack(">II", fp.read(8))
     bit_depth = struct.unpack(">H", fp.read(2))[0]
     fp.read(2)  # color mode
@@ -357,6 +372,7 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
         has_alpha=True,
         bit_depth=bit_depth,
         layer_count=layer_count,
+        channels=channels,
     )
 
 
@@ -425,21 +441,37 @@ def _probe_mov(fp: IO[bytes]) -> MediaInfo:
     pixel_aspect = 1.0
     audio_sample_rate = 0.0
     has_audio = has_alpha = False
+    movie_ts = 0
+    audio_elst_dur = 0.0
 
     for a2, b2, e2 in _atoms(data, 0, len(data)):
         if a2 == b"mvhd":
             v = data[b2]
             ts = _u(data, b2 + (20 if v == 1 else 12), 4)
+            movie_ts = ts
             dur = _u(data, b2 + 24, 8) if v == 1 else _u(data, b2 + 16, 4)
             duration = dur / ts if ts else 0.0
         elif a2 == b"trak":
             handler = b""
             tw = th = 0
             mts = mdur = sample_delta = 0
+            elst_seg_dur = 0
+            elst_sentinel = 0xFFFFFFFF
+            depth = 0
+            track_pa = 0.0
             for a3, b3, e3 in _atoms(data, b2, e2):
                 if a3 == b"tkhd":
                     tw = _u(data, e3 - 8, 4) >> 16
                     th = _u(data, e3 - 4, 4) >> 16
+                elif a3 == b"edts":
+                    for ae, be, ee in _atoms(data, b3, e3):
+                        if ae == b"elst" and ee - be >= 16:
+                            # Entries follow version/flags(4) + entry_count(4);
+                            # segment_duration is u32 (v0) or u64 (v1) in the
+                            # movie timescale; the all-ones value is an empty edit.
+                            ev = data[be]
+                            elst_seg_dur = _u(data, be + 8, 8 if ev == 1 else 4)
+                            elst_sentinel = (1 << (64 if ev == 1 else 32)) - 1
                 elif a3 == b"mdia":
                     for a4, b4, e4 in _atoms(data, b3, e3):
                         if a4 == b"mdhd":
@@ -456,15 +488,17 @@ def _probe_mov(fp: IO[bytes]) -> MediaInfo:
                                     continue
                                 for a6, b6, e6 in _atoms(data, b5, e5):
                                     if a6 == b"stsd":
-                                        d, pa = _parse_stsd(data, b6, e6)
-                                        if d == 32:
-                                            has_alpha = True
-                                        if pa:
-                                            pixel_aspect = pa
+                                        depth, track_pa = _parse_stsd(data, b6, e6)
                                     elif a6 == b"stts" and e6 - b6 >= 16:
                                         sample_delta = _u(data, b6 + 12, 4)
             if handler == b"vide":
                 width, height = tw, th
+                # depth and pixel aspect are only meaningful for a visual
+                # sample entry (reading them from an audio stsd gives garbage).
+                if depth == 32:
+                    has_alpha = True
+                if track_pa:
+                    pixel_aspect = track_pa
                 if mts and sample_delta:
                     frame_rate = round(mts / sample_delta, 3)
                 if mts and mdur:  # AE uses the video track's duration
@@ -473,6 +507,15 @@ def _probe_mov(fp: IO[bytes]) -> MediaInfo:
                 has_audio = True
                 # An audio track's media timescale is its sample rate.
                 audio_sample_rate = float(mts)
+                # AAC encoder pre-roll makes the mdhd/mvhd duration about one
+                # edit-list media_time too long; the elst segment_duration (in
+                # the movie timescale) is the playable length AE reports.
+                if elst_seg_dur not in (0, elst_sentinel) and movie_ts:
+                    audio_elst_dur = elst_seg_dur / movie_ts
+    # For audio-only media (no video track sets width), prefer the edit-list
+    # duration over the raw mdhd/mvhd duration.
+    if width == 0 and audio_elst_dur:
+        duration = audio_elst_dur
     return MediaInfo(
         width=width,
         height=height,
@@ -503,10 +546,369 @@ def _parse_stsd(data: bytes, body: int, end: int) -> tuple[int, float]:
     return depth, pixel_aspect
 
 
+# ---------------------------------------------------------------------------
+# FBX - 3D scene (AE renders at fixed defaults; dims are not in the file)
+# ---------------------------------------------------------------------------
+
+_FBX_MAGIC = b"Kaydara FBX Binary  \x00\x1a\x00"
+
+
+def _probe_fbx(fp: IO[bytes]) -> MediaInfo:
+    if fp.read(len(_FBX_MAGIC)) != _FBX_MAGIC:
+        raise ValueError("Not a binary FBX file (bad magic)")
+    # AE imports an FBX as a 1920x1080, 30 fps, 30 s 3D scene regardless of the
+    # scene's authored render settings, and re-reads the geometry on open.
+    return MediaInfo(
+        width=1920, height=1080, duration=30.0, frame_rate=30.0, has_alpha=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# Data footage (txt/csv/json) - AE imports as a 0x0 data item
+# ---------------------------------------------------------------------------
+
+
+def _probe_data(fp: IO[bytes]) -> MediaInfo:
+    """Text/CSV/JSON data footage: no dimensions, duration, or audio."""
+    return MediaInfo()
+
+
+# ---------------------------------------------------------------------------
+# mgjson - After Effects motion-graphics data stream (duration from samples)
+# ---------------------------------------------------------------------------
+
+
+def _parse_mgjson_time(t: str) -> datetime | None:
+    """Parse an mgjson ISO-8601 sample time, tolerating fractional-second
+    precision and timezone offsets that Python 3.7's strict
+    `datetime.fromisoformat` rejects.
+
+    Returns a naive `datetime` (any timezone offset is dropped - all samples
+    in a stream share one offset, so the inter-sample span is unaffected) or
+    `None` if the value cannot be parsed.
+    """
+    s = t.strip()
+    # Drop a trailing 'Z' or numeric UTC offset (+HH:MM / +HHMM); the span
+    # between samples is offset-independent.
+    s = re.sub(r"(Z|[+-]\d{2}:?\d{2})$", "", s)
+    # Clamp over-long fractional seconds to 6 digits (strptime %f accepts 1-6).
+    s = re.sub(r"(\.\d{6})\d+", r"\1", s)
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _probe_mgjson(fp: IO[bytes]) -> MediaInfo:
+    doc = json.load(fp)
+    times = []
+    for stream in doc.get("dataDynamicSamples", []):
+        for sample in stream.get("samples", []):
+            t = sample.get("time")
+            if t:
+                parsed = _parse_mgjson_time(t)
+                if parsed is not None:
+                    times.append(parsed)
+    if not times:
+        return MediaInfo(frame_rate=30.0)
+    span = (max(times) - min(times)).total_seconds()
+    # AE imports mgjson at a fixed 30 fps and reports the span plus one frame.
+    return MediaInfo(duration=span + 1.0 / 30.0, frame_rate=30.0)
+
+
+# ---------------------------------------------------------------------------
+# MP3 - MPEG audio frame header (audio only)
+# ---------------------------------------------------------------------------
+
+_MP3_SR = {
+    3: (44100, 48000, 32000),
+    2: (22050, 24000, 16000),
+    0: (11025, 12000, 8000),
+}
+_MP3_BR_M1_L3 = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0)
+_MP3_BR_M2_L3 = (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0)
+
+
+def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
+    raw = fp.read()
+    # Skip an ID3v2 tag: syncsafe size in bytes 6-9 after "ID3" + version/flags.
+    audio_start = 0
+    if raw[:3] == b"ID3" and len(raw) >= 10:
+        s = raw[6:10]
+        audio_start = 10 + (
+            (s[0] & 0x7F) << 21
+            | (s[1] & 0x7F) << 14
+            | (s[2] & 0x7F) << 7
+            | (s[3] & 0x7F)
+        )
+    if len(raw) < audio_start + 4:
+        return MediaInfo(has_audio=True)
+    h = struct.unpack_from(">I", raw, audio_start)[0]
+    if (h >> 21) & 0x7FF != 0x7FF:  # 11-bit frame sync
+        return MediaInfo(has_audio=True)
+    mpeg_ver = (h >> 19) & 0x3  # 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+    bitrate_i = (h >> 12) & 0xF
+    sr_i = (h >> 10) & 0x3
+    padding = (h >> 9) & 0x1
+    mono = ((h >> 6) & 0x3) == 3
+    sr = _MP3_SR.get(mpeg_ver, (0, 0, 0))[sr_i] if sr_i < 3 else 0
+    # `.mp3` is MPEG Audio Layer III by definition, so the Layer III bitrate
+    # tables apply; the frame-size coefficient is samples-per-frame/8
+    # (1152/8=144 for MPEG-1, 576/8=72 for MPEG-2/2.5).
+    bitrate = (_MP3_BR_M1_L3 if mpeg_ver == 3 else _MP3_BR_M2_L3)[bitrate_i] * 1000
+    spf = 1152 if mpeg_ver == 3 else 576
+    # A Xing/Info header (VBR) carries the exact frame count; else assume CBR.
+    side = (17 if mono else 32) if mpeg_ver == 3 else (9 if mono else 17)
+    duration = 0.0
+    tag_at = audio_start + 4 + side
+    if raw[tag_at : tag_at + 4] in (b"Xing", b"Info"):
+        flags = struct.unpack_from(">I", raw, tag_at + 4)[0]
+        if flags & 0x1 and sr:
+            frames = struct.unpack_from(">I", raw, tag_at + 8)[0]
+            duration = frames * spf / sr
+    elif bitrate and sr:
+        # bitrate >= 32 kbps and sr >= 8 kHz, so frame_size is always > 0.
+        frame_size = spf // 8 * bitrate // sr + padding
+        duration = (len(raw) - audio_start) // frame_size * spf / sr
+    return MediaInfo(duration=duration, has_audio=True, audio_sample_rate=float(sr))
+
+
+# ---------------------------------------------------------------------------
+# SWF - file header (AE rasterizes the movie to video)
+# ---------------------------------------------------------------------------
+
+
+def _probe_swf(fp: IO[bytes]) -> MediaInfo:
+    sig = fp.read(3)
+    fp.read(5)  # version (1 byte) + file length (LE u32)
+    if sig == b"FWS":
+        body = fp.read(21)
+    elif sig == b"CWS":
+        body = zlib.decompress(fp.read())[:21]
+    elif sig == b"ZWS":
+        fp.read(4)  # uncompressed length precedes the LZMA stream
+        stream = fp.read()
+        # A SWF LZMA body is 5 props bytes then the raw stream, with no 8-byte
+        # uncompressed-size field; splice one in (unknown = all ones) so the
+        # FORMAT_ALONE decoder accepts it.
+        body = lzma.decompress(
+            stream[:5] + b"\xff" * 8 + stream[5:], format=lzma.FORMAT_ALONE
+        )[:21]
+    else:
+        raise ValueError("Not a valid SWF file (bad signature)")
+    # Frame size is a bit-packed RECT (twips): nbits in the top 5 bits, then
+    # four nbits-wide fields (xmin, xmax, ymin, ymax). The stage is non-negative.
+    nbits = body[0] >> 3
+    rect_bytes = (5 + 4 * nbits + 7) // 8
+    bits = "".join(format(b, "08b") for b in body[:rect_bytes])
+    vals = []
+    pos = 5
+    for _ in range(4):
+        vals.append(int(bits[pos : pos + nbits], 2))
+        pos += nbits
+    width = (vals[1] - vals[0]) // 20
+    height = (vals[3] - vals[2]) // 20
+    fr_raw = struct.unpack_from("<H", body, rect_bytes)[0]
+    frame_rate = fr_raw / 256.0  # 8.8 fixed-point
+    frame_count = struct.unpack_from("<H", body, rect_bytes + 2)[0]
+    duration = frame_count / frame_rate if frame_rate else 0.0
+    return MediaInfo(
+        width=width,
+        height=height,
+        duration=duration,
+        frame_rate=frame_rate,
+        has_alpha=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# MPEG-1/2 program stream - sequence header + picture-start-code count
+# ---------------------------------------------------------------------------
+
+_MPEG_FR = {
+    1: 24000 / 1001,
+    2: 24.0,
+    3: 25.0,
+    4: 30000 / 1001,
+    5: 30.0,
+    6: 50.0,
+    7: 60000 / 1001,
+    8: 60.0,
+}
+
+
+def _probe_mpeg(fp: IO[bytes]) -> MediaInfo:
+    data = fp.read()
+    seq = data.find(b"\x00\x00\x01\xb3")
+    if seq < 0:
+        raise ValueError("Not a valid MPEG file (no sequence header)")
+    val = struct.unpack_from(">I", data, seq + 4)[0]
+    width = (val >> 20) & 0xFFF
+    height = (val >> 8) & 0xFFF
+    fps = _MPEG_FR.get(val & 0xF, 0.0)
+    # Program streams carry no global duration and the SCR timeline stops short
+    # of the final frames, so count picture start codes. This reads the whole
+    # file, which is acceptable for the sizes py_aep handles.
+    frames = data.count(b"\x00\x00\x01\x00")
+    duration = frames / fps if fps else 0.0
+    has_audio = any(data.find(bytes((0, 0, 1, sid))) >= 0 for sid in range(0xC0, 0xE0))
+    return MediaInfo(
+        width=width,
+        height=height,
+        duration=duration,
+        frame_rate=fps,
+        has_audio=has_audio,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Radiance HDR (RGBE) - text header with a resolution line (still image)
+# ---------------------------------------------------------------------------
+
+
+def _probe_hdr(fp: IO[bytes]) -> MediaInfo:
+    if not fp.readline().startswith(b"#?"):
+        raise ValueError("Not a Radiance HDR file (missing '#?' identifier)")
+    while True:
+        line = fp.readline()
+        if not line:
+            raise ValueError("Unexpected EOF in Radiance HDR header")
+        if line.strip() == b"":  # blank line separates header from resolution
+            break
+    # Resolution line is two axis specifiers, e.g. "-Y 426 +X 640"; the X
+    # specifier gives width and the Y specifier gives height. Radiance allows
+    # either order (and either sign), so key off the axis letter, not position.
+    parts = fp.readline().split()
+    if len(parts) < 4:
+        raise ValueError("Cannot parse HDR resolution line")
+    dims = {parts[0][-1:]: int(parts[1]), parts[2][-1:]: int(parts[3])}
+    if b"X" not in dims or b"Y" not in dims:
+        raise ValueError("Cannot parse HDR resolution line (missing X or Y axis)")
+    return MediaInfo(width=dims[b"X"], height=dims[b"Y"])
+
+
+# ---------------------------------------------------------------------------
+# AI / EPS / PDF - vector page dimensions (still image, TEXT source format)
+# ---------------------------------------------------------------------------
+
+_MEDIABOX_RE = re.compile(
+    rb"/MediaBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]"
+)
+
+
+def _probe_pdf(fp: IO[bytes]) -> MediaInfo:
+    m = _MEDIABOX_RE.search(fp.read())
+    if m is None:
+        return MediaInfo(has_alpha=True)
+    x0, y0, x1, y1 = (float(g) for g in m.groups())
+    return MediaInfo(width=round(x1 - x0), height=round(y1 - y0), has_alpha=True)
+
+
+def _probe_eps(fp: IO[bytes]) -> MediaInfo:
+    width = height = 0
+    hires = False
+    for raw in fp:
+        line = raw.strip()
+        if line.startswith(b"%%HiResBoundingBox:"):
+            nums = line.split(b":", 1)[1].split()
+            if len(nums) >= 4:
+                llx, lly, urx, ury = (float(n) for n in nums[:4])
+                width, height = round(urx - llx), round(ury - lly)
+                hires = True
+        elif not hires and line.startswith(b"%%BoundingBox:"):
+            rest = line.split(b":", 1)[1].strip()
+            if rest != b"(atend)":
+                nums = rest.split()
+                if len(nums) >= 4:
+                    llx, lly, urx, ury = (float(n) for n in nums[:4])
+                    width, height = round(urx - llx), round(ury - lly)
+        elif line.startswith(b"%%EndComments"):
+            break
+    return MediaInfo(width=width, height=height, has_alpha=True)
+
+
+def _probe_text(fp: IO[bytes]) -> MediaInfo:
+    """AI/EPS/PDF dimensions: PDF uses /MediaBox, EPS/PostScript %%BoundingBox."""
+    sig = fp.read(4)
+    fp.seek(0)
+    if sig == b"%PDF":
+        return _probe_pdf(fp)
+    return _probe_eps(fp)
+
+
+# ---------------------------------------------------------------------------
+# WMV / ASF - header objects (dims exact; duration/fps are decoder-derived)
+# ---------------------------------------------------------------------------
+
+_ASF_HEADER = bytes.fromhex("3026B2758E66CF11A6D900AA0062CE6C")
+_ASF_FILE_PROPS = bytes.fromhex("A1DCAB8C47A9CF118EE400C00C205365")
+_ASF_STREAM_PROPS = bytes.fromhex("9107DCB7B7A9CF118EE600C00C205365")
+_ASF_VIDEO_PREFIX = bytes.fromhex("C0EF19BC")  # first 4 LE bytes of the video GUID
+
+
+def _probe_wmv(fp: IO[bytes]) -> MediaInfo:
+    if fp.read(16) != _ASF_HEADER:
+        raise ValueError("Not a valid ASF/WMV file (bad header GUID)")
+    header_size = struct.unpack("<Q", fp.read(8))[0]
+    fp.read(6)  # object count (u32) + 2 reserved bytes
+    body = fp.read(max(0, header_size - 30))
+    width = height = 0
+    duration = 0.0
+    pos = 0
+    while pos + 24 <= len(body):
+        guid = body[pos : pos + 16]
+        size = struct.unpack_from("<Q", body, pos + 16)[0]
+        if size < 24 or pos + size > len(body):
+            break
+        payload = body[pos + 24 : pos + size]
+        if guid == _ASF_FILE_PROPS and len(payload) >= 64:
+            # Send Duration (100ns, +48) is the content length excluding the
+            # preroll; it is the closest header value to AE's decoded duration.
+            # Fall back to Play Duration (+40, includes preroll) minus preroll
+            # (ms, +56) when Send Duration is absent. Neither is exact: AE
+            # decodes the video to get the true frame-accurate duration/fps,
+            # which the ASF header does not store.
+            send_duration = struct.unpack_from("<Q", payload, 48)[0]
+            if send_duration:
+                duration = send_duration / 1e7
+            else:
+                play_duration = struct.unpack_from("<Q", payload, 40)[0]
+                preroll = struct.unpack_from("<Q", payload, 56)[0]
+                duration = max(0.0, play_duration / 1e7 - preroll / 1e3)
+        elif guid == _ASF_STREAM_PROPS and len(payload) >= 62:
+            # Video stream: type-specific data at +54 begins with enc_width/height.
+            if payload[:4] == _ASF_VIDEO_PREFIX:
+                width = struct.unpack_from("<I", payload, 54)[0]
+                height = struct.unpack_from("<I", payload, 58)[0]
+        pos += size
+    # ASF carries no frame rate (AE derives it from the decoder); leave 0.
+    return MediaInfo(width=width, height=height, duration=duration)
+
+
 _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".png": _probe_png,
     ".mov": _probe_mov,
     ".m4v": _probe_mov,
+    ".m4a": _probe_mov,
+    ".fbx": _probe_fbx,
+    ".txt": _probe_data,
+    ".csv": _probe_data,
+    ".json": _probe_data,
+    ".mgjson": _probe_mgjson,
+    ".mp3": _probe_mp3,
+    ".swf": _probe_swf,
+    ".mpeg": _probe_mpeg,
+    ".mpg": _probe_mpeg,
+    ".hdr": _probe_hdr,
+    ".ai": _probe_text,
+    ".eps": _probe_text,
+    ".pdf": _probe_text,
+    ".wmv": _probe_wmv,
     ".aiff": _probe_aiff,
     ".wav": _probe_wav,
     ".exr": _probe_exr,

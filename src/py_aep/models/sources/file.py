@@ -11,6 +11,8 @@ from ...binary.footage_chunks import (
     SspcChunk,
     build_generic_opti_data,
     build_psd_opti_data,
+    build_rhdr_opti_data,
+    build_text_opti_data,
     build_tiff_opti_data,
 )
 from ...binary.mutations import build_pin_list
@@ -26,6 +28,7 @@ from ...binary.utils import (
     parse_alas_data,
 )
 from ...data.file_formats import FileFormat, get_file_format
+from ...resolvers.ai_layers import read_ai_color_profile
 from ...resolvers.media_probe import probe_media
 from ..validators import validate_path_exists
 from .footage import FootageSource
@@ -53,6 +56,10 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
     - PNG/EXR sequences and all audio/video formats: need the 58-byte
       generic header so AE recognises the item as a sequence or media file
       rather than missing footage.
+    - HDR (Radiance): needs the 30-byte format-specific `RHDR` header;
+      dimensions live in `sspc`, not the opti.
+    - AI/EPS/PDF: need the 596-byte `TEXT` header with width/height
+      embedded as big-endian u16.
     """
     if fmt.opti == "tiff":
         return build_tiff_opti_data(info.width, info.height)
@@ -60,6 +67,10 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
         return build_psd_opti_data(
             info.width, info.height, info.bit_depth, info.layer_count
         )
+    if fmt.opti == "hdr":
+        return build_rhdr_opti_data()
+    if fmt.opti == "text":
+        return build_text_opti_data(info.width, info.height)
     if fmt.opti == "empty" and not sequence:
         return b""
     return build_generic_opti_data(fmt.source_format)
@@ -249,6 +260,8 @@ class FileSource(FootageSource):
         end_frame: int = 0,
         frame_padding: int = 0,
         opti_data: bytes = b"",
+        embedded_profile_name: str | None = None,
+        full_frame: bool = True,
     ) -> FileSource:
         """Create a new file footage source with backing chunks.
 
@@ -281,6 +294,12 @@ class FileSource(FootageSource):
             opti_data: Raw `opti` asset-info bytes. Empty is accepted by AE
                 for single still images; sequences and audio need the
                 generic header (see `build_generic_opti_data`).
+            embedded_profile_name: Name of the source's embedded color
+                profile, recorded in `LIST:CLRS` (matching AE). `None` for
+                sources with no embedded profile.
+            full_frame: When `True` (default, every standard import), the
+                footage spans its full source frame. Set `False` for a layer
+                cropped to its content box (`COMP_CROPPED_LAYERS`).
         """
         is_sequence = sequence_prefix is not None
         path = Path(file)
@@ -306,6 +325,13 @@ class FileSource(FootageSource):
         sspc.duration = duration
         sspc.pixel_aspect = pixel_aspect
         sspc.audio_sample_rate = audio_sample_rate
+        # AE 2026 writes this reserved template for every file footage source
+        # (solids/placeholders leave it all-zero). Byte 0xC7 (index 3) is 1 when
+        # the footage spans the full source frame, 0 for a layer cropped to its
+        # content box (COMP_CROPPED_LAYERS); byte 0xC9 is a constant 2.
+        sspc._reserved_c4 = (
+            b"\x00\x00\x00" + (b"\x01" if full_frame else b"\x00") + b"\x00\x02"
+        )
         if is_sequence:
             sspc.start_frame = start_frame
             sspc.end_frame = end_frame
@@ -325,7 +351,7 @@ class FileSource(FootageSource):
                 io.BytesIO(opti_data), len(opti_data), chunk_type="opti"
             )
         else:
-            opti = OptiChunk(chunk_type="opti", data=b"")
+            opti = OptiChunk(chunk_type="opti")
 
         fullpath = str(path.parent) if is_sequence else str(path)
         path_chunks: list[Chunk] = [
@@ -335,7 +361,12 @@ class FileSource(FootageSource):
             path_chunks.append(Utf8Chunk(value=sequence_prefix or ""))
             path_chunks.append(Utf8Chunk(value=sequence_ext or ""))
 
-        pin = build_pin_list(sspc, opti, path_chunks=path_chunks)
+        pin = build_pin_list(
+            sspc,
+            opti,
+            path_chunks=path_chunks,
+            embedded_profile_name=embedded_profile_name,
+        )
         clrs = find_by_list_type(chunks=pin.chunks, list_type="CLRS")
         linl = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
 
@@ -380,6 +411,8 @@ class FileSource(FootageSource):
             return cls._build_sequence(path, fmt, force_alphabetical)
         info = probe_media(path)
         opti_data = _opti_data(fmt, info, sequence=False)
+        # AI/EPS/PDF carry an embedded ICC profile AE records in CLRS.
+        profile_name = read_ai_color_profile(path) if fmt.opti == "text" else None
         return cls._new(
             path,
             source_format=fmt.source_format,
@@ -392,6 +425,7 @@ class FileSource(FootageSource):
             alpha_premultiplied=fmt.alpha_premultiplied,
             audio_sample_rate=info.audio_sample_rate,
             opti_data=opti_data,
+            embedded_profile_name=profile_name,
         )
 
     @classmethod

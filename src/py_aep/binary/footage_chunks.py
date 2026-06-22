@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from attrs import define
 
-from .bin_utils import read_bytes
+from .bin_utils import read_bytes, truncate_utf8
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import (
@@ -144,7 +144,13 @@ class SspcChunk(Chunk):
     _reserved_b8: bytes = bytes_field(4, repr=False)
     work_area_start: int = u4_field(default=0xFFFFFFFF)
     work_area_end: int = u4_field(default=0xFFFFFFFF)
-    _reserved_c4: bytes = bytes_field(6, repr=False)
+    _reserved_c4: bytes = bytes_field(3, repr=False)
+    full_frame: bool = bool_field()
+    """Byte 0xC7: `True` when the footage spans its full source frame,
+    `False` for a layer cropped to its content box (`COMP_CROPPED_LAYERS`).
+    Written only for file footage; solids/placeholders leave it `False`."""
+
+    _reserved_c8: bytes = bytes_field(2, repr=False)
     _reserved_ca: bytes = bytes_field(10, repr=False)
     _reserved_d4: bytes = bytes_field(10, default=b"\x01" + b"\x00" * 9, repr=False)
 
@@ -370,6 +376,162 @@ def build_psd_opti_data(
     return _build_still_opti(b"8BPS", width, height, bit_depth, tail)
 
 
+def build_psd_flattened_opti_data(
+    width: int, height: int, bit_depth: int, channels: int
+) -> bytes:
+    """Build the 602-byte `8BPS` `opti` for a FLATTENED PSD/PSB imported as a
+    one-layer composition.
+
+    AE writes a full opti (not the empty one it uses for footage) for this
+    merged-still comp layer. It differs from the merged `build_psd_opti_data`
+    in three bytes (AE 2026 byte-verified against a real flattened RGB PSD):
+
+    - 0x0A: 1 (a merged/flattened-reference flag; per-layer optis leave 0).
+    - 0x1E: the file's real channel count (3 for RGB, 4 for RGBA), not the
+      composited-to-4 value the still template hard-codes.
+    - 0x30: the true layer count, 0 (the merged builder clamps this to 1).
+    """
+    buf = bytearray(build_psd_opti_data(width, height, bit_depth))
+    buf[0x0A] = 0x01
+    buf[0x1E] = channels
+    buf[0x30] = 0x00
+    return bytes(buf)
+
+
+def build_psd_layer_opti_data(
+    canvas_width: int,
+    canvas_height: int,
+    bit_depth: int,
+    layer_count: int,
+    layer_index: int,
+    layer_id: int,
+    layer_name: str,
+    bounds: tuple[int, int, int, int],
+) -> bytes:
+    """Build the 602-byte `8BPS` `opti` for one layer of a layered PSD import.
+
+    When After Effects imports a layered Photoshop file as a composition, it
+    creates one footage item per layer, each referencing the same file with its
+    source layer selected. The selection is stored in this opti, identically for
+    a whole-canvas (`COMP`) or cropped (`COMP_CROPPED_LAYERS`) import - the crop
+    only changes the footage `sspc` dimensions and the comp-layer transform, not
+    this opti. It extends the merged `build_psd_opti_data` (which sets a
+    `0xFFFFFFFF` sentinel at 0x0E and an empty trailing name) with:
+
+    - 0x0E: the 0-based layer index (BE u32), clearing the merged sentinel.
+    - 0x4E/0x52/0x56/0x5A: the layer's content bounding box top/left/bottom/right
+      (LE s32), i.e. the layer record's rectangle - NOT the canvas.
+    - 0x5E: channel count - 4 (RGBA) for a layer with pixel content, 0 for an
+      empty content box (e.g. an adjustment layer).
+    - 0x154: the Photoshop layer id (`lyid`, LE u32).
+    - 0x158: the layer name, NUL-terminated UTF-8.
+
+    The `psd_canvas_*` fields keep the full document size. Byte-verified against
+    AE 2026's `COMP`/`COMP_CROPPED_LAYERS` import of `8bits.psd`/`.psb` and a
+    margined 3-layer PSD.
+
+    Args:
+        canvas_width: Full document width in pixels.
+        canvas_height: Full document height in pixels.
+        bit_depth: Bits per channel.
+        layer_count: Total layers in the document.
+        layer_index: 0-based document index of this layer (bottom first).
+        layer_id: Photoshop layer id (`lyid`).
+        layer_name: Layer name.
+        bounds: The layer's content box as `(left, top, right, bottom)`.
+    """
+    left, top, right, bottom = bounds
+    buf = bytearray(
+        build_psd_opti_data(canvas_width, canvas_height, bit_depth, layer_count)
+    )
+    struct.pack_into(">I", buf, 0x0E, layer_index)
+    struct.pack_into("<i", buf, 0x4E, top)
+    struct.pack_into("<i", buf, 0x52, left)
+    struct.pack_into("<i", buf, 0x56, bottom)
+    struct.pack_into("<i", buf, 0x5A, right)
+    # Channel count: 4 (RGBA) for a layer with pixel content, 0 for an empty
+    # content box (e.g. an adjustment layer with no pixels). AE 2026 measured.
+    buf[0x5E] = 0x04 if right > left and bottom > top else 0x00
+    struct.pack_into("<I", buf, 0x154, layer_id)
+    name = truncate_utf8(layer_name, 255)
+    buf[0x158 : 0x158 + len(name)] = name
+    return bytes(buf)
+
+
+def build_rhdr_opti_data() -> bytes:
+    """Build the 30-byte Radiance HDR (`RHDR`) `opti` asset-info body.
+
+    AE refuses an empty or generic `opti` for HDR, but the dimensions are
+    stored in `sspc` (not this opti), so the body is a fixed template. The
+    `asset_type_int` is 0x002e (46), distinguishing it from the generic
+    0x0005 and the still-importer 0x0109. Reverse-engineered from AE 2026;
+    AE's own opti carries a file-system fingerprint in the trailing 8 bytes
+    that AE re-derives on a cache miss, so it is left zero here.
+    """
+    return (
+        b"RHDR"
+        + b"\x00\x2e"
+        + struct.pack(">I", 30)  # total length (big-endian)
+        + b"\x02\x00"
+        + b"\x00" * 18
+    )
+
+
+def build_text_opti_data(width: int, height: int) -> bytes:
+    """Build the 596-byte `TEXT` `opti` asset-info body for AI/EPS/PDF.
+
+    AE stores this opti for every file imported with source format `TEXT`
+    (Illustrator, EPS, PDF). Width and height are big-endian u16 at bytes
+    24 and 28. AE caches `sspc` (not this opti) for dimensions, so AE's
+    per-file flag bytes (51, 60) and the redundant dimension tail
+    (584-589) are not load-bearing and are left zero. Reverse-engineered
+    from AE 2026 for ai.ai (612x792), eps.eps (1921x2881), pdf.pdf (595x842).
+    """
+    buf = bytearray(596)
+    buf[0:4] = b"TEXT"
+    buf[4:6] = b"\x00\x08"
+    struct.pack_into(">I", buf, 6, 596)  # total length
+    struct.pack_into(">H", buf, 24, width)
+    struct.pack_into(">H", buf, 28, height)
+    buf[40:44] = b"\xff\xff\xff\xff"
+    return bytes(buf)
+
+
+def build_ai_layer_opti_data(
+    width: int, height: int, layer_name: str, color_space: str | None = None
+) -> bytes:
+    """Build the 596-byte `TEXT` `opti` for one layer of a layered AI/PDF import.
+
+    When After Effects imports a layered Illustrator/PDF file as a composition,
+    it creates one footage item per layer, each referencing the same file with
+    its source layer selected. The selection is stored entirely in this opti.
+    It extends `build_text_opti_data` with:
+
+    - byte 0x3C: element/page count (1).
+    - byte 0x3D: per-layer-reference flag (1; whole-document footage is 0).
+    - byte 0x44: the layer name, NUL-terminated.
+    - bytes 0x248/0x24C: the redundant page-dimension tail (height/width, BE u16).
+    - byte 0x33: 2 (a flag AE also sets for whole-document footage).
+
+    The artwork bounding box (0x10-0x1c, BE signed 16.16) keeps the full-page
+    value `build_text_opti_data` already writes; a cropped
+    (`COMP_CROPPED_LAYERS`) import would set it to the layer's artwork bounds.
+    Byte-verified against AE 2026's import of ai.ai ("Calque 1"/"Calque 2",
+    612x792).
+    """
+    buf = bytearray(build_text_opti_data(width, height))
+    # byte 0x33 = document color-space flag: 0x02 for CMYK, 0x08 otherwise
+    # (RGB + default). AE 2026-verified: ai.ai (CMYK)=0x02, complex.ai (RGB)=0x08.
+    buf[0x33] = 0x02 if color_space == "CMYK" else 0x08
+    buf[0x3C] = 0x01
+    buf[0x3D] = 0x01
+    name = truncate_utf8(layer_name, 255)
+    buf[0x44 : 0x44 + len(name)] = name
+    struct.pack_into(">H", buf, 0x248, height)
+    struct.pack_into(">H", buf, 0x24C, width)
+    return bytes(buf)
+
+
 @register("opti")
 @define
 class OptiChunk(Chunk):
@@ -456,7 +618,7 @@ class PsdOptiChunk(OptiChunk):
     """PSD footage asset (asset_type='8BPS')."""
 
     asset_type: str = ascii_field(4, default="8BPS")
-    asset_type_int: int = u2_field(default=264)
+    asset_type_int: int = u2_field(default=265)
     _pad_06: bytes = bytes_field(10, repr=False)
     psd_layer_index: int = u2_field()
     """0-based layer index. 0xFFFF = merged/flattened."""

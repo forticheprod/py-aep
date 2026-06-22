@@ -7,12 +7,12 @@ from py_aep.enums import AutoOrientType, Label, LayerType
 
 from ...binary.chunk import ListChunk
 from ...binary.item_chunks import CmtaChunk
-from ...binary.mutations import build_gide_list, clone_chunk_tree
+from ...binary.mutations import build_gide_list, clone_chunk_tree, rewrite_owner_tdpi
 from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import find_by_type, index_by_identity
 from ...parsers.property import parse_properties
-from ...parsers.utils import get_chunks_by_match_name
+from ...parsers.utils import get_match_name_runs
 from ...resolvers.transform import (
     Mat4,
     build_world_matrix,
@@ -216,7 +216,7 @@ class Layer(PropertyGroup):
         layer._tdgp = root_tdgp
 
         props = parse_properties(
-            chunks_by_match_name=get_chunks_by_match_name(root_tdgp),
+            match_name_runs=get_match_name_runs(root_tdgp),
             child_depth=1,
             effect_param_defs=effect_param_defs or {},
             composition=containing_comp,
@@ -240,6 +240,11 @@ class Layer(PropertyGroup):
     def name(self, value: str) -> None:
         PropertyBase.name.fset(self, value)  # type: ignore[attr-defined]
         self._ldta.layer_name = value
+        # AE sets _layer_flags_0 bit 0 only for a SOURCE-BACKED layer whose name
+        # is explicitly set (away from the source item's name). It stays 0 for
+        # sourceless layers (camera/light/text/shape) even when named, and for an
+        # empty (source-inherited) name.
+        self._ldta.name_set = bool(value) and self._ldta.source_id != 0
 
     @property
     def comment(self) -> str:
@@ -760,6 +765,10 @@ class Layer(PropertyGroup):
         )
         # Layer IDs are unique project-wide, not per-comp.
         cloned_ldta.layer_id = into_comp._project._allocate_layer_id()
+        # AE points every effect's hidden -0000 param tdpi at the owning
+        # layer; retarget the clones at the fresh id (layer-reference
+        # tdpi values keep pointing at the originally referenced layer).
+        rewrite_owner_tdpi(cloned_list, cloned_ldta.layer_id)
 
         # Determine chunk insertion point
         if same_comp:

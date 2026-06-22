@@ -31,9 +31,9 @@ _PROPERTY_MIN_MAX: dict[str, tuple[float, float]] = {
     "ADBE Mask Offset": (-32000, 32000),
 }
 
-# Default values for synthesized effect properties whose pard `dephault`
+# Default values for synthesized effect properties whose pard `default`
 # field could not be verified against ExtendScript ground truth. Defaults
-# normally come straight from the pard dephault field (validated across
+# normally come straight from the pard default field (validated across
 # the whole sample corpus: 140/140 parameters match); an entry here is
 # removable once a sample containing the parameter shows the pard
 # prediction matches ExtendScript output.
@@ -94,8 +94,16 @@ _ISSPATIAL_OVERRIDES: dict[str, bool] = {
     "ADBE Orientation": True,
     "ADBE Fill-0002": True,  # Fill > Color
     "ADBE Mask Shape": True,
+    "ADBE Vector Shape": True,  # shape-layer Path
     "ADBE Shadow Color": True,
     "ADBE Vector Fill Color": True,
+    # Text-animator color properties report isSpatial=True in AE.
+    "ADBE Text Fill Color": True,
+    "ADBE Text Stroke Color": True,
+    "ADBE 3DText Front RGB": True,
+    "ADBE 3DText Bevel RGB": True,
+    "ADBE 3DText Side RGB": True,
+    "ADBE 3DText Back RGB": True,
     "ADBE HUE SATURATION-0003": True,  # Channel Range
     "ADBE CurvesCustom-0001": True,
     "ADBE Easy Levels-0002": True,
@@ -235,6 +243,13 @@ _CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset(
         "ADBE Text Force Align Path",
         "ADBE Text First Margin",
         "ADBE Text Last Margin",
+        # Text range-selector bounds (can keyframe but not expression);
+        # the Units/Based On/Shape/Randomize props are already covered by
+        # their can_vary_over_time=False.
+        "ADBE Text Index Start",
+        "ADBE Text Index End",
+        "ADBE Text Index Offset",
+        "ADBE Text Random Seed",
         # Vector stroke dashes / gaps / offset
         "ADBE Vector Stroke Dash 1",
         "ADBE Vector Stroke Dash 2",
@@ -243,6 +258,9 @@ _CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset(
         "ADBE Vector Stroke Gap 2",
         "ADBE Vector Stroke Gap 3",
         "ADBE Vector Stroke Offset",
+        # Gradient highlight (length / angle never expressionable)
+        "ADBE Vector Grad HiLite Length",
+        "ADBE Vector Grad HiLite Angle",
         # Vector taper
         "ADBE Vector Taper StartWidthPx",
         "ADBE Vector Taper EndWidthPx",

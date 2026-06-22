@@ -361,7 +361,12 @@ def _stops_lines(kind: str, stops: list[list[float]]) -> list[str]:
         "<key>Stops List</key>",
         "<prop.list>",
     ]
-    for i, values in enumerate(stops):
+    # AE stores stops in a string-keyed map and serializes them in
+    # LEXICOGRAPHIC key order (Stop-0, Stop-1, Stop-10, ..., Stop-15,
+    # Stop-2, ...), not numeric order. Match that so gradients with >9
+    # stops are byte-identical (identical for <=10 stops).
+    for i in sorted(range(len(stops)), key=lambda n: str(n)):
+        values = stops[i]
         lines.extend(
             [
                 "<prop.pair>",

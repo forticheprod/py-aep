@@ -21,6 +21,7 @@ from ...binary.mutations import (
     build_shap,
 )
 from ...binary.property_chunks import (
+    TDSN_SENTINEL,
     CdatChunk,
     Tdb4Chunk,
     TdmnChunk,
@@ -64,7 +65,7 @@ from .parallel import (
     TEXT_KIND,
     ParallelKind,
 )
-from .property_base import _TDSN_SENTINEL, PropertyBase
+from .property_base import PropertyBase
 from .shape import Shape
 
 if TYPE_CHECKING:
@@ -152,6 +153,11 @@ def _validate_value(prop: Property, value: Any) -> None:
         _validate_list(value, prop)
     else:
         _validate_scalar(value, prop)
+
+
+# High byte of tdb4._pad10: AE's "this property has an expression" marker,
+# set whenever an expression Utf8 is present (independent of enabled/disabled).
+_TDB4_HAS_EXPRESSION = 0x01000000
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -368,7 +374,7 @@ class Property(PropertyBase):
 
         # AE writes the unnamed sentinel; the display name resolves
         # from auto_name on the model.
-        tdsn = TdsnChunk.new(_TDSN_SENTINEL, synthetic=synthetic)
+        tdsn = TdsnChunk.new(TDSN_SENTINEL, synthetic=synthetic)
         name_utf8 = tdsn.utf8
         _tdbs = ListChunk(
             list_type="tdbs",
@@ -414,6 +420,8 @@ class Property(PropertyBase):
             property_depth=property_depth,
             property_value_type=spec.pvt,
             value=final_value,
+            can_vary_over_time=spec.can_vary_over_time,
+            units_text=spec.units_text,
         )
         if default_value is not _USE_VALUE:
             prop.default_value = default_value
@@ -647,6 +655,11 @@ class Property(PropertyBase):
         """
         if self._tdum is not None or self._tduM is not None:
             return
+        # AE writes [0.0] bounds only on ANIMATABLE bounded leaves; it omits
+        # them on bounded menu/dropdown leaves (Line Cap, Fill Rule, Grad
+        # Type, ...) which report can_vary_over_time=False. Match that.
+        if self._can_vary_over_time is False:
+            return
         multi_dim_vector = (
             not self._color
             and not self.is_spatial
@@ -718,6 +731,36 @@ class Property(PropertyBase):
             self._tdb4._cvot_flags = 0xFF
             self._tdb4._type_flags = 0x08
             self._tdb4._property_category = 0x09
+            self._tdb4._spatial_marker = True
+        elif self.match_name in (
+            "ADBE Vector Position",
+            "ADBE Vector Anchor",
+            "ADBE Vector Grad Start Pt",
+            "ADBE Vector Grad End Pt",
+        ):
+            # Static shape spatials (measured on an AE 2026 SVG-cropped
+            # import: group transform Position/Anchor + gradient-fill
+            # Start/End points share one canon). Same vector-style flags as
+            # a layer transform plus pad2a=3; without them AE silently
+            # ignores the materialized value (reads 0,0).
+            self._tdb4._spatial_static_flags = 0x0F
+            self._tdb4._pad2a = 3
+            self._tdb4._value_hint_type = 0xFFFF
+            self._tdb4._value_hint_flag = 0xFF
+            self._tdb4._cvot_flags = 0xFF
+            self._tdb4._type_flags = 0x08
+            self._tdb4._property_category = 0x09
+            self._tdb4._spatial_marker = True
+        elif self._color and not self.is_effect and self._tdb4._value_hint_type == 0:
+            # Static color canon (measured on a script-modified vector
+            # fill color, AE 2026); with the synthesis-default flags AE
+            # silently ignores the materialized value.
+            self._tdb4._spatial_static_flags = 0x07
+            self._tdb4._value_hint_type = 2
+            self._tdb4._value_hint_flag = 0xFF
+            self._tdb4._cvot_flags = 0xFF
+            self._tdb4._type_flags = 0x01
+            self._tdb4._property_category = 0x01
             self._tdb4._spatial_marker = True
         elif (
             not self._color
@@ -994,12 +1037,27 @@ class Property(PropertyBase):
         if kind.name == "marker":
             raise ValueError("Markers have no static value to set.")
         container = self._kf_value_container
-        if container is None or not container.chunks:
-            raise ValueError(
-                f"static {self.match_name!r} property has no value container to update"
-            )
+        if container is None:
+            # A synthesized complex property (e.g. a freshly added gradient
+            # fill) has no wrapper/container yet; build it the same way
+            # animating would, then seed the static value.
+            if not kind.can_materialize_wrapper:
+                raise ValueError(
+                    f"static {self.match_name!r} property has no value "
+                    "container to update"
+                )
+            container = self._materialize_parallel_container(kind)
+            # AE keeps an (empty) cdat in the static tdbs; a synthesized
+            # gradient leaf has none, which AE rejects as "missing data".
+            if self._cdat is None and self._tdbs is not None and self._tdb4 is not None:
+                cdat = kind.static_cdat(value)
+                self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, cdat)
+                self._cdat = cdat
         value_chunk = kind.build_value_chunk(self, value)
-        container.chunks[0] = value_chunk
+        if container.chunks:
+            container.chunks[0] = value_chunk
+        else:
+            container.chunks.append(value_chunk)
         wrapped = kind.wrap_value_chunk(self, value_chunk)
         return wrapped if wrapped is not None else value
 
@@ -1048,7 +1106,17 @@ class Property(PropertyBase):
             return self._units_text
         if self._property_control_type == PropertyControlType.ANGLE:
             return "degrees"
-        return UNITS_TEXT_MAP.get(self.match_name, "")
+        # The map holds the spatial-valued exceptions (e.g. ADBE Orientation
+        # is 3D-spatial but degrees), so it must win over the pixels heuristic.
+        mapped = UNITS_TEXT_MAP.get(self.match_name)
+        if mapped is not None:
+            return mapped
+        if self._property_value_type in (
+            PropertyValueType.TwoD_SPATIAL,
+            PropertyValueType.ThreeD_SPATIAL,
+        ):
+            return "pixels"
+        return ""
 
     @property
     def can_vary_over_time(self) -> bool:
@@ -1122,15 +1190,26 @@ class Property(PropertyBase):
                 f"expression cannot be set on property {self.match_name!r}"
             )
         validate_string(value)
+        if not value:
+            # Empty string clears the expression (chunk + tdb4 markers).
+            self._clear_expression()
+            return
+        self._ensure_materialized()
         if self._expression_utf8 is not None:
-            self._ensure_materialized()
             self._expression_utf8.value = value
-        elif value:
-            self._ensure_materialized()
+        else:
             chunk = Utf8Chunk(value=value)
             self._tdbs.chunks.append(chunk)
             self._expression_utf8 = chunk
         self._expression = value
+        # Assigning an expression enables it (AE semantics): clear any stale
+        # disabled state so the cache recomputes True (mirrors _clear_expression).
+        self._expression_enabled = None
+        if self._tdb4 is not None:
+            # AE marks an expression-bearing parameter in tdb4._pad10; the
+            # inverse of _clear_expression so a created expression round-trips.
+            self._tdb4._pad10 |= _TDB4_HAS_EXPRESSION
+            self._tdb4._expr_flags = 0
 
     @property
     def expression_enabled(self) -> bool:
@@ -1690,6 +1769,29 @@ class Property(PropertyBase):
         self._cdat = cdat
         self._value = None
 
+    def _clear_expression(self) -> None:
+        """Remove any expression, reverting to a plain (non-expression) property.
+
+        Drops the expression `Utf8` chunk from the `tdbs` and clears the
+        tdb4 expression flag, so `expression` becomes `""` and
+        `expression_enabled` `False`. A no-op when no expression is set.
+        """
+        if self._expression_utf8 is None and not self._expression:
+            return
+        if self._expression_utf8 is not None:
+            self._tdbs.chunks[:] = [
+                c for c in self._tdbs.chunks if c is not self._expression_utf8
+            ]
+            self._expression_utf8 = None
+        self._expression = None
+        self._expression_enabled = None
+        if self._tdb4 is not None:
+            # `_expr_flags` (bit 0 = disabled) and the `_pad10` marker
+            # (_TDB4_HAS_EXPRESSION) are AE's expression-present flags; clear
+            # both so the tdb4 matches a plain static parameter.
+            self._tdb4._expr_flags = 0
+            self._tdb4._pad10 &= ~_TDB4_HAS_EXPRESSION
+
     # -- Complex (parallel-container) keyframe mutation ------------------
 
     def _build_shap_chunk(self, shape: Shape) -> Chunk:
@@ -1895,7 +1997,7 @@ class Property(PropertyBase):
             # property (synthesis seeds the auto-name; a pristine
             # orientation stores its real name).
             if self._name_utf8 is not None:
-                self._name_utf8.value = _TDSN_SENTINEL
+                self._name_utf8.value = TDSN_SENTINEL
             kind.on_wrap(self)
         else:
             raise NotImplementedError(
@@ -2155,7 +2257,10 @@ class Property(PropertyBase):
         Lazily computed from context:
         - Effect point properties (TWO_D inside an effect): composition
           dimensions.
-        - Anchor Point: layer source dimensions.
+        - Anchor Point: layer source dimensions, but ONLY when the layer
+          has a source. Source-less layers (shape, text, null) store the
+          anchor in raw pixels - AE does not normalize it - so applying a
+          scale (which would fall back to comp size) corrupts the value.
         - All others: `None`.
 
         On first access for effect points, also triggers
@@ -2172,10 +2277,13 @@ class Property(PropertyBase):
 
         if self.match_name == "ADBE Anchor Point":
             layer = self._containing_layer
-            width = getattr(layer, "width", 0)
-            height = getattr(layer, "height", 0)
-            if width and height:
-                scale = [float(width), float(height), 1.0]
+            # Only footage/comp layers normalize the anchor to source size;
+            # source-less layers (shape, text, null) store it in raw pixels.
+            if getattr(layer, "source", None) is not None:
+                width = getattr(layer, "width", 0)
+                height = getattr(layer, "height", 0)
+                if width and height:
+                    scale = [float(width), float(height), 1.0]
         elif (
             self._property_control_type == PropertyControlType.TWO_D
             and self._is_in_effect()

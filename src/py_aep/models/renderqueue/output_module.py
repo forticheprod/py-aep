@@ -21,7 +21,11 @@ from py_aep.enums import (
     PostRenderActionSetting,
     ResizeQuality,
 )
-from py_aep.enums.mappings import map_output_audio, map_output_color_space
+from py_aep.enums.mappings import (
+    map_output_audio,
+    map_output_color_space,
+    profile_id_for_name,
+)
 
 from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
 from ...binary.misc_chunks import HdrmChunk
@@ -577,6 +581,43 @@ class OutputModule:
         return self._output_color_space or ""
 
     @property
+    def output_color_space(self) -> str:
+        """The output color space (Output Module Settings > Color Management).
+        Read / Write.
+
+        Reading returns the name of an Adobe ICC profile (e.g. `"ARRI LogC3
+        Wide Color Gamut - EI 800"`), or - when set to the working color space -
+        the project's working-space name (mirroring After Effects).
+
+        Writable as `"Working Color Space"` or a catalogued Adobe ICC profile
+        name (the 16-byte profile ID is written; no ICC bytes are needed). OCIO
+        output color spaces cannot be written - After Effects identifies them by
+        a hash of a runtime-generated ICC profile that cannot be reproduced
+        (assigning one raises [NotImplementedError][]).
+
+        Note:
+            Not exposed in ExtendScript."""
+        return self._output_color_space or ""
+
+    @output_color_space.setter
+    def output_color_space(self, value: str) -> None:
+        ldat = self._om_ldat
+        if value == "Working Color Space":
+            ldat.output_color_space_working = 1
+            ldat.output_profile_id = b"\xff" * 16
+            return
+        profile_id = profile_id_for_name(value)
+        if profile_id is None:
+            raise NotImplementedError(
+                f"Output color space {value!r} is not a known Adobe ICC profile. "
+                "OCIO output color spaces cannot be written: After Effects "
+                "identifies them by a hash of a runtime-generated ICC profile "
+                "that cannot be reproduced."
+            )
+        ldat.output_color_space_working = 0
+        ldat.output_profile_id = profile_id
+
+    @property
     def _output_file_info(self) -> dict[str, str]:
         """Output file info (read-only)."""
         file_template = self.file_template
@@ -910,7 +951,7 @@ class OutputModule:
         new_ropt: Chunk = (
             RoptChunk.frombytes(template.format_options, chunk_type="Ropt")
             if template.format_options is not None
-            else RoptChunk(data=b"")
+            else RoptChunk()
         )
         for i in range(roou_idx, block_end):
             if lom_chunks[i].chunk_type == "Ropt":

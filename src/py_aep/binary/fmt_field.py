@@ -73,7 +73,9 @@ def fmt_field(
             n = int(fmt[:-1]) if len(fmt) > 1 else 1
             default = b"\x00" * n
         else:
-            default = 0
+            # Coerce so constructed chunks hold the read-time type
+            # (e.g. bool_field defaults to False, not 0).
+            default = coerce(0) if coerce is not None else 0
     md: dict[str, Any] = {"fmt": fmt}
     if encoding is not None:
         md["encoding"] = encoding

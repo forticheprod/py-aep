@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import struct
+import uuid
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from .chunk import Chunk, ListChunk, read_chunks, write_chunk
+from ..data.dropdown_control import DROPDOWN_CONTROL
+from .chunk import Chunk, ContainerChunk, ListChunk, read_chunks, write_chunk
 from .ldat_chunks import (
     GdtaChunk,
     KfColor,
@@ -24,6 +27,7 @@ from .misc_chunks import (
     DcuiChunk,
     DropChunk,
     EmbpChunk,
+    EmpdChunk,
     EpidChunk,
     HdrmChunk,
     IpwsChunk,
@@ -35,8 +39,16 @@ from .misc_chunks import (
     ShphChunk,
     StrtChunk,
 )
+from .property_chunks import (
+    TDSN_SENTINEL,
+    CdatChunk,
+    Tdb4Chunk,
+    TdmnChunk,
+    TdsbChunk,
+    TdsnChunk,
+)
 from .render_chunks import RoutItem
-from .scalar_chunks import U4Chunk, Utf8Chunk
+from .scalar_chunks import S4Chunk, U4Chunk, Utf8Chunk
 
 if TYPE_CHECKING:
     from typing import Any, Callable
@@ -107,6 +119,31 @@ def _unflag_markers(
         parent_chunks[idx - 1].synthetic = False
     if idx + 1 < len(parent_chunks) and parent_chunks[idx + 1].chunk_type == "tdmn":
         parent_chunks[idx + 1].synthetic = False
+
+
+def rewrite_owner_tdpi(chunk: Chunk, layer_id: int) -> None:
+    """Point effect internal-param (`-0000`) tdpi chunks at `layer_id`.
+
+    Every effect's hidden `-0000` parameter carries the owning layer's
+    id in its `tdpi`; AE rewrites these when a layer is duplicated.
+    Layer-reference tdpi values (regular value params) keep pointing at
+    the referenced layer and are left untouched.
+    """
+    if not isinstance(chunk, ListChunk):
+        return
+    chunks = chunk.chunks
+    for i, c in enumerate(chunks):
+        if (
+            c.chunk_type == "tdmn"
+            and cast("TdmnChunk", c).value.endswith("-0000")
+            and i + 1 < len(chunks)
+            and isinstance(chunks[i + 1], ListChunk)
+        ):
+            for inner in cast("ListChunk", chunks[i + 1]).chunks:
+                if inner.chunk_type == "tdpi":
+                    cast("S4Chunk", inner).value = layer_id
+        elif isinstance(c, ListChunk):
+            rewrite_owner_tdpi(c, layer_id)
 
 
 def clone_chunk_tree(chunk: Chunk) -> Chunk:
@@ -262,7 +299,7 @@ def build_shap(
     )
     ldat = LdatChunk(items=list(points), item_type=LdatItemType.shape, item_size=8)
     inner = ListChunk(list_type="list", chunks=[lhd3, ldat])
-    omtn = Chunk(chunk_type="omtn", data=b"")
+    omtn = Chunk(chunk_type="omtn")
     return ListChunk(list_type="shap", chunks=[shph, inner, omtn])
 
 
@@ -291,7 +328,7 @@ def build_source_alternate_extras() -> list[Chunk]:
     Alternate tdmn."""
     return [
         U4Chunk(chunk_type="blsv", value=1),
-        U4Chunk(chunk_type="blsi", value=0),
+        U4Chunk(chunk_type="blsi"),
     ]
 
 
@@ -301,6 +338,7 @@ def build_pin_list(
     *,
     is_solid: bool = False,
     path_chunks: list[Chunk] | None = None,
+    embedded_profile_name: str | None = None,
 ) -> ListChunk:
     """Build a complete `LIST:Pin` with required companion chunks.
 
@@ -308,14 +346,22 @@ def build_pin_list(
     prefix/extension `Utf8` chunks) are inserted between the leading
     empty `Utf8` and `opti`. File sources pass them; solid/placeholder
     sources (no file path) pass nothing.
+
+    When `embedded_profile_name` is given, the source's embedded color
+    profile is recorded in `LIST:CLRS` as an `empd` flag plus a `Utf8`
+    name (matching AE); pass `None` for sources with no embedded profile.
     """
-    clrs_chunks: list[Chunk] = [
-        EpidChunk(),
-        ApidChunk(),
-        LinlChunk(),
-        EmbpChunk(),
-        IpwsChunk(),
-    ]
+    clrs_chunks: list[Chunk] = [EpidChunk(), ApidChunk()]
+    if embedded_profile_name is not None:
+        clrs_chunks.append(EmpdChunk())
+        clrs_chunks.append(Utf8Chunk(value=embedded_profile_name))
+    clrs_chunks.extend(
+        [
+            LinlChunk(),
+            EmbpChunk(),
+            IpwsChunk(),
+        ]
+    )
     if is_solid:
         clrs_chunks.append(DcuiChunk())
         clrs_chunks.append(PrgbChunk())
@@ -377,3 +423,341 @@ def build_om_container() -> ListChunk:
     lhd3 = Lhd3Chunk(count=0, item_size=128, item_type_raw=1, counter_b=1)
     ldat = LdatChunk(items=[], item_type=LdatItemType.litm, item_size=128)
     return ListChunk(list_type="list", chunks=[lhd3, ldat])
+
+
+def build_default_path_shape(time_base: int) -> tuple[TdmnChunk, ListChunk]:
+    """Build the `(tdmn, LIST:om-s)` pair for a new Path element's
+    `ADBE Vector Shape` property.
+
+    AE writes an empty bezier path (no vertices) with a unit bounding
+    box for `addProperty("ADBE Vector Shape - Group")`; the chunk
+    layout mirrors a static mask path (`tdbs` with empty `cdat` plus
+    the `omks > shap` value container).
+
+    Args:
+        time_base: The comp's internal timebase (`cdta.internal_timebase`).
+    """
+    tdb4 = Tdb4Chunk(
+        spatial_static_flags=7,
+        pad2a=1,
+        value_hint_type=2,
+        cvot_flags=7,
+        time_base=time_base,
+        no_value_flags=1,
+        type_flags=8,
+        spatial_marker=True,
+    )
+    tdbs = ListChunk(
+        list_type="tdbs",
+        chunks=[
+            TdsbChunk(),
+            TdsnChunk.new(TDSN_SENTINEL),
+            tdb4,
+            CdatChunk(pad=b"\x00\x00\x00\x00"),
+        ],
+    )
+    shap = ListChunk(
+        list_type="shap",
+        chunks=[
+            ShphChunk(flags=9, bottom_right_x=1.0, bottom_right_y=1.0),
+            ListChunk(
+                list_type="list",
+                chunks=[Lhd3Chunk(item_size=8, item_type_raw=4, counter_b=4)],
+            ),
+            Chunk(chunk_type="omtn"),
+        ],
+    )
+    oms = ListChunk(
+        list_type="om-s",
+        chunks=[tdbs, ListChunk(list_type="omks", chunks=[shap])],
+    )
+    return TdmnChunk(value="ADBE Vector Shape"), oms
+
+
+# AE-exact `ADBE Mask Shape` om-s written when a mask's rotoBezier is
+# enabled: the implicit default full-frame rectangle materialized as an
+# explicit roto-bezier path. Geometry is normalized [0, 1] (so it is
+# comp/layer-size independent); only the embedded tdb4 time_base is
+# comp-specific and is patched per call. Captured from AE 2026
+# (rotoBezier=true on a freshly added mask); py_aep round-trips it
+# byte-identically.
+_DEFAULT_ROTO_MASK_SHAPE_OMS = (
+    "4c495354000001c26f6d2d734c495354000000b67464627374647362000000040100000174"
+    "64736e0000000e55746638000000062d5f305f2f2d746462340000007cdb99000100070001"
+    "00020007000060003f1a36e2eb1c432d3ff00000000000003ff00000000000003ff0000000"
+    "0000003ff00000000000000001000800000000000000000000000000000000000000010000"
+    "00000000000000000000000000000000000000000000000000000000000000000000000000"
+    "00000000006364617400000004000000004c495354000000f86f6d6b734c495354000000ec"
+    "736861707368706800000018b3de020100000000000000003f8000003f800000010000004c"
+    "495354000000a86c6973746c6864330000003400d00bee000000000000000c000000040000"
+    "000800000004000000010000001000000000000000000000000000000000000000006c6461"
+    "740000006000000000000000000000000000000000000000003f800000000000003f800000"
+    "000000003f8000003f8000003f8000003f8000003f8000003f8000003f8000003f80000000"
+    "0000003f800000000000003f8000000000000000000000000000006f6d746e000000103f80"
+    "00003f8000003f8000003f800000"
+)
+
+
+def build_default_mask_shape(time_base: int) -> tuple[TdmnChunk, ListChunk]:
+    """Build the `(tdmn, LIST:om-s)` pair AE writes for `ADBE Mask Shape`
+    when a mask's rotoBezier is enabled.
+
+    A freshly added mask has no Mask Shape subtree (AE treats it as the
+    implicit default full-frame rectangle); enabling rotoBezier
+    materializes that default as an explicit roto-bezier path. The
+    geometry is normalized, so only the comp's internal timebase varies.
+
+    Args:
+        time_base: The comp's internal timebase (`cdta.internal_timebase`).
+    """
+    raw = bytes.fromhex(_DEFAULT_ROTO_MASK_SHAPE_OMS)
+    oms = cast("ListChunk", read_chunks(BytesIO(raw), len(raw))[0])
+    tdbs = cast("ListChunk", oms.chunks[0])
+    for c in tdbs.chunks:
+        if isinstance(c, Tdb4Chunk):
+            c._time_base = time_base
+    return TdmnChunk(value="ADBE Mask Shape"), oms
+
+
+def build_vector_element(
+    match_name: str,
+    name: str,
+    *,
+    subgroups: tuple[tuple[str, int, int], ...] = (),
+    path_time_base: int | None = None,
+) -> tuple[TdmnChunk, ListChunk]:
+    """Build the `(tdmn, LIST:tdgp)` pair AE writes for a freshly added
+    shape element.
+
+    A new element is a named, otherwise empty group: child properties
+    stay at AE-side defaults and are synthesized on parse rather than
+    written to binary. `subgroups` lists the mandatory empty subgroups
+    some elements carry as `(match_name, tdsb lock flags)` pairs.
+
+    Args:
+        match_name: The element match name (e.g. `ADBE Vector Shape - Rect`).
+        name: The instance name AE bakes into the tdsn (`"Base N"`).
+        subgroups: Mandatory empty subgroups to write inside the element,
+            as `(match_name, tdsb lock flags, tdsb enable flags)` triples.
+        path_time_base: For the Path element (`ADBE Vector Shape -
+            Group`), the comp's internal timebase; adds the default
+            empty `ADBE Vector Shape` bezier property.
+    """
+    chunks: list[Chunk] = [TdsbChunk(), TdsnChunk.new(name)]
+    if path_time_base is not None:
+        chunks.extend(build_default_path_shape(path_time_base))
+    for sub_match_name, lock_flags, enable_flags in subgroups:
+        chunks.append(TdmnChunk(value=sub_match_name))
+        chunks.append(
+            ListChunk(
+                list_type="tdgp",
+                chunks=[
+                    TdsbChunk(lock_flags=lock_flags, enable_flags=enable_flags),
+                    TdsnChunk.new(TDSN_SENTINEL),
+                    TdmnChunk(value="ADBE Group End"),
+                ],
+            )
+        )
+    chunks.append(TdmnChunk(value="ADBE Group End"))
+    return TdmnChunk(value=match_name), ListChunk(list_type="tdgp", chunks=chunks)
+
+
+def build_text_selector(
+    match_name: str,
+    name: str,
+    *,
+    has_advanced: bool,
+) -> tuple[TdmnChunk, ListChunk]:
+    """Build the `(tdmn, LIST:tdgp)` pair AE writes for a freshly added
+    text selector.
+
+    A new selector is a named group `[tdsb, tdsn("X Selector N"),
+    group end]` whose value children are synthesized on parse. The
+    Range Selector additionally carries an empty `ADBE Text Range
+    Advanced` subgroup in binary (its children are synthesized too);
+    Wiggly and Expression selectors do not.
+
+    Args:
+        match_name: The selector match name (e.g. `ADBE Text Selector`).
+        name: The instance name AE bakes into the tdsn (`"Base N"`).
+        has_advanced: Whether to write the empty Advanced subgroup
+            (Range Selector only).
+    """
+    chunks: list[Chunk] = [TdsbChunk(), TdsnChunk.new(name)]
+    if has_advanced:
+        chunks.append(TdmnChunk(value="ADBE Text Range Advanced"))
+        chunks.append(
+            ListChunk(
+                list_type="tdgp",
+                chunks=[
+                    TdsbChunk(),
+                    TdsnChunk.new(TDSN_SENTINEL),
+                    TdmnChunk(value="ADBE Group End"),
+                ],
+            )
+        )
+    chunks.append(TdmnChunk(value="ADBE Group End"))
+    return TdmnChunk(value=match_name), ListChunk(list_type="tdgp", chunks=chunks)
+
+
+def build_text_animator(name: str) -> tuple[TdmnChunk, ListChunk]:
+    """Build the `(tdmn, LIST:tdgp)` pair AE writes for a freshly added
+    text animator.
+
+    A new animator is `[tdsb, tdsn("Animator N"), Animator Properties
+    (empty), group end]`. The empty `ADBE Text Animator Properties`
+    subgroup is in binary; its 103-property pool and the (also empty)
+    `ADBE Text Selectors` group are synthesized on parse.
+
+    Args:
+        name: The instance name AE bakes into the tdsn (`"Animator N"`).
+    """
+    properties_tdgp = ListChunk(
+        list_type="tdgp",
+        chunks=[
+            TdsbChunk(),
+            TdsnChunk.new(TDSN_SENTINEL),
+            TdmnChunk(value="ADBE Group End"),
+        ],
+    )
+    tdgp = ListChunk(
+        list_type="tdgp",
+        chunks=[
+            TdsbChunk(),
+            TdsnChunk.new(name),
+            TdmnChunk(value="ADBE Text Animator Properties"),
+            properties_tdgp,
+            TdmnChunk(value="ADBE Group End"),
+        ],
+    )
+    return TdmnChunk(value="ADBE Text Animator"), tdgp
+
+
+def build_expression_control(
+    match_name: str,
+    display_name: str,
+    part_bytes: bytes,
+    *,
+    tdsn_name: str,
+    time_base: int,
+    layer_id: int,
+    layer_param_name: str | None = None,
+) -> tuple[TdmnChunk, ListChunk]:
+    """Build the `(tdmn, LIST:sspc)` pair AE writes for a freshly added
+    expression-control effect.
+
+    The parameter definitions (`LIST:parT`) are baked plugin data from
+    `data/effect_controls.py`. The instance tdgp carries the hidden
+    `-0000` internal parameter (a 1-D scalar whose `tdpi` points at the
+    containing layer) and the named Compositing Options group; value
+    parameters stay at their defaults and are omitted from binary,
+    except the Layer Control's, which AE always writes.
+
+    Args:
+        match_name: The effect match name (e.g. `ADBE Slider Control`).
+        display_name: The default effect name, written to `fnam`.
+        part_bytes: This control's serialized `LIST:parT` chunk.
+        tdsn_name: The instance name for the effect tdsn - the unnamed
+            sentinel for a first instance, `"Name N"` for later ones.
+        time_base: The comp's internal timebase (`cdta.internal_timebase`).
+        layer_id: Id of the layer the effect is applied to.
+        layer_param_name: When set, also write the `-0001` value
+            parameter to the tdgp, with this tdsn display name.
+    """
+    part = read_chunks(BytesIO(part_bytes), len(part_bytes))[0]
+
+    def param_tdbs(name: str, enable_flags: int) -> ListChunk:
+        tdb4 = Tdb4Chunk(
+            value_hint_type=1,
+            time_base=time_base,
+            type_flags=4,
+            property_category=4,
+            pad7a=128,
+        )
+        return ListChunk(
+            list_type="tdbs",
+            chunks=[
+                TdsbChunk(enable_flags=enable_flags),
+                TdsnChunk.new(name),
+                tdb4,
+                CdatChunk(values=[0.0] * 5),
+                S4Chunk(chunk_type="tdpi", value=layer_id),
+                S4Chunk(chunk_type="tdps"),
+            ],
+        )
+
+    tdgp_chunks: list[Chunk] = [
+        TdsbChunk(),
+        TdsnChunk.new(tdsn_name),
+        TdmnChunk(value=match_name + "-0000"),
+        param_tdbs("", 3),
+    ]
+    if layer_param_name is not None:
+        tdgp_chunks += [
+            TdmnChunk(value=match_name + "-0001"),
+            param_tdbs(layer_param_name, 1),
+        ]
+    tdgp_chunks += [
+        TdmnChunk(value="ADBE Effect Built In Params"),
+        ListChunk(
+            list_type="tdgp",
+            chunks=[
+                TdsbChunk(),
+                TdsnChunk.new("Compositing Options"),
+                TdmnChunk(value="ADBE Group End"),
+            ],
+        ),
+        TdmnChunk(value="ADBE Group End"),
+    ]
+    # AE writes an all-zero pgui GUID for every expression control
+    # (verified on Slider/Color/Checkbox/Point/Layer + dropdown, AE 2026);
+    # PguiChunk() defaults to 16 zero bytes.
+    pgui = PguiChunk()
+    sspc = ListChunk(
+        list_type="sspc",
+        chunks=[
+            ContainerChunk(chunk_type="fnam", chunks=[Utf8Chunk(value=display_name)]),
+            part,
+            ListChunk(list_type="tdgp", chunks=tdgp_chunks),
+            pgui,
+        ],
+    )
+    return TdmnChunk(value=match_name), sspc
+
+
+def build_dropdown_control(
+    *,
+    tdsn_name: str,
+    time_base: int,
+    layer_id: int,
+) -> tuple[TdmnChunk, ListChunk]:
+    """Build a Dropdown Menu Control - a pseudo-effect whose match name
+    is generated fresh per instance.
+
+    The match name is `"Pseudo/@@" + base64(uuid4 bytes)` (standard
+    alphabet, padding stripped), always 31 chars - the same length as
+    the captured placeholder in `DROPDOWN_CONTROL["part"]`, so a
+    byte-level substitution into the baked `parT` preserves chunk
+    sizes. The tdgp is the same as a value-less control (only the
+    `-0000` internal param); the Menu enum + items live in the `parT`.
+
+    Args:
+        tdsn_name: The instance name for the effect tdsn.
+        time_base: The comp's internal timebase.
+        layer_id: Id of the layer the effect is applied to.
+    """
+    match_name = "Pseudo/@@" + base64.b64encode(uuid.uuid4().bytes).decode(
+        "ascii"
+    ).rstrip("=")
+    part_bytes = bytes.fromhex(DROPDOWN_CONTROL["part"]).replace(
+        DROPDOWN_CONTROL["placeholder"].encode("ascii"),
+        match_name.encode("ascii"),
+    )
+    return build_expression_control(
+        match_name,
+        DROPDOWN_CONTROL["name"],
+        part_bytes,
+        tdsn_name=tdsn_name,
+        time_base=time_base,
+        layer_id=layer_id,
+    )

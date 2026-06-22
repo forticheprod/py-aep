@@ -16,14 +16,20 @@ For single-file inspection (tree, dump, list), use `aep-inspect`.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..binary.chunk import ListChunk, read_aep
-from ._chunk_helpers import chunk_label, extract_leaf_chunks
+from ._chunk_helpers import (
+    chunk_label,
+    extract_leaf_chunks,
+    extract_leaf_chunks_typed,
+)
 
 if TYPE_CHECKING:
     from typing import Any, Iterator
@@ -144,6 +150,146 @@ def compare_binary_data(
             )
 
 
+# ── Float-tolerant comparison ───────────────────────────────────────────────
+
+#: Default tolerances: floats differing by at most this (relative or
+#: absolute) are treated as equal. AE and py_aep encode the same coordinate
+#: through different float32/float64 rounding, so tiny deltas are noise.
+FLOAT_REL_TOL = 1e-4
+FLOAT_ABS_TOL = 1e-3
+
+
+def _floats_close(a: float, b: float) -> bool:
+    return abs(a - b) <= max(FLOAT_ABS_TOL, FLOAT_REL_TOL * max(abs(a), abs(b)))
+
+
+def _chunk_floats(chunk: Any) -> list[float] | None:
+    """Return a chunk's coordinate float fields, or None if it has none.
+
+    Covers the float-bearing leaf chunks whose values AE and py_aep may
+    encode with slightly different rounding: `cdat` (doubles), `shph`
+    (bounding-box f4), and `ldat` shape-point lists (f4 x/y).
+    """
+    ct = getattr(chunk, "chunk_type", None)
+    if ct == "cdat":
+        values = list(chunk.values)
+        return values or None
+    if ct == "shph":
+        return [
+            chunk.top_left_x,
+            chunk.top_left_y,
+            chunk.bottom_right_x,
+            chunk.bottom_right_y,
+        ]
+    if ct == "ldat":
+        items = chunk.items
+        if items and all(hasattr(i, "x") and hasattr(i, "y") for i in items):
+            return [v for i in items for v in (i.x, i.y)]
+    return None
+
+
+def _with_floats(chunk: Any, floats: list[float]) -> Any:
+    """Return a copy of `chunk` with its coordinate floats replaced."""
+    clone = copy.deepcopy(chunk)
+    ct = clone.chunk_type
+    if ct == "cdat":
+        clone.values = list(floats)
+    elif ct == "shph":
+        (
+            clone.top_left_x,
+            clone.top_left_y,
+            clone.bottom_right_x,
+            clone.bottom_right_y,
+        ) = floats
+    elif ct == "ldat":
+        for idx, item in enumerate(clone.items):
+            item.x = floats[2 * idx]
+            item.y = floats[2 * idx + 1]
+    return clone
+
+
+_FLOAT_TAG_RE = re.compile(r"<float>([^<]*)</float>")
+
+
+def _gradient_xml_only_float_diff(s1: Any, s2: Any) -> bool:
+    """True when two AE `prop.map` XML strings (gradient color data) differ
+    ONLY in their `<float>` values within tolerance.
+
+    Gradient colors/offsets are stored as text floats inside a `Utf8`
+    chunk, so the numeric tolerance applied to cdat/shph/ldat cannot reach
+    them; AE and py_aep round an 8-bit colour to adjacent float32 values.
+    """
+    if not isinstance(s1, str) or not isinstance(s2, str):
+        return False
+    if "<prop.map" not in s1 or "<float>" not in s1:
+        return False
+    f1 = _FLOAT_TAG_RE.findall(s1)
+    f2 = _FLOAT_TAG_RE.findall(s2)
+    if len(f1) != len(f2):
+        return False
+    # Everything except the float values must be byte-identical.
+    if _FLOAT_TAG_RE.sub("<float/>", s1) != _FLOAT_TAG_RE.sub("<float/>", s2):
+        return False
+    for a, b in zip(f1, f2):
+        # `<float>` content is normally numeric in AE's prop.map output; an
+        # empty/non-numeric tag is not a pure float-precision diff (and must
+        # not crash the comparison), so treat it as a real difference.
+        try:
+            fa, fb = float(a), float(b)
+        except ValueError:
+            return False
+        if not _floats_close(fa, fb):
+            return False
+    return True
+
+
+def _only_float_diff(c1: Any, c2: Any) -> bool:
+    """True when `c1` and `c2` differ ONLY in float coordinates within
+    tolerance (so the byte difference is float-precision noise, not a real
+    change). Non-float bytes must still match exactly."""
+    ct = getattr(c1, "chunk_type", None)
+    if ct != getattr(c2, "chunk_type", None):
+        return False
+    if ct == "Utf8":
+        return _gradient_xml_only_float_diff(
+            getattr(c1, "value", None), getattr(c2, "value", None)
+        )
+    f1 = _chunk_floats(c1)
+    if f1 is None:
+        return False
+    f2 = _chunk_floats(c2)
+    if f2 is None or len(f1) != len(f2):
+        return False
+    if not all(_floats_close(a, b) for a, b in zip(f1, f2)):
+        return False
+    # Rebuild c1 with c2's float values; equal bytes => only the (in-
+    # tolerance) floats differed, everything else is byte-identical.
+    rebuilt: bytes = _with_floats(c1, f2).tobytes()
+    original: bytes = c2.tobytes()
+    return rebuilt == original
+
+
+def _multi_only_float_diff(
+    all_typed: list[dict[str, Any]], present: list[int], path: str
+) -> bool:
+    """True when `path` differs only in float coordinates across every file
+    that contains it (so the multi-file diff is float-precision noise). Files
+    byte-identical to the reference do not count as a difference."""
+    ref = all_typed[present[0]].get(path)
+    if ref is None:
+        return False
+    ref_bytes = ref.tobytes()
+    for i in present[1:]:
+        other = all_typed[i].get(path)
+        if other is None:
+            return False
+        if other.tobytes() == ref_bytes:
+            continue
+        if not _only_float_diff(ref, other):
+            return False
+    return True
+
+
 # ── AEP chunk extraction ───────────────────────────────────────────────────
 
 #: Alias for backward compatibility with tests.
@@ -154,16 +300,25 @@ parse_aep_chunks = extract_leaf_chunks
 
 
 def _compare_chunk_dicts(
-    data1: dict[str, bytes], data2: dict[str, bytes]
-) -> tuple[list[ChunkDifference], list[str], list[str]]:
+    data1: dict[str, bytes],
+    data2: dict[str, bytes],
+    typed1: dict[str, Chunk] | None = None,
+    typed2: dict[str, Chunk] | None = None,
+    exact: bool = False,
+) -> tuple[list[ChunkDifference], list[str], list[str], list[str]]:
     """Compare two chunk dictionaries and return differences.
 
     Args:
         data1: Chunk path to bytes mapping from file 1.
         data2: Chunk path to bytes mapping from file 2.
+        typed1: Optional decoded chunks for file 1 (enables float-tolerant
+            comparison of coordinate fields).
+        typed2: Optional decoded chunks for file 2.
+        exact: When `True`, disable float tolerance (byte-exact).
 
     Returns:
-        Tuple of (differences, paths only in data1, paths only in data2).
+        Tuple of (differences, paths only in data1, paths only in data2,
+        paths of the float-precision-only differences suppressed).
     """
     paths1 = set(data1.keys())
     paths2 = set(data2.keys())
@@ -173,9 +328,24 @@ def _compare_chunk_dicts(
     common_paths = sorted(paths1 & paths2)
 
     differences: list[ChunkDifference] = []
+    suppressed: list[str] = []
     for path in common_paths:
         bytes1 = data1[path]
         bytes2 = data2[path]
+        if bytes1 == bytes2:
+            continue
+        # Suppress float-precision-only differences (same coordinate, just
+        # AE-vs-py_aep float rounding) unless an exact comparison was asked.
+        if (
+            not exact
+            and typed1 is not None
+            and typed2 is not None
+            and path in typed1
+            and path in typed2
+            and _only_float_diff(typed1[path], typed2[path])
+        ):
+            suppressed.append(path)
+            continue
         byte_diffs = list(compare_binary_data(bytes1, bytes2, path))
 
         if byte_diffs or len(bytes1) != len(bytes2):
@@ -188,7 +358,7 @@ def _compare_chunk_dicts(
                 )
             )
 
-    return differences, only_in_1, only_in_2
+    return differences, only_in_1, only_in_2, suppressed
 
 
 # ── Structural comparison ───────────────────────────────────────────────────
@@ -272,10 +442,12 @@ def compare_structure(
 
 def compare_multi_aep_files(
     files: list[Path],
+    exact: bool = False,
 ) -> tuple[
     list[MultiChunkDifference],
     list[tuple[str, list[int]]],
     list[dict[str, bytes]],
+    list[str],
 ]:
     """Compare multiple AEP files and return per-chunk differences.
 
@@ -283,17 +455,24 @@ def compare_multi_aep_files(
 
     Args:
         files: List of AEP file paths (first = reference).
+        exact: When `True`, disable float tolerance (byte-exact); otherwise
+            chunks differing only in float-precision coordinates across all
+            present files are suppressed, matching two-file mode.
 
     Returns:
-        Tuple of (chunk differences, missing chunk info, parsed data per file).
+        Tuple of (chunk differences, missing chunk info, parsed data per file,
+        paths of the float-precision-only chunk differences suppressed).
     """
-    all_data = [parse_aep_chunks(f) for f in files]
+    parsed = [extract_leaf_chunks_typed(f) for f in files]
+    all_data = [data for data, _ in parsed]
+    all_typed = [typed for _, typed in parsed]
     all_paths: set[str] = set()
     for d in all_data:
         all_paths.update(d.keys())
 
     differences: list[MultiChunkDifference] = []
     missing_chunks: list[tuple[str, list[int]]] = []
+    suppressed: list[str] = []
 
     for path in sorted(all_paths):
         present = [i for i, d in enumerate(all_data) if path in d]
@@ -322,11 +501,15 @@ def compare_multi_aep_files(
                 )
 
         if chunk_diffs:
+            # Suppress float-precision-only differences (matching two-file mode).
+            if not exact and _multi_only_float_diff(all_typed, present, path):
+                suppressed.append(path)
+                continue
             differences.append(
                 MultiChunkDifference(path=path, diffs=chunk_diffs, sizes=sizes)
             )
 
-    return differences, missing_chunks, all_data
+    return differences, missing_chunks, all_data, suppressed
 
 
 # ── Output formatting ──────────────────────────────────────────────────────
@@ -580,6 +763,7 @@ def to_json_output(
     differences: list[ChunkDifference],
     only_in_file1: list[str],
     only_in_file2: list[str],
+    suppressed: int = 0,
 ) -> dict[str, Any]:
     """Convert comparison results to a JSON-serializable dict."""
     return {
@@ -617,11 +801,13 @@ def to_json_output(
         ],
         "only_in_file1": only_in_file1,
         "only_in_file2": only_in_file2,
+        "suppressed_float_diffs": suppressed,
         "summary": {
             "chunks_with_differences": len(differences),
             "total_byte_differences": sum(len(d.byte_diffs) for d in differences),
             "only_in_file1": len(only_in_file1),
             "only_in_file2": len(only_in_file2),
+            "suppressed_float_diffs": suppressed,
         },
     }
 
@@ -641,6 +827,17 @@ def filter_differences(
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
+
+
+def _report_suppressed(suppressed: int, exact: bool) -> None:
+    """Note suppressed float-precision-only diffs so they are never silent."""
+    if suppressed and not exact:
+        plural = "s" if suppressed != 1 else ""
+        print(
+            f"Note: suppressed {suppressed} float-precision-only chunk "
+            f"difference{plural} (use --exact to show them).",
+            file=sys.stderr,
+        )
 
 
 def main() -> int:
@@ -693,6 +890,12 @@ Output shows for each different byte:
         metavar="N",
         help="Show N surrounding bytes around each difference",
     )
+    parser.add_argument(
+        "--exact",
+        action="store_true",
+        help="Byte-exact comparison; do not tolerate float-precision "
+        "differences in cdat/shph/ldat coordinate fields",
+    )
 
     args = parser.parse_args()
     files: list[Path] = args.files
@@ -715,12 +918,15 @@ Output shows for each different byte:
     # ── Multi-file comparison (3+ AEP files) ──────────────────────
 
     if len(files) > 2:
-        multi_diffs, missing, all_data = compare_multi_aep_files(files)
+        multi_diffs, missing, all_data, suppressed = compare_multi_aep_files(
+            files, exact=args.exact
+        )
 
         if args.filter:
             pattern = args.filter.lower()
             multi_diffs = [d for d in multi_diffs if pattern in d.path.lower()]
             missing = [(p, idxs) for p, idxs in missing if pattern in p.lower()]
+            suppressed = [p for p in suppressed if pattern in p.lower()]
 
         print_multi_results(
             files,
@@ -729,6 +935,7 @@ Output shows for each different byte:
             context=args.context,
             all_data=all_data,
         )
+        _report_suppressed(len(suppressed), args.exact)
         return 0 if not multi_diffs and not missing else 1
 
     # ── Two-file comparison ────────────────────────────────────────────
@@ -736,9 +943,11 @@ Output shows for each different byte:
     file1, file2 = files[0], files[1]
 
     # Parse once and reuse for both comparison and context
-    data1 = extract_leaf_chunks(file1)
-    data2 = extract_leaf_chunks(file2)
-    diffs, only1, only2 = _compare_chunk_dicts(data1, data2)
+    data1, typed1 = extract_leaf_chunks_typed(file1)
+    data2, typed2 = extract_leaf_chunks_typed(file2)
+    diffs, only1, only2, suppressed = _compare_chunk_dicts(
+        data1, data2, typed1, typed2, exact=args.exact
+    )
     struct_diffs = compare_structure(file1, file2)
     ctx1: dict[str, bytes] | None = data1 if args.context > 0 else None
     ctx2: dict[str, bytes] | None = data2 if args.context > 0 else None
@@ -746,10 +955,12 @@ Output shows for each different byte:
     # Apply filter
     if args.filter:
         diffs, only1, only2 = filter_differences(diffs, only1, only2, args.filter)
+        pattern = args.filter.lower()
+        suppressed = [p for p in suppressed if pattern in p.lower()]
 
     # Output results
     if args.json:
-        output = to_json_output(file1, file2, diffs, only1, only2)
+        output = to_json_output(file1, file2, diffs, only1, only2, len(suppressed))
         print(json.dumps(output, indent=2))
     else:
         print_results(
@@ -763,6 +974,7 @@ Output shows for each different byte:
             data2=ctx2,
             structural_diffs=struct_diffs,
         )
+    _report_suppressed(len(suppressed), args.exact)
 
     return 0 if not diffs and not only1 and not only2 else 1
 

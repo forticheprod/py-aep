@@ -24,7 +24,7 @@ from ..models.layers.three_d_model_layer import ThreeDModelLayer
 from ..synthesis.core import synthesize_layer_properties
 from .property import parse_properties
 from .utils import (
-    get_chunks_by_match_name,
+    get_match_name_runs,
 )
 
 if TYPE_CHECKING:
@@ -114,7 +114,7 @@ def parse_layer(
 
     root_tdgp_chunk = find_by_list_type(chunks=child_chunks, list_type="tdgp")
     properties = parse_properties(
-        chunks_by_match_name=get_chunks_by_match_name(root_tdgp_chunk),
+        match_name_runs=get_match_name_runs(root_tdgp_chunk),
         child_depth=1,
         effect_param_defs=effect_param_defs,
         composition=composition,

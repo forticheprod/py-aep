@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 from .descriptors import ChunkField
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..binary.item_chunks import HeadChunk
     from .project import Project
     from .viewer.viewer import Viewer
@@ -52,11 +54,27 @@ class Application:
         cause issues when opening the file in After Effects.
     """
 
-    version = ChunkField[str]("_head", "version", validate=_validate_version)
+    version = ChunkField[str](
+        "_head",
+        "version",
+        validate=_validate_version,
+        post_set=lambda obj: obj._head.sync_file_format_version(),
+    )
     """The version of After Effects that last saved the project, formatted as
     "{major}.{minor}x{build}" (e.g., "25.6x101"). Read / Write.
 
+    Setting it also updates the file-format compatibility marker (which
+    determines the oldest AE that can open the file) to match the new major
+    version, so the file claims to be openable by that AE.
+
     Warning:
+        Setting the version does **not** migrate the project structure: the
+        version-gated chunks and features are left unchanged, so relabeling
+        to an older version may produce a file that the older AE opens but
+        whose newer content it cannot represent. To create a project
+        faithfully targeting a specific AE version use [py_aep.new][]; to
+        convert an existing project, open and re-save it in the target AE.
+
         This attribute is read-only in ExtendScript. Modifying it could
         cause issues when opening the file in After Effects.
     """
@@ -82,6 +100,17 @@ class Application:
         self._head = _head
         self._project = project
         self._active_viewer = active_viewer
+
+    @classmethod
+    def _new(cls, version: str, ae_preferences_dir: Path | None = None) -> Application:
+        """Build a new, empty [Application][] (mirrors File > New Project).
+
+        See `py_aep.new`.
+        """
+        from .project import Project
+
+        project = Project._new(version, ae_preferences_dir=ae_preferences_dir)
+        return cls(_head=project._head, project=project, active_viewer=None)
 
     def __repr__(self) -> str:
         return f"Application(version={self.version!r}, build_number={self.build_number!r}, app_name={self.app_name!r})"

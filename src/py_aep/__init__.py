@@ -238,6 +238,7 @@ __all__ = [
     "MaskMotionBlur",
     "MaskPropertyGroup",
     "MotionBlurSetting",
+    "new",
     "OpenExrFormatOptions",
     "OutputAudio",
     "OutputChannels",
@@ -334,3 +335,40 @@ def parse(
         rifx, xmp = read_aep(f, defer_list_types=_DEFERRED_LIST_TYPES)
     project = parse_project(rifx, xmp, file_path, ae_preferences_dir=prefs_path)
     return parse_app(rifx, project)
+
+
+# Default target version: the AE build the empty-project skeleton was
+# captured from (AE 2026).
+_DEFAULT_NEW_VERSION = "26.0x67"
+
+
+def new(
+    version: str = _DEFAULT_NEW_VERSION,
+    *,
+    ae_preferences_dir: str | os.PathLike[str] | None = None,
+) -> Application:
+    """Creates a new project in After Effects, replicating the File > New > New Project
+    menu command.
+
+    Returns an [Application][] wrapping an empty [Project][] (containing
+    only the root folder and an empty render queue).
+
+    Args:
+        version: The After Effects version to stamp into the file,
+            formatted as `"{major}.{minor}x{build}"` (e.g. `"26.0x67"`).
+            A file stamped at version N opens in After Effects N and later.
+        ae_preferences_dir: Optional path to the AE preferences directory
+            (e.g. `C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0`),
+            required only for adding items to the render queue.
+
+    Example:
+        ```python
+        import py_aep
+
+        app = py_aep.new()
+        comp = app.project.root_folder.add_comp("Comp 1", 1920, 1080, 1.0, 10.0, 30.0)
+        app.project.save("new_project.aep")
+        ```
+    """
+    prefs_path = Path(ae_preferences_dir) if ae_preferences_dir else None
+    return Application._new(version, ae_preferences_dir=prefs_path)

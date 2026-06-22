@@ -110,6 +110,11 @@ class LdtaChunk(Chunk):
     three_d_per_char = BitField("_layer_flags_0", 3)
     frame_blending_mode = BitField("_layer_flags_0", 2)
     guide_layer = BitField("_layer_flags_0", 1)
+    # bit 0: a source-backed layer's name was explicitly set (away from the
+    # source item's name). Always 0 for sourceless layers (camera/light/text/
+    # shape) even when named; NOT equivalent to ExtendScript isNameSet (use the
+    # model-level Layer.is_name_set for that).
+    name_set = BitField("_layer_flags_0", 0)
 
     # byte 38: _layer_flags_1
     null_layer = BitField("_layer_flags_1", 7)

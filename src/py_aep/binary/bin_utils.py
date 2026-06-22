@@ -74,6 +74,17 @@ def write_bytes(fp: IO[bytes], data: bytes) -> int:
     return len(data)
 
 
+def truncate_utf8(value: str, max_bytes: int) -> bytes:
+    """Encode `value` to UTF-8, truncated to at most `max_bytes` bytes.
+
+    Slicing UTF-8 bytes can split a multibyte character; decoding the slice
+    with `errors="ignore"` drops any trailing partial sequence, so the result
+    is always valid UTF-8 and never exceeds `max_bytes`. Used for fixed-width
+    AEP name fields.
+    """
+    return value.encode("utf-8")[:max_bytes].decode("utf-8", "ignore").encode("utf-8")
+
+
 def is_readable(fp: IO[bytes], size: int = 1) -> bool:
     """Check if `size` bytes can be read without consuming them."""
     pos = fp.tell()

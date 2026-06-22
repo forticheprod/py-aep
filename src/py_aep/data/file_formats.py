@@ -52,21 +52,40 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     ".gif": FileFormat("STIL", False, "generic"),
     ".psd": FileFormat("8BPS", False, "psd"),
     ".psb": FileFormat("8BPS", False, "psd"),
+    # Video/audio containers (generic opti; codec bytes re-derived by AE).
+    ".m4a": FileFormat("MOoV", False, "generic"),
+    ".mp3": FileFormat("MP3A", False, "generic"),
+    ".swf": FileFormat("SWF ", False, "generic"),
+    ".mpeg": FileFormat("MPEO", False, "generic"),
+    ".mpg": FileFormat("MPEO", False, "generic"),
+    # Motion-graphics data stream (duration from the sampled time range).
+    ".mgjson": FileFormat("sjgm", False, "generic"),
+    # 3D scene - empty opti; AE re-reads the scene and uses default render dims.
+    ".fbx": FileFormat("LDOM", False, "empty"),
+    # Data footage - 0x0 items; empty source code for txt/csv, reversed-ext code
+    # for json.
+    ".txt": FileFormat("", False, "generic"),
+    ".csv": FileFormat("", False, "generic"),
+    ".json": FileFormat("nosj", False, "generic"),
+    ".wmv": FileFormat("WMED", False, "generic"),
+    # Radiance HDR - format-specific 30-byte opti.
+    ".hdr": FileFormat("RHDR", False, "hdr"),
+    # Vector / PostScript / PDF - shared 596-byte TEXT opti.
+    ".ai": FileFormat("TEXT", False, "text"),
+    ".eps": FileFormat("TEXT", False, "text"),
+    ".pdf": FileFormat("TEXT", False, "text"),
 }
 
 
-# Additional formats imported into AE 2026 and decoded but not yet supported
-# (their `source_format` codes are recorded here for the follow-up work):
-#   .aac  -> "MPEG" (generic opti) - measured on an M4A container renamed to
-#            .aac (AE picks the importer from the extension); re-measure with
-#            a real ADTS stream, then add an ADTS frame-scan duration probe
-#   .m4a  -> "MOoV" (generic opti) - _probe_mov reads it, but AAC encoder
-#            padding makes the duration ~0.05s long; needs `elst` edit-list
-#   .mp3  -> "MP3A" (generic opti) - needs an MP3 frame-header duration probe
-#   .mpeg -> "MPEO" (generic opti) - needs an MPEG program-stream probe
-#   .wmv  -> "WMED" (generic opti) - needs an ASF-header probe
-#   .hdr  -> "RHDR" - uses a 30-byte format-specific opti (not generic)
-# AE refused .avi (codec) and .flv (unsupported) on import.
+# Formats AE imports as footage but py-aep does NOT support, with reasons:
+#   .aac  -> "MPEG" - no sample in samples/assets/; needs an ADTS frame-scan
+#            duration probe (re-measure with a real ADTS stream first)
+#   .c4d  -> "C4DC" - opti is a ~357KB blob embedding the absolute file path and
+#            Cineware render state; not reconstructable without Cineware
+#   .crw / .nef -> "Craw" - opti embeds per-file Camera Raw XMP decode settings;
+#            not reconstructable without Adobe Camera Raw
+# AE refuses .avi (codec), .flv/.ps (invalid type) on import. .ma imports
+# only as a cropped comp (not footage) - a separate comp-conversion feature.
 
 
 # Which `ImportAsType` values `ImportOptions.can_import_as()` accepts per
@@ -89,8 +108,9 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     # Layered Photoshop - footage, comp, or comp-cropped.
     ".psd": frozenset({_FOOTAGE, _COMP, _CROPPED}),
     ".psb": frozenset({_FOOTAGE, _COMP, _CROPPED}),
-    # Layered vector (not in samples/assets) - documented to behave like PSD.
+    # Vector / PostScript / PDF - footage, comp, or comp-cropped (AE-measured).
     ".ai": frozenset({_FOOTAGE, _COMP, _CROPPED}),
+    ".eps": frozenset({_FOOTAGE, _COMP, _CROPPED}),
     ".pdf": frozenset({_FOOTAGE, _COMP, _CROPPED}),
     # Multi-channel EXR - footage or comp-cropped, but not plain comp.
     ".exr": frozenset({_FOOTAGE, _CROPPED}),
@@ -105,19 +125,42 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".tga": frozenset({_FOOTAGE}),
     ".bmp": frozenset({_FOOTAGE}),
     ".gif": frozenset({_FOOTAGE}),
+    ".hdr": frozenset({_FOOTAGE}),
     # Video - footage or project.
     ".mov": frozenset({_FOOTAGE, _PROJECT}),
     ".m4v": frozenset({_FOOTAGE}),
-    # Audio - footage only.
+    ".wmv": frozenset({_FOOTAGE}),
+    # Audio - footage only (m4a may also carry an AE project).
     ".aiff": frozenset({_FOOTAGE}),
     ".wav": frozenset({_FOOTAGE}),
+    ".m4a": frozenset({_FOOTAGE, _PROJECT}),
     # AE still reports these importable as footage.
     ".fbx": frozenset({_FOOTAGE}),
     ".txt": frozenset({_FOOTAGE}),
+    ".csv": frozenset({_FOOTAGE}),
+    ".json": frozenset({_FOOTAGE}),
+    ".mgjson": frozenset({_FOOTAGE}),
+    ".mp3": frozenset({_FOOTAGE}),
+    ".swf": frozenset({_FOOTAGE}),
+    ".mpeg": frozenset({_FOOTAGE}),
+    ".mpg": frozenset({_FOOTAGE}),
     # Project / template - project only (.aet not in samples/assets).
     ".aep": frozenset({_PROJECT}),
     ".aet": frozenset({_PROJECT}),
 }
+
+
+# Extensions imported by converting the file directly into a composition
+# (no FileSource/footage item), so they are absent from `_FILE_FORMATS` yet
+# are still importable. `can_import_as` gates these on `_IMPORT_AS_TYPES`
+# alone (no media-format lookup).
+COMP_CONVERSION_EXTENSIONS: frozenset[str] = frozenset({".svg"})
+
+# Layered formats AE imports as a composition of per-layer footage. Illustrator
+# /PDF layers are PDF Optional Content Groups (see resolvers.ai_layers);
+# Photoshop layers come from the file's layer records (see resolvers.psd_layers).
+AI_COMP_EXTENSIONS: frozenset[str] = frozenset({".ai", ".pdf"})
+PSD_COMP_EXTENSIONS: frozenset[str] = frozenset({".psd", ".psb"})
 
 
 def get_import_as_types(suffix: str) -> frozenset[ImportAsType]:
