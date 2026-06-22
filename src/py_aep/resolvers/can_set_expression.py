@@ -78,6 +78,16 @@ def resolve_can_set_expression(prop: Property) -> bool:
     if prop.is_separation_follower:
         return False
 
+    # An UNAPPLIED text-animator pool property cannot have an expression;
+    # once applied (materialized in binary) it can, like any property.
+    parent = prop.parent_property
+    if (
+        parent is not None
+        and parent.match_name == "ADBE Text Animator Properties"
+        and not prop._is_live()
+    ):
+        return False
+
     pvt = prop.property_value_type
     if pvt in _PVT_ALWAYS_TRUE:
         return True

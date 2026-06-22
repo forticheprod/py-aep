@@ -113,13 +113,24 @@ class HeadChunk(Chunk):
 
     chunk_type: str = "head"
 
-    _reserved_00: bytes = bytes_field(4, repr=False)
-    _version_word: int = u4_field(repr=False)
-    _reserved_08: bytes = bytes_field(4, repr=False)
-    next_item_id: int = u4_field(repr=False)
+    # Defaults capture a fresh AE 2026 project (see project_chunks.py).
+    _reserved_00a: bytes = bytes_field(1, repr=False)
+    file_format_version: int = u1_field(default=0x61)
+    """Project file-format version AE checks when opening: it refuses files
+    whose value exceeds the running app's own. Equals the AE major version
+    plus 71 for AE 2022+ (e.g. 0x61=97 for AE 26)."""
+    _reserved_00c: bytes = bytes_field(1, repr=False)
+    _format_subversion: int = u1_field(default=0x02, repr=False)
+    # Fresh-project default: OS=12 (Windows, bits 25-22), the reserved bit 10
+    # AE always sets on save, and bit 9=1 (release, not beta). The version
+    # bits (major/minor/build) are stamped by the `version` setter, which
+    # preserves these.
+    _version_word: int = u4_field(default=(12 << 22) | (1 << 10) | (1 << 9), repr=False)
+    _reserved_08: bytes = bytes_field(4, default=b"\x80\x00\x00\x00", repr=False)
+    next_item_id: int = u4_field(default=1, repr=False)
     """Next item ID to allocate, always > max existing item ID."""
     _reserved_10: bytes = bytes_field(2, repr=False)
-    file_revision: int = u2_field()
+    file_revision: int = u2_field(default=1)
     """File revision counter, incremented on each save."""
 
     @property
@@ -173,6 +184,17 @@ class HeadChunk(Chunk):
         self._version_word = (self._version_word & ~0xFF) | (value & 0xFF)
 
     @property
+    def ae_version_os(self) -> int:
+        """OS code (bits 25-22); 12 for Windows in saved files."""
+        return (self._version_word >> 22) & 0x0F
+
+    @ae_version_os.setter
+    def ae_version_os(self, value: int) -> None:
+        self._version_word = (self._version_word & ~(0x0F << 22)) | (
+            (value & 0x0F) << 22
+        )
+
+    @property
     def ae_version_major(self) -> int:
         """Full major version (e.g. 25)."""
         return self.ae_version_major_a * 8 + self.ae_version_major_b
@@ -193,6 +215,13 @@ class HeadChunk(Chunk):
         self.ae_version_minor = minor
         self.ae_build_number = build
 
+    def sync_file_format_version(self) -> None:
+        """Set `file_format_version` (the open-compatibility gate) from the
+        current major version. AE tracks the major with a constant offset
+        for AE 2022+; the gate is a `<=` compare, so this is exact for
+        2022+ and a safe under-estimate for older majors."""
+        self.file_format_version = self.ae_version_major + 71
+
 
 # ---------------------------------------------------------------------------
 # nhed - compact project settings mirror (32 bytes)
@@ -211,14 +240,15 @@ class NhedChunk(Chunk):
 
     chunk_type: str = "nhed"
 
-    _reserved_00: bytes = bytes_field(8, repr=False)
+    # Defaults capture a fresh AE 2026 project (see project_chunks.py).
+    _reserved_00: bytes = bytes_field(8, default=b"\x00" * 7 + b"\x05", repr=False)
     _display_byte: int = u1_field(repr=False)
-    footage_timecode_display_start_type: int = u1_field()
-    _reserved_0a: bytes = bytes_field(1, repr=False)
+    footage_timecode_display_start_type: int = u1_field(default=1)
+    _reserved_0a: bytes = bytes_field(1, default=b"\x01", repr=False)
     _feet_byte: int = u1_field(repr=False)
-    timecode_default_base: int = u1_field()
-    _reserved_0d: bytes = bytes_field(1, repr=False)
-    frames_count_type: int = u1_field()
+    timecode_default_base: int = u1_field(default=30)
+    _reserved_0d: bytes = bytes_field(1, default=b"\x10", repr=False)
+    frames_count_type: int = u1_field(default=2)
     bits_per_channel: int = u1_field()
     transparency_grid_thumbnails: bool = bool_field()
     _reserved_11: bytes = bytes_field(15, repr=False)
@@ -260,19 +290,20 @@ class NnhdChunk(Chunk):
 
     chunk_type: str = "nnhd"
 
-    _reserved_00: bytes = bytes_field(8, repr=False)
+    # Defaults capture a fresh AE 2026 project (see project_chunks.py).
+    _reserved_00: bytes = bytes_field(8, default=b"\x00" * 7 + b"\x05", repr=False)
     _display_byte: int = u1_field(repr=False)
     """Byte 8: bit 7 = feet_frames_film_type, bits 6-0 = time_display_type."""
 
     footage_timecode_display_start_type: int = u1_field(default=1)
-    _reserved_0a: int = u1_field(repr=False)
+    _reserved_0a: int = u1_field(default=1, repr=False)
     _feet_byte: int = u1_field(repr=False)
     """Byte 11: bit 0 = frames_use_feet_frames."""
 
     _reserved_0c: bytes = bytes_field(2, repr=False)
-    timecode_default_base: int = u2_field()
+    timecode_default_base: int = u2_field(default=30)
     _unknown_10: bytes = bytes_field(4, default=b"\x00\x00\x00\x10", repr=False)
-    frames_count_type: int = u1_field()
+    frames_count_type: int = u1_field(default=2)
     _reserved_15: bytes = bytes_field(3, repr=False)
     bits_per_channel: int = u1_field()
     transparency_grid_thumbnails: bool = bool_field()

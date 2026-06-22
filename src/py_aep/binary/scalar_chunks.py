@@ -61,6 +61,10 @@ class _StringChunkBase(Chunk):
     "fiop",
     "lnrb",
     "lnrp",
+    "qtlg",
+    "pcms",
+    "PwCs",
+    "pdvc",
 )
 @define
 class U1Chunk(Chunk):
@@ -69,7 +73,7 @@ class U1Chunk(Chunk):
     value: int = u1_field()
 
 
-@register("fivc", "fipc")
+@register("fivc", "fipc", "oacc")
 @define
 class U2Chunk(Chunk):
     """Unsigned 2-byte integer chunk."""
@@ -94,6 +98,8 @@ class U2Chunk(Chunk):
     "fvdv",
     "ftts",
     "fifl",
+    "mrid",
+    "sfid",
 )
 @define
 class U4Chunk(Chunk):

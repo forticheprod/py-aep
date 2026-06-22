@@ -118,6 +118,8 @@ MATCH_NAME_TO_AUTO_NAME = {
     "ADBE Text Animator": "Animator",
     "ADBE Text Selectors": "Selectors",
     "ADBE Text Selector": "Range Selector",
+    "ADBE Text Wiggly Selector": "Wiggly Selector",
+    "ADBE Text Expressible Selector": "Expression Selector",
     "ADBE Text Percent Start": "Start",
     "ADBE Text Percent End": "End",
     "ADBE Text Percent Offset": "Offset",

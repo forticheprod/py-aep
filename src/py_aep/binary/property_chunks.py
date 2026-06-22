@@ -149,6 +149,11 @@ class Tdb4Chunk(Chunk):
     integer = BitField("_type_flags", 2)
     color = BitField("_type_flags", 0)
     expression_disabled = BitField("_expr_flags", 0)
+    # AE's expression-present marker: the high byte of `_pad10` (0x01000000),
+    # set whenever an expression Utf8 is present (independent of enabled/
+    # disabled). AE rejects a file with the marker set but no expression Utf8
+    # as "missing data in file".
+    has_expression = BitField("_pad10", 24)
 
     @property
     def has_time_base(self) -> bool:
@@ -425,6 +430,11 @@ class TdmnChunk(_StringChunkBase):
         encoded = self.value.encode("UTF-8")[:40]
         padded = encoded.ljust(40, b"\x00")
         return write_bytes(fp, padded)
+
+
+# Sentinel AE writes as the tdsn display name for unnamed properties;
+# the name then resolves from the auto-name.
+TDSN_SENTINEL = "-_0_/-"
 
 
 @register("tdsn")

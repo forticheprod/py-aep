@@ -136,6 +136,7 @@ class FootageItem(AVItem):
             proxy_source=proxy_source,
         )
         self._main_source = main_source
+        main_source._project = project
         self._view_data: list[Chunk] = []
         # Store resolved display name in __dict__ so the ChunkField
         # getter returns it without mutating the binary Utf8 chunk.
@@ -257,6 +258,7 @@ class FootageItem(AVItem):
             main_source=source,
             proxy_source=None,
         )
+        source._project = project
         item._ensure_guides_container()
         item._view_data = view_data
         return item
@@ -391,6 +393,7 @@ class FootageItem(AVItem):
         self._replace_pin(0, AVItem._pin_for_source(source))
 
         self._main_source = source
+        source._project = self._project
 
         assert self._idta is not None
         self._idta.is_footage = True

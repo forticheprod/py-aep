@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING, Iterator
 
 from ...binary.chunk import ListChunk
 from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ...binary.project_chunks import RhedChunk
+from ...binary.render_chunks import ArsiChunk, RoutChunk
 
 if TYPE_CHECKING:
-    from ...binary.render_chunks import ArsiChunk, RoutChunk
     from ..items.composition import CompItem
     from ..project import Project
     from .render_queue_item import RenderQueueItem
@@ -52,6 +53,42 @@ class RenderQueue:
         self._arsi = _arsi
         self._items = items
         self._parent = parent
+
+    @classmethod
+    def _new(cls, parent: Project) -> RenderQueue:
+        """Build an empty render queue with its backing `LIST:LRdr` tree.
+
+        Mirrors the empty-queue scaffold AE writes and `parse_render_queue`
+        yields: `Rhed` + empty `Rout` + a settings `LIST:list` (lhd3 plus a
+        synthetic ldat) + empty `LItm` + `LSIf[ARsi]`. The settings ldat is
+        synthetic so it is skipped by `write_aep()` until the first `add()`.
+        """
+        rhed = RhedChunk()
+        rout = RoutChunk()
+        rs_lhd3 = Lhd3Chunk(item_size=2246, item_type_raw=1, counter_b=1)
+        rs_ldat = LdatChunk(chunk_type="ldat", synthetic=True)
+        litm = ListChunk(list_type="LItm")
+        arsi = ArsiChunk()
+        lrdr = ListChunk(
+            list_type="LRdr",
+            chunks=[
+                rhed,
+                rout,
+                ListChunk(list_type="list", chunks=[rs_lhd3, rs_ldat]),
+                litm,
+                ListChunk(list_type="LSIf", chunks=[arsi]),
+            ],
+        )
+        return cls(
+            _lrdr=lrdr,
+            _rs_lhd3=rs_lhd3,
+            _rs_ldat=rs_ldat,
+            _rout=rout,
+            _litm=litm,
+            _arsi=arsi,
+            parent=parent,
+            items=[],
+        )
 
     def __iter__(self) -> Iterator[RenderQueueItem]:
         return iter(self.items)

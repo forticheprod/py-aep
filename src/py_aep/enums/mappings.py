@@ -143,6 +143,38 @@ _ICC_PROFILE_MAPPING: dict[str, str] = {
 }
 
 
+#: Inverse of `_ICC_PROFILE_MAPPING`: color-space name -> 32-char hex profile ID.
+#: Used to write a known Adobe profile's 16-byte ID (footage `apid`, output
+#: `output_profile_id`) without needing the ICC file on disk.
+_NAME_TO_ICC_PROFILE: dict[str, str] = {
+    name: uid for uid, name in _ICC_PROFILE_MAPPING.items()
+}
+
+
+def adobe_color_profile_names() -> list[str]:
+    """Return the Adobe-CMS color-space names (working space / footage / output).
+
+    The catalogued profile descriptions - the set After Effects'
+    `app.project.listColorProfiles()` returns in Adobe CMS mode (verified
+    set-identical, 102 names).
+    """
+    return list(_ICC_PROFILE_MAPPING.values())
+
+
+def profile_id_for_name(name: str) -> bytes | None:
+    """Return the 16-byte ICC Profile ID for a known color-space name.
+
+    The inverse of the `_ICC_PROFILE_MAPPING` lookup. Returns `None` for names
+    not in the table (e.g. an OCIO color space, or a profile py_aep has not
+    catalogued).
+
+    Args:
+        name: The color-space name (e.g. `"sRGB IEC61966-2.1"`).
+    """
+    uid_hex = _NAME_TO_ICC_PROFILE.get(name)
+    return bytes.fromhex(uid_hex) if uid_hex is not None else None
+
+
 def map_output_color_space(
     output_profile_id: bytes,
     output_color_space_working: bool,

@@ -139,7 +139,11 @@ class MkifChunk(Chunk):
     """SDK `PF_MaskMode`: 0=None, 1=Add, 2=Subtract, 3=Intersect,
     4=Lighten, 5=Darken, 6=Difference."""
 
-    _reserved_08: bytes = bytes_field(37, repr=False)
+    mask_id: int = u4_field()
+    """1-based id assigned at mask creation (creation order within the
+    layer)."""
+
+    _reserved_0c: bytes = bytes_field(33, repr=False)
     color_r: int = u1_field()
     color_g: int = u1_field()
     color_b: int = u1_field()
@@ -174,8 +178,9 @@ class ShphChunk(Chunk):
     chunk_type: str = "shph"
 
     _reserved_00: bytes = bytes_field(3, default=b"\xb3\xde\x02", repr=False)
-    _flags: int = u1_field(repr=False)
-    """Byte 3: bit 3 = open."""
+    _flags: int = u1_field(default=1, repr=False)
+    """Byte 3 bit flags: bit 0 = `normalized`, bit 3 = `open`. Defaults to
+    `1` (normalized, closed)."""
 
     top_left_x: float = f4_field()
     """Bounding-box left edge (x minimum)."""
@@ -190,6 +195,10 @@ class ShphChunk(Chunk):
     """Bounding-box bottom edge (y maximum)."""
 
     _reserved_14: bytes = bytes_field(4, default=b"\x01\x00\x00\x00", repr=False)
+
+    normalized = BitField("_flags", 0)
+    """True when the ldat points are stored as `[0, 1]` fractions of the
+    bounding box (AE's universal encoding)."""
 
     open = BitField("_flags", 3)
     """True when the path is open (not closed)."""
@@ -510,9 +519,9 @@ class IntegerPardChunk(PardChunk):
     """Integer slider (type 1, SDK `PF_Param_SLIDER` / `PF_SliderDef`).
 
     Body: s4 value, 32s value_str, 32s value_desc, s4 valid_min,
-    s4 valid_max, s4 slider_min, s4 slider_max, s4 dephault. The valid
+    s4 valid_max, s4 slider_min, s4 slider_max, s4 default. The valid
     range is what ExtendScript reports as `minValue`/`maxValue`;
-    `dephault` is the parameter's factory default value.
+    `default` is the parameter's factory default value.
     """
 
     _pad_pre: bytes = bytes_field(15, repr=False)
@@ -526,7 +535,7 @@ class IntegerPardChunk(PardChunk):
     valid_max: int = s4_field()
     slider_min: int | None = s4_field(optional=True, default=None)
     slider_max: int | None = s4_field(optional=True, default=None)
-    dephault: int | None = s4_field(optional=True, default=None)
+    default: int | None = s4_field(optional=True, default=None)
 
 
 @define
@@ -538,7 +547,7 @@ class ScalarPardChunk(PardChunk):
     value_str, 32s value_desc, then PF_Fixed valid_min / valid_max
     (what ExtendScript reports as `minValue`/`maxValue`), PF_Fixed
     slider_min / slider_max (the UI slider range) and PF_Fixed
-    dephault (the parameter's factory default value).
+    default (the parameter's factory default value).
     """
 
     _pad_pre: bytes = bytes_field(15, repr=False)
@@ -552,7 +561,7 @@ class ScalarPardChunk(PardChunk):
     valid_max_raw: int = s4_field()
     slider_min_raw: int = s4_field()
     slider_max_raw: int = s4_field()
-    dephault_raw: int | None = s4_field(optional=True, default=None)
+    default_raw: int | None = s4_field(optional=True, default=None)
 
 
 @define
@@ -560,7 +569,7 @@ class AnglePardChunk(PardChunk):
     """Angle control (type 3, SDK `PF_AngleDef`).
 
     Body: `PF_Fixed` (16.16 fixed point, `raw / 65536`) value, then
-    PF_Fixed dephault (the parameter's factory default value).
+    PF_Fixed default (the parameter's factory default value).
     """
 
     _pad_pre: bytes = bytes_field(15, repr=False)
@@ -568,7 +577,7 @@ class AnglePardChunk(PardChunk):
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value: int = s4_field()
-    dephault_raw: int | None = s4_field(optional=True, default=None)
+    default_raw: int | None = s4_field(optional=True, default=None)
 
 
 @define
@@ -624,7 +633,7 @@ class SliderPardChunk(PardChunk):
     Body: f8 value, f8 phase, 32s value_desc, then f4 valid_min /
     valid_max (what ExtendScript reports as `minValue`/`maxValue`;
     non-finite means that side is unbounded), f4 slider_min /
-    slider_max (the UI slider range) and f4 dephault (the parameter's
+    slider_max (the UI slider range) and f4 default (the parameter's
     factory default value).
     """
 
@@ -639,7 +648,11 @@ class SliderPardChunk(PardChunk):
     valid_max: float = f4_field()
     slider_min: float = f4_field()
     slider_max: float = f4_field()
-    dephault: float | None = f4_field(optional=True, default=None)
+    default: float | None = f4_field(optional=True, default=None)
+    _precision: int | None = u2_field(optional=True, default=None, repr=False)
+    display_flags: int | None = u2_field(optional=True, default=None)
+    """SDK `PF_ValueDisplayFlags`: bit 0 (PERCENT) is the only flag AE
+    writes reliably for float sliders (fixed-point sliders leave it 0)."""
 
 
 @define
@@ -675,14 +688,15 @@ class ThreeDPardChunk(PardChunk):
 @register("dwga")
 @define
 class DwgaChunk(Chunk):
-    """Working gamma selector chunk (1 byte).
+    """Working gamma selector chunk (4 bytes).
 
-    Stores a single byte: 0 = gamma 2.2, non-zero = gamma 2.4.
+    The first byte selects the gamma (0 = 2.2, non-zero = 2.4)
     """
 
     chunk_type: str = "dwga"
 
     working_gamma_selector: int = u1_field()
+    _reserved_01: bytes = bytes_field(3, repr=False)
 
     @property
     def working_gamma(self) -> float:
@@ -852,6 +866,21 @@ class EpidChunk(Chunk):
 
     chunk_type: str = "epid"
     data: bytes = b"\xff" * 16
+
+
+@register("empd")
+@define
+class EmpdChunk(Chunk):
+    """Embedded-profile-present flag.
+
+    AE writes this (value 1) when the source file carries an embedded color
+    profile; the `Utf8` chunk that follows it in `LIST:CLRS` holds the
+    profile's name (e.g. `Coated FOGRA39 (ISO 12647-2:2004)`). Absent when the
+    source has no embedded profile.
+    """
+
+    chunk_type: str = "empd"
+    value: bool = bool_field(default=True)
 
 
 @register("linl")

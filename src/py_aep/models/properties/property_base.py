@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import PropertyType
@@ -7,7 +8,7 @@ from py_aep.enums import PropertyType
 from ...ae_version import get_ae_version_major
 from ...binary.chunk import ListChunk
 from ...binary.mutations import clone_chunk_tree
-from ...binary.property_chunks import TdmnChunk
+from ...binary.property_chunks import TDSN_SENTINEL, TdmnChunk
 from ...binary.utils import find_by_type, index_by_identity
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..descriptors import ChunkField
@@ -19,23 +20,33 @@ if TYPE_CHECKING:
     from ...binary.property_chunks import TdsbChunk
     from ...binary.scalar_chunks import Utf8Chunk
     from ..layers.layer import Layer
+    from .mask_property_group import MaskPropertyGroup
     from .property import Property
     from .property_group import PropertyGroup
 
 
-# Sentinel value used as the tdsn display name for synthesized properties.
-# When this exact string appears as the tdsn value, the property has no
-# user-visible name and falls back to auto_name.
-_TDSN_SENTINEL = "-_0_/-"
-
 # Match names of groups that support add/remove/move/duplicate on children.
+# "ADBE Vectors Group" is a nested shape group's own contents.
 _INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset(
     {
         "ADBE Effect Parade",
         "ADBE Mask Parade",
         "ADBE Effect Mask Parade",
         "ADBE Text Animators",
+        "ADBE Text Selectors",
         "ADBE Root Vectors Group",
+        "ADBE Vectors Group",
+    }
+)
+
+
+# Text animator + selectors expose an enable toggle (canSetEnabled).
+_TEXT_ANIMATOR_TOGGLEABLE: frozenset[str] = frozenset(
+    {
+        "ADBE Text Animator",
+        "ADBE Text Selector",
+        "ADBE Text Wiggly Selector",
+        "ADBE Text Expressible Selector",
     }
 )
 
@@ -58,6 +69,29 @@ def _renumber_mask_auto_names(parent: PropertyGroup) -> None:
         if child._is_mask:
             child._auto_name = f"Mask {i}"
             i += 1
+
+
+def _assign_duplicate_mask_identity(
+    source: PropertyBase, new_mask: PropertyBase, parent: PropertyGroup
+) -> None:
+    """Give a duplicated mask a fresh per-layer id and matching name.
+
+    AE assigns the copy the next free mask id (highest existing + 1) and
+    names it `'{base} {new_id}'`, where `base` is the source name with any
+    trailing number stripped (verified in AE 2026: `'Mask 1'` -> id 2
+    `'Mask 2'`; `'Eyes'` -> id 2 `'Eyes 2'`; with ids `[1, 3]`, `'Mask 1'`
+    -> id 4 `'Mask 4'`). A plain clone keeps the source's id and name,
+    colliding with it.
+    """
+    siblings = [
+        cast("MaskPropertyGroup", m)
+        for m in parent._properties
+        if m._is_mask and m is not new_mask
+    ]
+    new_id = max((m._mkif.mask_id for m in siblings), default=0) + 1
+    cast("MaskPropertyGroup", new_mask)._mkif.mask_id = new_id
+    base = re.sub(r" \d+$", "", source.name)
+    new_mask.name = f"{base} {new_id}"
 
 
 class PropertyBase:
@@ -138,6 +172,12 @@ class PropertyBase:
         Anchoring uses the sibling's `tdmn` (unique per property) rather
         than its body chunk, because separation followers (e.g.
         `ADBE Position_0` / `_1`) alias the same body chunk.
+
+        All chunk lookups use object identity, not `==`: attrs gives
+        chunks structural equality, and an empty group body (e.g. a
+        text animator's Selectors vs Properties tdgp) is structurally
+        identical to a sibling's, so `.remove()`/`.index()` would act on
+        the wrong chunk.
         """
         parent = self._parent_property
         if parent is None:
@@ -148,21 +188,24 @@ class PropertyBase:
         if tdgp is None or tdmn is None or body is None:
             return
         chunks = tdgp.chunks
-        if tdmn not in chunks or body not in chunks:
+        if not any(c is tdmn for c in chunks) or not any(c is body for c in chunks):
             return
         siblings = parent._properties
         idx = next((i for i, s in enumerate(siblings) if s is self), None)
         if idx is None:
             return
-        chunks.remove(tdmn)
-        chunks.remove(body)
+        chunks[:] = [c for c in chunks if c is not tdmn and c is not body]
 
         pos: int | None = None
         # Insert right before the nearest following live sibling's tdmn.
         for sib in siblings[idx + 1 :]:
-            if sib._is_live() and sib._tdmn is not None and sib._tdmn in chunks:
-                pos = chunks.index(sib._tdmn)
-                break
+            if sib._is_live() and sib._tdmn is not None:
+                sib_pos = next(
+                    (i for i, c in enumerate(chunks) if c is sib._tdmn), None
+                )
+                if sib_pos is not None:
+                    pos = sib_pos
+                    break
         if pos is None:
             # No live following sibling: insert before the group-end marker.
             pos = len(chunks)
@@ -248,7 +291,7 @@ class PropertyBase:
             return self._name
         if self._name_utf8 is not None:
             text: str = self._name_utf8.value.split("\0")[0]
-            if text and text != _TDSN_SENTINEL:
+            if text and text != TDSN_SENTINEL:
                 return text
         return self.auto_name
 
@@ -268,7 +311,7 @@ class PropertyBase:
             return True
         if self._name_utf8 is not None:
             text: str = self._name_utf8.value.split("\0")[0]
-            return bool(text) and text != _TDSN_SENTINEL
+            return bool(text) and text != TDSN_SENTINEL
         return False
 
     @property
@@ -299,7 +342,8 @@ class PropertyBase:
         """`True` if the `enabled` attribute value can be set.
 
         This is `True` for all layers, effect property groups, shape
-        vector groups, and text path options. Read-only.
+        vector groups, text path options, and the Layer Styles group
+        and its individual styles. Read-only.
         """
         if self.property_depth == 0:
             return True
@@ -308,10 +352,24 @@ class PropertyBase:
         mn = self.match_name
         if mn == "ADBE Text Path Options":
             return True
+        # A text animator and each text selector can be toggled.
+        if mn in _TEXT_ANIMATOR_TOGGLEABLE:
+            return True
+        # The Layer Styles group and each individual style (match names
+        # like "dropShadow/enabled") report canSetEnabled only when
+        # applied to the layer. AE writes all ten styles as identical
+        # empty groups, so the only "applied" signal is the enabled
+        # flag: canSetEnabled tracks it exactly (group = any style
+        # enabled). Blending Options ("ADBE Blend Options Group") is
+        # excluded and always reports False.
+        if mn == "ADBE Layer Styles" or mn.endswith("/enabled"):
+            return self.enabled
         if mn.startswith("ADBE Vector") and mn not in (
             "ADBE Vectors Group",
             "ADBE Vector Transform Group",
             "ADBE Vector Repeater Transform",
+            "ADBE Vector Wiggler Transform",
+            "ADBE Vector Materials Group",
         ):
             return self.property_type in (
                 PropertyType.NAMED_GROUP,
@@ -505,6 +563,7 @@ class PropertyBase:
         )
 
         if self._is_mask:
+            _assign_duplicate_mask_identity(self, new_prop, parent)
             _renumber_mask_auto_names(parent)
         return new_prop
 
@@ -584,9 +643,7 @@ class PropertyBase:
                 tdmn=tdmn,
             )
         else:
-            raise ValueError(
-                f"Unexpected backing chunk type '{list_chunk.list_type}'"
-            )
+            raise ValueError(f"Unexpected backing chunk type '{list_chunk.list_type}'")
         # clone_chunk_tree strips synthetic chunks, so synthesized children
         # (e.g. Mask Feather/Opacity) are missing from the clone; re-arm
         # deferred synthesis to fill them on first access, like a fresh parse.

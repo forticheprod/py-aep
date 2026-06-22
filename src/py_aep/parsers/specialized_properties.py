@@ -139,8 +139,15 @@ def _parse_shape_shap(
     )
     list_chunk = find_by_list_type(chunks=shap_chunk.chunks, list_type="list")
 
-    ldat = cast("LdatChunk", find_by_type(chunks=list_chunk.chunks, chunk_type="ldat"))
-    points = ldat.items
+    # An empty path (no vertices) carries only the lhd3 header, no ldat;
+    # treat it as zero points so the value is an empty Shape, not None.
+    try:
+        ldat = cast(
+            "LdatChunk", find_by_type(chunks=list_chunk.chunks, chunk_type="ldat")
+        )
+        points = ldat.items
+    except ChunkNotFoundError:
+        points = []
 
     # Extract variable-width mask feather data from fth5 chunk (if present).
     try:

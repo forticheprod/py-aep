@@ -647,6 +647,7 @@ import py_aep.binary.item_chunks  # noqa: F401, E402
 import py_aep.binary.layer_chunks  # noqa: F401, E402
 import py_aep.binary.ldat_chunks  # noqa: F401, E402
 import py_aep.binary.misc_chunks  # noqa: F401, E402
+import py_aep.binary.project_chunks  # noqa: F401, E402
 import py_aep.binary.property_chunks  # noqa: F401, E402
 import py_aep.binary.render_chunks  # noqa: F401, E402
 import py_aep.binary.scalar_chunks  # noqa: F401, E402

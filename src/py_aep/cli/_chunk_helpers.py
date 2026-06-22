@@ -100,12 +100,15 @@ def _extract_chunks_recursive(
     parent_path: str,
     result: dict[str, bytes],
     counters: dict[str, int] | None = None,
+    typed: dict[str, Chunk] | None = None,
 ) -> None:
     """Recursively extract leaf chunk data with paths.
 
     Stores raw data for all non-LIST (leaf) chunks, including empty ones.
     LIST chunks are traversed but their aggregate raw data is not stored,
-    so diff output only appears at the deepest chunk level.
+    so diff output only appears at the deepest chunk level. When `typed`
+    is provided, the decoded leaf `Chunk` objects are stored alongside the
+    raw bytes (used for float-tolerant comparison).
     """
     if counters is None:
         counters = {}
@@ -118,12 +121,14 @@ def _extract_chunks_recursive(
             if chunk.chunks:
                 child_counters: dict[str, int] = {}
                 _extract_chunks_recursive(
-                    chunk.chunks, current_path, result, child_counters
+                    chunk.chunks, current_path, result, child_counters, typed
                 )
         else:
             # Store all leaf chunks, including empty ones, so missing
             # empty chunks (e.g. Utf8 with no content) are detected
             result[current_path] = chunk.tobytes()
+            if typed is not None:
+                typed[current_path] = chunk
 
 
 def extract_leaf_chunks(file_path: Path) -> dict[str, bytes]:
@@ -136,11 +141,25 @@ def extract_leaf_chunks(file_path: Path) -> dict[str, bytes]:
         Dict mapping chunk paths to their raw binary data.
         Only leaf chunks (non-LIST) are included.
     """
+    return extract_leaf_chunks_typed(file_path)[0]
+
+
+def extract_leaf_chunks_typed(
+    file_path: Path,
+) -> tuple[dict[str, bytes], dict[str, Chunk]]:
+    """Like `extract_leaf_chunks`, but also return the decoded leaf chunks.
+
+    Returns:
+        A tuple `(raw_bytes_by_path, typed_chunk_by_path)`. The typed
+        chunks let callers compare numeric fields (e.g. float coordinates)
+        with tolerance instead of byte-exactly.
+    """
     with open(file_path, "rb") as f:
         rifx, _xmp = read_aep(f)
     result: dict[str, bytes] = {}
-    _extract_chunks_recursive(rifx.chunks, "", result)
-    return result
+    typed: dict[str, Chunk] = {}
+    _extract_chunks_recursive(rifx.chunks, "", result, typed=typed)
+    return result, typed
 
 
 def format_hex_dump(data: bytes, bytes_per_line: int = 16) -> str:

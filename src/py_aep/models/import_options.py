@@ -6,7 +6,11 @@ import os
 import re
 from pathlib import Path
 
-from ..data.file_formats import get_file_format, get_import_as_types
+from ..data.file_formats import (
+    COMP_CONVERSION_EXTENSIONS,
+    get_file_format,
+    get_import_as_types,
+)
 from ..enums import ImportAsType
 from .validators import validate_enum, validate_path
 
@@ -102,13 +106,18 @@ class ImportOptions:
         """
         validate_enum(ImportAsType)(type)
         type = ImportAsType(type)
+        suffix = self._file.suffix.lower()
+        if suffix in COMP_CONVERSION_EXTENSIONS:
+            # Comp-conversion formats (e.g. SVG) have no media-format entry;
+            # gate on the import-type table alone.
+            return type in get_import_as_types(suffix)
         try:
-            fmt = get_file_format(self._file.suffix)
+            fmt = get_file_format(suffix)
         except ValueError:
             return False
         if fmt.opti == "unsupported":
             return False
-        return type in get_import_as_types(self._file.suffix)
+        return type in get_import_as_types(suffix)
 
     def is_file_name_numbered(self) -> tuple[bool, int]:
         """Check whether the filename ends with a number.

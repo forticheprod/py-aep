@@ -2,15 +2,28 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from py_aep.data.effect_controls import EXPRESSION_CONTROLS
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyType
+from py_aep.resolvers.can_add_property import AddableKind, resolve_addable
 from py_aep.resolvers.can_add_property import (
     can_add_property as _can_add_property,
 )
 
+from ...ae_version import get_ae_version_major
 from ...binary.chunk import ListChunk
-from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
+from ...binary.mutations import (
+    build_dropdown_control,
+    build_expression_control,
+    build_text_animator,
+    build_text_selector,
+    build_vector_element,
+    clone_chunk_tree,
+    rewrite_owner_tdpi,
+)
+from ...binary.property_chunks import TDSN_SENTINEL, TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.scalar_chunks import Utf8Chunk
+from ...data.dropdown_control import DROPDOWN_CONTROL
 from ...synthesis.specs import (
     _GROUP_CHILD_SPECS,
     _LAYER_STYLE_CHILD_SPECS,
@@ -18,14 +31,54 @@ from ...synthesis.specs import (
     _GroupSpec,
 )
 from .overrides import _PROPERTY_MIN_MAX
-from .property import Property
-from .property_base import _INDEXED_GROUP_MATCH_NAMES, _TDSN_SENTINEL, PropertyBase
+from .property import Property, _values_equal
+from .property_base import _INDEXED_GROUP_MATCH_NAMES, PropertyBase
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Literal
 
     from ...synthesis.specs import _PropSpec
+    from .mask_property_group import MaskPropertyGroup
+
+
+# Mandatory empty subgroups AE writes inside some freshly added shape
+# elements, as (match name, tdsb lock flags, tdsb enable flags) triples. A
+# group's own contents carries lock-flag 0x04, like the Root Vectors Group.
+# Enable-flags is 1 (enabled) except the Materials Group, which AE writes
+# as 3 (enabled + collapsed) - matching its default-collapsed UI state.
+_STROKE_SUBGROUPS: tuple[tuple[str, int, int], ...] = (
+    ("ADBE Vector Stroke Dashes", 0, 1),
+    ("ADBE Vector Stroke Taper", 0, 1),
+    ("ADBE Vector Stroke Wave", 0, 1),
+)
+_VECTOR_SUBGROUPS: dict[str, tuple[tuple[str, int, int], ...]] = {
+    "ADBE Vector Group": (
+        ("ADBE Vectors Group", 4, 1),
+        ("ADBE Vector Transform Group", 0, 1),
+        ("ADBE Vector Materials Group", 0, 3),
+    ),
+    "ADBE Vector Graphic - Stroke": _STROKE_SUBGROUPS,
+    "ADBE Vector Graphic - G-Stroke": _STROKE_SUBGROUPS,
+    "ADBE Vector Filter - Repeater": (("ADBE Vector Repeater Transform", 0, 1),),
+    "ADBE Vector Filter - Wiggler": (("ADBE Vector Wiggler Transform", 0, 1),),
+}
+
+# AE's creation names for shape elements, where they differ from the
+# auto-name table ("Rectangle Path 1" vs auto-name "Rectangle").
+_VECTOR_CREATION_NAMES: dict[str, str] = {
+    "ADBE Vector Shape - Rect": "Rectangle Path",
+    "ADBE Vector Shape - Ellipse": "Ellipse Path",
+    "ADBE Vector Shape - Star": "Polystar Path",
+}
+
+# Per-type creation-name base for text selectors. The Range Selector
+# also carries an empty Advanced subgroup in binary.
+_TEXT_SELECTOR_NAMES: dict[str, str] = {
+    "ADBE Text Selector": "Range Selector",
+    "ADBE Text Wiggly Selector": "Wiggly Selector",
+    "ADBE Text Expressible Selector": "Expression Selector",
+}
 
 
 def _insert_before_group_end(tdgp: ListChunk, chunk: Any) -> None:
@@ -39,6 +92,58 @@ def _insert_before_group_end(tdgp: ListChunk, chunk: Any) -> None:
             tdgp.chunks.insert(i, chunk)
             return
     tdgp.chunks.append(chunk)
+
+
+def _effect_tdgp(sspc: ListChunk) -> ListChunk | None:
+    """The instance `tdgp` (param container) inside an effect sspc."""
+    for c in sspc.chunks:
+        if isinstance(c, ListChunk) and c.list_type == "tdgp":
+            return c
+    return None
+
+
+def _set_effect_instance_name(sspc: ListChunk, name: str) -> None:
+    """Replace the instance display name (tdsn) in a cloned effect sspc."""
+    tdgp = _effect_tdgp(sspc)
+    if tdgp is None:
+        return
+    for i, inner in enumerate(tdgp.chunks):
+        if inner.chunk_type == "tdsn":
+            tdgp.chunks[i] = TdsnChunk.new(name)
+            return
+
+
+def _reset_to_default_values(group: PropertyGroup) -> None:
+    """Reset every value leaf of a freshly cloned effect to its default.
+
+    AE's EfdG definition mirrors the project's first applied instance -
+    including edited values, keyframes, and expressions - but
+    `addProperty` must produce a static, default-valued instance. Each
+    leaf is de-animated (keyframes removed) and stripped of any
+    expression, then leaves whose value still differs from the `pard`
+    default are reset. Leaves with no known default keep their value but
+    are still de-animated / de-expressioned.
+
+    Known limitation: 2D/3D point value params (e.g. a Lens Flare's
+    Flare Center, a Point Control) carry no canonical default in the
+    `pard` - AE's effect plugin defines it and it is not stored in the
+    file - so their static value cannot be reset and is inherited from
+    the source instance. Scalar/slider/angle/color/enum params all carry
+    a stored default and reset correctly.
+    """
+    for child in group.properties:
+        if isinstance(child, PropertyGroup):
+            _reset_to_default_values(child)
+            continue
+        # Removing the last keyframe reverts the leaf to a static value,
+        # so the value setter (which rejects keyframed properties) can run.
+        while child.keyframes:
+            child.remove_key(0)
+        child._clear_expression()
+        if child.default_value is not None and not _values_equal(
+            child.value, child.default_value
+        ):
+            child.value = child.default_value
 
 
 def _reorder_and_fill(
@@ -90,6 +195,8 @@ def _reorder_and_fill(
                     child._max_value_fallback = spec.max_value
                 if spec.can_vary_over_time is not None:
                     child._can_vary_over_time = spec.can_vary_over_time
+                if spec.units_text is not None:
+                    child._units_text = spec.units_text
                 if child.default_value is None:
                     dv = (
                         spec.value
@@ -237,7 +344,7 @@ class PropertyGroup(PropertyBase):
         _tdsb = TdsbChunk(synthetic=synthetic)
         # AE writes the unnamed sentinel; the display name resolves
         # from auto_name on the model.
-        tdsn = TdsnChunk.new(_TDSN_SENTINEL, synthetic=synthetic)
+        tdsn = TdsnChunk.new(TDSN_SENTINEL, synthetic=synthetic)
         name_utf8 = tdsn.utf8
         group_end = TdmnChunk(value="ADBE Group End", synthetic=synthetic)
         _tdgp = ListChunk(
@@ -305,9 +412,14 @@ class PropertyGroup(PropertyBase):
         if match_name in _INDEXED_GROUP_MATCH_NAMES:
             self._property_type = PropertyType.INDEXED_GROUP
 
-        if match_name in ("ADBE Effect Mask Parade", "ADBE Vectors Group"):
-            self._elided = True
-        elif match_name == "ADBE Text Animators" and not properties:
+        if match_name in (
+            "ADBE Effect Mask Parade",
+            "ADBE Vectors Group",
+            # Text-animator structural containers are elided in AE.
+            "ADBE Text Animators",
+            "ADBE Text Selectors",
+            "ADBE Text Animator Properties",
+        ):
             self._elided = True
 
     @property
@@ -344,7 +456,7 @@ class PropertyGroup(PropertyBase):
             self._name_utf8.synthetic = False
             # Also unflag tdsn container if present
             for c in self._tdgp.chunks:
-                if getattr(c, "chunk_type", None) == "tdsn":
+                if c.chunk_type == "tdsn":
                     c.synthetic = False
                     break
         # Also flip the group end marker.
@@ -490,14 +602,342 @@ class PropertyGroup(PropertyBase):
         """Check whether a property with the given name can be added.
 
         Returns `True` if this group is an indexed group and `name` is
-        a valid match name or display name for the group type. For
-        the Effect Parade, any non-empty string is accepted (actual
-        effect availability is validated at add time).
+        a valid match name or display name for the group type. For the
+        Effect Parade, the expression controls py_aep can create plus
+        any effect already defined in the project (`LIST:EfdG`) are
+        accepted.
 
         Args:
             name: A match name or display name to check.
         """
-        return _can_add_property(self.match_name, self.property_type, name)
+        if _can_add_property(self.match_name, self.property_type, name):
+            return True
+        return self._installed_effect_def(name) is not None
+
+    def add_property(self, name: str) -> Property | PropertyGroup:
+        """Create and return a new property with the specified name,
+        and add it to this group.
+
+        Indexed groups (and, as a named-group exception, the text
+        animator `Properties` pool) support adding properties; see
+        `can_add_property`. Accepted names cover every ExtendScript
+        addable family: mask atoms (`ADBE Mask Atom` / `Mask`), the
+        expression controls including the Dropdown Menu Control (e.g.
+        `ADBE Slider Control` / `Slider Control`, `ADBE Dropdown
+        Control`), shape elements on a contents group (e.g.
+        `ADBE Vector Shape - Rect`, `ADBE Vector Group`), text
+        selectors (e.g. `ADBE Text Selector` / `Range Selector`), text
+        animators (`ADBE Text Animator` / `Animator`), and animator
+        properties from the fixed pool (e.g. `ADBE Text Position 3D` /
+        `Position`).
+
+        Note:
+            Unlike ExtendScript, adding a property does not invalidate
+            existing references to the group's other properties.
+
+        Args:
+            name: The display name or match name of the property to
+                add.
+
+        Raises:
+            ValueError: If a property with this name cannot be added
+                to this group.
+        """
+        result = resolve_addable(self.match_name, self.property_type, name)
+        if result is None:
+            # Effect Parade: any effect already defined in the project's
+            # EfdG (re-applied by cloning its stored definition).
+            installed = self._installed_effect_def(name)
+            if installed is not None:
+                return self._add_installed_effect(*installed)
+            raise ValueError(
+                f"Cannot add property '{name}' to group '{self.match_name}'"
+            )
+        resolved, kind = result
+        if kind is AddableKind.MASK:
+            return self._add_mask_atom()
+        if kind is AddableKind.EXPRESSION_CONTROL:
+            return self._add_expression_control(resolved)
+        if kind is AddableKind.DROPDOWN:
+            return self._add_dropdown_control()
+        if kind is AddableKind.SHAPE:
+            return self._add_vector_element(resolved)
+        if kind is AddableKind.TEXT_SELECTOR:
+            return self._add_text_selector(resolved)
+        if kind is AddableKind.TEXT_ANIMATOR:
+            return self._add_text_animator()
+        if kind is AddableKind.ANIMATOR_PROPERTY:
+            return self._add_animator_property(resolved)
+        # Exhaustiveness guard: resolve_addable returns one of the seven
+        # AddableKind members, each handled above. Reached only if a new
+        # kind is added without a dispatch arm.
+        raise NotImplementedError(f"no add_property builder for '{resolved}'")
+
+    def _free_numbered_name(self, base: str, start: int) -> str:
+        """`'{base} {n}'` with `n >= start`, skipping any number already
+        used by a sibling so a new instance never duplicates an existing
+        name. AE numbers same-type instances per container, but a count+1
+        scheme collides once an instance is removed or the existing names
+        are non-contiguous (e.g. `['Stroke 1', 'Stroke 3']`).
+        """
+        existing = {p.name for p in self.properties}
+        n = start
+        while f"{base} {n}" in existing:
+            n += 1
+        return f"{base} {n}"
+
+    def _effect_instance_name(self, display: str, same_type: int) -> str:
+        """The tdsn name for a new effect instance: the first instance uses
+        the unnamed sentinel (so it shows the effect's own name); later ones
+        get a baked `"{display} N"`. `same_type` is the count of existing
+        instances (counted per match name, or per pseudo-effect namespace
+        for the Dropdown Control)."""
+        if same_type == 0:
+            return TDSN_SENTINEL
+        return self._free_numbered_name(display, same_type + 1)
+
+    def _add_mask_atom(self) -> MaskPropertyGroup:
+        """Add a new default mask atom to this Masks parade group."""
+        from .mask_property_group import MaskPropertyGroup  # noqa: PLC0415
+
+        self._ensure_materialized()
+        # AE assigns a monotonic per-layer mask id (highest existing + 1),
+        # not a positional count: len+1 collides after a mid-parade mask is
+        # removed, or on a parsed layer whose mask ids are non-contiguous.
+        existing = [m for m in self.properties if isinstance(m, MaskPropertyGroup)]
+        next_id = max((m._mkif.mask_id for m in existing), default=0) + 1
+        mask = MaskPropertyGroup._new(
+            self,
+            self.property_depth + 1,
+            name=f"Mask {next_id}",
+            mask_id=next_id,
+        )
+        self._properties.append(mask)
+        return mask
+
+    def _add_expression_control(self, match_name: str) -> PropertyGroup:
+        """Add a fresh expression-control effect to this Effect Parade."""
+        skeleton = EXPRESSION_CONTROLS[match_name]
+        self._ensure_materialized()
+        comp = self._containing_layer.containing_comp
+
+        # AE names the first instance after the effect (unnamed tdsn
+        # sentinel) and later instances "Name N" with a baked tdsn.
+        display: str = skeleton["name"]
+        same_type = sum(1 for p in self.properties if p.match_name == match_name)
+        tdsn_name = self._effect_instance_name(display, same_type)
+
+        tdmn, sspc = build_expression_control(
+            match_name,
+            display,
+            bytes.fromhex(skeleton["part"]),
+            tdsn_name=tdsn_name,
+            time_base=comp._cdta.internal_timebase,
+            layer_id=self._containing_layer.id,
+            layer_param_name=skeleton["layer_param"],
+        )
+        return self._attach_effect(tdmn, sspc, match_name)
+
+    def _add_dropdown_control(self) -> PropertyGroup:
+        """Add a fresh Dropdown Menu Control to this Effect Parade.
+
+        The Dropdown Menu Control is a pseudo-effect with a per-instance
+        generated match name, so AE's "Name N" numbering counts existing
+        dropdowns by the `Pseudo/` namespace rather than by match name.
+        """
+        self._ensure_materialized()
+        comp = self._containing_layer.containing_comp
+
+        display = DROPDOWN_CONTROL["name"]
+        same_type = sum(
+            1 for p in self.properties if p.match_name.startswith("Pseudo/@@")
+        )
+        tdsn_name = self._effect_instance_name(display, same_type)
+
+        tdmn, sspc = build_dropdown_control(
+            tdsn_name=tdsn_name,
+            time_base=comp._cdta.internal_timebase,
+            layer_id=self._containing_layer.id,
+        )
+        return self._attach_effect(tdmn, sspc, tdmn.value)
+
+    def _installed_effect_def(self, name: str) -> tuple[str, str, ListChunk] | None:
+        """Resolve `name` to an effect defined in the project's EfdG.
+
+        Only the Effect Parade can host installed effects. Returns
+        `(match_name, display_name, def_sspc)` for a project-defined
+        effect, else `None`.
+        """
+        from ...parsers.effect import find_effect_definition  # noqa: PLC0415
+
+        if self.match_name != "ADBE Effect Parade":
+            return None
+        project = self._containing_layer.containing_comp._project
+        return find_effect_definition(project._rifx.chunks, name)
+
+    def _add_installed_effect(
+        self, match_name: str, display: str, def_sspc: ListChunk
+    ) -> PropertyGroup:
+        """Add an effect already defined in the project by cloning its
+        `LIST:EfdG` definition.
+
+        The stored definition is a complete sspc template, so cloning it
+        and retargeting the hidden `-0000` internal param to this layer
+        yields a valid applied effect. AE's EfdG entry mirrors the first
+        applied instance (including edited values and keyframes), so the
+        value parameters are de-animated and reset to their `pard`
+        defaults to match `addProperty`'s static, default-valued
+        semantics.
+        """
+        self._ensure_materialized()
+        sspc = clone_chunk_tree(def_sspc)
+        assert isinstance(sspc, ListChunk)
+        rewrite_owner_tdpi(sspc, layer_id=self._containing_layer.id)
+
+        # Name the instance: the first uses the unnamed tdsn sentinel
+        # (so it shows the effect's fnam name); later ones get "Name N".
+        same_type = sum(1 for p in self.properties if p.match_name == match_name)
+        tdsn_name = self._effect_instance_name(display, same_type)
+        _set_effect_instance_name(sspc, tdsn_name)
+
+        effect = self._attach_effect(TdmnChunk(value=match_name), sspc, match_name)
+        _reset_to_default_values(effect)
+        return effect
+
+    def _attach_effect(
+        self, tdmn: TdmnChunk, sspc: ListChunk, match_name: str
+    ) -> PropertyGroup:
+        """Insert a built effect's chunks, parse, wire the model, append.
+
+        `parse_effect` is the canonical chunks->model path for effects
+        (param-def merging, child synthesis); `duplicate()` uses it too.
+        """
+        from ...parsers.effect import parse_effect  # noqa: PLC0415
+
+        layer = self._containing_layer
+        comp = layer.containing_comp
+        parent_tdgp = self._tdgp
+        assert parent_tdgp is not None
+        _insert_before_group_end(parent_tdgp, tdmn)
+        _insert_before_group_end(parent_tdgp, sspc)
+
+        effect_param_defs = comp._project._effect_param_defs
+        effect = parse_effect(
+            sspc_chunk=sspc,
+            group_match_name=match_name,
+            property_depth=self.property_depth + 1,
+            effect_param_defs=effect_param_defs,
+            composition=comp,
+            tdmn=tdmn,
+        )
+        effect._parent_property = self
+        effect._deferred_ae_major = get_ae_version_major(layer)
+        self._properties.append(effect)
+        return effect
+
+    def _attach_group(
+        self, tdmn: TdmnChunk, tdgp: ListChunk, match_name: str
+    ) -> PropertyGroup:
+        """Insert a built group's chunks, parse, wire the model, append.
+
+        `parse_property_group` is the canonical chunks->model path for
+        added groups (mandatory subgroups, the Path element's om-s,
+        deferred child synthesis); the shape, selector and animator
+        builders share it, as `_attach_effect` does for effects.
+        """
+        from ...parsers.property import parse_property_group  # noqa: PLC0415
+
+        layer = self._containing_layer
+        comp = layer.containing_comp
+        parent_tdgp = self._tdgp
+        assert parent_tdgp is not None
+        _insert_before_group_end(parent_tdgp, tdmn)
+        _insert_before_group_end(parent_tdgp, tdgp)
+
+        group = parse_property_group(
+            tdgp_chunk=tdgp,
+            group_match_name=match_name,
+            property_depth=self.property_depth + 1,
+            effect_param_defs=comp._project._effect_param_defs,
+            composition=comp,
+            tdmn=tdmn,
+        )
+        group._parent_property = self
+        group._deferred_ae_major = get_ae_version_major(layer)
+        self._properties.append(group)
+        return group
+
+    def _add_vector_element(self, match_name: str) -> PropertyGroup:
+        """Add a fresh shape element to this contents group."""
+        self._ensure_materialized()
+        comp = self._containing_layer.containing_comp
+
+        # AE bakes a per-container, per-type numbered name into the tdsn.
+        base = _VECTOR_CREATION_NAMES.get(match_name) or MATCH_NAME_TO_AUTO_NAME.get(
+            match_name, match_name
+        )
+        same_type = sum(1 for p in self.properties if p.match_name == match_name)
+        path_time_base = (
+            comp._cdta.internal_timebase
+            if match_name == "ADBE Vector Shape - Group"
+            else None
+        )
+        tdmn, tdgp = build_vector_element(
+            match_name,
+            self._free_numbered_name(base, same_type + 1),
+            subgroups=_VECTOR_SUBGROUPS.get(match_name, ()),
+            path_time_base=path_time_base,
+        )
+        return self._attach_group(tdmn, tdgp, match_name)
+
+    def _add_animator_property(self, match_name: str) -> Property | PropertyGroup:
+        """Apply an animator property from the fixed pool (the
+        named-group exception).
+
+        The `ADBE Text Animator Properties` group exposes a fixed pool
+        of synthesized members; unlike indexed groups, "adding" one
+        materializes the existing member in place (it keeps its pool
+        position) rather than appending a new child. Idempotent: adding
+        an already-applied property is a no-op, as in AE.
+        """
+        prop = next((p for p in self.properties if p.match_name == match_name), None)
+        # resolve_addable returns only pool match names, so the member exists.
+        assert prop is not None
+        prop._ensure_materialized()
+        return prop
+
+    def _add_text_animator(self) -> PropertyGroup:
+        """Add a fresh animator to this Text Animators group.
+
+        A new animator is a minimal `[Animator N, Properties (empty)]`
+        container; its (empty) Selectors group and the 103-property
+        Properties pool are synthesized on parse.
+        """
+        self._ensure_materialized()
+        same_type = sum(
+            1 for p in self.properties if p.match_name == "ADBE Text Animator"
+        )
+        tdmn, tdgp = build_text_animator(
+            self._free_numbered_name("Animator", same_type + 1)
+        )
+        return self._attach_group(tdmn, tdgp, "ADBE Text Animator")
+
+    def _add_text_selector(self, match_name: str) -> PropertyGroup:
+        """Add a fresh selector to this text animator's Selectors group.
+
+        Like shape elements, a selector is a minimal named group whose
+        value children are synthesized; the Range Selector additionally
+        carries an empty `ADBE Text Range Advanced` subgroup in binary.
+        """
+        self._ensure_materialized()
+        base = _TEXT_SELECTOR_NAMES[match_name]
+        same_type = sum(1 for p in self.properties if p.match_name == match_name)
+        tdmn, tdgp = build_text_selector(
+            match_name,
+            self._free_numbered_name(base, same_type + 1),
+            has_advanced=match_name == "ADBE Text Selector",
+        )
+        return self._attach_group(tdmn, tdgp, match_name)
 
     def property(self, key: int | str) -> Property | PropertyGroup:
         """Look up a child property by index or name.

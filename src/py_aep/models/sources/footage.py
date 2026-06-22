@@ -2,21 +2,36 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, cast
 
-from ...binary.utils import find_by_type, toggle_flag_chunk
+from ...binary.utils import (
+    ChunkNotFoundError,
+    find_by_type,
+    find_chunks_after,
+    toggle_flag_chunk,
+)
+from ...data.color_spaces import (
+    PROFILE_TYPE_OCIO,
+    build_icc_envelope,
+    build_ocio_colorspace_envelope,
+    parse_envelope,
+)
+from ...data.icc_profiles import default_icc_library
 from ...enums import (
     AlphaMode,
     FieldSeparationType,
     LinearLightMode,
     PulldownPhase,
 )
-from ...enums.mappings import map_media_color_space
+from ...enums.mappings import map_media_color_space, profile_id_for_name
 from ..descriptors import ChunkField
-from ..validators import _validate_number, validate_rgb_color
+from ..validators import _validate_number, validate_rgb_color, validate_string
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.footage_chunks import SspcChunk
-    from ...binary.scalar_chunks import U1Chunk
+    from ...binary.scalar_chunks import U1Chunk, Utf8Chunk
+    from ...data.color_spaces import ColorProfile
+    from ...data.icc_profiles import IccProfileLibrary
+    from ..project import Project
 
 
 class FootageSource:
@@ -167,6 +182,14 @@ class FootageSource:
         self._sspc = _sspc
         self._linl = _linl
         self._clrs = _clrs
+        self._project: Project | None = None
+
+    def _icc_lib(self) -> IccProfileLibrary:
+        """ICC library for Adobe-CMS profile writes - the owning project's
+        (honouring `icc_profile_dirs`) when wired, else the global default."""
+        if self._project is not None:
+            return self._project._icc_lib()
+        return default_icc_library()
 
     @property
     def preserve_rgb(self) -> bool:
@@ -190,11 +213,16 @@ class FootageSource:
     @property
     def media_color_space(self) -> str:
         """The media color space from the Interpret Footage >
-        Color Management tab.
+        Color Management tab. Read / Write.
 
-        Returns `"Embedded"` (default), `"Working Color Space"`, or
-        the name of the selected ICC profile (e.g. `"Apple RGB"`).
-        Read-only.
+        Returns `"Embedded"`, `"Working Color Space"`, the name of an assigned
+        OCIO color space (e.g. `"ACEScg"`), or the name of an Adobe ICC profile
+        (e.g. `"Apple RGB"`).
+
+        Writable: `"Working Color Space"`, `"Embedded"`, an OCIO color-space
+        name, or an Adobe ICC profile name. An Adobe profile is identified by its
+        16-byte ID and its ICC bytes are discovered on disk
+        (`ColorProfileNotFoundError` if not installed).
 
         Note:
             Not exposed in ExtendScript."""
@@ -203,11 +231,93 @@ class FootageSource:
         ipws_chunk = cast(
             "U1Chunk", find_by_type(chunks=self._clrs.chunks, chunk_type="ipws")
         )
+        if ipws_chunk.value:
+            return "Working Color Space"
+        # In OCIO mode the assigned color space is carried as an OCIO envelope in
+        # the `ocsp` Utf8 (apid is the unmanaged sentinel). In Adobe mode `ocsp`
+        # holds the embedded/override profile and `apid` is the discriminator.
+        ocsp = self._ocsp_profile()
+        if ocsp is not None and ocsp.profile_type == PROFILE_TYPE_OCIO:
+            return ocsp.name
         apid_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="apid")
-        return map_media_color_space(
-            bool(ipws_chunk.value),
-            apid_chunk.data,
+        return map_media_color_space(False, apid_chunk.data)
+
+    @media_color_space.setter
+    def media_color_space(self, value: str) -> None:
+        validate_string(value)
+        if self._clrs is None:
+            raise AttributeError(
+                "Cannot set media_color_space: no CLRS container. Update the "
+                "value in After Effects then re-parse the project to modify "
+                "this footage source."
+            )
+        ipws_chunk = cast(
+            "U1Chunk", find_by_type(chunks=self._clrs.chunks, chunk_type="ipws")
         )
+        apid_chunk = find_by_type(chunks=self._clrs.chunks, chunk_type="apid")
+        if value == "Working Color Space":
+            # AE sets ipws, clears the override id, and empties the ocsp Utf8.
+            ipws_chunk.value = 1
+            apid_chunk.data = b"\xff" * 16
+            self._write_ocsp("")
+            return
+        ipws_chunk.value = 0
+        if value == "Embedded":
+            # Revert to the file's embedded profile (mirrored in the Mcsp Utf8).
+            apid_chunk.data = b"\xff" * 16
+            self._write_ocsp(self._embedded_envelope())
+            return
+        if profile_id_for_name(value) is not None:
+            # Adobe ICC override: apid is the catalogued profile ID and the ocsp
+            # carries the embedded ICC bytes (discovered from the standard Adobe
+            # Color dirs). For most profiles the bytes hash to the same ID; the
+            # handful AE generates a private variant for (Apple/Adobe RGB,
+            # ColorMatch, ROMM) embed the on-disk copy AE still recognizes.
+            lib = self._icc_lib()
+            apid_chunk.data = lib.hash_for(value)
+            self._write_ocsp(build_icc_envelope(value, lib.bytes_for(value)))
+            return
+        # Treat any other name as an OCIO color space (no ICC, apid unmanaged).
+        apid_chunk.data = b"\xff" * 16
+        self._write_ocsp(build_ocio_colorspace_envelope(value))
+
+    def _ocsp_utf8(self) -> Utf8Chunk | None:
+        """The `Utf8` chunk after the CLRS `ocsp` marker (the assigned space)."""
+        if self._clrs is None:
+            return None
+        try:
+            after = find_chunks_after(
+                chunks=self._clrs.chunks, chunk_type="Utf8", after_type="ocsp"
+            )
+        except ChunkNotFoundError:
+            return None
+        return cast("Utf8Chunk", after[0]) if after else None
+
+    def _ocsp_profile(self) -> ColorProfile | None:
+        utf8 = self._ocsp_utf8()
+        if utf8 is None or "baseColorProfile" not in utf8.value:
+            return None
+        return parse_envelope(utf8.value)
+
+    def _embedded_envelope(self) -> str:
+        """The embedded source profile envelope (CLRS `Mcsp` Utf8), or `{}`."""
+        if self._clrs is None:
+            return "{}"
+        try:
+            after = find_chunks_after(
+                chunks=self._clrs.chunks, chunk_type="Utf8", after_type="Mcsp"
+            )
+        except ChunkNotFoundError:
+            return "{}"
+        return cast("Utf8Chunk", after[0]).value if after else "{}"
+
+    def _write_ocsp(self, envelope: str) -> None:
+        utf8 = self._ocsp_utf8()
+        if utf8 is None:
+            raise AttributeError(
+                "Cannot set media_color_space: no 'ocsp' color chunk in CLRS."
+            )
+        utf8.value = envelope
 
     @property
     def is_still(self) -> bool:

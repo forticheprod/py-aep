@@ -60,6 +60,7 @@ class PropertyValueType(IntEnum):
     LITM = 6426
     GIDE = 6427
     ORIENTATION = 6428
+    VARIABLE_FONT_AXIS = 3145784
 
 
 class KeyframeInterpolationType(IntEnum):

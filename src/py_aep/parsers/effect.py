@@ -29,6 +29,7 @@ from ..models.properties.property_group import PropertyGroup
 from ..synthesis.specs import _PropSpec
 from .utils import (
     get_chunks_by_match_name,
+    get_match_name_runs,
 )
 
 if TYPE_CHECKING:
@@ -114,14 +115,14 @@ def _resolve_effect_value(
         value = param_def.get("default_value", param_def.get("last_value"))
         return value, value
     # General case: last_value > default_value > override table > pard
-    # dephault.
+    # default.
     value = param_def.get("last_value")
     if value is None:
         value = param_def.get("default_value")
     if value is None:
         value = _PROPERTY_DEFAULTS.get(match_name)
     if value is None:
-        value = param_def.get("dephault")
+        value = param_def.get("default")
     default_value: Any = param_def.get("default_value")
     if default_value is None:
         default_value = value
@@ -151,6 +152,9 @@ def _apply_param_def_metadata(
         prop._max_value_fallback = max_val
     prop.nb_options = param_def.get("nb_options")
     prop.property_parameters = param_def.get("property_parameters")
+    units = param_def.get("units_text")
+    if units is not None:
+        prop._units_text = units
     # The pard param flags carry the authoritative can-vary bit; the
     # residue table keeps the rare params where they disagree with
     # ExtendScript (e.g. the Puppet Engine dropdown).
@@ -227,12 +231,12 @@ def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
     prop._property_value_type = param_def.get(
         "property_value_type", prop.property_value_type
     )
-    # Prefer the override table, then the pard dephault field. For LAYER
+    # Prefer the override table, then the pard default field. For LAYER
     # references, pard stores a meaningless 0 and we have no static
     # override, so leave default_value unset entirely.
     static_default = _PROPERTY_DEFAULTS.get(prop.match_name)
     if static_default is None:
-        static_default = param_def.get("dephault")
+        static_default = param_def.get("default")
     if static_default is not None:
         prop.default_value = static_default
     elif param_def["property_control_type"] != PropertyControlType.LAYER:
@@ -320,13 +324,15 @@ def _parse_effect_properties(
     """
     from .property import parse_properties
 
-    chunks_by_property = get_chunks_by_match_name(tdgp_chunk)
     # Skip index-0 internal parameters (not exposed in ExtendScript).
-    for key in [k for k in chunks_by_property if k.endswith("-0000")]:
-        del chunks_by_property[key]
+    property_runs = [
+        (name, chunks)
+        for name, chunks in get_match_name_runs(tdgp_chunk)
+        if not name.endswith("-0000")
+    ]
 
     parsed = parse_properties(
-        chunks_by_match_name=chunks_by_property,
+        match_name_runs=property_runs,
         child_depth=child_depth,
         effect_param_defs={},
         composition=composition,
@@ -502,8 +508,8 @@ def _pard_extractor(
 @_pard_extractor(PropertyControlType.ANGLE)
 def _extract_angle(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value / 65536
-    if body.dephault_raw is not None:
-        result["dephault"] = _intify(body.dephault_raw / 65536)
+    if body.default_raw is not None:
+        result["default"] = _intify(body.default_raw / 65536)
     result["property_value_type"] = PropertyValueType.OneD
 
 
@@ -546,8 +552,8 @@ def _intify(value: float) -> int | float:
 
 @_pard_extractor(PropertyControlType.INTEGER)
 def _extract_integer(body: Any, result: dict[str, Any]) -> None:
-    if body.dephault is not None:
-        result["dephault"] = body.dephault
+    if body.default is not None:
+        result["default"] = body.default
     result["min_value"] = body.valid_min
     result["max_value"] = body.valid_max
 
@@ -555,8 +561,8 @@ def _extract_integer(body: Any, result: dict[str, Any]) -> None:
 @_pard_extractor(PropertyControlType.SCALAR)
 def _extract_scalar(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value / 65536
-    if body.dephault_raw is not None:
-        result["dephault"] = _intify(body.dephault_raw / 65536)
+    if body.default_raw is not None:
+        result["default"] = _intify(body.default_raw / 65536)
     result["min_value"] = _intify(body.valid_min_raw / 65536)
     result["max_value"] = _intify(body.valid_max_raw / 65536)
 
@@ -564,13 +570,17 @@ def _extract_scalar(body: Any, result: dict[str, Any]) -> None:
 @_pard_extractor(PropertyControlType.SLIDER)
 def _extract_slider(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value
-    if body.dephault is not None and math.isfinite(body.dephault):
-        result["dephault"] = _intify(body.dephault)
+    if body.default is not None and math.isfinite(body.default):
+        result["default"] = _intify(body.default)
     # Non-finite bounds mean the side is unbounded.
     if math.isfinite(body.valid_min):
         result["min_value"] = _intify(body.valid_min)
     if math.isfinite(body.valid_max):
         result["max_value"] = _intify(body.valid_max)
+    # PF_ValueDisplayFlag_PERCENT (bit 0) is the only display flag AE
+    # serializes reliably for float sliders; it maps to unitsText "percent".
+    if body.display_flags and body.display_flags & 0x01:
+        result["units_text"] = "percent"
 
 
 @_pard_extractor(PropertyControlType.THREE_D)
@@ -687,3 +697,51 @@ def parse_effect_definitions(
         effect_defs[effect_match_name] = param_defs
 
     return effect_defs
+
+
+def find_effect_definition(
+    root_chunks: list[Chunk], name: str
+) -> tuple[str, str, ListChunk] | None:
+    """Locate an effect's project-level definition in `LIST:EfdG`.
+
+    AE stores a complete `LIST:sspc` template (`fnam` + `parT` + value
+    `tdgp` + `pgui`) for every effect type used in the project, so any
+    such effect can be re-applied by cloning that template. `name` is
+    matched against the effect match name first, then its `fnam` display
+    name.
+
+    Args:
+        root_chunks: The root chunks of the AEP file.
+        name: An effect match name or display name.
+
+    Returns:
+        `(match_name, display_name, def_sspc)` for the matching
+        definition, or `None`.
+    """
+    try:
+        efdg_chunk = find_by_list_type(chunks=root_chunks, list_type="EfdG")
+    except ChunkNotFoundError:
+        return None
+
+    entries: list[tuple[str, str, ListChunk]] = []
+    for efdf_chunk in filter_by_list_type(chunks=efdg_chunk.chunks, list_type="EfDf"):
+        match_name = cast(
+            "TdmnChunk", find_by_type(chunks=efdf_chunk.chunks, chunk_type="tdmn")
+        ).value
+        sspc_chunk = find_by_list_type(chunks=efdf_chunk.chunks, list_type="sspc")
+        fnam = cast(
+            "ContainerChunk", find_by_type(chunks=sspc_chunk.chunks, chunk_type="fnam")
+        )
+        display = cast(
+            "Utf8Chunk", find_by_type(chunks=fnam.chunks, chunk_type="Utf8")
+        ).value
+        entries.append((match_name, display, sspc_chunk))
+
+    # Match name takes precedence over display name across all entries.
+    for entry in entries:
+        if name == entry[0]:
+            return entry
+    for entry in entries:
+        if name == entry[1]:
+            return entry
+    return None

@@ -108,6 +108,8 @@ class AVItem(Item):
         )
         self._pin_chunks = _pin_chunks
         self._proxy_source = proxy_source
+        if proxy_source is not None:
+            proxy_source._project = project
         self._used_in: set[CompItem] = set()
         self._viewer: Viewer | None = None
 
@@ -346,4 +348,5 @@ class AVItem(Item):
         """Set a proxy LIST:Pin chunk (add or replace)."""
         self._replace_pin(1, self._pin_for_source(source))
         self._proxy_source = source
+        source._project = self._project
         self.use_proxy = True

@@ -102,8 +102,8 @@ flowchart TD
     end
 
     subgraph Phase2["Phase 2 - Property Dispatch (parse_properties)"]
-        PL --> CMN["get_chunks_by_match_name()"]
-        CMN --> dispatch{"list_type?"}
+        PL --> MNR["get_match_name_runs()"]
+        MNR --> dispatch{"list_type?"}
         dispatch -->|"tdgp"| PG["parse_property_group()\n--> recursive parse_properties()"]
         dispatch -->|"tdbs"| PP["parse_property()\ntdsb + tdb4 + cdat + keyframes"]
         dispatch -->|"sspc"| PE["parse_effect()"]
@@ -609,19 +609,21 @@ def test_comp_shutter_angle():
     assert comp.shutter_angle == 180.0
 ```
 
-For writable fields, add a **roundtrip test** following the pattern in `tests/test_models_composition.py`:
+For writable fields, add a **roundtrip test** in `tests/roundtrip/` (these
+parse fresh so a mutation can never corrupt a cached read-only sample),
+following the pattern in `tests/roundtrip/test_models_composition.py`:
 
 ```python
 class TestRoundtripShutterAngle:
     def test_modify_shutter_angle(self, tmp_path: Path) -> None:
-        project = parse_aep(SAMPLES_DIR / "shutterAngle_180.aep").project
+        project = parse_project_fresh(SAMPLES_DIR / "shutterAngle_180.aep")
         comp = project.compositions[0]
         assert comp.shutter_angle == 180
 
         comp.shutter_angle = 360
         project.save(tmp_path / "modified.aep")
 
-        project2 = parse_aep(tmp_path / "modified.aep").project
+        project2 = parse_project_fresh(tmp_path / "modified.aep")
         assert project2.compositions[0].shutter_angle == 360
 ```
 
@@ -679,11 +681,14 @@ motion_blur = ChunkField[bool]("_cdta", "motion_blur")
 # Run all tests
 uv run pytest
 
+# Run all tests in one folder (e.g. only read-only, or only roundtrip)
+uv run pytest tests/read_only
+
 # Run specific test file
-uv run pytest tests/test_models_layer.py
+uv run pytest tests/read_only/test_models_layer.py
 
 # Run specific test
-uv run pytest tests/test_models_layer.py::test_layer_motion_blur -v
+uv run pytest tests/read_only/test_models_layer.py::TestLayerBasic -v
 
 # Run with coverage
 uv run pytest --cov=src/py_aep --cov-report html --cov-report term:skip-covered
@@ -691,15 +696,22 @@ uv run pytest --cov=src/py_aep --cov-report html --cov-report term:skip-covered
 
 ### Test Structure
 
-Tests are organized by model type:
-- `test_models_project.py` - Project-level attributes
-- `test_models_composition.py` - CompItem attributes and roundtrip tests
-- `test_models_footage.py` - FootageItem and sources
-- `test_models_layer.py` - Layer types and attributes
-- `test_models_property.py` - Properties, keyframes, effects, roundtrip tests
-- `test_models_marker.py` - Markers
-- `test_models_text.py` - TextDocument and FontObject roundtrip tests
-- `test_models_renderqueue.py` - Render queue, settings, output modules
+Tests are split into three folders by how they touch sample projects:
+
+- `tests/read_only/` - parse a sample and only **read** it (assert against
+  ExtendScript JSON). These share an `lru_cache`d parse via
+  `helpers.parse_project`, so they must never mutate the parsed objects.
+- `tests/roundtrip/` - **mutate** a project (setters, add / remove /
+  duplicate, save + reparse). These parse fresh via
+  `helpers.parse_project_fresh` (or `py_aep.parse`) so a mutation can never
+  corrupt a cached read-only sample shared by another worker.
+- `tests/unit/` - exercise pure functions, in-memory chunks, byte-level
+  round-trips, or the CLI - no sample model project involved.
+
+Shared helpers live in `tests/helpers.py`, importable from any folder as
+`from helpers import ...` (enabled by `pythonpath = ["tests"]`). A given model
+type can have a file in more than one folder, e.g. both
+`read_only/test_models_layer.py` and `roundtrip/test_models_layer.py`.
 
 ### Writing Tests
 

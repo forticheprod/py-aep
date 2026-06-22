@@ -20,6 +20,7 @@ from ...binary.layer_chunks import (
 from ...binary.misc_chunks import PguiChunk, PrinChunk
 from ...binary.mutations import build_ovg2, build_source_alternate_extras
 from ...binary.property_chunks import (
+    TDSN_SENTINEL,
     CdatChunk,
     Tdb4Chunk,
     TdmnChunk,
@@ -47,7 +48,6 @@ from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
 from ..naming import auto_name
 from ..properties.property import Property
-from ..properties.property_base import _TDSN_SENTINEL
 from ..properties.property_group import PropertyGroup
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
@@ -1408,7 +1408,7 @@ class CompItem(AVItem):
             list_type="tdbs",
             chunks=[
                 TdsbChunk(),
-                TdsnChunk.new(_TDSN_SENTINEL),
+                TdsnChunk.new(TDSN_SENTINEL),
                 tdb4,
                 cdat,
             ],

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from ..data.text_animator_pool import TEXT_ANIMATOR_POOL
 from ..enums import PropertyValueType
 
 if TYPE_CHECKING:
@@ -37,6 +38,11 @@ class _PropSpec(NamedTuple):
     spatial_flags: int | None = None
     cvot: int | None = None
     value_hint_type: int | None = None
+    units_text: str | None = None
+    """Explicit units string; when `None`, units resolve from
+    `UNITS_TEXT_MAP` by match name (the default for most specs). Set
+    for bulk-generated specs (e.g. the text-animator pool) to keep
+    their units self-contained."""
     bound_chunks: bool | None = None
     """Whether AE writes `tdum`/`tduM` placeholder bound chunks for this
     property when materialized. `None` derives it from `min_value` /
@@ -51,6 +57,39 @@ class _GroupSpec(NamedTuple):
     min_major: int | None = None
 
 
+# A property's (dimensions, is_spatial, color) kind is a pure function of its
+# value type, so `_spec()` derives it from this table instead of every spec
+# repeating it. (ExtendScript reports color properties as spatial.) Value types
+# absent here - NO_VALUE, CUSTOM_VALUE, MARKER, TEXT_DOCUMENT - have no single
+# kind, so those specs pass `dimensions`/`is_spatial`/`color` explicitly.
+_PVT_KIND: dict[int, tuple[int, bool, bool]] = {
+    PropertyValueType.ThreeD_SPATIAL: (3, True, False),
+    PropertyValueType.ThreeD: (3, False, False),
+    PropertyValueType.TwoD_SPATIAL: (2, True, False),
+    PropertyValueType.TwoD: (2, False, False),
+    PropertyValueType.OneD: (1, False, False),
+    PropertyValueType.COLOR: (4, True, True),
+    PropertyValueType.VARIABLE_FONT_AXIS: (1, False, False),
+}
+
+
+def _spec(
+    match_name: str,
+    auto_name: str,
+    value: int | float | list[float] | None,
+    pvt: PropertyValueType,
+    **kwargs: Any,
+) -> _PropSpec:
+    """Build a `_PropSpec`, deriving `dimensions`/`is_spatial`/`color` from
+    `pvt` via `_PVT_KIND` unless given explicitly."""
+    if pvt in _PVT_KIND:
+        dimensions, is_spatial, color = _PVT_KIND[pvt]
+        kwargs.setdefault("dimensions", dimensions)
+        kwargs.setdefault("is_spatial", is_spatial)
+        kwargs.setdefault("color", color)
+    return _PropSpec(match_name, auto_name, value, pvt, **kwargs)
+
+
 # Color min/max bounds used by Layer Styles and Material Shadow Color.
 _COLOR_MIN: float = -3921568.62745098
 _COLOR_MAX: float = 3921568.62745098
@@ -58,7 +97,7 @@ _COLOR_MAX: float = 3921568.62745098
 # Canonical children of "ADBE Material Options Group" as reported by
 # ExtendScript.  Properties already parsed from binary are skipped.
 _MATERIAL_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Casts Shadows",
         "Casts Shadows",
         0.0,
@@ -67,7 +106,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         can_vary_over_time=False,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Transmission",
         "Light Transmission",
         0.0,
@@ -76,7 +115,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Accepts Shadows",
         "Accepts Shadows",
         1.0,
@@ -85,7 +124,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         can_vary_over_time=False,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Accepts Lights",
         "Accepts Lights",
         1.0,
@@ -94,21 +133,18 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         can_vary_over_time=False,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Shadow Color",
         "Shadow Color",
         [0.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
         has_time_base=True,
         spatial_flags=0x07,
         value_hint_type=2,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Appears in Reflections",
         "Appears in Reflections",
         1.0,
@@ -117,7 +153,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         can_vary_over_time=False,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Ambient Coefficient",
         "Ambient",
         100.0,
@@ -126,7 +162,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Diffuse Coefficient",
         "Diffuse",
         50.0,
@@ -135,7 +171,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Specular Coefficient",
         "Specular Intensity",
         50.0,
@@ -144,7 +180,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Shininess Coefficient",
         "Specular Shininess",
         5.0,
@@ -153,7 +189,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Metal Coefficient",
         "Metal",
         100.0,
@@ -162,7 +198,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Reflection Coefficient",
         "Reflection Intensity",
         0.0,
@@ -171,7 +207,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Glossiness Coefficient",
         "Reflection Sharpness",
         100.0,
@@ -180,7 +216,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Fresnel Coefficient",
         "Reflection Rolloff",
         0.0,
@@ -189,7 +225,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Transparency Coefficient",
         "Transparency",
         0.0,
@@ -198,7 +234,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Transp Rolloff",
         "Transparency Rolloff",
         0.0,
@@ -207,7 +243,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Index of Refraction",
         "Index of Refraction",
         1.0,
@@ -221,7 +257,7 @@ _MATERIAL_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Extrsn Options Group".
 _EXTRUSION_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Bevel Styles",
         "Bevel Style",
         1.0,
@@ -230,7 +266,7 @@ _EXTRUSION_SPECS: list[_PropSpec] = [
         max_value=4,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Bevel Direction",
         "Bevel Direction",
         1.0,
@@ -243,7 +279,7 @@ _EXTRUSION_SPECS: list[_PropSpec] = [
         cvot=0x00,
         value_hint_type=2,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Bevel Depth",
         "Bevel Depth",
         2.0,
@@ -251,7 +287,7 @@ _EXTRUSION_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Hole Bevel Depth",
         "Hole Bevel Depth",
         100.0,
@@ -259,7 +295,7 @@ _EXTRUSION_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Extrsn Depth",
         "Extrusion Depth",
         0.0,
@@ -271,7 +307,7 @@ _EXTRUSION_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Plane Options Group".
 _PLANE_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Plane Curvature",
         "Curvature",
         0.0,
@@ -279,7 +315,7 @@ _PLANE_SPECS: list[_PropSpec] = [
         min_value=-100,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Plane Subdivision",
         "Segments",
         4.0,
@@ -291,12 +327,11 @@ _PLANE_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Audio Group".
 _AUDIO_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Audio Levels",
         "Audio Levels",
         [0.0, 0.0],
         PropertyValueType.TwoD,
-        dimensions=2,
         min_value=-192,
         max_value=24,
     ),
@@ -304,7 +339,7 @@ _AUDIO_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Source Options Group".
 _SOURCE_OPTIONS_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Layer Source Alternate",
         "Item Cache Entry",
         None,
@@ -318,7 +353,7 @@ _SOURCE_OPTIONS_SPECS: list[_PropSpec] = [
 # Canonical children of "ADBE Effect Built In Params" (Compositing Options).
 _COMPOSITING_OPTIONS_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Effect Mask Parade", "Masks"),
-    _PropSpec(
+    _spec(
         "ADBE Effect Mask Opacity",
         "Effect Opacity",
         100.0,
@@ -326,7 +361,7 @@ _COMPOSITING_OPTIONS_SPECS: list[_PropSpec | _GroupSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Force CPU GPU",
         "GPU Rendering",
         1.0,
@@ -341,23 +376,22 @@ _COMPOSITING_OPTIONS_SPECS: list[_PropSpec | _GroupSpec] = [
 # Mask Path is parsed separately (complex shape data) and only present in
 # binary for some samples; placing it in specs ensures correct ordering.
 _MASK_ATOM_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Mask Shape",
         "Mask Path",
         None,
         PropertyValueType.CUSTOM_VALUE,
         is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Mask Feather",
         "Mask Feather",
         [0.0, 0.0],
         PropertyValueType.TwoD,
-        dimensions=2,
         min_value=0,
         max_value=32000,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Mask Opacity",
         "Mask Opacity",
         100.0,
@@ -365,13 +399,13 @@ _MASK_ATOM_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec("ADBE Mask Offset", "Mask Expansion", 0.0, PropertyValueType.OneD),
+    _spec("ADBE Mask Offset", "Mask Expansion", 0.0, PropertyValueType.OneD),
 ]
 
 # Canonical children of "ADBE Light Options Group" as reported by ExtendScript.
 _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Light Env Atom", "Source"),
-    _PropSpec(
+    _spec(
         "ADBE Light Backgd Visible",
         "Background Visible",
         0.0,
@@ -380,7 +414,7 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         can_vary_over_time=False,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Backgd Opacity",
         "Background Opacity",
         100.0,
@@ -389,7 +423,7 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Backgd Blur",
         "Background Blur",
         0.0,
@@ -398,24 +432,21 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         max_value=100,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Intensity",
         "Intensity",
         100.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Color",
         "Color",
         [1.0, 1.0, 1.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Cone Angle",
         "Cone Angle",
         90.0,
@@ -423,7 +454,7 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         min_value=0,
         max_value=180,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Cone Feather 2",
         "Cone Feather",
         50.0,
@@ -431,7 +462,7 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Falloff Type",
         "Falloff",
         1.0,
@@ -439,7 +470,7 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         min_value=1,
         max_value=3,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Falloff Start",
         "Radius",
         500.0,
@@ -447,7 +478,7 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         min_value=0,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Falloff Distance",
         "Falloff Distance",
         500.0,
@@ -455,7 +486,7 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         min_value=0,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Casts Shadows",
         "Casts Shadows",
         0.0,
@@ -464,14 +495,14 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         can_vary_over_time=False,
         has_time_base=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Shadow Darkness",
         "Shadow Darkness",
         100.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Light Shadow Diffusion",
         "Shadow Diffusion",
         0.0,
@@ -482,41 +513,41 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
 
 # Canonical children of "ADBE Camera Options Group" as reported by ExtendScript.
 _CAMERA_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Camera Zoom",
         "Zoom",
         0.0,
         PropertyValueType.OneD,
         min_value=1,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Camera Depth of Field",
         "Depth of Field",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Camera Focus Distance",
         "Focus Distance",
         0.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Camera Aperture",
         "Aperture",
         0.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Camera Blur Level",
         "Blur Level",
         100.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Shape",
         "Iris Shape",
         1.0,
@@ -524,13 +555,13 @@ _CAMERA_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=10,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Rotation",
         "Iris Rotation",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Roundness",
         "Iris Roundness",
         0.0,
@@ -538,7 +569,7 @@ _CAMERA_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Aspect Ratio",
         "Iris Aspect Ratio",
         1.0,
@@ -546,7 +577,7 @@ _CAMERA_SPECS: list[_PropSpec] = [
         min_value=0.00999999977648,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Diffraction Fringe",
         "Iris Diffraction Fringe",
         0.0,
@@ -554,7 +585,7 @@ _CAMERA_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=500,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Highlight Gain",
         "Highlight Gain",
         0.0,
@@ -562,7 +593,7 @@ _CAMERA_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Highlight Threshold",
         "Highlight Threshold",
         1.0,
@@ -570,7 +601,7 @@ _CAMERA_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Iris Hightlight Saturation",
         "Highlight Saturation",
         0.0,
@@ -582,38 +613,38 @@ _CAMERA_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Text Path Options".
 _TEXT_PATH_OPTIONS_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Text Path",
         "Path",
         0.0,
         PropertyValueType.CUSTOM_VALUE,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Reverse Path",
         "Reverse Path",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Perpendicular To Path",
         "Perpendicular To Path",
         1.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Force Align Path",
         "Force Alignment",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text First Margin",
         "First Margin",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Last Margin",
         "Last Margin",
         0.0,
@@ -623,7 +654,7 @@ _TEXT_PATH_OPTIONS_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Text More Options".
 _TEXT_MORE_OPTIONS_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Text Anchor Point Option",
         "Anchor Point Grouping",
         1.0,
@@ -632,14 +663,13 @@ _TEXT_MORE_OPTIONS_SPECS: list[_PropSpec] = [
         max_value=4,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Anchor Point Align",
         "Grouping Alignment",
         [0.0, 0.0],
         PropertyValueType.TwoD,
-        dimensions=2,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Render Order",
         "Fill & Stroke",
         1.0,
@@ -648,7 +678,7 @@ _TEXT_MORE_OPTIONS_SPECS: list[_PropSpec] = [
         max_value=3,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Character Blend Mode",
         "Inter-Character Blending",
         1.0,
@@ -657,7 +687,7 @@ _TEXT_MORE_OPTIONS_SPECS: list[_PropSpec] = [
         max_value=29,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Text Variable Font Spacing",
         "Variable Font Spacing",
         1.0,
@@ -671,7 +701,7 @@ _TEXT_MORE_OPTIONS_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Shape - Star" (Polystar path).
 _VECTOR_STAR_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Shape Direction",
         "Shape Direction",
         1.0,
@@ -680,7 +710,7 @@ _VECTOR_STAR_SPECS: list[_PropSpec] = [
         max_value=3,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Type",
         "Type",
         1.0,
@@ -689,48 +719,46 @@ _VECTOR_STAR_SPECS: list[_PropSpec] = [
         max_value=2,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Points",
         "Points",
         5.0,
         PropertyValueType.OneD,
         min_value=3,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Position",
         "Position",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Rotation",
         "Rotation",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Inner Radius",
         "Inner Radius",
         50.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Outer Radius",
         "Outer Radius",
         100.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Inner Roundess",
         "Inner Roundness",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Star Outer Roundess",
         "Outer Roundness",
         0.0,
@@ -740,7 +768,7 @@ _VECTOR_STAR_SPECS: list[_PropSpec] = [
 
 # Shared vector property specs used across Fill, G-Fill, G-Stroke, Stroke,
 # and Group lists.
-_VECTOR_BLEND_MODE = _PropSpec(
+_VECTOR_BLEND_MODE = _spec(
     "ADBE Vector Blend Mode",
     "Blend Mode",
     1.0,
@@ -749,7 +777,7 @@ _VECTOR_BLEND_MODE = _PropSpec(
     max_value=29,
     can_vary_over_time=False,
 )
-_VECTOR_COMPOSITE_ORDER = _PropSpec(
+_VECTOR_COMPOSITE_ORDER = _spec(
     "ADBE Vector Composite Order",
     "Composite",
     1.0,
@@ -758,7 +786,7 @@ _VECTOR_COMPOSITE_ORDER = _PropSpec(
     max_value=2,
     can_vary_over_time=False,
 )
-_VECTOR_FILL_RULE = _PropSpec(
+_VECTOR_FILL_RULE = _spec(
     "ADBE Vector Fill Rule",
     "Fill Rule",
     1.0,
@@ -767,7 +795,7 @@ _VECTOR_FILL_RULE = _PropSpec(
     max_value=2,
     can_vary_over_time=False,
 )
-_VECTOR_FILL_OPACITY = _PropSpec(
+_VECTOR_FILL_OPACITY = _spec(
     "ADBE Vector Fill Opacity",
     "Opacity",
     100.0,
@@ -775,7 +803,7 @@ _VECTOR_FILL_OPACITY = _PropSpec(
     min_value=0,
     max_value=100,
 )
-_VECTOR_GRAD_TYPE = _PropSpec(
+_VECTOR_GRAD_TYPE = _spec(
     "ADBE Vector Grad Type",
     "Type",
     1.0,
@@ -784,23 +812,19 @@ _VECTOR_GRAD_TYPE = _PropSpec(
     max_value=2,
     can_vary_over_time=False,
 )
-_VECTOR_GRAD_START_PT = _PropSpec(
+_VECTOR_GRAD_START_PT = _spec(
     "ADBE Vector Grad Start Pt",
     "Start Point",
     [0.0, 0.0],
     PropertyValueType.TwoD_SPATIAL,
-    dimensions=2,
-    is_spatial=True,
 )
-_VECTOR_GRAD_END_PT = _PropSpec(
+_VECTOR_GRAD_END_PT = _spec(
     "ADBE Vector Grad End Pt",
     "End Point",
     [100.0, 0.0],
     PropertyValueType.TwoD_SPATIAL,
-    dimensions=2,
-    is_spatial=True,
 )
-_VECTOR_GRAD_HILITE_LENGTH = _PropSpec(
+_VECTOR_GRAD_HILITE_LENGTH = _spec(
     "ADBE Vector Grad HiLite Length",
     "Highlight Length",
     0.0,
@@ -808,20 +832,32 @@ _VECTOR_GRAD_HILITE_LENGTH = _PropSpec(
     min_value=-100,
     max_value=100,
 )
-_VECTOR_GRAD_HILITE_ANGLE = _PropSpec(
+_VECTOR_GRAD_HILITE_ANGLE = _spec(
     "ADBE Vector Grad HiLite Angle",
     "Highlight Angle",
     0.0,
     PropertyValueType.OneD,
 )
-_VECTOR_GRAD_COLORS = _PropSpec(
+_VECTOR_GRAD_SCALE = _spec(
+    "ADBE Vector Grad Scale",
+    "Scale",
+    [100.0, 100.0],
+    PropertyValueType.TwoD,
+)
+_VECTOR_GRAD_ROTATION = _spec(
+    "ADBE Vector Grad Rotation",
+    "Rotation",
+    0.0,
+    PropertyValueType.OneD,
+)
+_VECTOR_GRAD_COLORS = _spec(
     "ADBE Vector Grad Colors",
     "Colors",
     None,
     PropertyValueType.NO_VALUE,
     is_spatial=True,
 )
-_VECTOR_STROKE_OPACITY = _PropSpec(
+_VECTOR_STROKE_OPACITY = _spec(
     "ADBE Vector Stroke Opacity",
     "Opacity",
     100.0,
@@ -829,14 +865,14 @@ _VECTOR_STROKE_OPACITY = _PropSpec(
     min_value=0,
     max_value=100,
 )
-_VECTOR_STROKE_WIDTH = _PropSpec(
+_VECTOR_STROKE_WIDTH = _spec(
     "ADBE Vector Stroke Width",
     "Stroke Width",
     2.0,
     PropertyValueType.OneD,
     min_value=0,
 )
-_VECTOR_STROKE_LINE_CAP = _PropSpec(
+_VECTOR_STROKE_LINE_CAP = _spec(
     "ADBE Vector Stroke Line Cap",
     "Line Cap",
     1.0,
@@ -845,7 +881,7 @@ _VECTOR_STROKE_LINE_CAP = _PropSpec(
     max_value=3,
     can_vary_over_time=False,
 )
-_VECTOR_STROKE_LINE_JOIN = _PropSpec(
+_VECTOR_STROKE_LINE_JOIN = _spec(
     "ADBE Vector Stroke Line Join",
     "Line Join",
     1.0,
@@ -854,7 +890,7 @@ _VECTOR_STROKE_LINE_JOIN = _PropSpec(
     max_value=3,
     can_vary_over_time=False,
 )
-_VECTOR_STROKE_MITER_LIMIT = _PropSpec(
+_VECTOR_STROKE_MITER_LIMIT = _spec(
     "ADBE Vector Stroke Miter Limit",
     "Miter Limit",
     4.0,
@@ -867,14 +903,11 @@ _VECTOR_FILL_SPECS: list[_PropSpec] = [
     _VECTOR_BLEND_MODE,
     _VECTOR_COMPOSITE_ORDER,
     _VECTOR_FILL_RULE,
-    _PropSpec(
+    _spec(
         "ADBE Vector Fill Color",
         "Color",
         [1.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
@@ -891,6 +924,8 @@ _VECTOR_G_FILL_SPECS: list[_PropSpec] = [
     _VECTOR_GRAD_END_PT,
     _VECTOR_GRAD_HILITE_LENGTH,
     _VECTOR_GRAD_HILITE_ANGLE,
+    _VECTOR_GRAD_SCALE,
+    _VECTOR_GRAD_ROTATION,
     _VECTOR_GRAD_COLORS,
     _VECTOR_FILL_OPACITY,
 ]
@@ -904,6 +939,8 @@ _VECTOR_G_STROKE_SPECS: list[_PropSpec | _GroupSpec] = [
     _VECTOR_GRAD_END_PT,
     _VECTOR_GRAD_HILITE_LENGTH,
     _VECTOR_GRAD_HILITE_ANGLE,
+    _VECTOR_GRAD_SCALE,
+    _VECTOR_GRAD_ROTATION,
     _VECTOR_GRAD_COLORS,
     _VECTOR_STROKE_OPACITY,
     _VECTOR_STROKE_WIDTH,
@@ -919,14 +956,11 @@ _VECTOR_G_STROKE_SPECS: list[_PropSpec | _GroupSpec] = [
 _VECTOR_STROKE_SPECS: list[_PropSpec] = [
     _VECTOR_BLEND_MODE,
     _VECTOR_COMPOSITE_ORDER,
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Color",
         "Color",
         [1.0, 1.0, 1.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
@@ -939,49 +973,49 @@ _VECTOR_STROKE_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Stroke Dashes".
 _VECTOR_STROKE_DASHES_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Dash 1",
         "Dash",
         10.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Gap 1",
         "Gap",
         10.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Dash 2",
         "Dash 2",
         10.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Gap 2",
         "Gap 2",
         10.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Dash 3",
         "Dash 3",
         10.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Gap 3",
         "Gap 3",
         10.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Stroke Offset",
         "Offset",
         0.0,
@@ -991,7 +1025,7 @@ _VECTOR_STROKE_DASHES_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Stroke Taper".
 _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Length Units",
         "Length Units",
         1.0,
@@ -1000,7 +1034,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
         max_value=2,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Start Length",
         "Start Length",
         0.0,
@@ -1008,7 +1042,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper End Length",
         "End Length",
         0.0,
@@ -1016,21 +1050,21 @@ _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper StartWidthPx",
         "Start Length",
         0.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper EndWidthPx",
         "End Length",
         0.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Start Width",
         "Start Width",
         0.0,
@@ -1038,7 +1072,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper End Width",
         "End Width",
         0.0,
@@ -1046,7 +1080,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Start Ease",
         "Start Ease",
         0.0,
@@ -1054,7 +1088,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
         min_value=-100,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper End Ease",
         "End Ease",
         0.0,
@@ -1066,7 +1100,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Stroke Wave".
 _VECTOR_STROKE_WAVE_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Wave Amount",
         "Amount",
         0.0,
@@ -1074,7 +1108,7 @@ _VECTOR_STROKE_WAVE_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Wave Units",
         "Units",
         1.0,
@@ -1083,21 +1117,21 @@ _VECTOR_STROKE_WAVE_SPECS: list[_PropSpec] = [
         max_value=2,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Wavelength",
         "Wavelength",
         100.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Wave Cycles",
         "Cycles",
         10.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Taper Wave Phase",
         "Phase",
         0.0,
@@ -1112,31 +1146,26 @@ _VECTOR_GROUP_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Transform Group".
 _VECTOR_TRANSFORM_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Anchor",
         "Anchor Point",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Position",
         "Position",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Scale",
         "Scale",
         [100.0, 100.0],
         PropertyValueType.TwoD,
-        dimensions=2,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Skew",
         "Skew",
         0.0,
@@ -1144,19 +1173,19 @@ _VECTOR_TRANSFORM_SPECS: list[_PropSpec] = [
         min_value=-85,
         max_value=85,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Skew Axis",
         "Skew Axis",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Rotation",
         "Rotation",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Group Opacity",
         "Opacity",
         100.0,
@@ -1170,18 +1199,15 @@ _VECTOR_TRANSFORM_SPECS: list[_PropSpec] = [
 def _vec3d_face_specs(face: str) -> list[_PropSpec]:
     """Return 12 material property specs for one face (Front/Bevel/Side/Back)."""
     return [
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} RGB",
             f"{face} Color",
             [1.0, 0.0, 0.0, 1.0],
             PropertyValueType.COLOR,
-            dimensions=4,
-            is_spatial=True,
-            color=True,
             min_value=_COLOR_MIN,
             max_value=_COLOR_MAX,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Ambient",
             f"{face} Ambient",
             100.0,
@@ -1189,7 +1215,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Diffuse",
             f"{face} Diffuse",
             50.0,
@@ -1197,7 +1223,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Specular",
             f"{face} Specular Intensity",
             50.0,
@@ -1205,7 +1231,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Shininess",
             f"{face} Specular Shininess",
             5.0,
@@ -1213,7 +1239,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Metal",
             f"{face} Metal",
             100.0,
@@ -1221,7 +1247,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Reflection",
             f"{face} Reflection Intensity",
             0.0,
@@ -1229,7 +1255,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Gloss",
             f"{face} Reflection Sharpness",
             100.0,
@@ -1237,7 +1263,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Fresnel",
             f"{face} Reflection Rolloff",
             0.0,
@@ -1245,7 +1271,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} Xparency",
             f"{face} Transparency",
             0.0,
@@ -1253,7 +1279,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} XparRoll",
             f"{face} Transparency Rolloff",
             0.0,
@@ -1261,7 +1287,7 @@ def _vec3d_face_specs(face: str) -> list[_PropSpec]:
             min_value=0,
             max_value=100,
         ),
-        _PropSpec(
+        _spec(
             f"ADBE Vec3D {face} IOR",
             f"{face} Index of Refraction",
             1.0,
@@ -1281,7 +1307,7 @@ _VECTOR_MATERIALS_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Shape - Ellipse".
 _VECTOR_ELLIPSE_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Shape Direction",
         "Shape Direction",
         1.0,
@@ -1290,27 +1316,24 @@ _VECTOR_ELLIPSE_SPECS: list[_PropSpec] = [
         max_value=3,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Ellipse Size",
         "Size",
         [100.0, 100.0],
         PropertyValueType.TwoD,
-        dimensions=2,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Ellipse Position",
         "Position",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
 ]
 
 # Canonical children of "ADBE Vector Shape - Rect".
 _VECTOR_RECT_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Shape Direction",
         "Shape Direction",
         1.0,
@@ -1319,23 +1342,20 @@ _VECTOR_RECT_SPECS: list[_PropSpec] = [
         max_value=3,
         can_vary_over_time=False,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Rect Size",
         "Size",
         [100.0, 100.0],
         PropertyValueType.TwoD,
-        dimensions=2,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Rect Position",
         "Position",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Rect Roundness",
         "Roundness",
         0.0,
@@ -1346,37 +1366,32 @@ _VECTOR_RECT_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Repeater Transform".
 _VECTOR_REPEATER_TRANSFORM_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Anchor",
         "Anchor Point",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Position",
         "Position",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Scale",
         "Scale",
         [100.0, 100.0],
         PropertyValueType.TwoD,
-        dimensions=2,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Rotation",
         "Rotation",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Opacity 1",
         "Start Opacity",
         100.0,
@@ -1384,7 +1399,7 @@ _VECTOR_REPEATER_TRANSFORM_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Opacity 2",
         "End Opacity",
         100.0,
@@ -1396,20 +1411,20 @@ _VECTOR_REPEATER_TRANSFORM_SPECS: list[_PropSpec] = [
 
 # Canonical children of "ADBE Vector Filter - Repeater".
 _VECTOR_REPEATER_SPECS: list[_PropSpec | _GroupSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Copies",
         "Copies",
         1.0,
         PropertyValueType.OneD,
         min_value=0,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Offset",
         "Offset",
         0.0,
         PropertyValueType.OneD,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Vector Repeater Order",
         "Composite",
         1.0,
@@ -1421,19 +1436,483 @@ _VECTOR_REPEATER_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Vector Repeater Transform", "Transform"),
 ]
 
+# Shape-element child specs (from AE 2026 ExtendScript ground truth via
+# export_project_json; min/max/units match what ExtendScript reports).
+
+# "ADBE Vector Shape - Group" (Path): Shape Direction + the bezier path.
+_VECTOR_PATH_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Vector Shape Direction",
+        "Shape Direction",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=3,
+        can_vary_over_time=False,
+    ),
+    _spec(
+        "ADBE Vector Shape",
+        "Path",
+        None,
+        PropertyValueType.CUSTOM_VALUE,
+        is_spatial=True,
+    ),
+]
+
+# "ADBE Vector Filter - Merge".
+_VECTOR_MERGE_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Vector Merge Type",
+        "Mode",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=5,
+        can_vary_over_time=False,
+    ),
+]
+
+# "ADBE Vector Filter - Offset".
+_VECTOR_OFFSET_SPECS: list[_PropSpec] = [
+    _spec("ADBE Vector Offset Amount", "Amount", 10.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Offset Line Join",
+        "Line Join",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=3,
+        can_vary_over_time=False,
+    ),
+    _spec(
+        "ADBE Vector Offset Miter Limit",
+        "Miter Limit",
+        4.0,
+        PropertyValueType.OneD,
+        min_value=1,
+    ),
+    _spec(
+        "ADBE Vector Offset Copies",
+        "Copies",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec("ADBE Vector Offset Copy Offset", "Copy Offset", 1.0, PropertyValueType.OneD),
+]
+
+# "ADBE Vector Filter - PB" (Pucker & Bloat).
+_VECTOR_PUCKER_BLOAT_SPECS: list[_PropSpec] = [
+    _spec("ADBE Vector PuckerBloat Amount", "Amount", 10.0, PropertyValueType.OneD),
+]
+
+# "ADBE Vector Filter - RC" (Round Corners).
+_VECTOR_ROUND_CORNERS_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Vector RoundCorner Radius",
+        "Radius",
+        10.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+]
+
+# "ADBE Vector Filter - Trim" (Trim Paths).
+_VECTOR_TRIM_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Vector Trim Start",
+        "Start",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Vector Trim End",
+        "End",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec("ADBE Vector Trim Offset", "Offset", 0.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Trim Type",
+        "Trim Multiple Shapes",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=2,
+        can_vary_over_time=False,
+    ),
+]
+
+# "ADBE Vector Filter - Twist".
+_VECTOR_TWIST_SPECS: list[_PropSpec] = [
+    _spec("ADBE Vector Twist Angle", "Angle", 10.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Twist Center",
+        "Center",
+        [0.0, 0.0],
+        PropertyValueType.TwoD_SPATIAL,
+    ),
+]
+
+# "ADBE Vector Filter - Roughen" (Wiggle Paths).
+_VECTOR_ROUGHEN_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Vector Roughen Size",
+        "Size",
+        10.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE Vector Roughen Detail",
+        "Detail",
+        10.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Vector Roughen Points",
+        "Points",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=2,
+    ),
+    _spec("ADBE Vector Temporal Freq", "Wiggles/Second", 2.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Correlation",
+        "Correlation",
+        50.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec("ADBE Vector Temporal Phase", "Temporal Phase", 0.0, PropertyValueType.OneD),
+    _spec("ADBE Vector Spatial Phase", "Spatial Phase", 0.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Random Seed",
+        "Random Seed",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=10000,
+    ),
+]
+
+# Canonical children of "ADBE Vector Wiggler Transform".
+_VECTOR_WIGGLER_TRANSFORM_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Vector Wiggler Anchor",
+        "Anchor Point",
+        [0.0, 0.0],
+        PropertyValueType.TwoD_SPATIAL,
+    ),
+    _spec(
+        "ADBE Vector Wiggler Position",
+        "Position",
+        [0.0, 0.0],
+        PropertyValueType.TwoD_SPATIAL,
+    ),
+    _spec(
+        "ADBE Vector Wiggler Scale",
+        "Scale",
+        [0.0, 0.0],
+        PropertyValueType.TwoD,
+    ),
+    _spec("ADBE Vector Wiggler Rotation", "Rotation", 0.0, PropertyValueType.OneD),
+]
+
+# "ADBE Vector Filter - Wiggler" (Wiggle Transform).
+_VECTOR_WIGGLER_SPECS: list[_PropSpec | _GroupSpec] = [
+    _spec(
+        "ADBE Vector Xform Temporal Freq",
+        "Wiggles/Second",
+        2.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE Vector Correlation",
+        "Correlation",
+        50.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec("ADBE Vector Temporal Phase", "Temporal Phase", 0.0, PropertyValueType.OneD),
+    _spec("ADBE Vector Spatial Phase", "Spatial Phase", 0.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Random Seed",
+        "Random Seed",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=10000,
+    ),
+    _GroupSpec("ADBE Vector Wiggler Transform", "Transform"),
+]
+
+# "ADBE Vector Filter - Zigzag" (Zig Zag).
+_VECTOR_ZIGZAG_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Vector Zigzag Size",
+        "Size",
+        5.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE Vector Zigzag Detail",
+        "Ridges per segment",
+        10.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Vector Zigzag Points",
+        "Points",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=2,
+    ),
+]
+
+# Text-selector child specs (AE 2026 ExtendScript ground truth).
+
+# "ADBE Text Range Advanced" - the Range Selector's Advanced subgroup.
+_TEXT_RANGE_ADVANCED_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Text Range Units",
+        "Units",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=2,
+        can_vary_over_time=False,
+    ),
+    _spec(
+        "ADBE Text Range Type2",
+        "Based On",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=4,
+        can_vary_over_time=False,
+    ),
+    _spec(
+        "ADBE Text Selector Mode",
+        "Mode",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=6,
+    ),
+    _spec(
+        "ADBE Text Selector Max Amount",
+        "Amount",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Range Shape",
+        "Shape",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=6,
+        can_vary_over_time=False,
+    ),
+    _spec(
+        "ADBE Text Selector Smoothness",
+        "Smoothness",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Levels Max Ease",
+        "Ease High",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Levels Min Ease",
+        "Ease Low",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Randomize Order",
+        "Randomize Order",
+        0.0,
+        PropertyValueType.OneD,
+        can_vary_over_time=False,
+    ),
+    _spec(
+        "ADBE Text Random Seed",
+        "Random Seed",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=10000,
+    ),
+]
+
+# "ADBE Text Selector" - Range Selector.
+_TEXT_RANGE_SELECTOR_SPECS: list[_PropSpec | _GroupSpec] = [
+    _spec(
+        "ADBE Text Percent Start",
+        "Start",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Percent End",
+        "End",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Percent Offset",
+        "Offset",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Index Start",
+        "Start",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=-99999,
+        max_value=99999,
+    ),
+    _spec(
+        "ADBE Text Index End",
+        "End",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=-99999,
+        max_value=99999,
+    ),
+    _spec(
+        "ADBE Text Index Offset",
+        "Offset",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=-99999,
+        max_value=99999,
+    ),
+    _GroupSpec("ADBE Text Range Advanced", "Advanced"),
+]
+
+# "ADBE Text Wiggly Selector".
+_TEXT_WIGGLY_SELECTOR_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Text Selector Mode",
+        "Mode",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=6,
+    ),
+    _spec(
+        "ADBE Text Wiggly Max Amount",
+        "Max Amount",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Wiggly Min Amount",
+        "Min Amount",
+        -100.0,
+        PropertyValueType.OneD,
+        min_value=-100,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE Text Range Type2",
+        "Based On",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=4,
+        can_vary_over_time=False,
+    ),
+    _spec("ADBE Text Temporal Freq", "Wiggles/Second", 2.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Text Character Correlation",
+        "Correlation",
+        50.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+    ),
+    _spec("ADBE Text Temporal Phase", "Temporal Phase", 0.0, PropertyValueType.OneD),
+    _spec("ADBE Text Spatial Phase", "Spatial Phase", 0.0, PropertyValueType.OneD),
+    _spec("ADBE Text Wiggly Lock Dim", "Lock Dimensions", 0.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Text Wiggly Random Seed",
+        "Random Seed",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=10000,
+    ),
+]
+
+# "ADBE Text Expressible Selector" - Expression Selector.
+_TEXT_EXPRESSIBLE_SELECTOR_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Text Range Type2",
+        "Based On",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=4,
+        can_vary_over_time=False,
+    ),
+    _spec(
+        "ADBE Text Expressible Amount",
+        "Amount",
+        [100.0, 100.0, 100.0],
+        PropertyValueType.ThreeD,
+        min_value=-100,
+        max_value=100,
+    ),
+]
+
 # Canonical children of "ADBE Blend Options Group".
 _BLEND_OPTIONS_SPECS: list[_PropSpec | _GroupSpec] = [
-    _PropSpec(
-        "ADBE Global Angle2", "Global Light Angle", 120.0, PropertyValueType.OneD
-    ),
-    _PropSpec(
+    _spec("ADBE Global Angle2", "Global Light Angle", 120.0, PropertyValueType.OneD),
+    _spec(
         "ADBE Global Altitude2", "Global Light Altitude", 30.0, PropertyValueType.OneD
     ),
     _GroupSpec("ADBE Adv Blend Group", "Advanced Blending"),
 ]
 
 _ADV_BLEND_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Layer Fill Opacity2",
         "Fill Opacity",
         100.0,
@@ -1441,7 +1920,7 @@ _ADV_BLEND_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "ADBE R Channel Blend",
         "Red",
         1.0,
@@ -1449,7 +1928,7 @@ _ADV_BLEND_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "ADBE G Channel Blend",
         "Green",
         1.0,
@@ -1457,7 +1936,7 @@ _ADV_BLEND_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "ADBE B Channel Blend",
         "Blue",
         1.0,
@@ -1465,7 +1944,7 @@ _ADV_BLEND_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Blend Interior",
         "Blend Interior Styles as Group",
         0.0,
@@ -1473,7 +1952,7 @@ _ADV_BLEND_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Blend Ranges",
         "Use Blend Ranges from Source",
         1.0,
@@ -1482,6 +1961,35 @@ _ADV_BLEND_SPECS: list[_PropSpec] = [
         max_value=1,
     ),
 ]
+
+
+def _build_text_animator_pool_specs() -> list[_PropSpec]:
+    """Build the `ADBE Text Animator Properties` pool from baked data.
+
+    The pool is a fixed set AE exposes for every text animator; py
+    synthesizes it so the group matches ExtendScript. Units are carried
+    on the spec (`units_text`) to keep the bulk table self-contained.
+    """
+    specs: list[_PropSpec] = []
+    for e in TEXT_ANIMATOR_POOL:
+        specs.append(
+            _spec(
+                e["mn"],
+                e["name"],
+                e["value"],
+                PropertyValueType(e["pvt"]),
+                # dimensions/is_spatial/color derive from pvt (_PVT_KIND).
+                min_value=e["min"],
+                max_value=e["max"],
+                # canVary defaults True for the pool; only record False.
+                can_vary_over_time=False if e["cv"] is False else None,
+                units_text=e["units"],
+            )
+        )
+    return specs
+
+
+_TEXT_ANIMATOR_POOL_SPECS: list[_PropSpec] = _build_text_animator_pool_specs()
 
 # Mapping from group match_name to ordered list of child property specs.
 _GROUP_CHILD_SPECS: dict[str, Sequence[_PropSpec | _GroupSpec]] = {
@@ -1497,7 +2005,7 @@ _GROUP_CHILD_SPECS: dict[str, Sequence[_PropSpec | _GroupSpec]] = {
     "ADBE Light Options Group": _LIGHT_SPECS,
     "ADBE Camera Options Group": _CAMERA_SPECS,
     "ADBE Text Properties": [
-        _PropSpec(
+        _spec(
             "ADBE Text Document",
             "Source Text",
             None,
@@ -1524,12 +2032,34 @@ _GROUP_CHILD_SPECS: dict[str, Sequence[_PropSpec | _GroupSpec]] = {
     "ADBE Vector Shape - Rect": _VECTOR_RECT_SPECS,
     "ADBE Vector Filter - Repeater": _VECTOR_REPEATER_SPECS,
     "ADBE Vector Repeater Transform": _VECTOR_REPEATER_TRANSFORM_SPECS,
+    "ADBE Vector Shape - Group": _VECTOR_PATH_SPECS,
+    "ADBE Vector Filter - Merge": _VECTOR_MERGE_SPECS,
+    "ADBE Vector Filter - Offset": _VECTOR_OFFSET_SPECS,
+    "ADBE Vector Filter - PB": _VECTOR_PUCKER_BLOAT_SPECS,
+    "ADBE Vector Filter - RC": _VECTOR_ROUND_CORNERS_SPECS,
+    "ADBE Vector Filter - Trim": _VECTOR_TRIM_SPECS,
+    "ADBE Vector Filter - Twist": _VECTOR_TWIST_SPECS,
+    "ADBE Vector Filter - Roughen": _VECTOR_ROUGHEN_SPECS,
+    "ADBE Vector Filter - Wiggler": _VECTOR_WIGGLER_SPECS,
+    "ADBE Vector Wiggler Transform": _VECTOR_WIGGLER_TRANSFORM_SPECS,
+    "ADBE Vector Filter - Zigzag": _VECTOR_ZIGZAG_SPECS,
+    "ADBE Text Selector": _TEXT_RANGE_SELECTOR_SPECS,
+    "ADBE Text Range Advanced": _TEXT_RANGE_ADVANCED_SPECS,
+    "ADBE Text Wiggly Selector": _TEXT_WIGGLY_SELECTOR_SPECS,
+    "ADBE Text Expressible Selector": _TEXT_EXPRESSIBLE_SELECTOR_SPECS,
+    "ADBE Text Animator Properties": _TEXT_ANIMATOR_POOL_SPECS,
+    # A text animator exposes an (initially empty) Selectors group and
+    # the Properties pool; AE writes only the latter to binary.
+    "ADBE Text Animator": [
+        _GroupSpec("ADBE Text Selectors", "Selectors"),
+        _GroupSpec("ADBE Text Animator Properties", "Properties"),
+    ],
 }
 
 # Canonical children for Layer Styles sub-groups.
 
 _DROP_SHADOW_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "dropShadow/mode2",
         "Blend Mode",
         5.0,
@@ -1537,18 +2067,15 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "dropShadow/color",
         "Color",
         [0.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "dropShadow/opacity",
         "Opacity",
         75.0,
@@ -1556,7 +2083,7 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "dropShadow/useGlobalAngle",
         "Use Global Light",
         0.0,
@@ -1564,8 +2091,8 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec("dropShadow/localLightingAngle", "Angle", 120.0, PropertyValueType.OneD),
-    _PropSpec(
+    _spec("dropShadow/localLightingAngle", "Angle", 120.0, PropertyValueType.OneD),
+    _spec(
         "dropShadow/distance",
         "Distance",
         5.0,
@@ -1573,7 +2100,7 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=30000,
     ),
-    _PropSpec(
+    _spec(
         "dropShadow/chokeMatte",
         "Spread",
         0.0,
@@ -1581,7 +2108,7 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "dropShadow/blur",
         "Size",
         5.0,
@@ -1589,7 +2116,7 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=250,
     ),
-    _PropSpec(
+    _spec(
         "dropShadow/noise",
         "Noise",
         0.0,
@@ -1597,7 +2124,7 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "dropShadow/layerConceals",
         "Layer Knocks Out Drop Shadow",
         1.0,
@@ -1608,7 +2135,7 @@ _DROP_SHADOW_SPECS: list[_PropSpec] = [
 ]
 
 _INNER_SHADOW_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "innerShadow/mode2",
         "Blend Mode",
         5.0,
@@ -1616,18 +2143,15 @@ _INNER_SHADOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "innerShadow/color",
         "Color",
         [0.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "innerShadow/opacity",
         "Opacity",
         75.0,
@@ -1635,7 +2159,7 @@ _INNER_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "innerShadow/useGlobalAngle",
         "Use Global Light",
         0.0,
@@ -1643,8 +2167,8 @@ _INNER_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec("innerShadow/localLightingAngle", "Angle", 120.0, PropertyValueType.OneD),
-    _PropSpec(
+    _spec("innerShadow/localLightingAngle", "Angle", 120.0, PropertyValueType.OneD),
+    _spec(
         "innerShadow/distance",
         "Distance",
         5.0,
@@ -1652,7 +2176,7 @@ _INNER_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=30000,
     ),
-    _PropSpec(
+    _spec(
         "innerShadow/chokeMatte",
         "Choke",
         0.0,
@@ -1660,7 +2184,7 @@ _INNER_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "innerShadow/blur",
         "Size",
         5.0,
@@ -1668,7 +2192,7 @@ _INNER_SHADOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=250,
     ),
-    _PropSpec(
+    _spec(
         "innerShadow/noise",
         "Noise",
         0.0,
@@ -1679,7 +2203,7 @@ _INNER_SHADOW_SPECS: list[_PropSpec] = [
 ]
 
 _OUTER_GLOW_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "outerGlow/mode2",
         "Blend Mode",
         11.0,
@@ -1687,7 +2211,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/opacity",
         "Opacity",
         75.0,
@@ -1695,7 +2219,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/noise",
         "Noise",
         0.0,
@@ -1703,7 +2227,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/AEColorChoice",
         "Color Type",
         1.0,
@@ -1711,18 +2235,15 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=2,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/color",
         "Color",
         [1.0, 1.0, 0.74509803921569, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/gradient",
         "Colors",
         None,
@@ -1730,7 +2251,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         is_spatial=True,
         can_vary_over_time=True,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/gradientSmoothness",
         "Gradient Smoothness",
         100.0,
@@ -1738,7 +2259,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/glowTechnique",
         "Technique",
         1.0,
@@ -1746,7 +2267,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=2,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/chokeMatte",
         "Spread",
         0.0,
@@ -1754,7 +2275,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/blur",
         "Size",
         5.0,
@@ -1762,7 +2283,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=250,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/inputRange",
         "Range",
         50.0,
@@ -1770,7 +2291,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "outerGlow/shadingNoise",
         "Jitter",
         0.0,
@@ -1781,7 +2302,7 @@ _OUTER_GLOW_SPECS: list[_PropSpec] = [
 ]
 
 _INNER_GLOW_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "innerGlow/mode2",
         "Blend Mode",
         11.0,
@@ -1789,7 +2310,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/opacity",
         "Opacity",
         75.0,
@@ -1797,7 +2318,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/noise",
         "Noise",
         0.0,
@@ -1805,7 +2326,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/AEColorChoice",
         "Color Type",
         1.0,
@@ -1813,18 +2334,15 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=2,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/color",
         "Color",
         [1.0, 1.0, 0.74509803921569, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/gradient",
         "Colors",
         None,
@@ -1832,7 +2350,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         is_spatial=True,
         can_vary_over_time=True,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/gradientSmoothness",
         "Gradient Smoothness",
         100.0,
@@ -1840,7 +2358,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/glowTechnique",
         "Technique",
         1.0,
@@ -1848,7 +2366,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=2,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/innerGlowSource",
         "Source",
         1.0,
@@ -1856,7 +2374,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=2,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/chokeMatte",
         "Choke",
         0.0,
@@ -1864,7 +2382,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/blur",
         "Size",
         5.0,
@@ -1872,7 +2390,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=250,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/inputRange",
         "Range",
         50.0,
@@ -1880,7 +2398,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "innerGlow/shadingNoise",
         "Jitter",
         0.0,
@@ -1891,7 +2409,7 @@ _INNER_GLOW_SPECS: list[_PropSpec] = [
 ]
 
 _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "bevelEmboss/bevelStyle",
         "Style",
         2.0,
@@ -1899,7 +2417,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=5,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/bevelTechnique",
         "Technique",
         1.0,
@@ -1907,7 +2425,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=3,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/strengthRatio",
         "Depth",
         100.0,
@@ -1915,7 +2433,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=1000,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/bevelDirection",
         "Direction",
         1.0,
@@ -1923,7 +2441,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=2,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/blur",
         "Size",
         5.0,
@@ -1931,7 +2449,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=250,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/softness",
         "Soften",
         0.0,
@@ -1939,7 +2457,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=16,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/useGlobalAngle",
         "Use Global Light",
         0.0,
@@ -1947,11 +2465,11 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec("bevelEmboss/localLightingAngle", "Angle", 120.0, PropertyValueType.OneD),
-    _PropSpec(
+    _spec("bevelEmboss/localLightingAngle", "Angle", 120.0, PropertyValueType.OneD),
+    _spec(
         "bevelEmboss/localLightingAltitude", "Altitude", 30.0, PropertyValueType.OneD
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/highlightMode",
         "Highlight Mode",
         11.0,
@@ -1959,18 +2477,15 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/highlightColor",
         "Highlight Color",
         [1.0, 1.0, 1.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/highlightOpacity",
         "Highlight Opacity",
         75.0,
@@ -1978,7 +2493,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/shadowMode",
         "Shadow Mode",
         5.0,
@@ -1986,18 +2501,15 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/shadowColor",
         "Shadow Color",
         [0.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "bevelEmboss/shadowOpacity",
         "Shadow Opacity",
         75.0,
@@ -2008,7 +2520,7 @@ _BEVEL_EMBOSS_SPECS: list[_PropSpec] = [
 ]
 
 _SATIN_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "chromeFX/mode2",
         "Blend Mode",
         5.0,
@@ -2016,18 +2528,15 @@ _SATIN_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "chromeFX/color",
         "Color",
         [0.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "chromeFX/opacity",
         "Opacity",
         50.0,
@@ -2035,8 +2544,8 @@ _SATIN_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec("chromeFX/localLightingAngle", "Angle", 19.0, PropertyValueType.OneD),
-    _PropSpec(
+    _spec("chromeFX/localLightingAngle", "Angle", 19.0, PropertyValueType.OneD),
+    _spec(
         "chromeFX/distance",
         "Distance",
         11.0,
@@ -2044,7 +2553,7 @@ _SATIN_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=250,
     ),
-    _PropSpec(
+    _spec(
         "chromeFX/blur",
         "Size",
         14.0,
@@ -2052,7 +2561,7 @@ _SATIN_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=250,
     ),
-    _PropSpec(
+    _spec(
         "chromeFX/invert",
         "Invert",
         1.0,
@@ -2063,7 +2572,7 @@ _SATIN_SPECS: list[_PropSpec] = [
 ]
 
 _COLOR_OVERLAY_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "solidFill/mode2",
         "Blend Mode",
         1.0,
@@ -2071,18 +2580,15 @@ _COLOR_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "solidFill/color",
         "Color",
         [1.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "solidFill/opacity",
         "Opacity",
         100.0,
@@ -2093,7 +2599,7 @@ _COLOR_OVERLAY_SPECS: list[_PropSpec] = [
 ]
 
 _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "gradientFill/mode2",
         "Blend Mode",
         1.0,
@@ -2101,7 +2607,7 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "gradientFill/opacity",
         "Opacity",
         100.0,
@@ -2109,7 +2615,7 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "gradientFill/gradient",
         "Colors",
         None,
@@ -2117,7 +2623,7 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         is_spatial=True,
         can_vary_over_time=True,
     ),
-    _PropSpec(
+    _spec(
         "gradientFill/gradientSmoothness",
         "Gradient Smoothness",
         100.0,
@@ -2125,8 +2631,8 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec("gradientFill/angle", "Angle", 90.0, PropertyValueType.OneD),
-    _PropSpec(
+    _spec("gradientFill/angle", "Angle", 90.0, PropertyValueType.OneD),
+    _spec(
         "gradientFill/type",
         "Style",
         1.0,
@@ -2134,7 +2640,7 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=5,
     ),
-    _PropSpec(
+    _spec(
         "gradientFill/reverse",
         "Reverse",
         0.0,
@@ -2142,7 +2648,7 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "gradientFill/align",
         "Align with Layer",
         1.0,
@@ -2150,7 +2656,7 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "gradientFill/scale",
         "Scale",
         100.0,
@@ -2158,18 +2664,16 @@ _GRADIENT_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=10,
         max_value=150,
     ),
-    _PropSpec(
+    _spec(
         "gradientFill/offset",
         "Offset",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
 ]
 
 _PATTERN_OVERLAY_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "patternFill/mode2",
         "Blend Mode",
         1.0,
@@ -2177,7 +2681,7 @@ _PATTERN_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "patternFill/opacity",
         "Opacity",
         100.0,
@@ -2185,7 +2689,7 @@ _PATTERN_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "patternFill/align",
         "Link with Layer",
         1.0,
@@ -2193,7 +2697,7 @@ _PATTERN_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=1,
     ),
-    _PropSpec(
+    _spec(
         "patternFill/scale",
         "Scale",
         100.0,
@@ -2201,18 +2705,16 @@ _PATTERN_OVERLAY_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=1000,
     ),
-    _PropSpec(
+    _spec(
         "patternFill/phase",
         "Offset",
         [0.0, 0.0],
         PropertyValueType.TwoD_SPATIAL,
-        dimensions=2,
-        is_spatial=True,
     ),
 ]
 
 _STROKE_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "frameFX/mode2",
         "Blend Mode",
         1.0,
@@ -2220,21 +2722,18 @@ _STROKE_SPECS: list[_PropSpec] = [
         min_value=1,
         max_value=33,
     ),
-    _PropSpec(
+    _spec(
         "frameFX/color",
         "Color",
         [1.0, 0.0, 0.0, 1.0],
         PropertyValueType.COLOR,
-        dimensions=4,
-        is_spatial=True,
-        color=True,
         min_value=_COLOR_MIN,
         max_value=_COLOR_MAX,
     ),
-    _PropSpec(
+    _spec(
         "frameFX/size", "Size", 3.0, PropertyValueType.OneD, min_value=1, max_value=250
     ),
-    _PropSpec(
+    _spec(
         "frameFX/opacity",
         "Opacity",
         100.0,
@@ -2242,7 +2741,7 @@ _STROKE_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _PropSpec(
+    _spec(
         "frameFX/style",
         "Position",
         1.0,
@@ -2292,23 +2791,19 @@ _GROUP_CHILD_SPECS["ADBE Layer Styles"] = _LAYER_STYLES_SPECS
 # Spatial values (Anchor Point, Position, Position_0, Position_1) are
 # computed from layer/comp dimensions; all others use a fixed default.
 _TRANSFORM_SPECS: list[_PropSpec] = [
-    _PropSpec(
+    _spec(
         "ADBE Anchor Point",
         "Anchor Point",
         None,
         PropertyValueType.ThreeD_SPATIAL,
-        dimensions=3,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Position",
         "Position",
         None,
         PropertyValueType.ThreeD_SPATIAL,
-        dimensions=3,
-        is_spatial=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Position_0",
         "X Position",
         None,
@@ -2316,7 +2811,7 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         has_time_base=True,
         bound_chunks=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Position_1",
         "Y Position",
         None,
@@ -2324,41 +2819,38 @@ _TRANSFORM_SPECS: list[_PropSpec] = [
         has_time_base=True,
         bound_chunks=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Position_2",
         "Z Position",
         None,
         PropertyValueType.OneD,
         bound_chunks=True,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Scale",
         "Scale",
         None,
         PropertyValueType.ThreeD,
-        dimensions=3,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Orientation",
         "Orientation",
         None,
         PropertyValueType.ThreeD_SPATIAL,
-        dimensions=3,
-        is_spatial=True,
         has_time_base=True,
         spatial_flags=0x07,
         cvot=0x07,
         value_hint_type=6,
     ),
-    _PropSpec(
+    _spec(
         "ADBE Rotate X", "X Rotation", None, PropertyValueType.OneD, has_time_base=True
     ),
-    _PropSpec(
+    _spec(
         "ADBE Rotate Y", "Y Rotation", None, PropertyValueType.OneD, has_time_base=True
     ),
-    _PropSpec("ADBE Rotate Z", "Rotation", None, PropertyValueType.OneD),
-    _PropSpec("ADBE Opacity", "Opacity", None, PropertyValueType.OneD),
-    _PropSpec(
+    _spec("ADBE Rotate Z", "Rotation", None, PropertyValueType.OneD),
+    _spec("ADBE Opacity", "Opacity", None, PropertyValueType.OneD),
+    _spec(
         "ADBE Envir Appear in Reflect",
         "Appears in Reflections",
         None,
@@ -2385,10 +2877,10 @@ _TRANSFORM_FIXED_DEFAULTS: dict[str, float | list[float]] = {
 
 
 _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
-    _PropSpec("ADBE Marker", "Marker", None, PropertyValueType.MARKER, dimensions=0),
+    _spec("ADBE Marker", "Marker", None, PropertyValueType.MARKER, dimensions=0),
     _GroupSpec("ADBE Text Properties", "Text"),
     _GroupSpec("ADBE Root Vectors Group", "Contents"),
-    _PropSpec(
+    _spec(
         "ADBE Time Remapping",
         "Time Remap",
         None,
