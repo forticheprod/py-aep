@@ -401,13 +401,6 @@ class TestReadSvgFeatures:
         assert doc.drawables[0].subpaths[0].vertices[0] == [10.0, 10.0]
         assert doc.drawables[0].subpaths[0].vertices[2] == [12.0, 12.0]
 
-    def test_text_element_unsupported(self):
-        svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
-          <text x="0" y="5">hi</text>
-        </svg>"""
-        with pytest.raises(UnsupportedSVGError):
-            read_svg(svg)
-
     def test_non_svg_root_raises(self):
         with pytest.raises(UnsupportedSVGError):
             read_svg("<html xmlns='http://www.w3.org/2000/svg'></html>")
@@ -417,3 +410,35 @@ class TestReadSvgFeatures:
         doc = read_svg(svg)
         assert isinstance(doc, SvgDocument)
         assert doc.width == 8.0
+
+
+class TestTextWhitespace:
+    """Significant whitespace between adjacent <tspan> runs is preserved."""
+
+    @staticmethod
+    def _last_run_min_x(svg: str) -> float | None:
+        doc = read_svg(svg)
+        # Text outlining needs a resolvable font; if none is installed the
+        # runs produce no drawables and there is nothing to assert.
+        if len(doc.drawables) < 2:
+            return None
+        return min(
+            v[0] for sp in doc.drawables[-1].subpaths for v in sp.vertices
+        )
+
+    def test_inter_tspan_space_advances_next_run(self):
+        head = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">'
+            '<text x="20" y="130" font-size="72">'
+        )
+        spaced = self._last_run_min_x(
+            head + "<tspan>foo</tspan> <tspan>bar</tspan></text></svg>"
+        )
+        flush = self._last_run_min_x(
+            head + "<tspan>foo</tspan><tspan>bar</tspan></text></svg>"
+        )
+        if spaced is None or flush is None:
+            pytest.skip("no outline font available to render text")
+        # The space between the runs pushes `bar` to the right; without the
+        # fix the two runs lay out flush and the min-x would be equal.
+        assert spaced > flush

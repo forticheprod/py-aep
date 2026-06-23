@@ -228,9 +228,7 @@ class FolderItem(Item):
         # 2026 for both script addComp and SVG import). Match that ordering.
         block = [comp._item_list, *comp._view_data]
         container = self._children_container
-        insert_at = (
-            1 if container and container[0].chunk_type == "fdta" else 0
-        )
+        insert_at = 1 if container and container[0].chunk_type == "fdta" else 0
         container[insert_at:insert_at] = block
 
         # Register in project and parent

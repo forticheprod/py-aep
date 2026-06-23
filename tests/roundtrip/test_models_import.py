@@ -13,6 +13,7 @@ from py_aep.binary.footage_chunks import (
     build_ai_layer_opti_data,
     build_psd_flattened_opti_data,
     build_psd_layer_opti_data,
+    build_text_opti_data,
 )
 from py_aep.models.import_options import ImportOptions
 from py_aep.models.items.composition import CompItem
@@ -358,6 +359,7 @@ class TestImportGapFormats:
             ("m4a.m4a", "MOoV", 0, 0),
             ("mgjson.mgjson", "sjgm", 0, 0),
             ("mp3.mp3", "MP3A", 0, 0),
+            ("aac.aac", "MPEG", 0, 0),
             ("swf.swf", "SWF ", 640, 360),
             ("mpeg.mpeg", "MPEO", 640, 360),
             ("hdr.hdr", "RHDR", 640, 426),
@@ -384,6 +386,17 @@ class TestImportGapFormats:
         assert item.duration == pytest.approx(13.839, abs=0.01)
         assert item.main_source._sspc.audio_sample_rate == 44100.0
 
+    def test_aac_duration_and_audio(self) -> None:
+        # ADTS frame-scan duration; AE 2026 decodes to 105.790s (the ~0.02s
+        # delta is decoder priming, which AE re-derives from the file on open).
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "aac.aac"))
+        assert item.main_source._sspc.source_format_type == "MPEG"
+        assert item.duration == pytest.approx(105.79, abs=0.05)
+        assert item.main_source._sspc.audio_sample_rate == 44100.0
+        assert item.has_audio is True
+        assert (item.width, item.height) == (0, 0)
+
     def test_mgjson_duration_from_samples(self) -> None:
         project = parse_aep(BASE).project
         item = project.import_file(ImportOptions(ASSETS / "mgjson.mgjson"))
@@ -399,6 +412,16 @@ class TestImportGapFormats:
         project = parse_aep(BASE).project
         item = project.import_file(ImportOptions(ASSETS / "ai.ai"))
         assert item.main_source.has_alpha is True
+
+    def test_fbx_sets_premultiplied_alpha_flag(self) -> None:
+        # AE 2026 sets the sspc premultiplied bit for an imported FBX scene
+        # even though alpha_mode_raw stays 0 (straight). Verified against an
+        # AE-resaved crystal.fbx.
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "crystal.fbx"))
+        sspc = item.main_source._sspc
+        assert sspc.premultiplied is True
+        assert sspc.alpha_mode_raw == 0
 
     def test_import_roundtrip_is_byte_identical(self, tmp_path: Path) -> None:
         # A newly supported format (custom RHDR opti) must survive
@@ -454,6 +477,19 @@ class TestImportAiComp:
             # ai.ai is CMYK (Coated FOGRA39), so the opti color-space flag = 0x02.
             assert mine == build_ai_layer_opti_data(612, 792, layer.name, "CMYK")
             assert mine == _ae_layer_opti(fixture, layer.name)
+
+    def test_per_layer_sspc_byte_c9_is_text_zero(self) -> None:
+        # Byte 0xC9 of the sspc reserved template is 0x00 for TEXT (AI/EPS/PDF)
+        # footage, not the 0x02 that raster/media writes. Regression guard: it
+        # was hardcoded 0x02 for all formats - a divergence invisible to the
+        # opti-only check above (verified against ai_comp.aep: 0xC9 = 0x00).
+        project = parse_aep(BASE).project
+        comp = project.import_file(_comp_opts(ASSETS / "ai.ai"))
+        for layer in comp.layers:
+            source = layer.source.main_source
+            assert isinstance(source, FileSource)
+            assert source._sspc.source_format_type == "TEXT"
+            assert _sspc_bytes(source)[0xC4:0xCA] == b"\x00\x00\x00\x01\x00\x00"
 
     def test_roundtrip_byte_identical(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
@@ -546,6 +582,60 @@ class TestImportAiComp:
         for layer in comp.layers:
             mine = bytes(layer.source.main_source._opti.data)
             assert mine == ae[layer.name]
+
+
+class TestImportEpsComp:
+    """EPS import as a composition, vs AE 2026 ground truth.
+
+    EPS is single-stream PostScript with no Optional Content Groups, so AE
+    rasterizes it to a one-layer comp (confirmed: AE 2026 imports eps.eps as a
+    1-layer comp). Unlike a real AI layer, the footage carries the bare TEXT
+    opti (no per-layer name/index/bbox).
+    """
+
+    def test_import_structure(self) -> None:
+        project = parse_aep(BASE).project
+        comp = project.import_file(_comp_opts(ASSETS / "eps.eps"))
+        assert isinstance(comp, CompItem)
+        assert comp.name == "eps"
+        assert (comp.width, comp.height) == (1921, 2881)
+        assert [layer.name for layer in comp.layers] == ["eps.eps"]
+        folders = [
+            it
+            for it in project.items.values()
+            if isinstance(it, FolderItem) and it.name == "eps Layers"
+        ]
+        assert len(folders) == 1
+        footage = folders[0].items
+        assert len(footage) == 1
+        assert isinstance(footage[0].main_source, FileSource)
+        assert footage[0].main_source.file.endswith("eps.eps")
+
+    def test_opti_is_bare_text(self) -> None:
+        # The footage opti is the plain TEXT body (dimensions only); the
+        # per-layer name/index/bbox an AI layer carries stay zero. Byte-matched
+        # against AE 2026's eps.eps comp import.
+        project = parse_aep(BASE).project
+        comp = project.import_file(_comp_opts(ASSETS / "eps.eps"))
+        source = comp.layers[0].source.main_source
+        assert isinstance(source, FileSource)
+        assert source._sspc.source_format_type == "TEXT"
+        assert bytes(source._opti.data) == build_text_opti_data(1921, 2881)
+
+    def test_layer_name_not_set(self) -> None:
+        # The single layer is named after the source item, so AE leaves the
+        # ldta name_set bit off (verified against AE's import).
+        comp = parse_aep(BASE).project.import_file(_comp_opts(ASSETS / "eps.eps"))
+        assert comp.layers[0]._ldta.name_set is False
+
+    def test_roundtrip_byte_identical(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        project.import_file(_comp_opts(ASSETS / "eps.eps"))
+        out = tmp_path / "eps_comp.aep"
+        project.save(out)
+        out2 = tmp_path / "eps_comp2.aep"
+        parse_aep(out).project.save(out2)
+        assert out.read_bytes() == out2.read_bytes()
 
 
 class TestImportPsdComp:

@@ -838,17 +838,22 @@ _VECTOR_GRAD_HILITE_ANGLE = _spec(
     0.0,
     PropertyValueType.OneD,
 )
+# Grad Scale / Grad Rotation were added to the gradient fill/stroke groups in
+# AE 2026 (major 26); 2018-2025 stop at HiLite Angle -> Colors. Probed across
+# AE CC 2018, 2022, 2023, 2024, 2025, 2026 (only 26.0 exposes them).
 _VECTOR_GRAD_SCALE = _spec(
     "ADBE Vector Grad Scale",
     "Scale",
     [100.0, 100.0],
     PropertyValueType.TwoD,
+    min_major=26,
 )
 _VECTOR_GRAD_ROTATION = _spec(
     "ADBE Vector Grad Rotation",
     "Rotation",
     0.0,
     PropertyValueType.OneD,
+    min_major=26,
 )
 _VECTOR_GRAD_COLORS = _spec(
     "ADBE Vector Grad Colors",

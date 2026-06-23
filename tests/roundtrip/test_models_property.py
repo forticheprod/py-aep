@@ -605,20 +605,18 @@ class TestRoundtripExpressionCreate:
         (verified against AE 2026); the py-only round-trip cannot catch
         that because py reads the Utf8 regardless of the marker.
         """
-        from py_aep.models.properties.property import _TDB4_HAS_EXPRESSION
-
         project = parse_aep(SAMPLES_DIR / "is_modified_false.aep").project
         prop = _find_property(project.compositions[0].layers[0], "ADBE Rotate Z")
         assert prop is not None
-        assert prop._tdb4._pad10 & _TDB4_HAS_EXPRESSION == 0
+        assert prop._tdb4.has_expression is False
 
         prop.expression = "time * 90"
-        assert prop._tdb4._pad10 & _TDB4_HAS_EXPRESSION
+        assert prop._tdb4.has_expression is True
 
         # Clearing removes the chunk and the marker again.
         prop.expression = ""
         assert prop._expression_utf8 is None
-        assert prop._tdb4._pad10 & _TDB4_HAS_EXPRESSION == 0
+        assert prop._tdb4.has_expression is False
 
 
 class TestRoundtripExpressionEnabled:
@@ -2548,3 +2546,122 @@ class TestValueInPlaceMutation:
         pos2 = _find_property(project2.compositions[0].layers[0], "ADBE Position")
         assert pos2 is not None
         assert pos2.value[0] == pytest.approx(original[0] + 123.0)
+
+
+def _find_descendant(node: Layer | PropertyGroup, match_name: str) -> Property | None:
+    """Recursively find a leaf Property by match name under a layer/group."""
+    for child in node:
+        if isinstance(child, Property) and child.match_name == match_name:
+            return child
+        if isinstance(child, PropertyGroup):
+            found = _find_descendant(child, match_name)
+            if found is not None:
+                return found
+    return None
+
+
+class TestPlaceholderBoundsValueSetter:
+    """Setting a value on properties carrying AE's `[0.0]` placeholder bounds.
+
+    AE writes a `[0.0]` tdum/tduM placeholder for Scale, the separated
+    Position followers, and Time Remapping. py_aep used to read this as a
+    real `max=0` and reject any non-zero value on the static `.value` setter.
+    The placeholder is now suppressed for the value setter, and for Scale /
+    separated Position on the read API too, matching ExtendScript. Time
+    Remapping keeps its read bounds (ExtendScript reports `hasMax=True`/
+    `maxValue=0`) while the setter no longer enforces them.
+    """
+
+    SAMPLE = PROPERTY_SAMPLES_DIR / "transform_separated.aep"
+
+    def _layer(self) -> Layer:
+        return parse_aep(self.SAMPLE).project.compositions[0].layers[0]
+
+    def test_set_time_remapping_value(self) -> None:
+        tr = _find_descendant(self._layer(), "ADBE Time Remapping")
+        assert tr is not None and not tr.keyframes
+        tr.value = 5.0  # used to raise "must be <= 0.0"
+        assert tr.value == pytest.approx(5.0)
+        # Read bounds still match ExtendScript (hasMax True, maxValue 0).
+        assert tr.has_max is True
+        assert tr.max_value == 0
+
+    def test_set_separated_position_dimension(self) -> None:
+        px = _find_descendant(self._layer(), "ADBE Position_0")
+        assert px is not None and not px.keyframes
+        px.value = -50.0  # used to raise; only 0.0 was accepted
+        assert px.value == pytest.approx(-50.0)
+        # ExtendScript reports no bounds for separated Position dimensions.
+        assert px.has_min is False
+        assert px.has_max is False
+
+    def test_set_scale_value(self) -> None:
+        scale = _find_descendant(self._layer(), "ADBE Scale")
+        assert scale is not None and not scale.keyframes
+        scale.value = [150.0, 150.0, 150.0]
+        assert scale.value == pytest.approx([150.0, 150.0, 150.0])
+        assert scale.has_max is False
+
+    def test_real_bounds_still_enforced(self) -> None:
+        op = _find_descendant(self._layer(), "ADBE Opacity")
+        assert op is not None
+        assert (op.min_value, op.max_value) == (0, 100)
+        with pytest.raises(ValueError):
+            op.value = 150.0
+
+    def test_min_zero_bound_still_enforced(self) -> None:
+        # Regression guard: a property with a real min=0 but a placeholder
+        # (all-zero) max must still reject negatives. A prior fix wrongly
+        # dropped the min whenever the max was absent, letting AE-invalid
+        # negatives through for ~24 props (stroke width, light/camera, etc.).
+        project = parse_aep(VERSIONS_DIR / "ae2026" / "complete.aep").project
+        falloff = None
+        for comp in project.compositions:
+            for layer in comp.layers:
+                p = _find_descendant(layer, "ADBE Light Falloff Distance")
+                if p is not None and not p.keyframes:
+                    falloff = p
+                    break
+            if falloff is not None:
+                break
+        assert falloff is not None
+        assert falloff.min_value == 0
+        with pytest.raises(ValueError):
+            falloff.value = -5.0
+        falloff.value = 50.0  # positive accepted (placeholder max not enforced)
+        assert falloff.value == pytest.approx(50.0)
+
+    def test_roundtrip_is_byte_identical(self, tmp_path: Path) -> None:
+        # Parsing (which reads the suppressed bounds) must not mutate chunks.
+        raw = self.SAMPLE.read_bytes()
+        out = tmp_path / "rt.aep"
+        parse_aep(self.SAMPLE).project.save(out)
+        assert out.read_bytes() == raw
+
+    def test_unbounded_props_match_extendscript(self) -> None:
+        # Properties ExtendScript reports as unbounded must not over-report
+        # bounds: fully-unbounded (channel blend, given a UI-range fallback)
+        # and placeholder-max (light props with an all-zero [0.0] tduM).
+        project = parse_aep(VERSIONS_DIR / "ae2026" / "complete.aep").project
+        found: dict[str, Property] = {}
+
+        def collect(node: Layer | PropertyGroup) -> None:
+            for p in node:
+                if isinstance(p, Property):
+                    found.setdefault(p.match_name, p)
+                elif isinstance(p, PropertyGroup):
+                    collect(p)
+
+        for comp in project.compositions:
+            for layer in comp.layers:
+                collect(layer)
+
+        # Fully unbounded in ExtendScript (hasMin=False, hasMax=False):
+        rb = found["ADBE R Channel Blend"]
+        assert (rb.has_min, rb.has_max) == (False, False)
+        # Light Falloff Distance: ES hasMin=True, hasMax=False (placeholder max).
+        lf = found["ADBE Light Falloff Distance"]
+        assert (lf.has_min, lf.has_max) == (True, False)
+        # Light Intensity: ES hasMin=False, hasMax=False.
+        li = found["ADBE Light Intensity"]
+        assert (li.has_min, li.has_max) == (False, False)

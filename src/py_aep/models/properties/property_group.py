@@ -23,6 +23,7 @@ from ...binary.mutations import (
 )
 from ...binary.property_chunks import TDSN_SENTINEL, TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.utils import ChunkNotFoundError, find_by_list_type
 from ...data.dropdown_control import DROPDOWN_CONTROL
 from ...synthesis.specs import (
     _GROUP_CHILD_SPECS,
@@ -96,10 +97,10 @@ def _insert_before_group_end(tdgp: ListChunk, chunk: Any) -> None:
 
 def _effect_tdgp(sspc: ListChunk) -> ListChunk | None:
     """The instance `tdgp` (param container) inside an effect sspc."""
-    for c in sspc.chunks:
-        if isinstance(c, ListChunk) and c.list_type == "tdgp":
-            return c
-    return None
+    try:
+        return find_by_list_type(sspc.chunks, "tdgp")
+    except ChunkNotFoundError:
+        return None
 
 
 def _set_effect_instance_name(sspc: ListChunk, name: str) -> None:
@@ -768,12 +769,12 @@ class PropertyGroup(PropertyBase):
         `(match_name, display_name, def_sspc)` for a project-defined
         effect, else `None`.
         """
-        from ...parsers.effect import find_effect_definition  # noqa: PLC0415
+        from ...parsers.effect import match_effect_definition  # noqa: PLC0415
 
         if self.match_name != "ADBE Effect Parade":
             return None
         project = self._containing_layer.containing_comp._project
-        return find_effect_definition(project._rifx.chunks, name)
+        return match_effect_definition(project._effect_definitions(), name)
 
     def _add_installed_effect(
         self, match_name: str, display: str, def_sspc: ListChunk

@@ -44,8 +44,13 @@ OCIO_TYPE_COLORSPACE = 2
 
 
 def _compact(obj: object) -> str:
-    """Serialize `obj` exactly as AE does: compact, no whitespace."""
-    return json.dumps(obj, separators=(",", ":"))
+    """Serialize `obj` exactly as AE does: compact, no whitespace.
+
+    `ensure_ascii=False` so a non-ASCII profile/color-space name is emitted as
+    raw UTF-8 (matching AE's `Utf8` chunk) rather than `\\uXXXX` escapes, which
+    would break the byte-identical round-trip.
+    """
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
 def _b64(text: str) -> str:

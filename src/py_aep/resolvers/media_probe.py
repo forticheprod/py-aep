@@ -634,18 +634,25 @@ _MP3_BR_M1_L3 = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 32
 _MP3_BR_M2_L3 = (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0)
 
 
-def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
-    raw = fp.read()
-    # Skip an ID3v2 tag: syncsafe size in bytes 6-9 after "ID3" + version/flags.
-    audio_start = 0
+def _skip_id3v2(raw: bytes) -> int:
+    """Byte offset of the audio data after a leading ID3v2 tag (0 if absent).
+
+    The tag length is a 28-bit syncsafe integer in header bytes 6-9.
+    """
     if raw[:3] == b"ID3" and len(raw) >= 10:
         s = raw[6:10]
-        audio_start = 10 + (
+        return 10 + (
             (s[0] & 0x7F) << 21
             | (s[1] & 0x7F) << 14
             | (s[2] & 0x7F) << 7
             | (s[3] & 0x7F)
         )
+    return 0
+
+
+def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
+    raw = fp.read()
+    audio_start = _skip_id3v2(raw)
     if len(raw) < audio_start + 4:
         return MediaInfo(has_audio=True)
     h = struct.unpack_from(">I", raw, audio_start)[0]
@@ -675,6 +682,89 @@ def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
         # bitrate >= 32 kbps and sr >= 8 kHz, so frame_size is always > 0.
         frame_size = spf // 8 * bitrate // sr + padding
         duration = (len(raw) - audio_start) // frame_size * spf / sr
+    return MediaInfo(duration=duration, has_audio=True, audio_sample_rate=float(sr))
+
+
+# ---------------------------------------------------------------------------
+# AAC - ADTS frame stream (audio only)
+# ---------------------------------------------------------------------------
+
+# ADTS sampling-frequency index -> Hz (indices 13-15 are reserved/explicit).
+_AAC_SR = (
+    96000,
+    88200,
+    64000,
+    48000,
+    44100,
+    32000,
+    24000,
+    22050,
+    16000,
+    12000,
+    11025,
+    8000,
+    7350,
+)
+
+
+def _adts_frame_len(raw: bytes, pos: int) -> int:
+    """13-bit ADTS frame length: low 2 bits of byte 3, all of byte 4, high 3
+    bits of byte 5."""
+    return (raw[pos + 3] & 0x03) << 11 | raw[pos + 4] << 3 | raw[pos + 5] >> 5
+
+
+def _is_adts_header(raw: bytes, pos: int, n: int) -> bool:
+    """Whether `pos` begins a plausible ADTS frame header.
+
+    Beyond the 12-bit sync word this checks the layer bits (always 0 for ADTS)
+    and the sampling-frequency index (< 13), and that the frame length is at
+    least a full header - enough to reject a coincidental `0xFF 0xFx` byte pair
+    in non-ADTS data.
+    """
+    return (
+        pos + 7 <= n
+        and raw[pos] == 0xFF
+        and raw[pos + 1] & 0xF0 == 0xF0
+        and (raw[pos + 1] >> 1) & 0x3 == 0
+        and (raw[pos + 2] >> 2) & 0xF < 13
+        and _adts_frame_len(raw, pos) >= 7
+    )
+
+
+def _probe_aac(fp: IO[bytes]) -> MediaInfo:
+    """AAC in a raw ADTS stream (audio only).
+
+    Each ADTS frame carries 1024 samples per raw-data-block; the duration is
+    the summed sample count divided by the sampling rate. After Effects
+    decodes the file via Windows Media Foundation and may report a slightly
+    different duration (decoder priming), but it re-derives the value from
+    the located file on open, so the header estimate never affects playback.
+    """
+    raw = fp.read()
+    audio_start = _skip_id3v2(raw)
+    n = len(raw)
+    # Locate the first real ADTS frame: a valid header whose successor also
+    # syncs (or which ends the file). Requiring the next frame guards against
+    # locking onto a coincidental sync word in leading non-ADTS bytes.
+    pos = audio_start
+    while pos + 7 <= n:
+        if _is_adts_header(raw, pos, n):
+            nxt = pos + _adts_frame_len(raw, pos)
+            if nxt >= n or _is_adts_header(raw, nxt, n):
+                break
+        pos += 1
+    else:
+        return MediaInfo(has_audio=True)
+    sr_i = (raw[pos + 2] >> 2) & 0xF
+    sr = _AAC_SR[sr_i] if sr_i < len(_AAC_SR) else 0
+    total_samples = 0
+    while pos + 7 <= n and raw[pos] == 0xFF and raw[pos + 1] & 0xF0 == 0xF0:
+        frame_len = _adts_frame_len(raw, pos)
+        if frame_len < 7:  # shorter than the header: corrupt, stop scanning
+            break
+        total_samples += 1024 * ((raw[pos + 6] & 0x03) + 1)
+        pos += frame_len
+    duration = total_samples / sr if sr else 0.0
     return MediaInfo(duration=duration, has_audio=True, audio_sample_rate=float(sr))
 
 
@@ -901,6 +991,7 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".json": _probe_data,
     ".mgjson": _probe_mgjson,
     ".mp3": _probe_mp3,
+    ".aac": _probe_aac,
     ".swf": _probe_swf,
     ".mpeg": _probe_mpeg,
     ".mpg": _probe_mpeg,

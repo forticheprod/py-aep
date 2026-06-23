@@ -261,8 +261,10 @@ def test_g_fill_synthesized_properties(gradient_comp) -> None:
         "ADBE Vector Grad End Pt",
         "ADBE Vector Grad HiLite Length",
         "ADBE Vector Grad HiLite Angle",
-        "ADBE Vector Grad Scale",
-        "ADBE Vector Grad Rotation",
+        # Grad Scale / Grad Rotation were added in AE 2026 (major 26);
+        # gradient.aep is AE 25.6, so synthesis must NOT add them here (the
+        # ExtendScript gradient.json lists neither - over-reporting them is
+        # exactly the version-gate bug this guards against).
         "ADBE Vector Grad Colors",
         "ADBE Vector Fill Opacity",
     ]
@@ -284,8 +286,8 @@ def test_g_stroke_synthesized_properties(gradient_comp) -> None:
         "ADBE Vector Grad End Pt",
         "ADBE Vector Grad HiLite Length",
         "ADBE Vector Grad HiLite Angle",
-        "ADBE Vector Grad Scale",
-        "ADBE Vector Grad Rotation",
+        # Grad Scale / Grad Rotation are AE 2026+ only; gradient.aep is AE 25.6
+        # (gradient.json lists neither), so synthesis must not add them.
         "ADBE Vector Grad Colors",
         "ADBE Vector Stroke Opacity",
         "ADBE Vector Stroke Width",

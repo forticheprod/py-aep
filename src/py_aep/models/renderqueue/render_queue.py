@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Iterator
 
-from ...binary.chunk import ListChunk
+from ...binary.chunk import Chunk, ListChunk
 from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
 from ...binary.project_chunks import RhedChunk
 from ...binary.render_chunks import ArsiChunk, RoutChunk
@@ -11,6 +11,23 @@ if TYPE_CHECKING:
     from ..items.composition import CompItem
     from ..project import Project
     from .render_queue_item import RenderQueueItem
+
+
+def _ensure_materialized(chunk: Chunk) -> None:
+    """Clear the `synthetic` flag on a chunk and its container subtree.
+
+    `parse_render_queue` leaves a synthesized render-queue scaffold (a missing
+    `LRdr`, settings `LIST:list`, or empty-queue `ldat`) marked `synthetic` so
+    `write_aep` skips it and an untouched queue-less file round-trips
+    byte-identically. The first `add()` calls this to materialize the whole
+    subtree so the populated queue is serialized. A no-op for a normal AE file
+    whose `LRdr` is already fully present and non-synthetic.
+    """
+    chunk.synthetic = False
+    children = getattr(chunk, "chunks", None)
+    if children is not None:
+        for child in children:
+            _ensure_materialized(child)
 
 
 class RenderQueue:
@@ -134,10 +151,10 @@ class RenderQueue:
         # Create the new RQ item with all backing chunks
         rqi = RenderQueueItem._new(comp, parent=self)
 
-        # When the render queue started empty, the parser attached a synthetic
-        # ldat to the settings 'list' (skipped on write). Materialize it so the
-        # new settings actually get written. Harmless when already non-synthetic.
-        self._rs_ldat.synthetic = False
+        # Materialize any synthesized scaffold the parser left synthetic (an
+        # empty-queue ldat, or - for a queue-less file - the whole LRdr tree),
+        # so the populated queue is actually written. No-op for a normal file.
+        _ensure_materialized(self._lrdr)
 
         # Append render settings to LRdr's ldat. Only `count` tracks the
         # item count; AE keeps count_b/counter_a/counter_b at their seeded

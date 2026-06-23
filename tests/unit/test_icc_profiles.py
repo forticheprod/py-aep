@@ -6,7 +6,7 @@ import hashlib
 
 import pytest
 
-from py_aep.data.icc_profiles import (
+from py_aep.color.icc import (
     ColorProfileNotFoundError,
     IccProfileLibrary,
     default_icc_directories,

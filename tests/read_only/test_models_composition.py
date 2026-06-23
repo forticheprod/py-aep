@@ -623,3 +623,139 @@ class TestEssentialGraphics:
             assert ctrl.controller_type == expected_type, (
                 f"{sample}: expected type {expected_type}, got {ctrl.controller_type}"
             )
+
+    def test_essential_property_uuids_resolve_to_controllers(self) -> None:
+        # Regression: a precomp layer's OvG2 overrides live under the layer's
+        # root tdgp, not the Layr's direct children. _parse_ovg2_uuids used to
+        # search the wrong level, so essential_property_uuids returned [] for
+        # every populated sample. The override UUIDs are the source comp's
+        # controller UUIDs verbatim.
+        project = parse_project(EG_SAMPLES_DIR / "multiple_controllers.aep")
+        source = next(c for c in project.compositions if c.name == "primary")
+        controller_uuids = {c.uuid for c in source.motion_graphics_controllers}
+        assert len(controller_uuids) == 3
+
+        main = next(c for c in project.compositions if c.name == "main")
+        with_overrides = [
+            layer for layer in main.layers if layer.essential_property_uuids
+        ]
+        assert len(with_overrides) == 1
+        overrides = with_overrides[0].essential_property_uuids
+        assert len(overrides) == 3
+        assert set(overrides) <= controller_uuids
+
+    def test_essential_property_uuids_empty_without_overrides(self) -> None:
+        project = parse_project(EG_SAMPLES_DIR / "no_essential_properties.aep")
+        for comp in project.compositions:
+            for layer in comp.layers:
+                assert layer.essential_property_uuids == []
+
+    def test_essential_property_controllers_resolve(self) -> None:
+        # The precomp layer's overrides resolve to the source comp's
+        # controllers by shared UUID, in override order.
+        project = parse_project(EG_SAMPLES_DIR / "multiple_controllers.aep")
+        main = next(c for c in project.compositions if c.name == "main")
+        layer = next(layer for layer in main.layers if layer.essential_property_uuids)
+        controllers = layer.essential_property_controllers
+        assert [c.name for c in controllers] == [
+            "Brightness",
+            "Layer Opacity",
+            "Background Color",
+        ]
+        # Each resolved controller's uuid is the override uuid at that position.
+        assert [c.uuid for c in controllers] == layer.essential_property_uuids
+
+    def test_essential_property_controllers_single_override(self) -> None:
+        project = parse_project(EG_SAMPLES_DIR / "text_source_text.aep")
+        layer = next(
+            layer
+            for comp in project.compositions
+            for layer in comp.layers
+            if layer.essential_property_uuids
+        )
+        controllers = layer.essential_property_controllers
+        assert len(controllers) == 1
+        assert controllers[0].name == "Title Text"
+
+    def test_essential_property_controllers_empty_for_non_precomp(self) -> None:
+        # A layer with no overrides (a solid, non-CompItem source) resolves [].
+        project = parse_project(EG_SAMPLES_DIR / "multiple_controllers.aep")
+        primary = next(c for c in project.compositions if c.name == "primary")
+        solid = next(layer for layer in primary.layers if layer.name == "Gray Solid 1")
+        assert solid.essential_property_controllers == []
+
+    def test_controller_source_property_path(self) -> None:
+        # Each controller records the root-to-leaf path of the source-comp
+        # property it exposes (match name + index; None index = match by name).
+        project = parse_project(EG_SAMPLES_DIR / "multiple_controllers.aep")
+        comp = next(c for c in project.compositions if c.name == "primary")
+        by_name = {c.name: c for c in comp.motion_graphics_controllers}
+
+        bg = by_name["Background Color"].source_property_path
+        assert [n.match_name for n in bg] == [
+            "ADBE Effect Parade",
+            "ADBE Fill",
+            "ADBE Fill-0002",
+        ]
+        assert [n.prop_index for n in bg] == [None, 0, 3]
+
+        # A transform property (not an effect): every node matches by name.
+        opacity = by_name["Layer Opacity"].source_property_path
+        assert [n.match_name for n in opacity] == [
+            "ADBE Transform Group",
+            "ADBE Opacity",
+        ]
+        assert all(n.prop_index is None for n in opacity)
+
+    def test_group_controller(self) -> None:
+        # A type-10 Group controller and its members parse as a flat controller
+        # list - group members are SIBLING CCtl, not nested, so the stored ones
+        # are not lost. The group itself controls no single source property.
+        # (ExtendScript reports a 4th "GropDropZone" drop-zone controller that
+        # AE synthesizes at runtime and does not store, so it is absent here.)
+        project = parse_project(EG_SAMPLES_DIR / "group_controller.aep")
+        comp = next(c for c in project.compositions if c.name == "Comp 1")
+        assert [
+            (c.name, c.controller_type) for c in comp.motion_graphics_controllers
+        ] == [
+            ("Group", 10),
+            ("Gaussian Blur Blurriness", 2),
+            ("Fill Color", 4),
+        ]
+        assert comp.motion_graphics_controllers[0].source_property_path == []
+        # Pin the deliberate one-lower-than-ExtendScript count (ES reports 4
+        # including the unstored runtime "GropDropZone"); guards against drift.
+        assert comp.motion_graphics_template_controller_count == 3
+        assert "GropDropZone" not in comp.motion_graphics_template_controller_names
+
+        # The precomp layer's overrides resolve to all three (incl. the group).
+        main = next(c for c in project.compositions if c.name == "main")
+        layer = next(la for la in main.layers if la.essential_property_uuids)
+        assert [c.name for c in layer.essential_property_controllers] == [
+            "Group",
+            "Gaussian Blur Blurriness",
+            "Fill Color",
+        ]
+
+    def test_media_replacement_controller(self) -> None:
+        # A type-14 Media Replacement controller parses, and (unlike a Group)
+        # AE synthesizes no extra drop-zone controller, so the count matches
+        # ExtendScript exactly.
+        project = parse_project(EG_SAMPLES_DIR / "media_replacement.aep")
+        comp = next(c for c in project.compositions if c.name == "image_with_alpha")
+        ctrls = comp.motion_graphics_controllers
+        assert comp.motion_graphics_template_controller_count == 1
+        assert len(ctrls) == 1
+        assert ctrls[0].controller_type == 14
+        assert ctrls[0].name == "image_with_alpha.png"
+
+    def test_pre_cif3_falls_back_to_legacy_container(self) -> None:
+        # Pre-CIF3 files (AE < 2022) store Essential Graphics in CIF2/CIFO.
+        # The parser falls back to them, so the template name still resolves
+        # to ExtendScript's "Untitled" instead of None.
+        versions = Path(__file__).parent.parent.parent / "samples" / "versions"
+        project = parse_project(versions / "ae2018" / "complete.aep")
+        assert project.compositions
+        for comp in project.compositions:
+            assert comp.motion_graphics_template_name == "Untitled"
+            assert comp.motion_graphics_template_controller_count == 0

@@ -13,6 +13,7 @@ from ..binary.footage_chunks import (
     build_ai_layer_opti_data,
     build_psd_flattened_opti_data,
     build_psd_layer_opti_data,
+    build_text_opti_data,
 )
 from ..binary.item_chunks import HeadChunk, NhedChunk, NnhdChunk
 from ..binary.misc_chunks import DwgaChunk
@@ -31,14 +32,18 @@ from ..binary.utils import (
     recursive_find,
     toggle_flag_chunk,
 )
-from ..data.color_spaces import (
+from ..color.envelope import (
     build_icc_envelope,
     build_ocio_colorspace_envelope,
     build_ocio_display_envelope,
 )
-from ..data.file_formats import AI_COMP_EXTENSIONS, PSD_COMP_EXTENSIONS
-from ..data.icc_profiles import IccProfileLibrary
-from ..data.ocio_config import list_config_color_spaces, resolve_ocio_config
+from ..color.icc import IccProfileLibrary
+from ..color.ocio import list_config_color_spaces, resolve_ocio_config
+from ..data.file_formats import (
+    AI_COMP_EXTENSIONS,
+    EPS_COMP_EXTENSIONS,
+    PSD_COMP_EXTENSIONS,
+)
 from ..enums import (
     BitsPerChannel,
     ColorManagementSystem,
@@ -303,6 +308,7 @@ class Project:
         self._render_queue = render_queue
         self._active_item: Item | None = None
         self._effect_param_defs: dict[str, dict[str, dict[str, Any]]] = {}
+        self._effect_definitions_cache: list[tuple[str, str, ListChunk]] | None = None
         self._used_in_linked = False
 
         self._max_layer_id = -1  # lazily computed on first allocation
@@ -319,6 +325,21 @@ class Project:
     # Inherited from the empty-project ground truth; callers can override
     # via color_management_system / lut_interpolation_method / etc.
     _NEW_PROJECT_CMS_JSON: ClassVar[str] = '{"lutInterpolationMethod":1}'
+
+    def _effect_definitions(self) -> list[tuple[str, str, ListChunk]]:
+        """`LIST:EfdG` effect definitions, walked once and cached.
+
+        EfdG is read-only after parse (adding an installed effect clones
+        its sspc template into the layer rather than editing EfdG), so the
+        walk is computed lazily on first lookup and reused across adds.
+        """
+        if self._effect_definitions_cache is None:
+            from ..parsers.effect import effect_definition_entries  # noqa: PLC0415
+
+            self._effect_definitions_cache = effect_definition_entries(
+                self._rifx.chunks
+            )
+        return self._effect_definitions_cache
 
     @classmethod
     def _new(cls, version: str, ae_preferences_dir: Path | None = None) -> Project:
@@ -569,10 +590,28 @@ class Project:
     def working_space(self, value: str) -> None:
         validate_string(value)
         if self.color_management_system == ColorManagementSystem.OCIO:
+            self._validate_ocio_color_space(value)
             envelope = build_ocio_colorspace_envelope(value)
         else:
+            # bytes_for already raises ColorProfileNotFoundError for an
+            # unknown Adobe profile name, so no separate name check is needed.
             envelope = build_icc_envelope(value, self._icc_lib().bytes_for(value))
         self._ws_utf8 = self._rewrite_color_profile("PwCs", envelope)
+
+    def _validate_ocio_color_space(self, name: str) -> None:
+        """Reject an OCIO color-space name absent from the active config.
+
+        `list_color_profiles()` returns `[]` when the config cannot be located
+        or read; in that case skip the check rather than block a name that
+        cannot be verified.
+        """
+        available = self.list_color_profiles()
+        if available and name not in available:
+            raise ValueError(
+                f"{name!r} is not an active color space in the current OCIO "
+                f"configuration ({self.ocio_configuration_file!r}). Call "
+                "Project.list_color_profiles() to see the valid names."
+            )
 
     @property
     def icc_profile_dirs(self) -> list[Path] | None:
@@ -658,8 +697,9 @@ class Project:
         when unset), so this rewrites in place.
 
         Raises:
-            AttributeError: If the marker chunk is absent (the project was not
-                saved by After Effects with color management initialized).
+            ValueError: If the marker chunk is absent - color management is not
+                initialized in this project (a brand-new project, or one from a
+                pre-2022 After Effects, has no color-profile chunk to rewrite).
         """
         root = self._root_chunks
         for i, chunk in enumerate(root):
@@ -669,9 +709,11 @@ class Project:
                     utf8.value = envelope
                     return utf8
                 break
-        raise AttributeError(
-            f"No '{marker}' color-profile chunk to write. The project must be "
-            "saved by After Effects with color management initialized."
+        raise ValueError(
+            f"No '{marker}' color-profile chunk to write: color management is "
+            "not initialized in this project. The project must be saved by "
+            "After Effects (2022+) with color management enabled before its "
+            "working/display color space can be set."
         )
 
     @property
@@ -865,9 +907,16 @@ class Project:
         if options.import_as == ImportAsType.COMP:
             if suffix in AI_COMP_EXTENSIONS:
                 return self._import_ai_layered(options.file)
+            if suffix in EPS_COMP_EXTENSIONS:
+                return self._import_eps_comp(options.file)
             if suffix in PSD_COMP_EXTENSIONS:
                 return self._import_psd_layered(options.file)
             raise ValueError(f"import_file does not support COMP import for {suffix!r}")
+        if options.import_as == ImportAsType.PROJECT:
+            raise ValueError(
+                "import_file does not support PROJECT import (importing an "
+                ".aep/.aet, or an AE project embedded in a .mov/.m4a)"
+            )
         if options.import_as != ImportAsType.FOOTAGE:
             raise ValueError(
                 "import_file supports ImportAsType.FOOTAGE, COMP (layered "
@@ -1064,6 +1113,31 @@ class Project:
             for name in read_ai_layers(file)
         ]
         return self._import_layered_comp(file, "TEXT", specs, info, profile_name)
+
+    def _import_eps_comp(self, file: Path) -> CompItem:
+        """Import an EPS as a single-layer composition.
+
+        EPS is single-stream PostScript with no Optional Content Groups (the
+        layer mechanism `read_ai_layers` relies on for `.ai`/`.pdf`), so AE
+        rasterizes it to one full-canvas layer. Verified against AE 2026:
+        importing `eps.eps` yields a 1-layer comp whose footage carries the
+        bare `TEXT` opti (no per-layer name/index/bbox - those stay zero,
+        unlike a real AI layer), byte-matched against an AE-resaved import.
+
+        EPS carries no embedded ICC profile (`read_ai_color_info` needs a PDF
+        object structure EPS lacks), so the footage is left untagged. AE instead
+        tags such footage with the project working space (sRGB by default); that
+        is a general color-management-on-import default py_aep does not yet apply
+        to any no-embedded-profile import, not an EPS-specific gap.
+        """
+        info = probe_media(file)
+        spec = LayerSpec(
+            file.name,
+            build_text_opti_data(info.width, info.height),
+            info.width,
+            info.height,
+        )
+        return self._import_layered_comp(file, "TEXT", [spec], info, None)
 
     def _import_psd_layered(self, file: Path, cropped: bool = False) -> CompItem:
         """Import a layered Photoshop file (`.psd`/`.psb`) as a composition.

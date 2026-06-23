@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from py_aep.data.ocio_config import (
+from py_aep.color.ocio import (
     list_config_color_spaces,
     resolve_ocio_config,
 )

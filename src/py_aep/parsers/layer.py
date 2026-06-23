@@ -42,17 +42,21 @@ _LAYER_CLASSES: dict[int, type[Layer]] = {
 }
 
 
-def _parse_ovg2_uuids(child_chunks: list[Chunk]) -> list[str]:
+def _parse_ovg2_uuids(tdgp_chunks: list[Chunk]) -> list[str]:
     """Extract Essential Properties override UUIDs from LIST:OvG2 chunks.
 
     Args:
-        child_chunks: The child chunks of a layer LIST chunk.
+        tdgp_chunks: The children of the layer's root `tdgp` group, where
+            `LIST:OvG2` is a direct child (beside the "ADBE Layer Overrides"
+            marker). NOT the layer LIST's own children - `OvG2` sits one
+            level deeper than that.
 
     Returns:
-        A list of UUID strings from the OvG2/CPrp/Utf8 entries.
+        A list of controller UUID strings from the OvG2/CPrp/Utf8 entries;
+        each matches an `EssentialGraphicsController.uuid` on the source comp.
     """
     uuids: list[str] = []
-    for ovg2_list in filter_by_list_type(chunks=child_chunks, list_type="OvG2"):
+    for ovg2_list in filter_by_list_type(chunks=tdgp_chunks, list_type="OvG2"):
         for cprp in filter_by_list_type(chunks=ovg2_list.chunks, list_type="CPrp"):
             utf8_chunks = filter_by_type(chunks=cprp.chunks, chunk_type="Utf8")
             if utf8_chunks:
@@ -102,6 +106,10 @@ def parse_layer(
         )
         layer_cls = AVLayer
 
+    # OvG2 (Essential Properties overrides) is a direct child of the layer's
+    # root tdgp, not of the layer LIST itself, so resolve the root tdgp first.
+    root_tdgp_chunk = find_by_list_type(chunks=child_chunks, list_type="tdgp")
+
     layer = layer_cls(
         _ldta=ldta,
         _cmta=cmta,
@@ -109,10 +117,9 @@ def parse_layer(
         _layer_list=layer_chunk,
         containing_comp=composition,
         properties=[],
-        essential_property_uuids=_parse_ovg2_uuids(child_chunks),
+        essential_property_uuids=_parse_ovg2_uuids(root_tdgp_chunk.chunks),
     )
 
-    root_tdgp_chunk = find_by_list_type(chunks=child_chunks, list_type="tdgp")
     properties = parse_properties(
         match_name_runs=get_match_name_runs(root_tdgp_chunk),
         child_depth=1,

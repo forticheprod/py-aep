@@ -31,6 +31,53 @@ _PROPERTY_MIN_MAX: dict[str, tuple[float, float]] = {
     "ADBE Mask Offset": (-32000, 32000),
 }
 
+# Non-effect properties that ExtendScript reports as having NO min/max
+# bounds, but whose binary carries an all-zero `[0.0]` tdum/tduM placeholder
+# (AE writes these for Scale and the separated-Position followers). The
+# placeholder bytes are preserved on disk for round-trip fidelity; they are
+# suppressed only when surfacing `min_value`/`max_value` so `has_min`/
+# `has_max` match ExtendScript.
+#
+# `ADBE Time Remapping` also carries a `[0.0]` placeholder, but ExtendScript
+# DOES report `hasMax=True`/`maxValue=0` for it, so it is intentionally
+# excluded here (suppressing it would diverge from ground truth). Its
+# spurious value-setter rejection is handled separately in `_get_max`.
+_PLACEHOLDER_UNBOUNDED: frozenset[str] = frozenset(
+    {
+        "ADBE Scale",
+        "ADBE Position_0",
+        "ADBE Position_1",
+        "ADBE Position_2",
+        # Light/Camera props that carry an all-zero [0.0] tduM (and tdum):
+        # ExtendScript reports hasMax=False for all, and hasMin=False for
+        # Light Intensity (the others keep a real min via their fallback).
+        "ADBE Light Falloff Distance",
+        "ADBE Light Falloff Start",
+        "ADBE Light Shadow Darkness",
+        "ADBE Light Shadow Diffusion",
+        "ADBE Light Intensity",
+        "ADBE Camera Zoom",
+    }
+)
+
+# Non-effect properties ExtendScript reports as FULLY unbounded (hasMin=False
+# AND hasMax=False) but for which a synthesis spec sets a min/max fallback
+# (a UI range AE does not expose via the scripting bounds API). The bounds are
+# suppressed on read so `has_min`/`has_max` and the value setter match
+# ExtendScript; `is_modified`/`default_value` (which read the spec directly,
+# not `min_value`) are unaffected.
+_UNBOUNDED_MATCH_NAMES: frozenset[str] = frozenset(
+    {
+        "ADBE R Channel Blend",
+        "ADBE G Channel Blend",
+        "ADBE B Channel Blend",
+        "ADBE Blend Interior",
+        "ADBE Blend Ranges",
+        "ADBE Vector Scale",
+        "ADBE Vector Repeater Scale",
+    }
+)
+
 # Default values for synthesized effect properties whose pard `default`
 # field could not be verified against ExtendScript ground truth. Defaults
 # normally come straight from the pard default field (validated across

@@ -32,10 +32,49 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
         project: The Project object being constructed, used to link comp
             references in render queue items.
     """
-    lrdr_chunk = find_by_list_type(chunks=root_chunks, list_type="LRdr")
+    try:
+        lrdr_chunk = find_by_list_type(chunks=root_chunks, list_type="LRdr")
+    except ChunkNotFoundError:
+        # Legacy/hand-built files may omit the render-queue scaffold entirely
+        # (AE always writes an LRdr, but a minimal file need not). Synthesize an
+        # empty queue and attach its LRdr to the root, marked synthetic so
+        # write_aep skips it - an untouched queue-less file still round-trips
+        # byte-identically. The first add() materializes the tree.
+        render_queue = RenderQueue._new(project)
+        render_queue._lrdr.synthetic = True
+        # AE writes LRdr immediately before LIST:PTRE (the workspace blob), so
+        # insert at that canonical root position rather than appending past it.
+        ptre_idx = next(
+            (
+                i
+                for i, c in enumerate(root_chunks)
+                if isinstance(c, ListChunk) and c.list_type == "PTRE"
+            ),
+            len(root_chunks),
+        )
+        root_chunks.insert(ptre_idx, render_queue._lrdr)
+        return render_queue
     lrdr_child_chunks = lrdr_chunk.chunks
+    synthesized = False
 
-    list_settings_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="list")
+    try:
+        list_settings_chunk = find_by_list_type(
+            chunks=lrdr_child_chunks, list_type="list"
+        )
+    except ChunkNotFoundError:
+        synthesized = True
+        # An LRdr present but lacking its settings 'list' is degenerate; rebuild
+        # it (lhd3 + synthetic ldat, mirroring RenderQueue._new) so the parse
+        # still yields an empty queue instead of raising.
+        list_settings_chunk = ListChunk(
+            list_type="list",
+            synthetic=True,
+            chunks=[
+                Lhd3Chunk(item_size=2246, item_type_raw=1, counter_b=1),
+                LdatChunk(chunk_type="ldat", synthetic=True),
+            ],
+        )
+        lrdr_child_chunks.append(list_settings_chunk)
     settings_lhd3 = cast(
         "Lhd3Chunk", find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3")
     )
@@ -49,18 +88,21 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
             "RoutChunk", find_by_type(chunks=lrdr_child_chunks, chunk_type="Rout")
         )
     except ChunkNotFoundError:
+        synthesized = True
         rout_chunk = RoutChunk(synthetic=True)
         lrdr_child_chunks.append(rout_chunk)
 
     try:
         litm_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="LItm")
     except ChunkNotFoundError:
+        synthesized = True
         litm_chunk = ListChunk(list_type="LItm", synthetic=True)
         lrdr_child_chunks.append(litm_chunk)
 
     try:
         lsif_chunk = find_by_list_type(chunks=lrdr_child_chunks, list_type="LSIf")
     except ChunkNotFoundError:
+        synthesized = True
         lsif_chunk = ListChunk(list_type="LSIf", synthetic=True)
         lrdr_child_chunks.append(lsif_chunk)
     try:
@@ -70,6 +112,18 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
     except ChunkNotFoundError:
         arsi_chunk = ArsiChunk(synthetic=True)
         lsif_chunk.chunks.append(arsi_chunk)
+
+    if synthesized:
+        # The synthesized placeholders were appended out of AE's canonical LRdr
+        # child order; reorder so a populated queue (after add() materializes
+        # them) is written canonically. Only when we synthesized something, so
+        # an untouched real file's order - hence its round-trip - is untouched.
+        _canon = {"Rhed": 0, "Rout": 1, "list": 2, "LItm": 3, "LSIf": 4}
+        lrdr_child_chunks.sort(
+            key=lambda c: _canon.get(
+                getattr(c, "list_type", None) or c.chunk_type, len(_canon)
+            )
+        )
 
     if settings_lhd3.count == 0:
         # Empty render queue: AE writes the settings 'list' with only an lhd3

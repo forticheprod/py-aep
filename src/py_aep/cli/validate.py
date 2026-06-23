@@ -712,15 +712,33 @@ def compare_property(
     for ki, (exp_kf, parsed_kf) in enumerate(zip(exp_keyframes, parsed_keyframes)):
         compare_keyframe(exp_kf, parsed_kf, f"{path}.keyframes[{ki}]", result)
 
-    # Compare min/max values
-    if "hasMin" in expected_prop and expected_prop["hasMin"]:
+    # Compare has_min/has_max PRESENCE first - this catches both over-reporting
+    # (py reports a bound ExtendScript says is absent) and under-reporting,
+    # which the value comparisons below cannot (they only run when ES reports
+    # the bound present).
+    if "hasMin" in expected_prop:
+        exp_has_min = bool(expected_prop["hasMin"])
+        parsed_has_min = bool(parsed_prop.get("has_min"))
+        if exp_has_min != parsed_has_min:
+            result.add_diff(f"{path}.hasMin", exp_has_min, parsed_has_min, "properties")
+    if "hasMax" in expected_prop:
+        exp_has_max = bool(expected_prop["hasMax"])
+        parsed_has_max = bool(parsed_prop.get("has_max"))
+        if exp_has_max != parsed_has_max:
+            result.add_diff(f"{path}.hasMax", exp_has_max, parsed_has_max, "properties")
+
+    # Compare min/max values only when BOTH sides report the bound present.
+    # The presence check above already flags an under-reported bound; gating
+    # the value comparison on the parsed side too avoids a redundant second
+    # diff (.minValue: 0 vs None) for the same root cause.
+    if expected_prop.get("hasMin") and parsed_prop.get("has_min"):
         if "minValue" in expected_prop:
             exp_min = expected_prop["minValue"]
             parsed_min = parsed_prop.get("min_value")
             if not compare_values(exp_min, parsed_min):
                 result.add_diff(f"{path}.minValue", exp_min, parsed_min, "properties")
 
-    if "hasMax" in expected_prop and expected_prop["hasMax"]:
+    if expected_prop.get("hasMax") and parsed_prop.get("has_max"):
         if "maxValue" in expected_prop:
             exp_max = expected_prop["maxValue"]
             parsed_max = parsed_prop.get("max_value")

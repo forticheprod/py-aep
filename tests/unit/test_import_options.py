@@ -108,7 +108,13 @@ class TestImportOptions:
                     implemented = False
             opts = ImportOptions(Path("asset" + ext))
             for t in all_types:
-                want = (t in expected) if implemented else False
+                # PROJECT import is unimplemented for every format, so
+                # can_import_as never returns True for it (even where AE can).
+                want = (
+                    t in expected and t != ImportAsType.PROJECT
+                    if implemented
+                    else False
+                )
                 assert opts.can_import_as(t) is want, f"{ext} / {t.name}"
 
     def test_can_import_as_unknown_extension_all_false(self) -> None:
@@ -163,8 +169,8 @@ class TestImportOptions:
         opts = ImportOptions(Path("FILE.PSD"))
         assert opts.can_import_as(ImportAsType.COMP) is True
 
-    def test_can_import_as_project_case_insensitive(self) -> None:
-        # .mov is the implemented format that accepts PROJECT; the extension
-        # match must be case-insensitive.
+    def test_can_import_as_project_always_false(self) -> None:
+        # AE can import a .mov as a project, but py_aep does not implement
+        # PROJECT import for any format, so can_import_as gates it out.
         opts = ImportOptions(Path("CLIP.MOV"))
-        assert opts.can_import_as(ImportAsType.PROJECT) is True
+        assert opts.can_import_as(ImportAsType.PROJECT) is False

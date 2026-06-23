@@ -320,18 +320,22 @@ class FileSource(FootageSource):
             is_synthetic_a=0,
             is_synthetic_b=0,
             is_synthetic_c=0,
+            full_frame=full_frame,
+            # AE 2026 writes byte 0xC9 = 0x02 for raster/media file footage but
+            # 0x00 for TEXT (AI/EPS/PDF); solids/placeholders keep the all-zero
+            # default. Verified across the AE-resaved import fixtures.
+            reserved_c8=b"\x00\x00" if source_format == "TEXT" else b"\x00\x02",
         )
         sspc.native_frame_rate = frame_rate
         sspc.duration = duration
         sspc.pixel_aspect = pixel_aspect
         sspc.audio_sample_rate = audio_sample_rate
-        # AE 2026 writes this reserved template for every file footage source
-        # (solids/placeholders leave it all-zero). Byte 0xC7 (index 3) is 1 when
-        # the footage spans the full source frame, 0 for a layer cropped to its
-        # content box (COMP_CROPPED_LAYERS); byte 0xC9 is a constant 2.
-        sspc._reserved_c4 = (
-            b"\x00\x00\x00" + (b"\x01" if full_frame else b"\x00") + b"\x00\x02"
-        )
+        if source_format == "LDOM":
+            # AE 2026 sets the premultiplied-alpha flag for an imported FBX
+            # scene even though `alpha_mode_raw` stays 0 (the 3D scene renders
+            # against a premultiplied black background). Measured against an
+            # AE-resaved crystal.fbx; every other format leaves the bit clear.
+            sspc.premultiplied = True
         if is_sequence:
             sspc.start_frame = start_frame
             sspc.end_frame = end_frame

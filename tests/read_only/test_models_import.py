@@ -24,7 +24,7 @@ class TestImportFileErrors:
         project = parse_aep(BASE).project
         opts = ImportOptions(ASSETS / "image_with_alpha.png")
         opts.import_as = ImportAsType.PROJECT
-        with pytest.raises(ValueError, match="FOOTAGE"):
+        with pytest.raises(ValueError, match="PROJECT import"):
             project.import_file(opts)
 
     def test_comp_import_unsupported_format_raises(self) -> None:

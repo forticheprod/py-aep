@@ -833,14 +833,21 @@ class CompItem(AVItem):
 
     @property
     def motion_graphics_template_controller_count(self) -> int:
-        """The number of properties in the Essential Graphics panel
-        for the composition. Read-only."""
+        """The number of controllers in the Essential Graphics panel for the
+        composition. Read-only.
+
+        Note: for each type-10 Group controller, After Effects synthesizes a
+        runtime-only "drop zone" controller it does not store in the file, so
+        this count is one lower per group than ExtendScript's
+        `motionGraphicsTemplateControllerCount`."""
         return len(self.motion_graphics_controllers)
 
     @property
     def motion_graphics_template_controller_names(self) -> list[str]:
-        """The names of all properties in the Essential Graphics panel.
-        Read-only."""
+        """The names of all controllers in the Essential Graphics panel.
+        Read-only. Excludes the runtime-only Group "drop zone" controller AE
+        synthesizes but does not store (see
+        `motion_graphics_template_controller_count`)."""
         return [ctrl.name for ctrl in self.motion_graphics_controllers]
 
     @property

@@ -1562,6 +1562,60 @@ class TestRenderQueueMissingScaffolding:
         assert out.read_bytes() == stripped.read_bytes()
 
 
+class TestRenderQueueNoLRdr:
+    """A project with NO top-level LRdr chunk parses as an empty queue, and
+    add() then attaches a writable queue that survives a reparse.
+
+    Regression: parse_render_queue required a top-level LRdr unconditionally
+    (so a legacy/hand-built file lacking it failed parse() entirely), and a
+    freshly-added queue was never attached to the root so it was lost on save.
+    """
+
+    @staticmethod
+    def _strip_lrdr(tmp_path: Path) -> Path:
+        src = SAMPLES_DIR / "empty.aep"
+        with src.open("rb") as f:
+            rifx, xmp = read_aep(f)
+        rifx.chunks = [
+            c
+            for c in rifx.chunks
+            if not (isinstance(c, ListChunk) and c.list_type == "LRdr")
+        ]
+        out = tmp_path / "no_lrdr.aep"
+        with out.open("wb") as f:
+            write_aep(f, rifx, xmp)
+        return out
+
+    def test_parse_yields_empty_queue(self, tmp_path: Path) -> None:
+        app = parse_aep(self._strip_lrdr(tmp_path))
+        rq = app.project.render_queue
+        assert rq.num_items == 0
+        assert list(rq) == []
+
+    def test_untouched_roundtrip_is_byte_identical(self, tmp_path: Path) -> None:
+        # The synthesized LRdr is synthetic, so write_aep skips it entirely.
+        stripped = self._strip_lrdr(tmp_path)
+        app = parse_aep(stripped)
+        out = tmp_path / "roundtrip.aep"
+        app.project.save(out)
+        assert out.read_bytes() == stripped.read_bytes()
+
+    def test_add_reparse_links_comp(self, tmp_path: Path) -> None:
+        stripped = self._strip_lrdr(tmp_path)
+        app = parse_aep(stripped)
+        rq = app.project.render_queue
+        comp = app.project.compositions[0]
+        rq.add(comp)
+        assert rq.num_items == 1
+
+        out = tmp_path / "added.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        rq2 = app2.project.render_queue
+        assert rq2.num_items == 1
+        assert rq2.items[0].comp.id == comp.id
+
+
 class TestRoundtripOutputColorSpace:
     """Roundtrip tests for OutputModule.output_color_space."""
 

@@ -55,6 +55,9 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     # Video/audio containers (generic opti; codec bytes re-derived by AE).
     ".m4a": FileFormat("MOoV", False, "generic"),
     ".mp3": FileFormat("MP3A", False, "generic"),
+    # AAC in an ADTS stream (audio only); source code confirmed against an
+    # AE 2026 import of samples/assets/aac.aac.
+    ".aac": FileFormat("MPEG", False, "generic"),
     ".swf": FileFormat("SWF ", False, "generic"),
     ".mpeg": FileFormat("MPEO", False, "generic"),
     ".mpg": FileFormat("MPEO", False, "generic"),
@@ -78,8 +81,6 @@ _FILE_FORMATS: dict[str, FileFormat] = {
 
 
 # Formats AE imports as footage but py-aep does NOT support, with reasons:
-#   .aac  -> "MPEG" - no sample in samples/assets/; needs an ADTS frame-scan
-#            duration probe (re-measure with a real ADTS stream first)
 #   .c4d  -> "C4DC" - opti is a ~357KB blob embedding the absolute file path and
 #            Cineware render state; not reconstructable without Cineware
 #   .crw / .nef -> "Craw" - opti embeds per-file Camera Raw XMP decode settings;
@@ -141,6 +142,7 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".json": frozenset({_FOOTAGE}),
     ".mgjson": frozenset({_FOOTAGE}),
     ".mp3": frozenset({_FOOTAGE}),
+    ".aac": frozenset({_FOOTAGE}),
     ".swf": frozenset({_FOOTAGE}),
     ".mpeg": frozenset({_FOOTAGE}),
     ".mpg": frozenset({_FOOTAGE}),
@@ -161,6 +163,10 @@ COMP_CONVERSION_EXTENSIONS: frozenset[str] = frozenset({".svg"})
 # Photoshop layers come from the file's layer records (see resolvers.psd_layers).
 AI_COMP_EXTENSIONS: frozenset[str] = frozenset({".ai", ".pdf"})
 PSD_COMP_EXTENSIONS: frozenset[str] = frozenset({".psd", ".psb"})
+# EPS is single-stream PostScript with no layer structure, so AE rasterizes it
+# to a one-layer composition (verified: AE 2026 imports eps.eps as a 1-layer
+# comp). Handled separately from AI_COMP_EXTENSIONS, which needs PDF OCGs.
+EPS_COMP_EXTENSIONS: frozenset[str] = frozenset({".eps"})
 
 
 def get_import_as_types(suffix: str) -> frozenset[ImportAsType]:

@@ -96,7 +96,10 @@ class ImportOptions:
         capability table (`get_import_as_types`) reflects After Effects,
         while a file whose format py_aep does not implement (absent from
         `data.file_formats`, or marked unsupported) returns `False` for
-        every type.
+        every type. `ImportAsType.PROJECT` is never importable (py_aep does
+        not implement project import for any format), so it always returns
+        `False` even though AE can import `.mov`/`.m4a`/`.aep`/`.aet` as a
+        project.
 
         Args:
             type: The import type to check.
@@ -106,6 +109,8 @@ class ImportOptions:
         """
         validate_enum(ImportAsType)(type)
         type = ImportAsType(type)
+        if type == ImportAsType.PROJECT:
+            return False
         suffix = self._file.suffix.lower()
         if suffix in COMP_CONVERSION_EXTENSIONS:
             # Comp-conversion formats (e.g. SVG) have no media-format entry;
