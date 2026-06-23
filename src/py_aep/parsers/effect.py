@@ -699,29 +699,22 @@ def parse_effect_definitions(
     return effect_defs
 
 
-def find_effect_definition(
-    root_chunks: list[Chunk], name: str
-) -> tuple[str, str, ListChunk] | None:
-    """Locate an effect's project-level definition in `LIST:EfdG`.
+def effect_definition_entries(
+    root_chunks: list[Chunk],
+) -> list[tuple[str, str, ListChunk]]:
+    """All effect definitions in `LIST:EfdG` as `(match_name, display, sspc)`.
 
     AE stores a complete `LIST:sspc` template (`fnam` + `parT` + value
     `tdgp` + `pgui`) for every effect type used in the project, so any
-    such effect can be re-applied by cloning that template. `name` is
-    matched against the effect match name first, then its `fnam` display
-    name.
-
-    Args:
-        root_chunks: The root chunks of the AEP file.
-        name: An effect match name or display name.
-
-    Returns:
-        `(match_name, display_name, def_sspc)` for the matching
-        definition, or `None`.
+    such effect can be re-applied by cloning that template. Returns `[]`
+    when the project has no `LIST:EfdG`. The walk is project-stable (AE
+    never re-reads it after parse), so callers cache the result rather
+    than re-walking per lookup.
     """
     try:
         efdg_chunk = find_by_list_type(chunks=root_chunks, list_type="EfdG")
     except ChunkNotFoundError:
-        return None
+        return []
 
     entries: list[tuple[str, str, ListChunk]] = []
     for efdf_chunk in filter_by_list_type(chunks=efdg_chunk.chunks, list_type="EfDf"):
@@ -736,8 +729,21 @@ def find_effect_definition(
             "Utf8Chunk", find_by_type(chunks=fnam.chunks, chunk_type="Utf8")
         ).value
         entries.append((match_name, display, sspc_chunk))
+    return entries
 
-    # Match name takes precedence over display name across all entries.
+
+def match_effect_definition(
+    entries: list[tuple[str, str, ListChunk]], name: str
+) -> tuple[str, str, ListChunk] | None:
+    """Find the definition matching `name` in `entries`.
+
+    `name` is matched against the effect match name across all entries
+    first, then against the `fnam` display name.
+
+    Returns:
+        `(match_name, display_name, def_sspc)` for the matching
+        definition, or `None`.
+    """
     for entry in entries:
         if name == entry[0]:
             return entry

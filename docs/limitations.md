@@ -179,18 +179,29 @@ embedded ICC data.
 
 ## Essential Properties
 
-Essential Property override values on precomp layers are parsed as regular
-properties under the `"Essential Properties"` group. The UUID linkage between
-overrides and their source controller definitions is now partially exposed:
+The UUID linkage between a precomp layer's Essential Property overrides and
+their source-composition controller definitions is resolved:
 
-- `Layer.essential_property_uuids` contains the UUIDs of `LIST:OvG2`
-  overrides on a precomp layer.
+- `Layer.essential_property_uuids` contains the override UUIDs from the
+  layer's `LIST:OvG2`.
 - `EssentialGraphicsController.uuid` contains the controller's identity UUID
   from the `LIST:CCtl` definition.
-- Consumers can match UUIDs to link overrides to controllers, but py_aep does
-  not perform this resolution automatically.
+- `AVLayer.essential_property_controllers` resolves the link automatically,
+  returning the source comp's controllers matched to the layer's overrides by
+  shared UUID, in override order.
 
-The following attributes are not parsed:
+One caveat: After Effects synthesizes an
+extra runtime-only "drop zone" controller (named e.g. `GropDropZone`) that is
+**not stored in the file**, so it is absent from `motion_graphics_controllers`
+and `motion_graphics_template_controller_count` is one lower than
+ExtendScript's `motionGraphicsTemplateControllerCount` (by one per group). The media-replacement controller itself, by contrast, matches ExtendScript
+exactly (no synthesized drop zone).
+
+The override *values* on a precomp layer are not exposed as individual
+properties: the layer's `"ADBE Layer Overrides"` group parses with no
+children, so ExtendScript's `numProperties`/`isModified` on that group (and
+its nested `ADBE Layer Overrides Group` for a grouped override) are not
+reflected. The following media-replacement attributes are also not parsed:
 
 - `Property.essentialPropertySource`
 - `Property.alternateSource`
@@ -234,14 +245,20 @@ values are extracted from the source file at import time.
   `COMP_CROPPED_LAYERS` for an SVG or a layered `.psd`/`.psb`. `PROJECT` import
   (importing an `.aep`/`.aet`) is not supported. An extension that the requested
   type does not cover raises `ValueError`.
-- **Supported footage formats** (verified to open in After Effects): PNG, JPEG,
-  BMP, GIF, TGA, TIFF, OpenEXR, PSD/PSB, QuickTime MOV, and WAV audio.
-  Image sequences are supported for those still-image formats. The same source
+- **Supported footage formats** (verified to open in After Effects): the
+  still images PNG, JPEG, BMP, GIF, TGA, TIFF, OpenEXR, PSD/PSB and Radiance
+  HDR; QuickTime MOV, M4V, WMV and MPEG video; WAV, AIFF, MP3, M4A and AAC
+  audio; FBX scenes; SWF; and TXT/CSV/JSON/mgjson data footage.
+  Image sequences are supported for the still-image formats. The same source
   builder backs `FootageItem.replace()`/`replace_with_sequence()` and
   `AVItem.set_proxy()`/`set_proxy_with_sequence()`.
 - **SVG**: importable only as `COMP_CROPPED_LAYERS`, which converts the artwork
   into a composition of native vector shape layers (`ADBE Vector Layer`) - there
   is no file-referencing footage source. Importing an SVG as `FOOTAGE` raises.
+  `<text>` / `<tspan>` are rendered as **outlined glyph shapes** (going beyond
+  After Effects, whose own SVG import silently drops them); this requires the
+  text's `font-family` to be installed - an unresolved font is skipped. Raster
+  `<image>` and `<textPath>` are not yet rendered.
 - **PSD/PSB**: as `FOOTAGE` it is imported as a single merged still (the `8BPS`
   merged-layer `opti` header is written so AE resolves it without stalling on a
   layer-interpretation modal). As `COMP`/`COMP_CROPPED_LAYERS` it becomes a

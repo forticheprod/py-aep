@@ -8,7 +8,7 @@ must reproduce them byte-for-byte for round-trip fidelity):
 
 from __future__ import annotations
 
-from py_aep.data.color_spaces import (
+from py_aep.color.envelope import (
     PROFILE_TYPE_ICC,
     PROFILE_TYPE_OCIO,
     build_icc_envelope,

@@ -20,8 +20,8 @@ from py_aep import (
     PulldownPhase,
 )
 from py_aep import parse as parse_aep
-from py_aep.data.color_spaces import build_ocio_colorspace_envelope
-from py_aep.data.icc_profiles import default_icc_directories
+from py_aep.color.envelope import build_ocio_colorspace_envelope
+from py_aep.color.icc import default_icc_directories
 from py_aep.enums.mappings import profile_id_for_name
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "footage"

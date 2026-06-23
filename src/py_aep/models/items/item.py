@@ -15,6 +15,7 @@ from ...binary.utils import (
     block_slice,
     find_by_list_type,
     find_by_type,
+    index_by_identity,
 )
 from ..descriptors import ChunkField
 from ..guide import Guide
@@ -268,7 +269,9 @@ class Item:
         """Removes the guides container."""
         if self._gide is None:
             return
-        self._item_list.chunks.remove(self._gide)
+        del self._item_list.chunks[
+            index_by_identity(self._item_list.chunks, self._gide)
+        ]
         self._gide = None
         self._lhd3 = None
         self._ldat = None

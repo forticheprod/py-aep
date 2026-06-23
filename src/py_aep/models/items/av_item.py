@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from ...binary.chunk import ListChunk
 from ...binary.mutations import build_pin_list
 from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.utils import index_by_identity
 from ..descriptors import ChunkField
 from ..naming import auto_name
 from .item import Item
@@ -183,7 +184,9 @@ class AVItem(Item):
     def set_proxy_to_none(self) -> None:
         """Remove the proxy source from this item."""
         if self._proxy_source:
-            self._item_list.chunks.remove(self._pin_chunks[1])
+            del self._item_list.chunks[
+                index_by_identity(self._item_list.chunks, self._pin_chunks[1])
+            ]
             del self._pin_chunks[1]
             self._proxy_source = None
         self.use_proxy = False
@@ -334,7 +337,7 @@ class AVItem(Item):
         """Replace or append a LIST:Pin chunk at the given index."""
         if pin_index < len(self._pin_chunks):
             old_pin = self._pin_chunks[pin_index]
-            idx = self._item_list.chunks.index(old_pin)
+            idx = index_by_identity(self._item_list.chunks, old_pin)
             self._item_list.chunks[idx] = new_pin
             self._pin_chunks[pin_index] = new_pin
         else:

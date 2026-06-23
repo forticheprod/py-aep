@@ -11,7 +11,8 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-# Presentation properties py_aep tracks (the paintable subset).
+# Presentation properties py_aep tracks (the paintable subset plus the text
+# properties needed to outline `<text>`/`<tspan>`).
 _TRACKED = (
     "fill",
     "fill-opacity",
@@ -27,9 +28,15 @@ _TRACKED = (
     "opacity",
     "display",
     "visibility",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "text-anchor",
+    "letter-spacing",
 )
 # Properties that inherit from parent to child (CSS-defined). `opacity`,
-# `display` and `visibility` do NOT inherit.
+# `display` and `visibility` do NOT inherit; the font/text properties do.
 INHERITABLE = frozenset(
     {
         "fill",
@@ -44,6 +51,12 @@ INHERITABLE = frozenset(
         "stroke-dasharray",
         "color",
         "visibility",
+        "font-family",
+        "font-size",
+        "font-weight",
+        "font-style",
+        "text-anchor",
+        "letter-spacing",
     }
 )
 
@@ -83,6 +96,9 @@ def parse_css(text: str) -> list[CssRule]:
     return rules
 
 
+_IMPORTANT_RE = re.compile(r"\s*!\s*important\s*$", re.IGNORECASE)
+
+
 def _parse_declarations(body: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for decl in body.split(";"):
@@ -91,7 +107,9 @@ def _parse_declarations(body: str) -> dict[str, str]:
         key, _, val = decl.partition(":")
         key = key.strip().lower()
         if key in _TRACKED:
-            out[key] = val.strip()
+            # Drop the CSS `!important` priority flag so it does not leak into
+            # the value and break downstream color/number parsing.
+            out[key] = _IMPORTANT_RE.sub("", val).strip()
     return out
 
 

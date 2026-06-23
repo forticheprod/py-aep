@@ -144,57 +144,72 @@ def read_psd_layers(file: str | os.PathLike[str]) -> list[PsdNode]:
     name = Path(file).name
     if data[:4] != b"8BPS":
         raise UnsupportedPsdLayersError(f"{name}: not a valid PSD/PSB file.")
-    is_psb = struct.unpack(">H", data[4:6])[0] == 2
-    len_size = 8 if is_psb else 4
-    off = 26
-    # Color Mode Data and Image Resources sections (4-byte lengths in both).
-    off += 4 + struct.unpack(">I", data[off : off + 4])[0]
-    off += 4 + struct.unpack(">I", data[off : off + 4])[0]
     flattened = FlattenedPsdError(f"{name}: flattened document (no layer records).")
-    # Layer and Mask Information section. A truly flattened file (Photoshop's
-    # Image > Flatten) writes this section with length 0 - there is no Layer
-    # Info block to read, so check the length before stepping into it.
-    lm_fmt = ">I" if len_size == 4 else ">Q"
-    if off + len_size > len(data):
-        raise flattened
-    lm_len = struct.unpack(lm_fmt, data[off : off + len_size])[0]
-    off += len_size
-    if lm_len == 0:
-        raise flattened
-    # Layer Info length, then the (signed) layer record count.
-    off += len_size
-    record_count = abs(struct.unpack(">h", data[off : off + 2])[0])
-    off += 2
-    if record_count == 0:
-        raise flattened
-
-    chan_len_size = 8 if is_psb else 4
-    records: list[_Record] = []
-    for index in range(record_count):
-        top, left, bottom, right = struct.unpack(">iiii", data[off : off + 16])
-        off += 16
-        num_channels = struct.unpack(">H", data[off : off + 2])[0]
+    # The byte-level parse below trusts the file layout; a truncated or
+    # corrupt PSD would otherwise surface a raw struct.error/UnicodeDecodeError.
+    # Convert those to the documented domain exception (FlattenedPsdError, a
+    # subclass, still propagates since it is neither of the caught types).
+    try:
+        is_psb = struct.unpack(">H", data[4:6])[0] == 2
+        len_size = 8 if is_psb else 4
+        off = 26
+        # Color Mode Data and Image Resources sections (4-byte lengths in both).
+        off += 4 + struct.unpack(">I", data[off : off + 4])[0]
+        off += 4 + struct.unpack(">I", data[off : off + 4])[0]
+        # Layer and Mask Information section. A truly flattened file (Photoshop's
+        # Image > Flatten) writes this section with length 0 - there is no Layer
+        # Info block to read, so check the length before stepping into it.
+        lm_fmt = ">I" if len_size == 4 else ">Q"
+        if off + len_size > len(data):
+            raise flattened
+        lm_len = struct.unpack(lm_fmt, data[off : off + len_size])[0]
+        off += len_size
+        if lm_len == 0:
+            raise flattened
+        # Layer Info block: its own length, then the (signed) layer record count.
+        # The Layer-and-Mask section can be non-empty (global layer-mask info
+        # present) while this nested block is empty, so check its length too -
+        # matching _probe_psd, which reads the count only when both are > 0.
+        layer_info_len = struct.unpack(lm_fmt, data[off : off + len_size])[0]
+        off += len_size
+        if layer_info_len == 0:
+            raise flattened
+        record_count = abs(struct.unpack(">h", data[off : off + 2])[0])
         off += 2
-        off += num_channels * (2 + chan_len_size)
-        off += 8  # blend mode signature (4) + key (4)
-        off += 4  # opacity, clipping, flags, filler
-        extra_len = struct.unpack(">I", data[off : off + 4])[0]
-        off += 4
-        extra = data[off : off + extra_len]
-        off += extra_len
-        layer_name, layer_id, section_divider, is_adjustment = _parse_layer_extra(
-            extra, is_psb
-        )
-        records.append(
-            _Record(
-                name=layer_name,
-                layer_id=layer_id,
-                bounds=(left, top, right, bottom),
-                record_index=index,
-                section_divider=section_divider,
-                is_adjustment=is_adjustment,
+        if record_count == 0:
+            raise flattened
+
+        chan_len_size = 8 if is_psb else 4
+        records: list[_Record] = []
+        for index in range(record_count):
+            top, left, bottom, right = struct.unpack(">iiii", data[off : off + 16])
+            off += 16
+            num_channels = struct.unpack(">H", data[off : off + 2])[0]
+            off += 2
+            off += num_channels * (2 + chan_len_size)
+            off += 8  # blend mode signature (4) + key (4)
+            off += 4  # opacity, clipping, flags, filler
+            extra_len = struct.unpack(">I", data[off : off + 4])[0]
+            off += 4
+            extra = data[off : off + extra_len]
+            off += extra_len
+            layer_name, layer_id, section_divider, is_adjustment = _parse_layer_extra(
+                extra, is_psb
             )
-        )
+            records.append(
+                _Record(
+                    name=layer_name,
+                    layer_id=layer_id,
+                    bounds=(left, top, right, bottom),
+                    record_index=index,
+                    section_divider=section_divider,
+                    is_adjustment=is_adjustment,
+                )
+            )
+    except (struct.error, UnicodeDecodeError) as exc:
+        raise UnsupportedPsdLayersError(
+            f"{name}: malformed PSD/PSB layer data."
+        ) from exc
     return _build_layer_tree(records)
 
 

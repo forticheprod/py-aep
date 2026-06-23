@@ -101,6 +101,10 @@ check_untyped_defs = true
 module = "py_aep.cos.*"
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+module = "fontTools.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]

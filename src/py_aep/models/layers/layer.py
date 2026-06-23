@@ -241,10 +241,17 @@ class Layer(PropertyGroup):
         PropertyBase.name.fset(self, value)  # type: ignore[attr-defined]
         self._ldta.layer_name = value
         # AE sets _layer_flags_0 bit 0 only for a SOURCE-BACKED layer whose name
-        # is explicitly set (away from the source item's name). It stays 0 for
-        # sourceless layers (camera/light/text/shape) even when named, and for an
-        # empty (source-inherited) name.
-        self._ldta.name_set = bool(value) and self._ldta.source_id != 0
+        # differs from the source item's name. It stays 0 for sourceless layers
+        # (camera/light/text/shape) even when named, for an empty (source-
+        # inherited) name, and when the name is set back to the source item's
+        # own name (verified against the MyGroup precomp layer in
+        # grouped_layers_comp.aep, where name == source comp name -> bit 0).
+        source_id = self._ldta.source_id
+        if not value or source_id == 0:
+            self._ldta.name_set = False
+        else:
+            source_item = self.containing_comp._project.items.get(source_id)
+            self._ldta.name_set = getattr(source_item, "name", None) != value
 
     @property
     def comment(self) -> str:

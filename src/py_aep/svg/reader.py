@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Union
 from xml.etree.ElementTree import Element, fromstring
@@ -19,9 +20,11 @@ from ._util import NUMBER_RE, clamp01, local_name
 from .colors import parse_color
 from .document import canvas
 from .errors import UnsupportedSVGError
+from .fonts import resolve_font
 from .gradients import GradientDef, collect_gradients, resolve_gradient
 from .shapes import cubics_to_subpath, element_subpaths
 from .style import CssRule, parse_css, resolve_properties
+from .text import TextRun, outline_runs, outline_text_path
 from .transform import Affine, parse_transform
 from .types import (
     GradientPaint,
@@ -68,8 +71,10 @@ _SKIP_TAGS = frozenset(
         "foreignObject",
     }
 )
-# Elements that are valid SVG content but py_aep cannot import as shapes.
-_UNSUPPORTED_TAGS = frozenset({"image", "text", "tspan", "textPath"})
+# Unsupported as standalone elements: `<tspan>`/`<textPath>` outside a `<text>`
+# (invalid SVG); within a `<text>`, _visit_text renders both. Raster `<image>` is
+# handled in _visit (skipped with a warning - it is not yet rendered).
+_UNSUPPORTED_TAGS = frozenset({"tspan", "textPath"})
 
 # Bound on container nesting (<g>/<svg>/<use>) so a pathologically deep
 # document raises a clean UnsupportedSVGError instead of a RecursionError.
@@ -113,6 +118,7 @@ def read_svg(source: str | os.PathLike[str] | bytes) -> SvgDocument:
     # the inherited base for all children.
     root_style = resolve_properties({}, "svg", root.attrib, reader._css)
     root_tf = root_tf.multiply(parse_transform(root.get("transform", "")))
+    reader._root_ctm = root_tf
     root_opacity = _ratio(root_style.get("opacity"), 1.0)
     drawables = reader.walk(root, root_tf, root_style, root_opacity)
     return SvgDocument(width=width, height=height, drawables=drawables)
@@ -127,6 +133,14 @@ class _Reader:
             eid = elem.get("id")
             if eid:
                 self._by_id[eid] = elem
+        self._root = root
+        # Child -> parent map for reconstructing a by-id element's accumulated
+        # transform (ElementTree has no parent links). Built lazily on first
+        # _element_ctm call - only <textPath> needs it, so the common SVG with
+        # no text path never pays for the whole-tree walk. `_root_ctm` is the
+        # base (viewBox + root transform), set by read_svg before the walk.
+        self._parents: dict[Element, Element] | None = None
+        self._root_ctm: Affine = Affine()
         self._use_stack: list[str] = []
 
     @staticmethod
@@ -136,6 +150,24 @@ class _Reader:
             if local_name(elem.tag) == "style" and elem.text:
                 rules.extend(parse_css(elem.text))
         return rules
+
+    def _element_ctm(self, elem: Element) -> Affine:
+        """Accumulated transform of `elem`: the root base (viewBox + root
+        transform) composed with every ancestor's `transform` down to and
+        including `elem`'s own."""
+        if self._parents is None:
+            self._parents = {
+                child: parent for parent in self._root.iter() for child in parent
+            }
+        chain: list[Element] = []
+        cur: Element | None = elem
+        while cur is not None and cur in self._parents:
+            chain.append(cur)
+            cur = self._parents.get(cur)
+        ctm = self._root_ctm
+        for node in reversed(chain):
+            ctm = ctm.multiply(parse_transform(node.get("transform", "")))
+        return ctm
 
     def walk(
         self,
@@ -164,6 +196,14 @@ class _Reader:
         tag = local_name(elem.tag)
         if tag in _SKIP_TAGS:
             return
+        if tag == "image":
+            # Raster <image> is not rendered (AE drops it too). Unlike the
+            # silent _SKIP_TAGS, warn once - it is visible content the author
+            # expected to appear.
+            warnings.warn(
+                "SVG <image> elements are not imported (skipped).", stacklevel=2
+            )
+            return
         if tag in _UNSUPPORTED_TAGS:
             raise UnsupportedSVGError(f"Unsupported element: <{tag}>")
 
@@ -181,6 +221,9 @@ class _Reader:
             return
         if tag == "use":
             self._visit_use(elem, local_tf, style, eff_opacity, out, depth)
+            return
+        if tag == "text":
+            self._visit_text(elem, local_tf, style, eff_opacity, out)
             return
         if tag in _DRAWABLE_TAGS:
             drawable = self._build_drawable(tag, elem, local_tf, style, eff_opacity)
@@ -221,6 +264,166 @@ class _Reader:
                 self._visit(target, use_tf, style, opacity, out, depth)
         finally:
             self._use_stack.pop()
+
+    def _visit_text(
+        self,
+        elem: Element,
+        ctm: Affine,
+        style: dict[str, str],
+        opacity: float,
+        out: list[SvgDrawable],
+    ) -> None:
+        # A <text> is outlined into vector shapes: its direct text and each
+        # <tspan> become a run (carrying its own font/fill), laid out
+        # left-to-right. <textPath> and per-chunk anchor (absolute-x tspans)
+        # are not yet handled.
+        if style.get("visibility") == "hidden":
+            return
+        runs: list[tuple[TextRun, dict[str, str]]] = []
+        if elem.text and elem.text.strip():
+            run = self._make_run(elem.text, style, None)
+            if run is not None:
+                runs.append((run, style))
+        for child in elem:
+            ctag = local_name(child.tag)
+            if ctag == "tspan":
+                cstyle = resolve_properties(style, "tspan", child.attrib, self._css)
+                if child.text and child.text.strip():
+                    run = self._make_run(child.text, cstyle, child)
+                    if run is not None:
+                        runs.append((run, cstyle))
+            elif ctag == "textPath":
+                self._add_text_path(elem, child, style, opacity, out)
+            # Text after a child element (its `tail`) belongs to the parent.
+            tail = child.tail
+            if tail and tail.strip():
+                run = self._make_run(tail, style, None)
+                if run is not None:
+                    runs.append((run, style))
+            elif tail and not tail.strip() and runs:
+                # A whitespace-only tail between two runs (e.g.
+                # `<tspan>foo</tspan> <tspan>bar</tspan>`) is a significant SVG
+                # space that collapses to one space. Fold it into the preceding
+                # run so the pen advances by a space glyph before the next run,
+                # rather than laying the runs out flush. A leading whitespace-
+                # only tail (no prior run) is document-leading and dropped.
+                last_run = runs[-1][0]
+                if not last_run.text.endswith(" "):
+                    last_run.text += " "
+        if not runs:
+            return
+        # Trim the whole sequence's leading/trailing whitespace (each run's
+        # internal whitespace was already collapsed in _make_run); a single
+        # space between runs stays significant.
+        runs[0][0].text = runs[0][0].text.lstrip(" ")
+        runs[-1][0].text = runs[-1][0].text.rstrip(" ")
+        origin_x = _num(elem.get("x", "0"))
+        origin_y = _num(elem.get("y", "0"))
+        anchor = (style.get("text-anchor") or "start").strip()
+        per_run = outline_runs([r for r, _ in runs], origin_x, origin_y, ctm, anchor)
+        for (_, run_style), subpaths in zip(runs, per_run):
+            if not subpaths:
+                continue
+            bbox = _bbox(subpaths)
+            fill = self._paint(run_style.get("fill", "black"), bbox, ctm)
+            stroke = self._stroke(run_style, bbox, ctm)
+            out.append(
+                SvgDrawable(
+                    subpaths=subpaths,
+                    fill=fill,
+                    stroke=stroke,
+                    name=elem.get("id"),
+                    opacity=opacity,
+                )
+            )
+
+    def _make_run(
+        self, text: str, style: dict[str, str], elem: Element | None
+    ) -> TextRun | None:
+        # Font is resolved from the cascaded/inherited style; position
+        # attributes (x/y/dx/dy) come from the run's own element.
+        text = _collapse_ws(text)
+        family = style.get("font-family", "sans-serif")
+        weight = (style.get("font-weight") or "").strip()
+        font_style = (style.get("font-style") or "").strip()
+        bold = weight in ("bold", "bolder") or (weight.isdigit() and int(weight) >= 600)
+        italic = font_style in ("italic", "oblique")
+        resolved = resolve_font(family, bold=bold, italic=italic)
+        if resolved is None:
+            return None
+        font_path, font_number = resolved
+        abs_x = _num(elem.get("x")) if elem is not None and elem.get("x") else None
+        abs_y = _num(elem.get("y")) if elem is not None and elem.get("y") else None
+        dx = _num(elem.get("dx")) if elem is not None and elem.get("dx") else 0.0
+        dy = _num(elem.get("dy")) if elem is not None and elem.get("dy") else 0.0
+        return TextRun(
+            text=text,
+            font_path=font_path,
+            font_number=font_number,
+            font_size=_num(style.get("font-size") or "16"),
+            letter_spacing=_num(style.get("letter-spacing") or "0"),
+            abs_x=abs_x,
+            abs_y=abs_y,
+            dx=dx,
+            dy=dy,
+            anchor=(style.get("text-anchor") or "").strip() or None,
+        )
+
+    def _add_text_path(
+        self,
+        text_elem: Element,
+        tp_elem: Element,
+        parent_style: dict[str, str],
+        opacity: float,
+        out: list[SvgDrawable],
+    ) -> None:
+        # A <textPath> lays its text along a referenced path's geometry, in the
+        # path's own coordinate space (its accumulated transform).
+        href = tp_elem.get("href") or tp_elem.get("{http://www.w3.org/1999/xlink}href")
+        if not href or not href.startswith("#"):
+            return
+        target = self._by_id.get(href[1:])
+        if target is None or not (tp_elem.text and tp_elem.text.strip()):
+            return
+        ctm = self._element_ctm(target)
+        style = resolve_properties(parent_style, "textPath", tp_elem.attrib, self._css)
+        run = self._make_run(tp_elem.text, style, None)
+        if run is None:
+            return
+        try:
+            path = element_subpaths(local_name(target.tag), target.attrib)
+        except UnsupportedSVGError:
+            return  # referenced element is not a path/basic shape
+        raw_off = (tp_elem.get("startOffset") or "0").strip()
+        if raw_off.endswith("%"):
+            off_abs, off_frac = 0.0, _num(raw_off) / 100.0
+        else:
+            off_abs, off_frac = _num(raw_off), None
+        subpaths = outline_text_path(
+            _collapse_ws(tp_elem.text).strip(),
+            path,
+            run.font_path,
+            run.font_size,
+            ctm,
+            font_number=run.font_number,
+            start_offset=off_abs,
+            start_offset_frac=off_frac,
+            letter_spacing=run.letter_spacing,
+        )
+        if not subpaths:
+            return
+        bbox = _bbox(subpaths)
+        fill = self._paint(style.get("fill", "black"), bbox, ctm)
+        stroke = self._stroke(style, bbox, ctm)
+        out.append(
+            SvgDrawable(
+                subpaths=subpaths,
+                fill=fill,
+                stroke=stroke,
+                name=text_elem.get("id"),
+                opacity=opacity,
+            )
+        )
 
     def _build_drawable(
         self,
@@ -322,9 +525,28 @@ def _num(text: str | None) -> float:
     return float(m.group()) if m else 0.0
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _collapse_ws(text: str) -> str:
+    """Collapse internal whitespace runs (incl. newlines/tabs) to one space.
+
+    SVG default white-space handling renders a run of source whitespace as a
+    single space; without this, the indentation of a pretty-printed `<text>`
+    is laid out as leading glyph advances. Edge spaces are kept here and
+    trimmed once across the whole run sequence by the caller.
+    """
+    return _WS_RE.sub(" ", text)
+
+
 def _ratio(text: str | None, default: float) -> float:
     if text is None or text == "":
         return default
     text = text.strip()
-    val = float(text[:-1]) / 100.0 if text.endswith("%") else float(text)
+    # A non-numeric value (e.g. the CSS keyword `inherit`) has no leading
+    # number; fall back to the default rather than raising, matching `_num`.
+    m = NUMBER_RE.search(text)
+    if m is None:
+        return default
+    val = float(m.group()) / 100.0 if text.endswith("%") else float(m.group())
     return clamp01(val)

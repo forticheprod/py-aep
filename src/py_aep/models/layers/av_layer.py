@@ -13,6 +13,7 @@ from py_aep.enums import (
 
 from ...ae_version import requires_version
 from ...binary.layer_chunks import LdtaChunk
+from ...resolvers.essential_properties import resolve_essential_property_controllers
 from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
@@ -20,6 +21,7 @@ from ..validators import validate_enum, validate_number
 from .layer import Layer
 
 if TYPE_CHECKING:
+    from ..essential_graphics import EssentialGraphicsController
     from ..items.composition import CompItem
 
 
@@ -339,6 +341,19 @@ class AVLayer(Layer):
                     self._source = cast(AVItem, result)
                     return self._source
                 return None
+
+    @property
+    def essential_property_controllers(self) -> list[EssentialGraphicsController]:
+        """The source composition's Essential Graphics controllers that this
+        precomp layer's Essential Properties overrides reference.
+
+        Each entry corresponds to a UUID in `essential_property_uuids` (same
+        order), resolved against the source comp's
+        `motion_graphics_controllers` by shared UUID. Empty for a non-precomp
+        layer, a source comp with no controllers, or a layer with no
+        overrides. Read-only.
+        """
+        return resolve_essential_property_controllers(self)
 
     @property
     def has_video(self) -> bool:

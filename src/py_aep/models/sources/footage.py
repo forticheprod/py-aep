@@ -8,13 +8,13 @@ from ...binary.utils import (
     find_chunks_after,
     toggle_flag_chunk,
 )
-from ...data.color_spaces import (
+from ...color.envelope import (
     PROFILE_TYPE_OCIO,
     build_icc_envelope,
     build_ocio_colorspace_envelope,
     parse_envelope,
 )
-from ...data.icc_profiles import default_icc_library
+from ...color.icc import default_icc_library
 from ...enums import (
     AlphaMode,
     FieldSeparationType,
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
     from ...binary.footage_chunks import SspcChunk
     from ...binary.scalar_chunks import U1Chunk, Utf8Chunk
-    from ...data.color_spaces import ColorProfile
-    from ...data.icc_profiles import IccProfileLibrary
+    from ...color.envelope import ColorProfile
+    from ...color.icc import IccProfileLibrary
     from ..project import Project
 
 

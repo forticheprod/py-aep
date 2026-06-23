@@ -56,6 +56,8 @@ from .overrides import (
     _CANVARY_OVERRIDES,
     _ISSPATIAL_OVERRIDES,
     _NAME_OVERRIDES,
+    _PLACEHOLDER_UNBOUNDED,
+    _UNBOUNDED_MATCH_NAMES,
 )
 from .parallel import (
     GRADIENT_KIND,
@@ -110,13 +112,22 @@ _SEPARATION_FOLLOWERS: list[str] = [
 ]
 
 
-def _get_min(prop: Property) -> float | None:
-    v = prop.min_value
-    return v if isinstance(v, (int, float)) else None
-
-
 def _get_max(prop: Property) -> float | None:
     v = prop.max_value
+    if not isinstance(v, (int, float)):
+        return None
+    # A max of exactly 0.0 is, across the whole sample corpus, always AE's
+    # [0.0] placeholder for an unbounded/runtime-grown bound (Time Remapping,
+    # and Light/Camera props that carry a [0.0] tduM) - never a genuine
+    # enforceable maximum. So do not enforce it on the value setter. (A
+    # hypothetical effect param with a real max of 0 is unsampled.)
+    if v == 0.0:
+        return None
+    return v
+
+
+def _get_min(prop: Property) -> float | None:
+    v = prop.min_value
     return v if isinstance(v, (int, float)) else None
 
 
@@ -153,11 +164,6 @@ def _validate_value(prop: Property, value: Any) -> None:
         _validate_list(value, prop)
     else:
         _validate_scalar(value, prop)
-
-
-# High byte of tdb4._pad10: AE's "this property has an expression" marker,
-# set whenever an expression Utf8 is present (independent of enabled/disabled).
-_TDB4_HAS_EXPRESSION = 0x01000000
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -719,7 +725,9 @@ class Property(PropertyBase):
             # with "chunk in file too big".
             if self._cdat is None:
                 cdat = CdatChunk(pad=b"\x00\x00\x00\x00")
-                self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, cdat)
+                self._tdbs.chunks.insert(
+                    index_by_identity(self._tdbs.chunks, self._tdb4) + 1, cdat
+                )
                 self._cdat = cdat
             return
         if self.match_name in ("ADBE Anchor Point", "ADBE Position"):
@@ -788,7 +796,9 @@ class Property(PropertyBase):
         target = dims * mult
         if self._cdat is None:
             cdat = CdatChunk(values=[0.0] * target)
-            self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, cdat)
+            self._tdbs.chunks.insert(
+                index_by_identity(self._tdbs.chunks, self._tdb4) + 1, cdat
+            )
             self._cdat = cdat
         elif len(self._cdat.values) < target:
             self._cdat.values = list(self._cdat.values) + [0.0] * (
@@ -818,14 +828,33 @@ class Property(PropertyBase):
         container = self._materialize_parallel_container(kind)
         container.chunks.append(kind.build_value_chunk(self, value))
         new_cdat = kind.static_cdat(value)
-        if self._cdat is not None and self._cdat in self._tdbs.chunks:
-            self._tdbs.chunks[self._tdbs.chunks.index(self._cdat)] = new_cdat
+        if self._cdat is not None and any(c is self._cdat for c in self._tdbs.chunks):
+            self._tdbs.chunks[index_by_identity(self._tdbs.chunks, self._cdat)] = (
+                new_cdat
+            )
         else:
-            self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, new_cdat)
+            self._tdbs.chunks.insert(
+                index_by_identity(self._tdbs.chunks, self._tdb4) + 1, new_cdat
+            )
         self._cdat = new_cdat
 
     def _chunk_body(self) -> ListChunk | None:
         return self._tdbs
+
+    def _is_placeholder_bound(self, body: TdumChunk) -> bool:
+        """`True` when this property's tdum/tduM is an all-zero `[0.0]`
+        placeholder that ExtendScript reports as no bound.
+
+        AE writes `[0.0]` bound chunks for Scale and the separated-Position
+        followers even though ExtendScript reports no min/max; the bytes are
+        kept on disk for round-trip but must not surface as a real bound.
+        Scoped to `_PLACEHOLDER_UNBOUNDED` so genuinely-bounded props (and
+        Time Remapping, whose `maxValue=0` ExtendScript does report) are
+        untouched.
+        """
+        return self.match_name in _PLACEHOLDER_UNBOUNDED and all(
+            v == 0.0 for v in body.values
+        )
 
     @staticmethod
     def _read_tdum(body: TdumChunk) -> int | float | list[float]:
@@ -1051,7 +1080,9 @@ class Property(PropertyBase):
             # gradient leaf has none, which AE rejects as "missing data".
             if self._cdat is None and self._tdbs is not None and self._tdb4 is not None:
                 cdat = kind.static_cdat(value)
-                self._tdbs.chunks.insert(self._tdbs.chunks.index(self._tdb4) + 1, cdat)
+                self._tdbs.chunks.insert(
+                    index_by_identity(self._tdbs.chunks, self._tdb4) + 1, cdat
+                )
                 self._cdat = cdat
         value_chunk = kind.build_value_chunk(self, value)
         if container.chunks:
@@ -1075,9 +1106,13 @@ class Property(PropertyBase):
         The minimum permitted value of the named property. Only valid if
         `has_min` is `True`. Read-only.
         """
+        if self.match_name in _UNBOUNDED_MATCH_NAMES:
+            return None
         if self._min_value_fallback is not _UNSET:
             return self._min_value_fallback
         if self._tdum is not None:
+            if self._is_placeholder_bound(self._tdum):
+                return None
             return self._read_tdum(self._tdum)
         return None
 
@@ -1087,9 +1122,13 @@ class Property(PropertyBase):
         The maximum permitted value of the named property. Only valid if
         `has_max` is `True`. Read-only.
         """
+        if self.match_name in _UNBOUNDED_MATCH_NAMES:
+            return None
         if self._max_value_fallback is not _UNSET:
             return self._max_value_fallback
         if self._tduM is not None:
+            if self._is_placeholder_bound(self._tduM):
+                return None
             return self._read_tdum(self._tduM)
         return None
 
@@ -1208,7 +1247,7 @@ class Property(PropertyBase):
         if self._tdb4 is not None:
             # AE marks an expression-bearing parameter in tdb4._pad10; the
             # inverse of _clear_expression so a created expression round-trips.
-            self._tdb4._pad10 |= _TDB4_HAS_EXPRESSION
+            self._tdb4.has_expression = True
             self._tdb4._expr_flags = 0
 
     @property
@@ -1602,10 +1641,10 @@ class Property(PropertyBase):
             self._animate_tdb4()
             chunks = self._tdbs.chunks
             if self._cdat is not None:
-                chunks[chunks.index(self._cdat)] = inner
+                chunks[index_by_identity(chunks, self._cdat)] = inner
                 self._cdat = None
             else:
-                chunks.insert(chunks.index(self._tdb4) + 1, inner)
+                chunks.insert(index_by_identity(chunks, self._tdb4) + 1, inner)
             return lhd3, ldat
         lhd3 = cast("Lhd3Chunk", find_by_type(chunks=inner.chunks, chunk_type="lhd3"))
         ldat = cast("LdatChunk", find_by_type(chunks=inner.chunks, chunk_type="ldat"))
@@ -1763,9 +1802,9 @@ class Property(PropertyBase):
             raw_vals = [0.0]
         cdat = CdatChunk(values=raw_vals)
         if inner is not None:
-            chunks[chunks.index(inner)] = cdat
+            chunks[index_by_identity(chunks, inner)] = cdat
         else:
-            chunks.insert(chunks.index(self._tdb4) + 1, cdat)
+            chunks.insert(index_by_identity(chunks, self._tdb4) + 1, cdat)
         self._cdat = cdat
         self._value = None
 
@@ -1786,11 +1825,11 @@ class Property(PropertyBase):
         self._expression = None
         self._expression_enabled = None
         if self._tdb4 is not None:
-            # `_expr_flags` (bit 0 = disabled) and the `_pad10` marker
-            # (_TDB4_HAS_EXPRESSION) are AE's expression-present flags; clear
-            # both so the tdb4 matches a plain static parameter.
+            # `_expr_flags` (bit 0 = disabled) and the `_pad10` high-byte
+            # marker (`has_expression`) are AE's expression-present flags;
+            # clear both so the tdb4 matches a plain static parameter.
             self._tdb4._expr_flags = 0
-            self._tdb4._pad10 &= ~_TDB4_HAS_EXPRESSION
+            self._tdb4.has_expression = False
 
     # -- Complex (parallel-container) keyframe mutation ------------------
 
@@ -1980,19 +2019,22 @@ class Property(PropertyBase):
                 (
                     c
                     for c in chunks
-                    if isinstance(c, ListChunk) and self._tdbs in c.chunks
+                    if isinstance(c, ListChunk)
+                    and any(cc is self._tdbs for cc in c.chunks)
                 ),
                 None,
             )
         if wrapper is not None:
             # The wrapper exists but has no value container: add it after
             # the tdbs.
-            wrapper.chunks.insert(wrapper.chunks.index(self._tdbs) + 1, container)
-        elif self._tdbs in chunks:
+            wrapper.chunks.insert(
+                index_by_identity(wrapper.chunks, self._tdbs) + 1, container
+            )
+        elif any(c is self._tdbs for c in chunks):
             wrapper = ListChunk(
                 list_type=kind.wrapper_type, chunks=[self._tdbs, container]
             )
-            chunks[chunks.index(self._tdbs)] = wrapper
+            chunks[index_by_identity(chunks, self._tdbs)] = wrapper
             # AE writes the unnamed sentinel into tdsn when it wraps the
             # property (synthesis seeds the auto-name; a pristine
             # orientation stores its real name).
@@ -2118,9 +2160,9 @@ class Property(PropertyBase):
         self._static_tdb4()
         chunks = self._tdbs.chunks
         if inner is not None:
-            chunks[chunks.index(inner)] = cdat
+            chunks[index_by_identity(chunks, inner)] = cdat
         else:
-            chunks.insert(chunks.index(self._tdb4) + 1, cdat)
+            chunks.insert(index_by_identity(chunks, self._tdb4) + 1, cdat)
         self._cdat = cdat
 
     def set_value_at_time(self, time: float, new_value: _ValueType) -> None:
