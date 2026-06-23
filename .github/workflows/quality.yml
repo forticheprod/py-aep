@@ -60,7 +60,7 @@ jobs:
       with:
         python-version: '3.7'
     - name: Install dependencies
-      run: pip install "pytest>=7.0,<8.0" "attrs>=20.1.0" "importlib_metadata" "typing_extensions>=3.7"
+      run: pip install "pytest>=7.0,<8.0" "attrs>=20.1.0" "PyYAML>=5.1" "fonttools>=4.38,<4.39" "importlib_metadata" "typing_extensions>=3.7"
     - name: Test with pytest
       run: PYTHONPATH=src pytest -v --no-header -ra --tb=short -o "addopts="
   pytest:
