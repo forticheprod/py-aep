@@ -27,7 +27,12 @@ from py_aep.enums.mappings import (
     profile_id_for_name,
 )
 
-from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ...binary.ldat_chunks import (
+    LHD3_BLOCK_SINGLE,
+    LdatChunk,
+    Lhd3Chunk,
+    sync_lhd3_counters,
+)
 from ...binary.misc_chunks import HdrmChunk
 from ...binary.render_chunks import (
     OutputModuleSettingsItem,
@@ -997,5 +1002,6 @@ class OutputModule:
             find_by_type(chunks=rqi._list_chunk.chunks, chunk_type="lhd3"),
         )
         om_lhd3.count -= 1
+        sync_lhd3_counters(om_lhd3, LHD3_BLOCK_SINGLE)
 
         del rqi._output_modules[om_idx]

@@ -24,7 +24,12 @@ from py_aep.enums import (
 )
 
 from ...binary.chunk import ContainerChunk, ListChunk
-from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ...binary.ldat_chunks import (
+    LHD3_BLOCK_SINGLE,
+    LdatChunk,
+    Lhd3Chunk,
+    sync_lhd3_counters,
+)
 from ...binary.mutations import build_om_container, build_rout_block, clone_chunk_tree
 from ...binary.render_chunks import RenderSettingsItem, RoutItem
 from ...binary.scalar_chunks import Utf8Chunk
@@ -60,6 +65,20 @@ def _start_time_from_binary(value: int) -> datetime | None:
     if not value:
         return None
     return _AEP_EPOCH + timedelta(seconds=value)
+
+
+def _validate_rq_status(value: object, obj: object | None = None) -> None:
+    """Reject `RQItemStatus.WILL_CONTINUE` as a settable status.
+
+    WILL_CONTINUE is a transient render-runtime status; its `to_binary()`
+    underflows to -1, which cannot be written to the unsigned status field
+    (it would truncate the file mid-save). AE never persists it.
+    """
+    if value == RQItemStatus.WILL_CONTINUE:
+        raise ValueError(
+            "Cannot set status to WILL_CONTINUE; it is a transient "
+            "render-runtime status with no persisted form."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +165,7 @@ class RenderQueueItem:
         RQItemStatus,
         "_ldat",
         "status",
+        validate=_validate_rq_status,
         post_set="_on_status_changed",
     )
     """The current render status of the item. Read / Write."""
@@ -343,6 +363,11 @@ class RenderQueueItem:
             parent=self,
         )
 
+        # A render queue item stores all its output modules in one LOm (split
+        # by Roou) and one OM-metadata list. Keep the list's lhd3 capacity
+        # counters in sync with the module count (block 1: _count_b /
+        # _counter_a / _counter_b all equal `count`), or AE rejects the file
+        # with "Invalid read length".
         self._lom.chunks.extend(lom_chunks)
 
         om_ldat = cast(
@@ -356,6 +381,7 @@ class RenderQueueItem:
             find_by_type(chunks=self._list_chunk.chunks, chunk_type="lhd3"),
         )
         om_lhd3.count += 1
+        sync_lhd3_counters(om_lhd3, LHD3_BLOCK_SINGLE)
 
         self._output_modules.append(om)
         return om
@@ -753,6 +779,7 @@ class RenderQueueItem:
 
         del rq._rs_ldat.items[idx]
         rq._rs_lhd3.count -= 1
+        sync_lhd3_counters(rq._rs_lhd3, LHD3_BLOCK_SINGLE)
 
         # AE stores a fixed block of Rout items per RQ item. Delete the whole
         # contiguous block (located by identity of its first entry) and refresh
@@ -815,6 +842,7 @@ class RenderQueueItem:
 
         rq._rs_ldat.items.insert(idx + 1, new_rsi)
         rq._rs_lhd3.count += 1
+        sync_lhd3_counters(rq._rs_lhd3, LHD3_BLOCK_SINGLE)
 
         # Insert the duplicated Rout block right after this item's block
         # (located by identity of its first entry) and refresh the count.

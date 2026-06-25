@@ -262,6 +262,11 @@ class Gradient:
     def remove_color_stop(self, stop: int) -> None:
         """Remove a color stop by index."""
         validate_positive_int(stop)
+        if stop >= len(self._color_stops):
+            raise ValueError(
+                f"color stop index {stop} out of range "
+                f"(gradient has {len(self._color_stops)} color stops)"
+            )
         self._color_stops[stop]._gradient = None
         self._color_stops = tuple(
             s for i, s in enumerate(self._color_stops) if i != stop
@@ -278,6 +283,11 @@ class Gradient:
     def remove_alpha_stop(self, stop: int) -> None:
         """Remove an alpha stop by index."""
         validate_positive_int(stop)
+        if stop >= len(self._alpha_stops):
+            raise ValueError(
+                f"alpha stop index {stop} out of range "
+                f"(gradient has {len(self._alpha_stops)} alpha stops)"
+            )
         self._alpha_stops[stop]._gradient = None
         self._alpha_stops = tuple(
             s for i, s in enumerate(self._alpha_stops) if i != stop

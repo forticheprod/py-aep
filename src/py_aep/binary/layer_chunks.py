@@ -6,14 +6,12 @@ so it reads as `None` from older files and is omitted on write when absent.
 
 from __future__ import annotations
 
-from fractions import Fraction
-
 from attrs import define
 
+from .bin_utils import to_dividend_divisor
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import (
-    bool_field,
     bytes_field,
     f8_field,
     s4_field,
@@ -82,7 +80,10 @@ class LdtaChunk(Chunk):
     _reserved_60: bytes = bytes_field(3, repr=False)
     blending_mode: int = u1_field()
     _reserved_64: bytes = bytes_field(3, repr=False)
-    preserve_transparency: bool = bool_field()
+    _transfer_flags: int = u1_field(repr=False)
+    """Byte 103: transfer-mode flags. bit 0 = preserve underlying transparency,
+    bit 1 = dancing dissolve (Dissolve blend with an animated pattern; AE has no
+    separate transfer-mode value for it)."""
     _reserved_68: bytes = bytes_field(3, repr=False)
     track_matte_type: int = u1_field()
     stretch_divisor: int = u4_field(default=1)
@@ -135,6 +136,10 @@ class LdtaChunk(Chunk):
     audio_enabled = BitField("_layer_flags_2", 1)
     enabled = BitField("_layer_flags_2", 0)
 
+    # byte 103: _transfer_flags
+    preserve_transparency = BitField("_transfer_flags", 0)
+    dancing_dissolve = BitField("_transfer_flags", 1)
+
     # -- Computed properties -----------------------------------------------
 
     @property
@@ -144,9 +149,7 @@ class LdtaChunk(Chunk):
 
     @start_time.setter
     def start_time(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.start_time_dividend = frac.numerator
-        self.start_time_divisor = frac.denominator
+        self.start_time_dividend, self.start_time_divisor = to_dividend_divisor(value)
 
     @property
     def in_point(self) -> float:
@@ -155,9 +158,7 @@ class LdtaChunk(Chunk):
 
     @in_point.setter
     def in_point(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.in_point_dividend = frac.numerator
-        self.in_point_divisor = frac.denominator
+        self.in_point_dividend, self.in_point_divisor = to_dividend_divisor(value)
 
     @property
     def out_point(self) -> float:
@@ -166,9 +167,7 @@ class LdtaChunk(Chunk):
 
     @out_point.setter
     def out_point(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.out_point_dividend = frac.numerator
-        self.out_point_divisor = frac.denominator
+        self.out_point_dividend, self.out_point_divisor = to_dividend_divisor(value)
 
     @property
     def stretch(self) -> float:
@@ -183,9 +182,9 @@ class LdtaChunk(Chunk):
             self.stretch_dividend = 0
             self.stretch_divisor = 0
         else:
-            frac = Fraction(value / 100.0).limit_denominator()
-            self.stretch_dividend = frac.numerator
-            self.stretch_divisor = frac.denominator
+            self.stretch_dividend, self.stretch_divisor = to_dividend_divisor(
+                value / 100.0
+            )
 
     @property
     def auto_orient(self) -> int:

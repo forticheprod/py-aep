@@ -757,12 +757,14 @@ _VECTOR_STAR_SPECS: list[_PropSpec] = [
         "Inner Roundness",
         0.0,
         PropertyValueType.OneD,
+        bound_chunks=True,
     ),
     _spec(
         "ADBE Vector Star Outer Roundess",
         "Outer Roundness",
         0.0,
         PropertyValueType.OneD,
+        bound_chunks=True,
     ),
 ]
 
@@ -1428,6 +1430,7 @@ _VECTOR_REPEATER_SPECS: list[_PropSpec | _GroupSpec] = [
         "Offset",
         0.0,
         PropertyValueType.OneD,
+        bound_chunks=True,
     ),
     _spec(
         "ADBE Vector Repeater Order",
@@ -1479,7 +1482,13 @@ _VECTOR_MERGE_SPECS: list[_PropSpec] = [
 
 # "ADBE Vector Filter - Offset".
 _VECTOR_OFFSET_SPECS: list[_PropSpec] = [
-    _spec("ADBE Vector Offset Amount", "Amount", 10.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Offset Amount",
+        "Amount",
+        10.0,
+        PropertyValueType.OneD,
+        bound_chunks=True,
+    ),
     _spec(
         "ADBE Vector Offset Line Join",
         "Line Join",
@@ -1864,7 +1873,13 @@ _TEXT_WIGGLY_SELECTOR_SPECS: list[_PropSpec] = [
         max_value=4,
         can_vary_over_time=False,
     ),
-    _spec("ADBE Text Temporal Freq", "Wiggles/Second", 2.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Text Temporal Freq",
+        "Wiggles/Second",
+        2.0,
+        PropertyValueType.OneD,
+        bound_chunks=True,
+    ),
     _spec(
         "ADBE Text Character Correlation",
         "Correlation",
@@ -1873,8 +1888,20 @@ _TEXT_WIGGLY_SELECTOR_SPECS: list[_PropSpec] = [
         min_value=0,
         max_value=100,
     ),
-    _spec("ADBE Text Temporal Phase", "Temporal Phase", 0.0, PropertyValueType.OneD),
-    _spec("ADBE Text Spatial Phase", "Spatial Phase", 0.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Text Temporal Phase",
+        "Temporal Phase",
+        0.0,
+        PropertyValueType.OneD,
+        bound_chunks=True,
+    ),
+    _spec(
+        "ADBE Text Spatial Phase",
+        "Spatial Phase",
+        0.0,
+        PropertyValueType.OneD,
+        bound_chunks=True,
+    ),
     _spec("ADBE Text Wiggly Lock Dim", "Lock Dimensions", 0.0, PropertyValueType.OneD),
     _spec(
         "ADBE Text Wiggly Random Seed",
@@ -1977,18 +2004,31 @@ def _build_text_animator_pool_specs() -> list[_PropSpec]:
     """
     specs: list[_PropSpec] = []
     for e in TEXT_ANIMATOR_POOL:
+        pvt = PropertyValueType(e["pvt"])
+        # AE writes the [0.0] placeholder tdum/tduM for animatable 1D
+        # animator scalars (Tracking Amount, Rotation, Skew Axis, the Hues)
+        # even though ExtendScript exposes no min/max; a materialized one
+        # that lacks them is rejected ("missing data in file"). Bounded 1D
+        # entries already get the bounds via _bound_chunks_hint.
+        unbounded_1d = (
+            pvt == PropertyValueType.OneD
+            and e["min"] is None
+            and e["max"] is None
+            and e["cv"] is not False
+        )
         specs.append(
             _spec(
                 e["mn"],
                 e["name"],
                 e["value"],
-                PropertyValueType(e["pvt"]),
+                pvt,
                 # dimensions/is_spatial/color derive from pvt (_PVT_KIND).
                 min_value=e["min"],
                 max_value=e["max"],
                 # canVary defaults True for the pool; only record False.
                 can_vary_over_time=False if e["cv"] is False else None,
                 units_text=e["units"],
+                bound_chunks=True if unbounded_1d else None,
             )
         )
     return specs

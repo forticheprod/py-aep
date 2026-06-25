@@ -8,10 +8,10 @@ interpretation.
 from __future__ import annotations
 
 import math
-from fractions import Fraction
 
 from attrs import define
 
+from .bin_utils import to_dividend_divisor
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import bytes_field, s4_field, u1_field, u2_field, u4_field
@@ -181,9 +181,9 @@ class CdtaChunk(Chunk):
 
     @pixel_aspect.setter
     def pixel_aspect(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.pixel_aspect_dividend = frac.numerator
-        self.pixel_aspect_divisor = frac.denominator
+        self.pixel_aspect_dividend, self.pixel_aspect_divisor = to_dividend_divisor(
+            value
+        )
 
     @property
     def duration(self) -> float:
@@ -192,9 +192,7 @@ class CdtaChunk(Chunk):
 
     @duration.setter
     def duration(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.duration_dividend = frac.numerator
-        self.duration_divisor = frac.denominator
+        self.duration_dividend, self.duration_divisor = to_dividend_divisor(value)
 
     @property
     def display_start_time(self) -> float:
@@ -203,9 +201,9 @@ class CdtaChunk(Chunk):
 
     @display_start_time.setter
     def display_start_time(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.display_start_time_dividend = frac.numerator
-        self.display_start_time_divisor = frac.denominator
+        self.display_start_time_dividend, self.display_start_time_divisor = (
+            to_dividend_divisor(value)
+        )
 
     @property
     def work_area_start(self) -> float:
@@ -214,9 +212,9 @@ class CdtaChunk(Chunk):
 
     @work_area_start.setter
     def work_area_start(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.work_area_start_dividend = frac.numerator
-        self.work_area_start_divisor = frac.denominator
+        self.work_area_start_dividend, self.work_area_start_divisor = (
+            to_dividend_divisor(value)
+        )
 
     @property
     def time_seconds(self) -> float:
@@ -225,9 +223,7 @@ class CdtaChunk(Chunk):
 
     @time_seconds.setter
     def time_seconds(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.time_dividend = frac.numerator
-        self.time_divisor = frac.denominator
+        self.time_dividend, self.time_divisor = to_dividend_divisor(value)
 
     @property
     def work_area_end_absolute(self) -> float:
@@ -306,9 +302,9 @@ class CdtaChunk(Chunk):
 
     @work_area_duration.setter
     def work_area_duration(self, value: float) -> None:
-        frac = Fraction(self.work_area_start + value).limit_denominator()
-        self.work_area_end_dividend = frac.numerator
-        self.work_area_end_divisor = frac.denominator
+        self.work_area_end_dividend, self.work_area_end_divisor = to_dividend_divisor(
+            self.work_area_start + value
+        )
 
     @property
     def work_area_duration_frame(self) -> int:
@@ -318,9 +314,9 @@ class CdtaChunk(Chunk):
     @work_area_duration_frame.setter
     def work_area_duration_frame(self, value: int) -> None:
         duration_seconds = value / self.frame_rate
-        frac = Fraction(self.work_area_start + duration_seconds).limit_denominator()
-        self.work_area_end_dividend = frac.numerator
-        self.work_area_end_divisor = frac.denominator
+        self.work_area_end_dividend, self.work_area_end_divisor = to_dividend_divisor(
+            self.work_area_start + duration_seconds
+        )
 
     @property
     def frame_time(self) -> int:

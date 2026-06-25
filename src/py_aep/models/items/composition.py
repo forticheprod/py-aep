@@ -55,6 +55,7 @@ from ..sources.solid import SolidSource
 from ..text.text_document import TextDocument
 from ..validators import (
     _validate_number,
+    validate_box_size,
     validate_duration,
     validate_footage_dimension,
     validate_frame_rate,
@@ -64,6 +65,7 @@ from ..validators import (
     validate_rgb_color,
     validate_sequence,
     validate_string,
+    validate_text,
     validate_vector2,
 )
 from .av_item import AVItem
@@ -766,6 +768,12 @@ class CompItem(AVItem):
         return len(self._item_list.chunks)
 
     @property
+    def _proxy_pin_index(self) -> int:
+        """A composition has no main-source pin, so its proxy pin is at
+        index 0 (footage items keep the main pin at 0 and the proxy at 1)."""
+        return 0
+
+    @property
     def layers(self) -> list[Layer]:
         """All the [Layer][] objects for layers in this composition.
         Read-only."""
@@ -1216,6 +1224,13 @@ class CompItem(AVItem):
         position = cast("Property", transform["ADBE Position"])
         position.value = [0.0, 0.0, -zoom]
 
+        # AE's new-camera Camera Zoom equals the same computed zoom. Without
+        # this the property keeps its 0.0 spec placeholder, which violates its
+        # own >= 1 minimum and makes keyframing the zoom raise ValueError.
+        camera_options = cast("PropertyGroup", layer["ADBE Camera Options Group"])
+        zoom_prop = cast("Property", camera_options["ADBE Camera Zoom"])
+        zoom_prop.value = zoom
+
         return layer
 
     def add_light(
@@ -1435,12 +1450,12 @@ class CompItem(AVItem):
         box_size: list[float] | None = None,
         line_orientation: LineOrientation | None = None,
     ) -> TextLayer:
-        validate_string(text)
+        validate_text(text)
         if box:
             if box_size is None:
                 box_size = [float(self.width), float(self.height)]
             else:
-                validate_vector2(box_size)
+                validate_box_size(box_size)
 
         existing = {lyr.name for lyr in self.layers}
         text = text or auto_name(TextLayer._auto_name, existing)

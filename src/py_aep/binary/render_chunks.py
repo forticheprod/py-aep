@@ -7,12 +7,11 @@ RoutChunk uses `items_field()` for repeating render-flag entries.
 
 from __future__ import annotations
 
-from fractions import Fraction
 from typing import TYPE_CHECKING, ClassVar
 
 from attrs import define
 
-from .bin_utils import read_bytes
+from .bin_utils import read_bytes, to_dividend_divisor
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import (
@@ -23,6 +22,8 @@ from .fmt_field import (
     f4_field,
     f8_field,
     items_field,
+    s2_field,
+    s4_field,
     str_field,
     u1_field,
     u2_field,
@@ -87,9 +88,10 @@ class RouuChunk(Chunk):
 
     _reserved_3a: bytes = bytes_field(9, repr=False)
     frame_rate: int = u1_field(default=30)
-    _reserved_44: bytes = bytes_field(3, repr=False)
-    depth: int = u1_field(default=32)
-    """Color depth: 24=Millions/8bpc, 48=Trillions/16bpc, 96=Floating/32bpc."""
+    depth: int = s4_field(default=32)
+    """Color depth in total bits-per-pixel as a signed 4-byte big-endian value:
+    24=Millions/8bpc, 48=Trillions/16bpc, 96=Floating/32bpc, and -32 for the
+    32bpc single-channel `Floating Point Gray` depth."""
 
     _reserved_48: bytes = bytes_field(5, default=b"\x01\x01\x00\x00\x00", repr=False)
     color_premultiplied: int = u1_field(default=1)
@@ -476,9 +478,9 @@ class RenderSettingsItem(FmtItem):
 
     @time_span_start.setter
     def time_span_start(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.time_span_start_dividend = frac.numerator
-        self.time_span_start_divisor = frac.denominator
+        self.time_span_start_dividend, self.time_span_start_divisor = (
+            to_dividend_divisor(value)
+        )
 
     @property
     def time_span_duration(self) -> float:
@@ -489,9 +491,9 @@ class RenderSettingsItem(FmtItem):
 
     @time_span_duration.setter
     def time_span_duration(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.time_span_duration_dividend = frac.numerator
-        self.time_span_duration_divisor = frac.denominator
+        self.time_span_duration_dividend, self.time_span_duration_divisor = (
+            to_dividend_divisor(value)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -531,10 +533,10 @@ class OutputModuleSettingsItem(FmtItem):
     _flag_byte_22: int = u1_field(repr=False)
     """Byte 22: bit 0=crop."""
 
-    crop_top: int = u2_field()
-    crop_left: int = u2_field()
-    crop_bottom: int = u2_field()
-    crop_right: int = u2_field()
+    crop_top: int = s2_field()
+    crop_left: int = s2_field()
+    crop_bottom: int = s2_field()
+    crop_right: int = s2_field()
     _reserved_24: bytes = bytes_field(2, repr=False)
     output_audio: int = u1_field(default=1)
     _reserved_26: bytes = bytes_field(4, repr=False)

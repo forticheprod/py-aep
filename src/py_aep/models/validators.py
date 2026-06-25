@@ -10,6 +10,7 @@ cross-field validation (e.g. checking that one field is >= another).
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,15 +24,19 @@ def _validate_number(
     min: float | Callable[..., float | None] | None = None,
     max: float | Callable[..., float | None] | None = None,
     integer: bool = False,
+    exclusive_min: bool = False,
 ) -> Callable[..., None]:
     """Return a validator that checks a numeric value.
 
     Args:
-        min: Minimum allowed value (inclusive). May be a static number
-            or a callable `(instance) -> float` for dynamic bounds.
+        min: Minimum allowed value. May be a static number or a callable
+            `(instance) -> float` for dynamic bounds. Inclusive unless
+            `exclusive_min` is set.
         max: Maximum allowed value (inclusive). May be a static number
             or a callable `(instance) -> float` for dynamic bounds.
         integer: When `True`, reject non-`int` values.
+        exclusive_min: When `True`, the value must be strictly greater than
+            `min` (e.g. a positive-but-non-zero size).
     """
     type_label = "an integer" if integer else "a number"
 
@@ -40,6 +45,11 @@ def _validate_number(
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
         if integer and not isinstance(value, int):
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
+        if isinstance(value, float) and not math.isfinite(value):
+            # NaN/inf would pass any `value < min or value > max` check (those
+            # comparisons are always False for NaN) and serialize as a corrupt
+            # IEEE special into a float32 field that AE may reject.
+            raise ValueError(f"must be a finite number, got {value}")
         lo = min(instance) if callable(min) else min
         hi = max(instance) if callable(max) else max
         if lo is None and hi is None:
@@ -49,8 +59,11 @@ def _validate_number(
             return
         if not isinstance(value, (int, float)):
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
-        if lo is not None and value < lo:
-            raise ValueError(f"must be >= {lo}, got {value}")
+        if lo is not None:
+            if exclusive_min and value <= lo:
+                raise ValueError(f"must be > {lo}, got {value}")
+            if not exclusive_min and value < lo:
+                raise ValueError(f"must be >= {lo}, got {value}")
         if hi is not None and value > hi:
             raise ValueError(f"must be <= {hi}, got {value}")
 
@@ -63,6 +76,7 @@ def validate_sequence(
     min: float | Callable[..., float | None] | None = None,
     max: float | Callable[..., float | None] | None = None,
     integer: bool = False,
+    exclusive_min: bool = False,
 ) -> Callable[..., None]:
     """Return a validator that checks a fixed-length numeric sequence.
 
@@ -70,15 +84,19 @@ def validate_sequence(
         length: Required number of elements. When `None`, any length
             is accepted. May be a callable `(instance) -> int` for
             dynamic bounds.
-        min: Minimum allowed value per element (inclusive). May be a
-            static number or a callable `(instance) -> float` for
-            dynamic bounds.
+        min: Minimum allowed value per element. May be a static number
+            or a callable `(instance) -> float` for dynamic bounds.
+            Inclusive unless `exclusive_min` is set.
         max: Maximum allowed value per element (inclusive). May be a
             static number or a callable `(instance) -> float` for
             dynamic bounds.
         integer: When `True`, reject non-`int` elements.
+        exclusive_min: When `True`, each element must be strictly greater
+            than `min` (e.g. a non-zero-area box size).
     """
-    _element_validator = _validate_number(min=min, max=max, integer=integer)
+    _element_validator = _validate_number(
+        min=min, max=max, integer=integer, exclusive_min=exclusive_min
+    )
 
     def _validator(value: object, instance: object | None = None) -> None:
         n = length(instance) if callable(length) else length
@@ -148,12 +166,15 @@ def _validate_str(
     *,
     allow_empty: bool = True,
     max_length: int | None = None,
+    allow_null: bool = True,
 ) -> Callable[..., None]:
     """Return a validator that checks a string value.
 
     Args:
         allow_empty: When `False`, reject empty strings.
         max_length: Maximum allowed character count.
+        allow_null: When `False`, reject strings containing a NUL (`\\x00`)
+            character, which corrupt the COS/text blobs AE reads.
     """
 
     def _validator(value: object, instance: object | None = None) -> None:
@@ -161,6 +182,8 @@ def _validate_str(
             raise TypeError(f"expected a string, got {type(value).__name__}")
         if not allow_empty and not value:
             raise ValueError("must not be empty")
+        if not allow_null and "\x00" in value:
+            raise ValueError("must not contain null bytes")
         if max_length is not None and len(value) > max_length:
             raise ValueError(
                 f"must be at most {max_length} characters, got {len(value)}"
@@ -209,13 +232,25 @@ validate_int = _validate_number(integer=True)
 
 validate_positive_int = _validate_number(min=0, integer=True)
 
+# A u2 field (e.g. the project revision counter) holds 0..65535.
+validate_u2 = _validate_number(min=0, max=0xFFFF, integer=True)
+
+# A u4 frame counter (e.g. a marker's frame_duration) holds 0..4294967295.
+validate_u4 = _validate_number(min=0, max=0xFFFFFFFF, integer=True)
+
+# A marker duration in seconds maps to a u4 600ths-of-a-second field
+# (round(seconds * 600)); cap at the field capacity and reject NaN/inf/negative.
+validate_marker_duration = _validate_number(min=0.0, max=0xFFFFFFFF / 600.0)
+
 validate_footage_dimension = _validate_number(min=4, max=30000, integer=True)
 
 validate_solid_dimension = _validate_number(min=1, max=30000, integer=True)
 
 validate_pixel_aspect = _validate_number(min=0.01, max=100.0)
 
-validate_duration = _validate_number(min=0.0, max=10800.0)
+# Min is one frame at the maximum 99 fps: a composition / footage duration of
+# exactly 0 has no frames and After Effects rejects it (ExtendScript raises).
+validate_duration = _validate_number(min=1.0 / 99.0, max=10800.0)
 
 validate_frame_rate = _validate_number(min=1.0, max=99.0)
 
@@ -226,6 +261,20 @@ validate_rgb_color = validate_sequence(length=3, min=0.0, max=1.0)
 validate_string = _validate_str()
 
 validate_name = _validate_str(allow_empty=False)
+
+# Strictly positive (non-zero) size, e.g. font size or stroke width.
+validate_positive_nonzero_number = _validate_number(min=0.0, exclusive_min=True)
+
+# A font PostScript name must be a non-empty, NUL-free string.
+validate_font_name = _validate_str(allow_empty=False, allow_null=False)
+
+# Text content may be empty but must not contain NUL bytes (they corrupt the
+# COS text blob AE reads).
+validate_text = _validate_str(allow_null=False)
+
+# A box-text size needs a strictly positive width and height (a zero-area box
+# has nothing to lay text into).
+validate_box_size = validate_sequence(length=2, min=0.0, exclusive_min=True)
 
 validate_path = _validate_path()
 

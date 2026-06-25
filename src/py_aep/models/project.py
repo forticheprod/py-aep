@@ -79,6 +79,7 @@ from .validators import (
     validate_path_does_not_exist,
     validate_path_exists,
     validate_string,
+    validate_u2,
 )
 
 if TYPE_CHECKING:
@@ -206,7 +207,9 @@ class Project:
     """When `True`, thumbnail views use the transparency checkerboard
     pattern. Read / Write."""
 
-    revision = ChunkField[int]("_head", "file_revision")
+    revision = ChunkField[int](
+        "_head", "file_revision", validate=validate_u2
+    )
     """The current revision of the project. Every user action increases the
     revision number by one. A new project starts at revision 1. Read / Write.
 
@@ -530,7 +533,9 @@ class Project:
 
     @linear_blending.setter
     def linear_blending(self, value: bool) -> None:
-        toggle_flag_chunk(self._rifx, "lnrb", value)
+        # AE keeps `lnrb` in a fixed slot right after `cpid` (before `lnrp` /
+        # `dwga`); appending it at the tail makes AE report "missing data".
+        toggle_flag_chunk(self._rifx, "lnrb", value, after_types=("cpid",))
 
     @property
     def linearize_working_space(self) -> bool:
@@ -541,7 +546,9 @@ class Project:
     @linearize_working_space.setter
     @requires_version(16)
     def linearize_working_space(self, value: bool) -> None:
-        toggle_flag_chunk(self._rifx, "lnrp", value)
+        # `lnrp` sits immediately after `lnrb` (or after `cpid` when linear
+        # blending is off), before `dwga`.
+        toggle_flag_chunk(self._rifx, "lnrp", value, after_types=("lnrb", "cpid"))
 
     @property
     def expression_engine(self) -> str:

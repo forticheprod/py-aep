@@ -109,8 +109,26 @@ class AVLayer(Layer):
     """When `True`, the layer's audio is enabled. This value corresponds
     to the audio toggle switch in the Timeline panel. Read / Write."""
 
-    blending_mode = ChunkField.enum(BlendingMode, "_ldta", "blending_mode")
-    """The blending mode of the layer. Read / Write."""
+    @property
+    def blending_mode(self) -> BlendingMode:
+        """The blending mode of the layer. Read / Write."""
+        mode = BlendingMode.from_binary(self._ldta.blending_mode)
+        if mode is BlendingMode.DISSOLVE and self._ldta.dancing_dissolve:
+            return BlendingMode.DANCING_DISSOLVE
+        return mode
+
+    @blending_mode.setter
+    def blending_mode(self, value: BlendingMode) -> None:
+        validate_enum(BlendingMode)(value)
+        value = BlendingMode(value)
+        # Dancing Dissolve has no transfer-mode value of its own: AE stores it
+        # as Dissolve plus the dancing-dissolve flag in the ldta transfer byte.
+        if value is BlendingMode.DANCING_DISSOLVE:
+            self._ldta.blending_mode = BlendingMode.DISSOLVE.to_binary()
+            self._ldta.dancing_dissolve = True
+        else:
+            self._ldta.blending_mode = value.to_binary()
+            self._ldta.dancing_dissolve = False
 
     collapse_transformation = ChunkField[bool](
         "_ldta",
@@ -476,8 +494,19 @@ class AVLayer(Layer):
                 " 'can_set_time_remap_enabled' is False."
             )
         prop = self["ADBE Time Remapping"]
-        if isinstance(prop, Property):
-            prop._animated = bool(value)
+        if not isinstance(prop, Property):
+            return
+        currently_enabled = bool(prop._animated)
+        if value and not currently_enabled:
+            # Enabling time remapping converts the static Time Remap property
+            # into an animated one with a placeholder keyframe (cdat -> LIST:list
+            # swap + animated tdb4 state). Flipping only the tdb4.animated bit
+            # leaves a contradictory static-and-animated property with no
+            # keyframe list, which AE reports as "file is damaged".
+            prop._add_key(self.in_point)
+        elif not value and currently_enabled:
+            while prop.keyframes:
+                prop.remove_key(0)
 
     @property
     def width(self) -> int:

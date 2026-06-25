@@ -118,7 +118,9 @@ class CosField(Generic[T]):
             # No backing dict - store as instance override
             obj.__dict__[self.public_name] = value
             return
-        if self.validate is not None:
+        # `None` clears the key (an optional field is being unset); there is
+        # no value to validate in that case.
+        if value is not None and self.validate is not None:
             self.validate(value, obj)
         if value is None:
             d.pop(self.key, None)

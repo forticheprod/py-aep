@@ -9,12 +9,11 @@ PsdOptiChunk (custom read/write for LE fields), PlaceholderOptiChunk.
 from __future__ import annotations
 
 import struct
-from fractions import Fraction
 from typing import TYPE_CHECKING
 
 from attrs import define
 
-from .bin_utils import read_bytes, truncate_utf8
+from .bin_utils import read_bytes, to_dividend_divisor, truncate_utf8
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import (
@@ -105,11 +104,12 @@ class SspcChunk(Chunk):
 
     _reserved_74: bytes = bytes_field(9, repr=False)
     _depth_flag: int = u1_field(default=0x0C, repr=False)
-    _reserved_7e: bytes = bytes_field(3, repr=False)
 
-    # -- Loop / pixel ratio (bytes 129-146) --------------------------------
-    loop: int = u1_field(default=1)
-    """Loop count (1 = no loop, 2+ = loop count)."""
+    # -- Loop / pixel ratio (bytes 126-146) --------------------------------
+    loop: int = u4_field(default=1)
+    """Loop count (1 = no loop, 2+ = loop count). Stored as a 4-byte
+    big-endian field (AE writes e.g. 1000 as 00 00 03 e8); a u1 here read
+    only the low byte and overflowed on save for counts > 255."""
 
     _reserved_82: bytes = bytes_field(4, repr=False)
     _is_synthetic_c: int = u1_field(default=1, repr=False)
@@ -196,9 +196,7 @@ class SspcChunk(Chunk):
 
     @duration.setter
     def duration(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.duration_dividend = frac.numerator
-        self.duration_divisor = frac.denominator
+        self.duration_dividend, self.duration_divisor = to_dividend_divisor(value)
 
     @property
     def pixel_aspect(self) -> float:
@@ -209,9 +207,9 @@ class SspcChunk(Chunk):
 
     @pixel_aspect.setter
     def pixel_aspect(self, value: float) -> None:
-        frac = Fraction(value).limit_denominator()
-        self.pixel_aspect_dividend = frac.numerator
-        self.pixel_aspect_divisor = frac.denominator
+        self.pixel_aspect_dividend, self.pixel_aspect_divisor = to_dividend_divisor(
+            value
+        )
 
     @property
     def premul_color(self) -> list[float]:

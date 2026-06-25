@@ -8,6 +8,7 @@ that have little-endian fields.
 from __future__ import annotations
 
 import struct
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +16,35 @@ if TYPE_CHECKING:
 
 _HEADER_STRUCT = struct.Struct(">4sI")
 _STRUCT_CACHE: dict[str, struct.Struct] = {}
+
+_INT32_MIN = -(2**31)
+_INT32_MAX = 2**31 - 1
+
+
+def to_dividend_divisor(value: float) -> tuple[int, int]:
+    """Split `value` into the `(dividend, divisor)` integers AE stores for its
+    time / ratio fields.
+
+    AEP encodes many quantities - layer and comp times, durations, pixel
+    aspect, render time spans - as a signed-32-bit dividend over an
+    unsigned-32-bit divisor. The denominator is capped from the value's
+    magnitude so the dividend always fits int32: precision degrades gracefully
+    for very large values rather than overflowing `struct.pack` and silently
+    truncating the saved file.
+
+    Raises:
+        ValueError: If the value's whole part alone cannot fit int32 (about 68
+            years for a time field) - which also rejects `nan` / `inf`.
+    """
+    if not _INT32_MIN <= value <= _INT32_MAX:
+        raise ValueError(
+            f"ratio value {value} is out of range (must be within +/-{_INT32_MAX})"
+        )
+    # |dividend| ~= |value| * denominator, so capping the denominator at
+    # INT32_MAX // (|value| + 2) keeps the dividend strictly inside int32.
+    max_denominator = max(1, _INT32_MAX // (int(abs(value)) + 2))
+    frac = Fraction(value).limit_denominator(min(1_000_000, max_denominator))
+    return frac.numerator, frac.denominator
 
 
 def _get_struct(full_fmt: str) -> struct.Struct:

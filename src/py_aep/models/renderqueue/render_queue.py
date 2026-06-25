@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Iterator
 
 from ...binary.chunk import Chunk, ListChunk
-from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ...binary.ldat_chunks import (
+    LHD3_BLOCK_SINGLE,
+    LdatChunk,
+    Lhd3Chunk,
+    sync_lhd3_counters,
+)
 from ...binary.project_chunks import RhedChunk
 from ...binary.render_chunks import ArsiChunk, RoutChunk
 
@@ -156,12 +161,13 @@ class RenderQueue:
         # so the populated queue is actually written. No-op for a normal file.
         _ensure_materialized(self._lrdr)
 
-        # Append render settings to LRdr's ldat. Only `count` tracks the
-        # item count; AE keeps count_b/counter_a/counter_b at their seeded
-        # value of 1 regardless of item count (verified against real files
-        # and duplicate(), which bumps only `count`).
+        # Append render settings to LRdr's ldat and keep the lhd3 capacity
+        # counters in sync with the new item count - AE keeps _count_b /
+        # _counter_a / _counter_b equal to `count` for this list and rejects
+        # the file ("Invalid read length") when they go stale.
         self._rs_ldat.items.append(rqi._ldat)
         self._rs_lhd3.count += 1
+        sync_lhd3_counters(self._rs_lhd3, LHD3_BLOCK_SINGLE)
 
         # Append Rout items (5 per RQ item) and update header
         for ri in rqi._rout_items:
