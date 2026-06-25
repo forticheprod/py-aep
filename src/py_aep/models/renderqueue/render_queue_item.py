@@ -67,20 +67,6 @@ def _start_time_from_binary(value: int) -> datetime | None:
     return _AEP_EPOCH + timedelta(seconds=value)
 
 
-def _validate_rq_status(value: object, obj: object | None = None) -> None:
-    """Reject `RQItemStatus.WILL_CONTINUE` as a settable status.
-
-    WILL_CONTINUE is a transient render-runtime status; its `to_binary()`
-    underflows to -1, which cannot be written to the unsigned status field
-    (it would truncate the file mid-save). AE never persists it.
-    """
-    if value == RQItemStatus.WILL_CONTINUE:
-        raise ValueError(
-            "Cannot set status to WILL_CONTINUE; it is a transient "
-            "render-runtime status with no persisted form."
-        )
-
-
 # ---------------------------------------------------------------------------
 # RENDER_SETTINGS: ExtendScript key -> (attribute, optional enum class)
 # ---------------------------------------------------------------------------
@@ -165,7 +151,6 @@ class RenderQueueItem:
         RQItemStatus,
         "_ldat",
         "status",
-        validate=_validate_rq_status,
         post_set="_on_status_changed",
     )
     """The current render status of the item. Read / Write."""
