@@ -74,6 +74,17 @@ class GradientPaint:
     """Linear: gradient end point. Radial: a point on the outer circle
     (center + radius along x), used to derive the highlight/radius."""
 
+    scale: tuple[float, float] = (100.0, 100.0)
+    """After Effects Grad Scale percentages `(x, y)`. A radial gradient
+    whose `gradientTransform` stretches it into an ellipse encodes the
+    aspect ratio in `y` (e.g. `(100, 200)` for a 2x-tall ellipse); without
+    it the gradient renders as a circle. Linear gradients keep `(100, 100)`."""
+
+    rotation: float = 0.0
+    """After Effects Grad Rotation in degrees. A radial gradient's
+    un-rotated baseline is `360` (AE's convention, visually equal to 0);
+    linear gradients use `0`."""
+
 
 @dataclass
 class StrokeStyle:

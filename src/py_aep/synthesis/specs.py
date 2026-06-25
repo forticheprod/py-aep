@@ -55,6 +55,13 @@ class _GroupSpec(NamedTuple):
     match_name: str
     auto_name: str
     min_major: int | None = None
+    enable_flags: int = 1
+    """`tdsb` enable-flags byte for the synthesized group: bit 0 is the
+    `enabled` toggle, bit 1 the collapsed/UI bit. Defaults to `1`
+    (enabled). The Layer Styles toggles are `2` (disabled - AE leaves
+    every layer style off until one is added; a stray `1` would make AE
+    apply the style, e.g. a default-red Color Overlay), and groups AE
+    writes collapsed (Layer Styles parent, Blending Options) are `3`."""
 
 
 # A property's (dimensions, is_spatial, color) kind is a pure function of its
@@ -2811,18 +2818,22 @@ _LAYER_STYLE_CHILD_SPECS: dict[str, list[_PropSpec]] = {
 }
 
 # Canonical children of "ADBE Layer Styles" (Blending Options + 10 styles).
+# AE leaves every layer style disabled (enable_flags 2) until one is added;
+# only Blending Options is enabled+collapsed (3). Synthesizing a style toggle
+# as enabled (1) makes AE apply that style on open - e.g. a default-red Color
+# Overlay - so the whole layer renders red.
 _LAYER_STYLES_SPECS: list[_GroupSpec] = [
-    _GroupSpec("ADBE Blend Options Group", "Blending Options"),
-    _GroupSpec("dropShadow/enabled", "Drop Shadow"),
-    _GroupSpec("innerShadow/enabled", "Inner Shadow"),
-    _GroupSpec("outerGlow/enabled", "Outer Glow"),
-    _GroupSpec("innerGlow/enabled", "Inner Glow"),
-    _GroupSpec("bevelEmboss/enabled", "Bevel and Emboss"),
-    _GroupSpec("chromeFX/enabled", "Satin"),
-    _GroupSpec("solidFill/enabled", "Color Overlay"),
-    _GroupSpec("gradientFill/enabled", "Gradient Overlay"),
-    _GroupSpec("patternFill/enabled", "Pattern Overlay"),
-    _GroupSpec("frameFX/enabled", "Stroke"),
+    _GroupSpec("ADBE Blend Options Group", "Blending Options", enable_flags=3),
+    _GroupSpec("dropShadow/enabled", "Drop Shadow", enable_flags=2),
+    _GroupSpec("innerShadow/enabled", "Inner Shadow", enable_flags=2),
+    _GroupSpec("outerGlow/enabled", "Outer Glow", enable_flags=2),
+    _GroupSpec("innerGlow/enabled", "Inner Glow", enable_flags=2),
+    _GroupSpec("bevelEmboss/enabled", "Bevel and Emboss", enable_flags=2),
+    _GroupSpec("chromeFX/enabled", "Satin", enable_flags=2),
+    _GroupSpec("solidFill/enabled", "Color Overlay", enable_flags=2),
+    _GroupSpec("gradientFill/enabled", "Gradient Overlay", enable_flags=2),
+    _GroupSpec("patternFill/enabled", "Pattern Overlay", enable_flags=2),
+    _GroupSpec("frameFX/enabled", "Stroke", enable_flags=2),
 ]
 
 _GROUP_CHILD_SPECS["ADBE Layer Styles"] = _LAYER_STYLES_SPECS
@@ -2939,7 +2950,7 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Transform Group", "Transform"),
     _GroupSpec("ADBE Camera Options Group", "Camera Options"),
     _GroupSpec("ADBE Light Options Group", "Light Options"),
-    _GroupSpec("ADBE Layer Styles", "Layer Styles"),
+    _GroupSpec("ADBE Layer Styles", "Layer Styles", enable_flags=3),
     _GroupSpec("ADBE Plane Options Group", "Geometry Options"),
     _GroupSpec("ADBE Extrsn Options Group", "Geometry Options"),
     _GroupSpec("ADBE Material Options Group", "Material Options"),

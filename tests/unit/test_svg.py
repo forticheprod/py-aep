@@ -370,6 +370,59 @@ class TestReadSvgFeatures:
         assert _approx(paint.start, (50.0, 50.0))
         assert _approx(paint.end, (90.0, 50.0))
 
+    def test_radial_gradient_transform_maps_to_grad_scale(self):
+        # A radial gradientTransform that stretches the gradient vertically
+        # (the matrix translation keeps the centre fixed) must surface as an
+        # AE Grad Scale aspect ratio, not collapse into a circle. This is the
+        # butterfly-wing case (matrix(1 0 0 N 0 ...)).
+        svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+          <defs><radialGradient id="g" gradientUnits="userSpaceOnUse"
+              cx="50" cy="50" r="20"
+              gradientTransform="matrix(1 0 0 2 0 -50)">
+            <stop offset="0" stop-color="#fff"/>
+            <stop offset="1" stop-color="#000"/>
+          </radialGradient></defs>
+          <circle cx="50" cy="50" r="20" fill="url(#g)"/>
+        </svg>"""
+        paint = read_svg(svg).drawables[0].fill
+        assert isinstance(paint, GradientPaint)
+        # Centre stays put and the x-radius (start/end) is unchanged...
+        assert _approx(paint.start, (50.0, 50.0))
+        assert _approx(paint.end, (70.0, 50.0))
+        # ...while the 2x vertical stretch lands in Grad Scale Y.
+        assert _approx(paint.scale, (100.0, 200.0), tol=1e-4)
+        assert paint.rotation == pytest.approx(360.0)
+
+    def test_radial_gradient_unrotated_baseline_is_360(self):
+        # AE stamps an un-rotated, un-stretched radial gradient with a
+        # 360-degree rotation (visually 0) and unit scale.
+        svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+          <defs><radialGradient id="g" gradientUnits="userSpaceOnUse"
+              cx="50" cy="50" r="20">
+            <stop offset="0" stop-color="#fff"/>
+            <stop offset="1" stop-color="#000"/>
+          </radialGradient></defs>
+          <circle cx="50" cy="50" r="20" fill="url(#g)"/>
+        </svg>"""
+        paint = read_svg(svg).drawables[0].fill
+        assert isinstance(paint, GradientPaint)
+        assert _approx(paint.scale, (100.0, 100.0), tol=1e-4)
+        assert paint.rotation == pytest.approx(360.0)
+
+    def test_linear_gradient_has_no_scale_or_rotation(self):
+        svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+          <defs><linearGradient id="g" gradientUnits="userSpaceOnUse"
+              x1="0" y1="0" x2="100" y2="0">
+            <stop offset="0" stop-color="#f00"/>
+            <stop offset="1" stop-color="#00f"/>
+          </linearGradient></defs>
+          <rect width="100" height="100" fill="url(#g)"/>
+        </svg>"""
+        paint = read_svg(svg).drawables[0].fill
+        assert isinstance(paint, GradientPaint)
+        assert paint.scale == (100.0, 100.0)
+        assert paint.rotation == 0.0
+
     def test_deeply_nested_groups_raise_clean_error(self):
         # Unbounded <g> nesting must raise UnsupportedSVGError, not RecursionError.
         svg = (
@@ -422,9 +475,7 @@ class TestTextWhitespace:
         # runs produce no drawables and there is nothing to assert.
         if len(doc.drawables) < 2:
             return None
-        return min(
-            v[0] for sp in doc.drawables[-1].subpaths for v in sp.vertices
-        )
+        return min(v[0] for sp in doc.drawables[-1].subpaths for v in sp.vertices)
 
     def test_inter_tspan_space_advances_next_run(self):
         head = (
