@@ -8,7 +8,12 @@ from ...binary.misc_chunks import NmhdChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import index_by_identity
 from ..descriptors import ChunkField
-from ..validators import validate_int, validate_positive_int, validate_string
+from ..validators import (
+    validate_int,
+    validate_marker_duration,
+    validate_string,
+    validate_u4,
+)
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
@@ -45,11 +50,15 @@ class MarkerValue:
     frame_duration = ChunkField[int](
         "_nmhd",
         "frame_duration",
-        validate=validate_positive_int,
+        validate=validate_u4,
     )
     """The marker's duration, in frames. Read / Write."""
 
-    duration = ChunkField[float]("_nmhd", "duration_seconds")
+    duration = ChunkField[float](
+        "_nmhd",
+        "duration_seconds",
+        validate=validate_marker_duration,
+    )
     """The marker's duration, in seconds. Read / Write."""
 
     label = ChunkField.enum(Label, "_nmhd", "label")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
-from typing import TYPE_CHECKING, Union, cast
+from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
 from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
@@ -11,7 +11,12 @@ from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
 from ...binary.chunk import ListChunk
-from ...binary.ldat_chunks import LdatItemType, ShapePoint
+from ...binary.ldat_chunks import (
+    LHD3_BLOCK_KEYFRAMES,
+    LdatItemType,
+    ShapePoint,
+    sync_lhd3_counters,
+)
 from ...binary.mutations import (
     ITEM_SIZE_BY_TYPE,
     build_keyframe_list,
@@ -31,7 +36,7 @@ from ...binary.property_chunks import (
     tdb4_apply_animated_template,
     tdb4_apply_static_template,
 )
-from ...binary.scalar_chunks import Utf8Chunk
+from ...binary.scalar_chunks import S4Chunk, Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
     find_by_list_type,
@@ -76,7 +81,6 @@ if TYPE_CHECKING:
     from ...binary.chunk import Chunk
     from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
     from ...binary.misc_chunks import ShphChunk
-    from ...binary.scalar_chunks import S4Chunk
     from ...synthesis.specs import _PropSpec
     from ..items.composition import CompItem
     from .property_group import PropertyGroup
@@ -614,6 +618,23 @@ class Property(PropertyBase):
         self._reposition_canonically()
         self._ensure_bound_chunks()
         self._materialize_static_orientation()
+        self._ensure_mask_index_chunks()
+
+    def _ensure_mask_index_chunks(self) -> None:
+        """Append the `tdli` index chunk AE requires for a materialized
+        MASK_INDEX effect param (e.g. a Path Text path selector).
+
+        AE stores a mask-index param's value in a `tdli` (S4Chunk) after the
+        cdat (the cdat itself stays all-zeros, see
+        `_complete_static_value_chunks`), and rejects a materialized tdbs
+        lacking it with "missing data in file".
+        """
+        if self.property_value_type != PropertyValueType.MASK_INDEX:
+            return
+        if any(getattr(c, "chunk_type", "") == "tdli" for c in self._tdbs.chunks):
+            return
+        index = self._value if isinstance(self._value, int) else 0
+        self._tdbs.chunks.append(S4Chunk(chunk_type="tdli", value=index))
 
     def _ensure_time_base(self) -> None:
         """Stamp the containing comp's timebase into a py-created tdb4.
@@ -661,37 +682,60 @@ class Property(PropertyBase):
         """
         if self._tdum is not None or self._tduM is not None:
             return
-        # AE writes [0.0] bounds only on ANIMATABLE bounded leaves; it omits
-        # them on bounded menu/dropdown leaves (Line Cap, Fill Rule, Grad
-        # Type, ...) which report can_vary_over_time=False. Match that.
-        if self._can_vary_over_time is False:
-            return
-        multi_dim_vector = (
-            not self._color
-            and not self.is_spatial
-            and self._vector
-            and self.dimensions > 1
+        # Synthetic EFFECT params: AE writes [0.0] tdum/tduM for SCALAR /
+        # INTEGER / SLIDER control types (RE'd vs AE 2026) regardless of
+        # can_vary, and omits them for ANGLE / POINT / 3D / COLOR / BOOLEAN /
+        # ENUM / LAYER. This bypasses the can_vary / fallback gating below,
+        # which only governs layer/shape props.
+        effect_bounded = (
+            self._is_in_effect()
+            and self._property_control_type in self._EFFECT_BOUNDED_CONTROL_TYPES
         )
-        fallback_bounded = (
-            (
-                self._min_value_fallback is not _UNSET
-                or self._max_value_fallback is not _UNSET
+        if not effect_bounded:
+            # AE writes [0.0] bounds only on ANIMATABLE bounded leaves; it omits
+            # them on bounded menu/dropdown leaves (Line Cap, Fill Rule, Grad
+            # Type, ...) which report can_vary_over_time=False. Match that.
+            if self._can_vary_over_time is False:
+                return
+            multi_dim_vector = (
+                not self._color
+                and not self.is_spatial
+                and self._vector
+                and self.dimensions > 1
             )
-            and not self._color
-            and not self.is_spatial
-            and not self._tdb4.integer
-            and not self.is_effect
-        )
-        if (
-            not multi_dim_vector
-            and not self._bound_chunks_hint
-            and not fallback_bounded
-        ):
-            return
+            fallback_bounded = (
+                (
+                    self._min_value_fallback is not _UNSET
+                    or self._max_value_fallback is not _UNSET
+                )
+                and not self._color
+                and not self.is_spatial
+                and not self._tdb4.integer
+                and not self._is_in_effect()
+            )
+            # AE persists the [0.0] placeholder tdum/tduM for the props in
+            # _PLACEHOLDER_UNBOUNDED (e.g. Light Intensity) even though
+            # ExtendScript reports hasMin/hasMax=False, and rejects a
+            # materialized one that lacks them ("missing data in file").
+            placeholder_unbounded = self.match_name in _PLACEHOLDER_UNBOUNDED
+            if (
+                not multi_dim_vector
+                and not self._bound_chunks_hint
+                and not fallback_bounded
+                and not placeholder_unbounded
+            ):
+                return
         if any(c.chunk_type in ("tdum", "tduM") for c in self._tdbs.chunks):
             return
-        self._tdbs.chunks.append(TdumChunk(chunk_type="tdum", values=[0.0]))
-        self._tdbs.chunks.append(TdumChunk(chunk_type="tduM", values=[0.0]))
+        # Integer-typed effect params (SCALAR/INTEGER) use u4-encoded bounds;
+        # vector params (SLIDER) and layer/shape props use double-encoded ones.
+        is_int = self._tdb4 is not None and self._tdb4.integer
+        self._tdbs.chunks.append(
+            TdumChunk(chunk_type="tdum", values=[0.0], is_integer=is_int)
+        )
+        self._tdbs.chunks.append(
+            TdumChunk(chunk_type="tduM", values=[0.0], is_integer=is_int)
+        )
 
     _NUMERIC_PVTS = frozenset(
         {
@@ -702,6 +746,22 @@ class Property(PropertyBase):
             PropertyValueType.ThreeD_SPATIAL,
             PropertyValueType.COLOR,
             PropertyValueType.NO_VALUE,
+        }
+    )
+
+    # Effect-param control types AE writes [0.0] tdum/tduM bounds for when a
+    # synthesized param is materialized (RE'd vs AE 2026 references; see
+    # scripts/_tmp_a6re). The other control types (ANGLE / POINT / 3D / COLOR /
+    # BOOLEAN / ENUM / LAYER) get no bounds. A SCALAR / INTEGER / SLIDER effect
+    # param materialized WITHOUT these placeholders is rejected by AE ("missing
+    # data in file"). AE's full per-control-type tdb4 canon is NOT reproduced -
+    # AE tolerates the synthesis-default flags on open, and matching the canon's
+    # integer bit would wrongly flip can_set_expression for point/scalar params.
+    _EFFECT_BOUNDED_CONTROL_TYPES: ClassVar[frozenset[PropertyControlType]] = frozenset(
+        {
+            PropertyControlType.SCALAR,
+            PropertyControlType.INTEGER,
+            PropertyControlType.SLIDER,
         }
     )
 
@@ -716,6 +776,19 @@ class Property(PropertyBase):
         shape, gradient, text) manage their own value containers.
         """
         if self._parallel_kind() is not None or self._tdb4 is None:
+            return
+        if self.property_value_type == PropertyValueType.MASK_INDEX:
+            # MASK_INDEX cdat is 5 zero doubles (like OneD); the index value
+            # lives in a separate `tdli` chunk (see _ensure_mask_index_chunks),
+            # NOT in the cdat, which stays all-zeros.
+            if self._cdat is None:
+                cdat = CdatChunk(values=[0.0] * 5)
+                self._tdbs.chunks.insert(
+                    index_by_identity(self._tdbs.chunks, self._tdb4) + 1, cdat
+                )
+                self._cdat = cdat
+            elif len(self._cdat.values) < 5:
+                self._cdat.values = [0.0] * 5
             return
         if self.property_value_type not in self._NUMERIC_PVTS:
             return
@@ -759,7 +832,11 @@ class Property(PropertyBase):
             self._tdb4._type_flags = 0x08
             self._tdb4._property_category = 0x09
             self._tdb4._spatial_marker = True
-        elif self._color and not self.is_effect and self._tdb4._value_hint_type == 0:
+        elif (
+            self._color
+            and not self._is_in_effect()
+            and self._tdb4._value_hint_type == 0
+        ):
             # Static color canon (measured on a script-modified vector
             # fill color, AE 2026); with the synthesis-default flags AE
             # silently ignores the materialized value.
@@ -774,7 +851,7 @@ class Property(PropertyBase):
             not self._color
             and not self.is_spatial
             and not self._tdb4.integer
-            and not self.is_effect
+            and not self._is_in_effect()
             and self._tdb4._value_hint_type == 0
             and self._tdb4._property_category == 0
         ):
@@ -1018,13 +1095,53 @@ class Property(PropertyBase):
                 "Use set_value_at_time() instead."
             )
         _validate_value(self, value)
+        complex_value = not isinstance(value, (int, float, list, type(None)))
+        # Arbitrary-data params (CUSTOM_VALUE, e.g. an effect's Curves /
+        # ARBITRARY_DATA leaf) store their data in a separate blob, not the
+        # numeric cdat. Writing a scalar/list into the cdat overflows it
+        # (AE: "chunk in file too big") or crashes on the empty buffer; reject
+        # it. Complex value objects (a mask Shape, also CUSTOM_VALUE-seeded)
+        # take the write-through path below and are unaffected.
+        if (
+            not complex_value
+            and self.property_value_type == PropertyValueType.CUSTOM_VALUE
+        ):
+            raise ValueError(
+                "Cannot set a numeric value on a CUSTOM_VALUE (arbitrary-data) "
+                "property; its data is not stored in the numeric value chunk."
+            )
+        # A freshly-added mask has no Mask Shape om-s container yet. Build AE's
+        # default full-frame path with the mask-specific builder BEFORE
+        # `_ensure_materialized` runs: it replaces the still-synthetic Mask
+        # Shape placeholder in place, whereas materializing first leaves the
+        # placeholder behind and AE rejects the duplicate ("missing data").
+        if (
+            complex_value
+            and self.match_name == "ADBE Mask Shape"
+            and self._kf_value_container is None
+        ):
+            from .mask_property_group import MaskPropertyGroup
+
+            parent = self._parent_property
+            if isinstance(parent, MaskPropertyGroup):
+                parent._materialize_mask_shape()
         self._ensure_materialized()
-        if not isinstance(value, (int, float, list, type(None))):
+        if complex_value:
             # A new complex value object (Shape, Gradient, TextDocument,
             # MarkerValue) assigned to a static property: `_write_cdat`
             # only writes numeric values, so the static value container
             # must be rebuilt.
             self._value = self._write_static_complex_value(value)
+            return
+        if self.property_value_type == PropertyValueType.MASK_INDEX:
+            # The mask index lives in the `tdli` chunk, not the cdat (which
+            # stays all-zeros); _ensure_materialized has appended one.
+            index = int(value) if isinstance(value, (int, float)) else 0
+            for chunk in self._tdbs.chunks:
+                if getattr(chunk, "chunk_type", "") == "tdli":
+                    cast("S4Chunk", chunk).value = index
+                    break
+            self._value = value
             return
         self._write_cdat(value)
         self._value = value
@@ -1238,7 +1355,16 @@ class Property(PropertyBase):
             self._expression_utf8.value = value
         else:
             chunk = Utf8Chunk(value=value)
-            self._tdbs.chunks.append(chunk)
+            # AE stores the expression Utf8 immediately after the value
+            # container (cdat or the keyframe LIST:list), BEFORE any
+            # tdum/tduM bounds - the order is positional, so appending at
+            # the tail makes AE reject the file ("missing data in file").
+            chunks = self._tdbs.chunks
+            anchor = self._cdat if self._cdat is not None else self._keyframe_inner()
+            if anchor is not None:
+                chunks.insert(index_by_identity(chunks, anchor) + 1, chunk)
+            else:
+                chunks.insert(index_by_identity(chunks, self._tdb4) + 1, chunk)
             self._expression_utf8 = chunk
         self._expression = value
         # Assigning an expression enables it (AE semantics): clear any stale
@@ -1568,6 +1694,10 @@ class Property(PropertyBase):
         # Gradient value to sample (no GCst data in the binary).
         if self.match_name == "ADBE Vector Grad Colors":
             return GRADIENT_KIND
+        # A freshly-synthesized mask path is seeded as CUSTOM_VALUE (not
+        # SHAPE), so guard it by match name or its value write silently no-ops.
+        if self.match_name == "ADBE Mask Shape":
+            return SHAPE_KIND
         pvt = self.property_value_type
         if pvt == PropertyValueType.SHAPE:
             return SHAPE_KIND
@@ -1726,6 +1856,7 @@ class Property(PropertyBase):
         ldat.items.insert(idx, ldat_item)
         self.keyframes.insert(idx, kf)
         lhd3.count = len(self.keyframes)
+        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
         kf.value = new_value
         self._link_inserted_key(idx)
         return idx
@@ -1762,6 +1893,7 @@ class Property(PropertyBase):
         del ldat.items[key_index]
         del self.keyframes[key_index]
         lhd3.count = len(self.keyframes)
+        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
         self._link_keyframes()
         if not self.keyframes:
             self._deanimate(removed_value)
@@ -1913,6 +2045,7 @@ class Property(PropertyBase):
         ldat.items.append(ldat_item)
         self.keyframes.append(kf)
         lhd3.count = 1
+        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
         kf._value = template
         self._value = None
         if isinstance(value, str):
@@ -1968,6 +2101,7 @@ class Property(PropertyBase):
             # no text was supplied, propagate the structural insert ourselves.
             td._propagate_cos()
         lhd3.count = len(self.keyframes)
+        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
         self._link_inserted_key(idx)
         return idx
 
@@ -1988,6 +2122,7 @@ class Property(PropertyBase):
             del doc_array[key_index]
         del self.keyframes[key_index]
         lhd3.count = len(self.keyframes)
+        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
         removed._propagate_cos()
         self._link_keyframes()
 
@@ -2091,6 +2226,7 @@ class Property(PropertyBase):
         else:
             container.chunks.insert(idx, value_chunk)
         lhd3.count = len(self.keyframes)
+        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
         # The header item already carries the value (`build_header_item`) and
         # the container chunk is inserted above, so set the shadow directly:
         # the public `kf.value` setter would re-route complex kinds back into
@@ -2126,6 +2262,7 @@ class Property(PropertyBase):
         if container is not None and key_index < len(container.chunks):
             del container.chunks[key_index]
         lhd3.count = len(self.keyframes)
+        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
         self._link_keyframes()
 
     def _deanimate_parallel(self, kind: ParallelKind) -> None:

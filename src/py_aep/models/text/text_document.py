@@ -25,10 +25,13 @@ from ...enums import (
     ParagraphJustification,
 )
 from ..validators import (
+    validate_box_size,
     validate_enum,
+    validate_font_name,
+    validate_positive_nonzero_number,
     validate_positive_number,
     validate_rgb_color,
-    validate_string,
+    validate_text,
     validate_vector2,
 )
 from .font_object import FontObject
@@ -145,7 +148,9 @@ class TextDocument:
 
     # -- Character-style CosField descriptors (_char_style dict) -----------
 
-    font_size = CosField.float("_char_style", "1", default=None)
+    font_size = CosField.float(
+        "_char_style", "1", default=None, validate=validate_positive_nonzero_number
+    )
     """The Text layer's font size in pixels. Read / Write."""
 
     faux_bold = CosField.bool("_char_style", "2", default=None)
@@ -202,7 +207,9 @@ class TextDocument:
     stroke_over_fill = CosField.bool("_char_style", "58", default=True)
     """When `True`, the stroke appears over the fill. Read / Write."""
 
-    stroke_width = CosField.float("_char_style", "63", default=1.0)
+    stroke_width = CosField.float(
+        "_char_style", "63", default=1.0, validate=validate_positive_nonzero_number
+    )
     """The Text layer's stroke thickness in pixels. Read / Write."""
 
     # -- Paragraph-style CosField descriptors (_para_style dict) -----------
@@ -315,9 +322,9 @@ class TextDocument:
                 the layer's orientation (e.g. vertical); `None` leaves
                 the template's horizontal default.
         """
-        validate_string(text)
+        validate_text(text)
         if box_size is not None:
-            validate_vector2(box_size)
+            validate_box_size(box_size)
         if line_orientation is not None:
             validate_enum(LineOrientation)(line_orientation)
         cos = copy.deepcopy(get_cos_template())
@@ -413,7 +420,7 @@ class TextDocument:
 
     @text.setter
     def text(self, value: str) -> None:
-        validate_string(value)
+        validate_text(value)
         self.__dict__.pop("text", None)
         inner = self._doc.setdefault("0", {})
         # AE stores every line break and the run terminator as CR (\r);
@@ -436,7 +443,7 @@ class TextDocument:
 
     @font.setter
     def font(self, value: str) -> None:
-        validate_string(value)
+        validate_font_name(value)
         if self._char_style is None:
             self._set_override("font", value)
             return
@@ -703,7 +710,7 @@ class TextDocument:
 
     @box_text_size.setter
     def box_text_size(self, value: list[float]) -> None:
-        validate_vector2(value)
+        validate_box_size(value)
         width, height = float(value[0]), float(value[1])
         frame = self._ensure_frame()
         coords = self._box_outline()

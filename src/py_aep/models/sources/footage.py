@@ -133,10 +133,27 @@ class FootageSource:
         PulldownPhase,
         "_sspc",
         "remove_pulldown",
+        post_set="_on_remove_pulldown_set",
     )
     """Controls which pulldown phase to remove from the source footage.
     [PulldownPhase.OFF][py_aep.enums.PulldownPhase] by default.
     Read / Write."""
+
+    def _on_remove_pulldown_set(self) -> None:
+        """Co-set a field order when a 3:2 pulldown phase is applied.
+
+        AE requires field separation to be set whenever a standard 3:2
+        pulldown phase (binary 1-5) is removed; a file with such a phase but
+        no field order is rejected ("field order must be set before 3:2
+        pulldown can be removed"). The 24P-advance phases (binary 6-10) are
+        exempt. Mirror AE's Interpret Footage dialog, which forces a field
+        order and defaults to Upper Field First.
+        """
+        if (
+            1 <= self._sspc.remove_pulldown <= 5
+            and self.field_separation_type == FieldSeparationType.OFF
+        ):
+            self.field_separation_type = FieldSeparationType.UPPER_FIELD_FIRST
 
     native_frame_rate = ChunkField[float]("_sspc", "native_frame_rate", read_only=True)
     """The native frame rate of the footage. Read-only."""

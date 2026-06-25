@@ -829,7 +829,13 @@ class TestRemoveGuide:
 
         comp.remove_guide(0)
         assert comp.guides == []
-        assert comp._gide is None
+        # After Effects always keeps an (empty) LIST:Gide for an item even with
+        # zero guides; deleting the container entirely leaves a project AE opens
+        # but cannot re-save. The container stays with count 0 and no ldat.
+        assert comp._gide is not None
+        assert comp._lhd3 is not None
+        assert comp._lhd3.count == 0
+        assert comp._ldat is None
 
         out = tmp_path / "remove_last.aep"
         project.save(out)

@@ -7,7 +7,13 @@ from py_aep.enums import Label
 from ...ae_version import requires_version
 from ...binary.chunk import ListChunk
 from ...binary.item_chunks import CmtaChunk
-from ...binary.ldat_chunks import LdatChunk, LdatItemType, Lhd3Chunk
+from ...binary.ldat_chunks import (
+    LHD3_BLOCK_GUIDES,
+    LdatChunk,
+    LdatItemType,
+    Lhd3Chunk,
+    sync_lhd3_counters,
+)
 from ...binary.mutations import build_gide_list
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import (
@@ -222,6 +228,7 @@ class Item:
         self._guides.append(guide)
         self._ldat.items.append(guide._guide_item)
         self._lhd3.count += 1
+        sync_lhd3_counters(self._lhd3, LHD3_BLOCK_GUIDES)
         return self._lhd3.count - 1
 
     @requires_version(16)
@@ -245,8 +252,9 @@ class Item:
         del self._ldat.items[guide_index]
         del self._guides[guide_index]
         self._lhd3.count -= 1
+        sync_lhd3_counters(self._lhd3, LHD3_BLOCK_GUIDES)
         if self._lhd3.count == 0:
-            self._remove_guides_container()
+            self._empty_guides_container()
 
     def _ensure_guides_container(self) -> None:
         """Create the guides container if needed."""
@@ -265,17 +273,19 @@ class Item:
             assert self._inner is not None
             self._inner.chunks.append(self._ldat)
 
-    def _remove_guides_container(self) -> None:
-        """Removes the guides container."""
+    def _empty_guides_container(self) -> None:
+        """Empty the guides container, keeping the (now childless) `LIST:Gide`.
+
+        After Effects always writes a `LIST:Gide` for an item even with zero
+        guides (its `lhd3` has `count=0` and no `ldat` child); deleting the
+        container entirely leaves the project in a state AE opens but cannot
+        re-save. So we drop only the `ldat` and keep `gide`/`lhd3`/`inner`.
+        """
         if self._gide is None:
             return
-        del self._item_list.chunks[
-            index_by_identity(self._item_list.chunks, self._gide)
-        ]
-        self._gide = None
-        self._lhd3 = None
+        if self._ldat is not None and self._inner is not None:
+            del self._inner.chunks[index_by_identity(self._inner.chunks, self._ldat)]
         self._ldat = None
-        self._inner = None
 
     def remove(self) -> None:
         """Remove this item from the project.

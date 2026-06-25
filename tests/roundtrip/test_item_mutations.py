@@ -574,7 +574,9 @@ class TestImportPlaceholder:
 
     def test_import_placeholder_invalid_duration(self) -> None:
         app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
-        with pytest.raises(ValueError, match="duration"):
+        # A zero duration has no frames; validate_duration rejects it (its
+        # minimum is one frame at the maximum 99 fps).
+        with pytest.raises(ValueError, match="must be >="):
             app.project.import_placeholder("PH", 1920, 1080, 30.0, 0.0)
 
     def test_import_placeholder_roundtrip(self, tmp_path: Path) -> None:

@@ -181,13 +181,24 @@ class AVItem(Item):
         self._project._ensure_used_in_linked()
         return list(self._used_in)
 
+    @property
+    def _proxy_pin_index(self) -> int:
+        """Index of the proxy `LIST:Pin` within `_pin_chunks`.
+
+        Footage items carry a main-source pin at index 0 and the proxy at
+        index 1; composition items have no main-source pin, so the proxy
+        lives at index 0. Overridden by [CompItem][].
+        """
+        return 1
+
     def set_proxy_to_none(self) -> None:
         """Remove the proxy source from this item."""
         if self._proxy_source:
+            proxy_pin = self._pin_chunks[self._proxy_pin_index]
             del self._item_list.chunks[
-                index_by_identity(self._item_list.chunks, self._pin_chunks[1])
+                index_by_identity(self._item_list.chunks, proxy_pin)
             ]
-            del self._pin_chunks[1]
+            del self._pin_chunks[self._proxy_pin_index]
             self._proxy_source = None
         self.use_proxy = False
 
@@ -349,7 +360,7 @@ class AVItem(Item):
         source: FileSource | SolidSource | PlaceholderSource,
     ) -> None:
         """Set a proxy LIST:Pin chunk (add or replace)."""
-        self._replace_pin(1, self._pin_for_source(source))
+        self._replace_pin(self._proxy_pin_index, self._pin_for_source(source))
         self._proxy_source = source
         source._project = self._project
         self.use_proxy = True

@@ -264,6 +264,27 @@ class Keyframe:
                 "value must be a number, list of numbers, Gradient, MarkerValue, Shape, TextDocument, or None"
             )
         prop = self._property
+        if prop is not None:
+            # Reuse the property's value validation (numeric bounds + finite
+            # check); it is a no-op for complex value types. Keeps NaN/inf and
+            # out-of-range values out of keyframe floats just as `.value=` does.
+            from .property import _validate_value
+
+            _validate_value(prop, value)
+            # Replacing a TEXT keyframe's value must mutate the EXISTING
+            # btdk-wired TextDocument in place (text documents live in the
+            # shared btdk COS blob, not a per-keyframe container). Storing a
+            # fresh, disconnected TextDocument leaves the real btdk with fewer
+            # COS docs than the keyframe count, so AE rejects the file ("error
+            # reading text layer from index"). Mirror `_set_parallel_value_at`.
+            if isinstance(value, TextDocument) and prop._parallel_kind() is TEXT_KIND:
+                current = self.value
+                if isinstance(current, TextDocument):
+                    current.text = value.text
+                    prop._ensure_materialized()
+                else:
+                    self._value = value
+                return
         # Complex (parallel-container) properties store their real value in a
         # sibling container chunk (otda / Nmrd / shap / Utf8), not in kf_data;
         # route the write through the property so the container - and any
@@ -358,6 +379,8 @@ class Keyframe:
 
     @in_temporal_ease.setter
     def in_temporal_ease(self, value: list[KeyframeEase]) -> None:
+        from .keyframe_ease import KeyframeEase
+
         if not isinstance(value, (list, tuple)):
             raise ValueError("in_temporal_ease must be a list of KeyframeEase objects")
         if not all(isinstance(e, KeyframeEase) for e in value):
@@ -382,6 +405,8 @@ class Keyframe:
 
     @out_temporal_ease.setter
     def out_temporal_ease(self, value: list[KeyframeEase]) -> None:
+        from .keyframe_ease import KeyframeEase
+
         if not isinstance(value, (list, tuple)):
             raise ValueError("out_temporal_ease must be a list of KeyframeEase objects")
         if not all(isinstance(e, KeyframeEase) for e in value):
@@ -464,7 +489,11 @@ class Keyframe:
 
     @spatial_auto_bezier.setter
     def spatial_auto_bezier(self, value: bool) -> None:
-        self._ldat_item.kf_data.spatial_auto_bezier = value
+        # Only spatial kf_data carries this flag. Non-spatial kinds (e.g.
+        # Orientation, whose kf_data is KfMultiDimensional) have no slot for
+        # it; match the tolerant getter and no-op rather than AttributeError.
+        if hasattr(self._ldat_item.kf_data, "spatial_auto_bezier"):
+            self._ldat_item.kf_data.spatial_auto_bezier = value
 
     @property
     def spatial_continuous(self) -> bool:
@@ -477,7 +506,9 @@ class Keyframe:
 
     @spatial_continuous.setter
     def spatial_continuous(self, value: bool) -> None:
-        self._ldat_item.kf_data.spatial_continuous = value
+        # See spatial_auto_bezier: non-spatial kf_data has no such slot.
+        if hasattr(self._ldat_item.kf_data, "spatial_continuous"):
+            self._ldat_item.kf_data.spatial_continuous = value
 
     @property
     def frame_time(self) -> int:

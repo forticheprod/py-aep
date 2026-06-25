@@ -229,7 +229,11 @@ def tdb4_apply_static_template(t: Tdb4Chunk, *, color: bool, spatial: bool) -> N
     t._cvot_flags = 0x02
     t._value_hint_flag = 0
     t._value_hint_type = 0
-    t._time_base = 0
+    # Do NOT zero _time_base: AE always keeps the comp-frame-rate-derived
+    # divisor (round(fps*1024)) on static numeric props and uses it as a
+    # ratio denominator - 0 triggers "zero denominator converting ratio
+    # denominators" on open. De-animation always follows _animate_tdb4
+    # (which set a non-zero _time_base), so preserving it is safe.
     t._property_category = 0
     if color:
         t._spatial_static_flags = 6

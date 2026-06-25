@@ -302,17 +302,32 @@ def toggle_flag_chunk(
     container: ListChunk,
     chunk_type: str,
     enable: bool,
+    *,
+    after_types: tuple[str, ...] = (),
 ) -> None:
     """Add or remove a flag chunk from a ListChunk container.
 
     Flag chunks are tiny (1-byte body `b"\\x01"`) presence/absence
     markers.
+
+    Some flag chunks are positional: After Effects reads them in a fixed
+    slot and rejects the file ("missing data") when they appear elsewhere.
+    Pass `after_types` to insert the new chunk immediately after the last
+    chunk of one of those types (e.g. `("cpid",)` for `lnrb`); when none of
+    them is present, or `after_types` is empty, the chunk is appended.
     """
     from .chunk import Chunk
 
     existing = [i for i, c in enumerate(container.chunks) if c.chunk_type == chunk_type]
     if enable and not existing:
-        container.chunks.append(Chunk(chunk_type=chunk_type, data=b"\x01"))
+        new_chunk = Chunk(chunk_type=chunk_type, data=b"\x01")
+        anchors = [
+            i for i, c in enumerate(container.chunks) if c.chunk_type in after_types
+        ]
+        if anchors:
+            container.chunks.insert(anchors[-1] + 1, new_chunk)
+        else:
+            container.chunks.append(new_chunk)
     elif not enable and existing:
         for i in reversed(existing):
             container.chunks.pop(i)

@@ -212,7 +212,7 @@ class ShphChunk(Chunk):
 @register("NmHd")
 @define
 class NmhdChunk(Chunk):
-    """Marker data chunk (17 bytes).
+    """Marker data chunk (20 bytes).
 
     Contains marker flags, duration, and label color.
     """
@@ -236,6 +236,9 @@ class NmhdChunk(Chunk):
     _reserved_0c: bytes = bytes_field(4, repr=False)
     label: int = u1_field()
     """Label color index."""
+
+    _reserved_11: bytes = bytes_field(3, repr=False)
+    """Bytes 17-19: trailing padding."""
 
     # BitField descriptors
     protected_region = BitField("_marker_flags", 1)

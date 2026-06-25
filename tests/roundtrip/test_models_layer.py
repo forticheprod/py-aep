@@ -207,6 +207,40 @@ class TestRoundtripAVLayerFlags:
         assert isinstance(layer2, AVLayer)
         assert layer2.blending_mode == BlendingMode.MULTIPLY
 
+    def test_dancing_dissolve_roundtrip(self, tmp_path: Path) -> None:
+        # Dancing Dissolve has no transfer-mode value of its own - AE stores it
+        # as Dissolve plus a flag bit in the ldta. Round-tripping exercises both
+        # the write (set the bit) and read (recover DANCING_DISSOLVE) paths.
+        project = parse_project_fresh(SAMPLES_DIR / "blendingMode.aep")
+        layer = get_layer(project, "blendingMode_ADD")
+        assert isinstance(layer, AVLayer)
+
+        layer.blending_mode = BlendingMode.DANCING_DISSOLVE
+        out = tmp_path / "dancing.aep"
+        project.save(out)
+        layer2 = get_layer(parse_aep(out).project, "blendingMode_ADD")
+        assert isinstance(layer2, AVLayer)
+        assert layer2.blending_mode == BlendingMode.DANCING_DISSOLVE
+
+    def test_dancing_dissolve_independent_of_preserve_transparency(
+        self, tmp_path: Path
+    ) -> None:
+        # The dancing flag and preserve-underlying-transparency share one ldta
+        # byte (bits 1 and 0). Setting one must not disturb the other.
+        project = parse_project_fresh(SAMPLES_DIR / "blendingMode.aep")
+        layer = get_layer(project, "blendingMode_ADD")
+        assert isinstance(layer, AVLayer)
+        layer.blending_mode = BlendingMode.DANCING_DISSOLVE
+        layer.preserve_transparency = True
+        out = tmp_path / "dancing_pt.aep"
+        project.save(out)
+        layer2 = get_layer(parse_aep(out).project, "blendingMode_ADD")
+        assert layer2.blending_mode == BlendingMode.DANCING_DISSOLVE
+        assert layer2.preserve_transparency is True
+        # Switching to a non-Dissolve mode clears only the dancing flag.
+        layer2.blending_mode = BlendingMode.NORMAL
+        assert layer2.preserve_transparency is True
+
     def test_modify_three_d_layer(self, tmp_path: Path) -> None:
         project = parse_project_fresh(SAMPLES_DIR / "avlayer_flags.aep")
         layer = get_layer(project, "threeDLayer_true")

@@ -199,7 +199,12 @@ class BlendingMode(IntEnum):
         return _BLENDING_MODE_BINARY_MAP.get(value, cls.NORMAL)
 
     def to_binary(self) -> int:
-        """Convert BlendingMode to binary value."""
+        """Convert BlendingMode to its binary transfer-mode value.
+
+        Dancing Dissolve shares Dissolve's transfer value (3); the two are
+        distinguished by a flag bit in the layer's `ldta`, set by
+        `AVLayer.blending_mode`, not by this value.
+        """
         return _BLENDING_MODE_TO_BINARY[self]
 
 
@@ -251,6 +256,10 @@ _BLENDING_MODE_BINARY_MAP: dict[int, BlendingMode] = {
 _BLENDING_MODE_TO_BINARY: dict[BlendingMode, int] = {
     v: k for k, v in _BLENDING_MODE_BINARY_MAP.items()
 }
+# Dancing Dissolve has no transfer-mode value of its own - it is Dissolve plus
+# a flag bit in the layer's ldta. Map it to Dissolve's value so to_binary()
+# never fails; AVLayer.blending_mode sets the distinguishing flag separately.
+_BLENDING_MODE_TO_BINARY[BlendingMode.DANCING_DISSOLVE] = 3
 
 
 class ChannelType(IntEnum):

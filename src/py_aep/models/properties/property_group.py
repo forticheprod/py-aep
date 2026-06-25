@@ -144,7 +144,12 @@ def _reset_to_default_values(group: PropertyGroup) -> None:
         if child.default_value is not None and not _values_equal(
             child.value, child.default_value
         ):
-            child.value = child.default_value
+            # Use the parse-path writer, not the public `value` setter: an
+            # enum/popup leaf's stored default can sit below its own pard min
+            # (e.g. a no-selection 0 with min=1), which the validating setter
+            # would reject - here we are restoring AE's own default, not taking
+            # user input, so validation must not run.
+            child._cache_value(child.default_value)
 
 
 def _reorder_and_fill(
