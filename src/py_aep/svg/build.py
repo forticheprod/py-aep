@@ -167,6 +167,18 @@ def _apply_gradient(
         paint.end[1] - cy,
     ]
     _leaf(group, "ADBE Vector Grad Colors").value = _gradient_value(paint)
+    # A radial gradientTransform's vertical stretch and rotation live in Grad
+    # Scale / Grad Rotation (the start/end points only encode the x-radius);
+    # AE writes a 360-degree baseline rotation on every radial gradient. These
+    # leaves are AE 2026-only, so they are absent when importing into an
+    # older project - in which case AE itself can only render the circular
+    # approximation, so skipping them matches AE's pre-2026 behaviour.
+    if paint.scale != (100.0, 100.0):
+        _set_if_present(
+            group, "ADBE Vector Grad Scale", [paint.scale[0], paint.scale[1]]
+        )
+    if paint.rotation:
+        _set_if_present(group, "ADBE Vector Grad Rotation", paint.rotation)
 
 
 def _gradient_value(paint: GradientPaint) -> Gradient:
@@ -188,6 +200,17 @@ def _set_optional(
     """Set a leaf only when it differs from its AE default (keeps the
     output minimal, matching AE which writes only non-defaults)."""
     if value != default:
+        _leaf(group, match_name).value = value
+
+
+def _set_if_present(
+    group: PropertyGroup, match_name: str, value: list[float] | float
+) -> None:
+    """Set a leaf only if the group actually has it.
+
+    Some leaves (e.g. the AE 2026 Grad Scale / Grad Rotation) are absent
+    when importing into an older project; skip them rather than raise."""
+    if any(p.match_name == match_name for p in group.properties):
         _leaf(group, match_name).value = value
 
 

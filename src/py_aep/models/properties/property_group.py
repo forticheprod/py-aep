@@ -223,6 +223,7 @@ def _reorder_and_fill(
                 child_depth,
                 parent_property=container,
                 synthetic=True,
+                enable_flags=spec.enable_flags,
             )
             ordered.append(group)
         else:
@@ -336,6 +337,7 @@ class PropertyGroup(PropertyBase):
         *,
         parent_property: PropertyGroup | None = None,
         synthetic: bool = False,
+        enable_flags: int = 1,
     ) -> PropertyGroup:
         """Create a synthetic empty PropertyGroup with backing chunks.
 
@@ -346,8 +348,12 @@ class PropertyGroup(PropertyBase):
             parent_property: The container that owns the synthesized group.
             synthetic: If True, mark backing chunks as synthetic
                 (skipped during serialization).
+            enable_flags: `tdsb` enable-flags byte (bit 0 enabled, bit 1
+                collapsed). Defaults to `1` (enabled); pass `2` for a
+                group AE leaves disabled (e.g. an unused layer style).
         """
         _tdsb = TdsbChunk(synthetic=synthetic)
+        _tdsb._enable_flags = enable_flags
         # AE writes the unnamed sentinel; the display name resolves
         # from auto_name on the model.
         tdsn = TdsnChunk.new(TDSN_SENTINEL, synthetic=synthetic)

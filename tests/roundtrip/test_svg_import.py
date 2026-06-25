@@ -124,6 +124,39 @@ class TestSvgImportGradients:
         parse(out).project.save(again)
         assert out.read_bytes() == again.read_bytes()
 
+    def test_radial_gradient_transform_becomes_grad_scale(self) -> None:
+        # The butterfly's four wings use radial gradients with a vertical
+        # gradientTransform stretch (matrix(1 0 0 N ...), N in {2,3,4}). AE
+        # 2026 stores that aspect ratio in Grad Scale; without it the wing
+        # gradients render as circles instead of tall ellipses. Import into a
+        # fresh (2026) project so the Grad Scale / Grad Rotation leaves exist.
+        from py_aep import new
+
+        app = new()
+        opts = ImportOptions(ASSETS / "butterfly.svg")
+        opts.import_as = ImportAsType.COMP_CROPPED_LAYERS
+        comp = app.project.import_file(opts)
+        assert isinstance(comp, CompItem)
+        contents = comp.layers[0].property("ADBE Root Vectors Group")
+        assert isinstance(contents, PropertyGroup)
+
+        scales_y = []
+        for group in contents.properties:
+            if group.match_name != "ADBE Vector Group":
+                continue
+            inner = group["ADBE Vectors Group"]
+            for child in inner.properties:
+                if child.match_name != "ADBE Vector Graphic - G-Fill":
+                    continue
+                if child["ADBE Vector Grad Type"].value != 2.0:  # radial only
+                    continue
+                # Every radial gradient carries AE's 360-degree baseline.
+                assert child["ADBE Vector Grad Rotation"].value == pytest.approx(360.0)
+                scales_y.append(child["ADBE Vector Grad Scale"].value[1])
+        # Five radial gradients: four stretched wings (200/200/300/400) plus
+        # the unstretched body (100).
+        assert sorted(round(s) for s in scales_y) == [100, 200, 200, 300, 400]
+
 
 class TestSvgImportByteFidelity:
     """Byte-level fidelity fixes surfaced by aep-compare vs AE's import."""
@@ -159,6 +192,38 @@ class TestSvgImportByteFidelity:
             if getattr(c, "chunk_type", None) == "tdsb"
         )
         assert tdsb._enable_flags == 3
+
+    def test_layer_styles_synthesized_disabled(self, tmp_path: Path) -> None:
+        # Every layer style must stay OFF on a freshly synthesized layer. The
+        # tdsb enable bit (bit 0) is written to disk, so a stray "enabled"
+        # toggle makes AE apply that style on open - notably a default-red
+        # Color Overlay, which painted the whole shape red. The in-memory
+        # state is masked by _derive_layer_styles_enabled, so the bug only
+        # surfaces after a save + reparse: check there.
+        app = parse(BASE)
+        comp = app.project.root_folder.add_comp("T", 100, 100, 1.0, 1.0, 30.0)
+        comp.add_shape()
+        out = tmp_path / "ls.aep"
+        app.project.save(out)
+
+        reparsed = parse(out)
+        layer = next(
+            item.layers[0]
+            for item in reparsed.project.items.values()
+            if getattr(item, "layers", None)
+        )
+        styles = layer["ADBE Layer Styles"]
+        assert isinstance(styles, PropertyGroup)
+        assert styles.enabled is False
+        assert styles._tdsb is not None and styles._tdsb.synthetic is False
+        assert styles._tdsb._enable_flags == 3  # enabled+collapsed parent
+        for child in styles.properties:
+            assert child.enabled is False, child.match_name
+            assert child._tdsb is not None
+            # Blending Options mirrors the parent (3); the 10 style toggles
+            # are disabled (2 = bit 0 clear).
+            expected = 3 if child.match_name == "ADBE Blend Options Group" else 2
+            assert child._tdsb._enable_flags == expected, child.match_name
 
     def test_menu_leaf_has_no_bound_chunks(self) -> None:
         # Bounded but non-animatable menu leaves (e.g. Stroke Line Cap) must

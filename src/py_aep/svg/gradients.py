@@ -12,6 +12,7 @@ module only produces the geometric/stop representation.
 
 from __future__ import annotations
 
+import math
 from xml.etree.ElementTree import Element
 
 from ._util import NUMBER_RE, local_name
@@ -159,15 +160,34 @@ def resolve_gradient(
         y2 = _coord(gd.attr("y2", "0%"), bh, min_y, object_bbox)
         start = base.apply(x1, y1)
         end = base.apply(x2, y2)
+        return GradientPaint(kind=gd.kind, stops=gd.stops, start=start, end=end)
+
+    cx = _coord(gd.attr("cx", "50%"), bw, min_x, object_bbox)
+    cy = _coord(gd.attr("cy", "50%"), bh, min_y, object_bbox)
+    # Radius as a fraction of the bbox diagonal-ish span.
+    r_text = gd.attr("r", "50%").strip()
+    if r_text.endswith("%"):
+        r = _num(r_text) / 100.0 * (bw if object_bbox else 1.0)
     else:
-        cx = _coord(gd.attr("cx", "50%"), bw, min_x, object_bbox)
-        cy = _coord(gd.attr("cy", "50%"), bh, min_y, object_bbox)
-        # Radius as a fraction of the bbox diagonal-ish span.
-        r_text = gd.attr("r", "50%").strip()
-        if r_text.endswith("%"):
-            r = _num(r_text) / 100.0 * (bw if object_bbox else 1.0)
-        else:
-            r = _num(r_text)
-        start = base.apply(cx, cy)
-        end = base.apply(cx + r, cy)
-    return GradientPaint(kind=gd.kind, stops=gd.stops, start=start, end=end)
+        r = _num(r_text)
+    start = base.apply(cx, cy)
+    end = base.apply(cx + r, cy)
+    # `start`/`end` only carry the x-radius, so a `gradientTransform` that
+    # stretches the gradient vertically (e.g. `matrix(1 0 0 4 ...)`, common
+    # for SVG wing/petal gradients) would collapse to a circle. Recover the
+    # ellipse: AE stores the y/x aspect ratio in Grad Scale and the x-axis
+    # angle in Grad Rotation (with 360 as the un-rotated radial baseline).
+    edge_y = base.apply(cx, cy + r)
+    x_radius = math.hypot(end[0] - start[0], end[1] - start[1])
+    y_radius = math.hypot(edge_y[0] - start[0], edge_y[1] - start[1])
+    scale_y = 100.0 * y_radius / x_radius if x_radius else 100.0
+    angle = math.degrees(math.atan2(end[1] - start[1], end[0] - start[0]))
+    rotation = angle if abs(angle) > 1e-6 else 360.0
+    return GradientPaint(
+        kind=gd.kind,
+        stops=gd.stops,
+        start=start,
+        end=end,
+        scale=(100.0, scale_y),
+        rotation=rotation,
+    )
