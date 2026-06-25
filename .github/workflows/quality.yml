@@ -59,12 +59,10 @@ jobs:
       uses: actions/setup-python@v6
       with:
         python-version: '3.7'
-    - name: Install uv
-      uses: astral-sh/setup-uv@v7
     - name: Install dependencies
-      run: uv sync --python 3.7 --extra dev
+      run: pip install "pytest>=7.0,<8.0" "attrs>=20.1.0" "PyYAML>=5.1" "fonttools>=4.38,<4.39" "importlib_metadata" "typing_extensions>=3.7"
     - name: Test with pytest
-      run: uv run --python 3.7 python -m pytest -v --no-header -ra --tb=short --import-mode=importlib -o "addopts="
+      run: PYTHONPATH=src pytest -v --no-header -ra --tb=short --import-mode=importlib -o "addopts="
   pytest:
     needs: lfs
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-quality')

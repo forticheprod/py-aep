@@ -364,7 +364,7 @@ class RenderSettingsItem(FmtItem):
     )
     _flag_byte: int = u1_field(repr=False)
     comp_id: int = u4_field()
-    status: int = u4_field(default=2)  # RQItemStatus.QUEUED
+    status: int = s4_field(default=2)  # RQItemStatus.QUEUED (-1 = WILL_CONTINUE)
     _reserved_06: bytes = bytes_field(4, default=b"\x00\x03\x00\x00", repr=False)
     time_span_start_dividend: int = u4_field()
     time_span_start_divisor: int = u4_field(default=1)
