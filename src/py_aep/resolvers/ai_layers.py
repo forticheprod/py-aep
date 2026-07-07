@@ -16,6 +16,7 @@ import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..color.icc import icc_profile_description
 from ..cos import CosParser, IndirectObject, IndirectReference
 
 if TYPE_CHECKING:
@@ -54,11 +55,14 @@ def _resolve(value: Any, data: bytes, offsets: dict[int, int]) -> Any:
     return value
 
 
-def read_ai_layers(file: str | os.PathLike[str]) -> list[str]:
+def read_ai_layers(
+    file: str | os.PathLike[str], data: bytes | None = None
+) -> list[str]:
     """Return the Illustrator/PDF layer names in document order.
 
     Args:
         file: Path to a `.ai` or `.pdf` file.
+        data: The file's bytes, if the caller already read them.
 
     Returns:
         Layer names in document (OCG) order, bottom layer first.
@@ -68,7 +72,8 @@ def read_ai_layers(file: str | os.PathLike[str]) -> list[str]:
             or has no Optional Content Groups (layers).
     """
     name = Path(file).name
-    data = Path(file).read_bytes()
+    if data is None:
+        data = Path(file).read_bytes()
     if not data.startswith(b"%PDF"):
         raise UnsupportedAiLayersError(
             f"{name}: not a PDF-compatible file; layered import requires an "
@@ -100,42 +105,17 @@ def read_ai_layers(file: str | os.PathLike[str]) -> list[str]:
 _STREAM_RE = re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.DOTALL)
 
 
-def _icc_description(profile: bytes) -> str | None:
-    """Read the `desc` tag's name from an ICC profile body."""
-    if len(profile) < 132 or profile[36:40] != b"acsp":
-        return None
-    tag_count = int.from_bytes(profile[128:132], "big")
-    pos = 132
-    for _ in range(tag_count):
-        if pos + 12 > len(profile):
-            break
-        signature = profile[pos : pos + 4]
-        offset = int.from_bytes(profile[pos + 4 : pos + 8], "big")
-        size = int.from_bytes(profile[pos + 8 : pos + 12], "big")
-        pos += 12
-        if signature != b"desc":
-            continue
-        tag = profile[offset : offset + size]
-        if tag[:4] == b"desc":  # ICC v2 textDescriptionType
-            ascii_len = int.from_bytes(tag[8:12], "big")
-            text = tag[12 : 12 + ascii_len].split(b"\x00", 1)[0]
-            return text.decode("ascii", "replace") or None
-        if tag[:4] == b"mluc":  # ICC v4 multiLocalizedUnicodeType
-            rec_offset = int.from_bytes(tag[20:24], "big")
-            rec_size = int.from_bytes(tag[24:28], "big")
-            text = tag[rec_offset : rec_offset + rec_size]
-            return text.decode("utf-16-be", "replace").rstrip("\x00") or None
-    return None
-
-
-def _find_ai_icc(file: str | os.PathLike[str]) -> bytes | None:
+def _find_ai_icc(
+    file: str | os.PathLike[str], data: bytes | None = None
+) -> bytes | None:
     """Return the embedded ICC profile body from a PDF-compatible file.
 
     Inflates each deflate stream and returns the first one that is an ICC
     profile (`acsp` signature at offset 36). `None` when the file is not
     PDF-compatible or has no embedded profile.
     """
-    data = Path(file).read_bytes()
+    if data is None:
+        data = Path(file).read_bytes()
     if not data.startswith(b"%PDF"):
         return None
     for match in _STREAM_RE.finditer(data):
@@ -152,7 +132,7 @@ def _find_ai_icc(file: str | os.PathLike[str]) -> bytes | None:
 
 
 def read_ai_color_info(
-    file: str | os.PathLike[str],
+    file: str | os.PathLike[str], data: bytes | None = None
 ) -> tuple[str | None, str | None]:
     """Return `(data color space, profile name)` from the embedded ICC profile.
 
@@ -166,12 +146,13 @@ def read_ai_color_info(
 
     Args:
         file: Path to a `.ai` or `.pdf` file.
+        data: The file's bytes, if the caller already read them.
     """
-    icc = _find_ai_icc(file)
+    icc = _find_ai_icc(file, data)
     if icc is None:
         return None, None
     color_space = icc[16:20].decode("latin-1").strip() or None
-    return color_space, _icc_description(icc)
+    return color_space, icc_profile_description(icc)
 
 
 def read_ai_color_profile(file: str | os.PathLike[str]) -> str | None:

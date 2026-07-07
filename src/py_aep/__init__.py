@@ -78,6 +78,7 @@ from .enums import (
     OutputFormat,
     ParagraphDirection,
     ParagraphJustification,
+    ParametricMeshType,
     PlayMode,
     PostRenderAction,
     PREFType,
@@ -102,6 +103,7 @@ from .enums import (
     ViewerType,
 )
 from .models import (
+    CURRENT_VALUE,
     Application,
     AVItem,
     AVLayer,
@@ -126,6 +128,7 @@ from .models import (
     MaskPropertyGroup,
     OpenExrFormatOptions,
     OutputModule,
+    ParametricMeshLayer,
     PlaceholderSource,
     PngFormatOptions,
     Project,
@@ -148,6 +151,7 @@ from .models import (
     ViewOptions,
     XmlFormatOptions,
 )
+from .resolvers.source_layers import list_layers
 
 try:
     __version__ = importlib_metadata.version("py_aep")
@@ -214,6 +218,7 @@ __all__ = [
     "ImportAsType",
     "ImportOptions",
     "Item",
+    "CURRENT_VALUE",
     "JpegFormatOptions",
     "Keyframe",
     "KeyframeEase",
@@ -229,6 +234,7 @@ __all__ = [
     "LinearLightMode",
     "LineJoinType",
     "LineOrientation",
+    "list_layers",
     "LogType",
     "LoopMode",
     "LutInterpolationMethod",
@@ -246,6 +252,8 @@ __all__ = [
     "OutputColorMode",
     "OutputFormat",
     "OutputModule",
+    "ParametricMeshLayer",
+    "ParametricMeshType",
     "ParagraphDirection",
     "ParagraphJustification",
     "parse",

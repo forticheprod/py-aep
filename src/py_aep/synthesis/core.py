@@ -28,6 +28,7 @@ from ..enums import PropertyValueType
 from ..models.layers.av_layer import AVLayer
 from ..models.layers.camera_layer import CameraLayer
 from ..models.layers.light_layer import LightLayer
+from ..models.layers.parametric_mesh_layer import ParametricMeshLayer
 from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
 from ..models.properties.property import Property
@@ -38,10 +39,12 @@ from ..models.properties.property_group import (
     _reorder_and_fill,
 )
 from .specs import (
-    _CAMERA_LIGHT_GROUPS,
-    _REGULAR_AV_ONLY_GROUPS,
-    _SHAPE_ONLY_GROUPS,
-    _TEXT_ONLY_GROUPS,
+    _PARAMETRIC_MESH_TOP_LEVEL_SPECS,
+    _SKIP_FOR_CAMERA,
+    _SKIP_FOR_LIGHT,
+    _SKIP_FOR_REGULAR_AV,
+    _SKIP_FOR_SHAPE,
+    _SKIP_FOR_TEXT,
     _TOP_LEVEL_SPECS,
     _TRANSFORM_FIXED_DEFAULTS,
     _TRANSFORM_SPECS,
@@ -85,34 +88,32 @@ def _synthesize_missing_top_level_groups(layer: Layer, ae_major: int) -> None:
     groups that contain data.  This function synthesizes the missing empty
     groups and reorders all groups to match the canonical ExtendScript order.
     """
-    if isinstance(layer, (CameraLayer, LightLayer)):
-        own_options = (
-            "ADBE Camera Options Group"
-            if isinstance(layer, CameraLayer)
-            else "ADBE Light Options Group"
-        )
-        skip_groups = frozenset(
-            s.match_name
-            for s in _TOP_LEVEL_SPECS
-            if s.match_name not in ("ADBE Marker", "ADBE Transform Group", own_options)
-        )
+    specs = _TOP_LEVEL_SPECS
+    if isinstance(layer, CameraLayer):
+        skip_groups = _SKIP_FOR_CAMERA
+    elif isinstance(layer, LightLayer):
+        skip_groups = _SKIP_FOR_LIGHT
     elif not isinstance(layer, AVLayer):
         return
     elif isinstance(layer, TextLayer):
-        skip_groups = (
-            _REGULAR_AV_ONLY_GROUPS | _SHAPE_ONLY_GROUPS | _CAMERA_LIGHT_GROUPS
-        )
+        skip_groups = _SKIP_FOR_TEXT
     elif isinstance(layer, ShapeLayer):
-        skip_groups = _REGULAR_AV_ONLY_GROUPS | _TEXT_ONLY_GROUPS | _CAMERA_LIGHT_GROUPS
-    else:
-        skip_groups = _TEXT_ONLY_GROUPS | _SHAPE_ONLY_GROUPS | _CAMERA_LIGHT_GROUPS
+        skip_groups = _SKIP_FOR_SHAPE
+    elif isinstance(layer, ParametricMeshLayer):
+        # Mesh layers expose a different group set AND order (Geometry
+        # Options / Essential Properties after Material Assignment), so
+        # they use their own full spec list instead of a skip set.
+        specs = _PARAMETRIC_MESH_TOP_LEVEL_SPECS
+        skip_groups = frozenset()
+    else:  # AVLayer
+        skip_groups = _SKIP_FOR_REGULAR_AV
 
     _reorder_and_fill(
-        layer, _TOP_LEVEL_SPECS, 1, skip=skip_groups, tail_mode="all", ae_major=ae_major
+        layer, specs, 1, skip=skip_groups, tail_mode="all", ae_major=ae_major
     )
 
     # Post-processing: Layer Sets elided flag and depth fixup.
-    canonical_mns = {s.match_name for s in _TOP_LEVEL_SPECS}
+    canonical_mns = {s.match_name for s in specs}
     for child in layer.properties:
         if child.match_name == "ADBE Layer Sets":
             child._elided = True
@@ -155,7 +156,10 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
     comp_w = layer.containing_comp.width
     comp_h = layer.containing_comp.height
     if isinstance(layer, AVLayer):
-        if isinstance(layer, (TextLayer, ShapeLayer)) or layer.null_layer:
+        if (
+            isinstance(layer, (TextLayer, ShapeLayer, ParametricMeshLayer))
+            or layer.null_layer
+        ):
             # Source-less AVLayers: anchor defaults to origin
             anchor_w = 0
             anchor_h = 0

@@ -3,7 +3,7 @@
 from .application import Application
 from .essential_graphics import EssentialGraphicsController
 from .guide import Guide
-from .import_options import ImportOptions
+from .import_options import CURRENT_VALUE, ImportOptions
 from .items.av_item import AVItem
 from .items.composition import CompItem
 from .items.folder import FolderItem
@@ -13,6 +13,7 @@ from .layers.av_layer import AVLayer
 from .layers.camera_layer import CameraLayer
 from .layers.layer import Layer
 from .layers.light_layer import LightLayer
+from .layers.parametric_mesh_layer import ParametricMeshLayer
 from .layers.shape_layer import ShapeLayer
 from .layers.text_layer import TextLayer
 from .layers.three_d_model_layer import ThreeDModelLayer
@@ -65,6 +66,7 @@ __all__ = [
     "Guide",
     "ImportOptions",
     "Item",
+    "CURRENT_VALUE",
     "JpegFormatOptions",
     "Keyframe",
     "KeyframeEase",
@@ -74,6 +76,7 @@ __all__ = [
     "MaskPropertyGroup",
     "OpenExrFormatOptions",
     "OutputModule",
+    "ParametricMeshLayer",
     "PlaceholderSource",
     "PngFormatOptions",
     "Project",

@@ -90,7 +90,7 @@ class GradientPaint:
 class StrokeStyle:
     """Stroke appearance for a drawable."""
 
-    paint: object
+    paint: SolidPaint | GradientPaint
     """SolidPaint or GradientPaint."""
 
     width: float
@@ -121,7 +121,7 @@ class SvgDrawable:
     subpaths: list[Subpath]
     """Outline(s); compound paths produce multiple subpaths."""
 
-    fill: object = None
+    fill: SolidPaint | GradientPaint | None = None
     """SolidPaint, GradientPaint, or None."""
 
     stroke: StrokeStyle | None = None

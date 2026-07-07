@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import struct
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from py_aep.binary.footage_chunks import (
     build_psd_layer_opti_data,
     build_text_opti_data,
 )
-from py_aep.models.import_options import ImportOptions
+from py_aep.models.import_options import CURRENT_VALUE, ImportOptions
 from py_aep.models.items.composition import CompItem
 from py_aep.models.items.folder import FolderItem
 from py_aep.models.items.footage import FootageItem
@@ -1065,3 +1066,394 @@ class TestLayeredImportFolderOrder:
             "red box/layer_bounds.psd",
         ]
         assert self._folder_order(project) == self._folder_order(fixture)
+
+
+# ---------------------------------------------------------------------------
+# Chosen-layer footage import ("Choose Layer" in AE's import dialog)
+# ---------------------------------------------------------------------------
+
+# sspc byte offsets where py's still-image imports are known to diverge from
+# AE 2026: time divisors (0x2C-0x2D), undecoded still-import flag bytes
+# (0x3F-0x41, 0x4F), the _reserved_6f region (0x6F-0x73, an unknown byte AE
+# moves between 0x71 and 0x72 across import/replace), and the _reserved_74
+# filesystem fingerprint (0x74-0x7C). The layer-binding region (0xBC-0xD3)
+# is deliberately NOT masked.
+_SSPC_NOISE = (
+    frozenset(range(0x2C, 0x2E))
+    | frozenset({0x3F, 0x40, 0x41, 0x4F})
+    | frozenset(range(0x6F, 0x7D))
+)
+
+
+def _layer_opts(
+    file: Path, layer: int | None = None, dims: str | None = None
+) -> ImportOptions:
+    opts = ImportOptions(file)
+    if layer is not None:
+        opts.layer_index = layer
+    if dims is not None:
+        opts.layer_dimensions = dims
+    return opts
+
+
+def _footage_parts(project: object) -> tuple[str, bytes, bytes, str]:
+    """(item name, sspc bytes, opti bytes, post-sspc Pin Utf8) of the single
+    file footage item."""
+    for item in project.items.values():  # type: ignore[attr-defined]
+        if isinstance(item, FootageItem) and isinstance(item.main_source, FileSource):
+            src = item.main_source
+            pin = src._pin.chunks
+            sspc_i = next(i for i, c in enumerate(pin) if c.chunk_type == "sspc")
+            return (
+                item.name,
+                _sspc_bytes(src),
+                src._opti.tobytes(),
+                pin[sspc_i + 1].value,
+            )
+    raise AssertionError("no file footage item in project")
+
+
+def _assert_sspc_matches(
+    ae: bytes, mine: bytes, extra_noise: frozenset = frozenset()
+) -> None:
+    assert len(ae) == len(mine)
+    noise = _SSPC_NOISE | extra_noise
+    diffs = [
+        f"0x{off:03x}: ae={ae[off]:02x} py={mine[off]:02x}"
+        for off in range(len(ae))
+        if off not in noise and ae[off] != mine[off]
+    ]
+    assert not diffs, diffs
+
+
+class TestChooseLayerImport:
+    """FOOTAGE import of a single layer, vs AE 2026 chooser fixtures.
+
+    `choose_layer.psd` is a 60x40 RGB/8 doc; bottom-to-top: `solo` (lyid 2,
+    L4 T6 R24 B20), `twin` (lyid 3), group `grp` holding `inner` (lyid 6),
+    `twin` (lyid 4). The duplicate `twin` names are intentional.
+    `list_layers` (top first): `["twin", "inner", "twin", "solo"]`, so
+    `solo` is index 3 and `inner` index 1.
+    """
+
+    @pytest.mark.parametrize(
+        "fixture,asset,layer,dims",
+        [
+            ("choose_layer_merged.aep", "choose_layer.psd", None, None),
+            ("choose_layer_solo_doc.aep", "choose_layer.psd", 3, None),
+            ("choose_layer_solo_doc.aep", "choose_layer.psd", 3, "document"),
+            ("choose_layer_solo_layer.aep", "choose_layer.psd", 3, "layer"),
+            ("choose_layer_inner.aep", "choose_layer.psd", 1, None),
+            ("ai_choose_layer.aep", "ai.ai", 0, None),
+        ],
+    )
+    def test_matches_ae_fixture(
+        self, fixture: str, asset: str, layer: int | None, dims: str | None
+    ) -> None:
+        # Name-matched byte parity of the load-bearing chunks: opti and the
+        # post-sspc Utf8 exactly, sspc outside the known still-import noise.
+        ae_name, ae_sspc, ae_opti, ae_utf8 = _footage_parts(
+            parse_aep(IMPORT_DIR / fixture).project
+        )
+        project = parse_aep(BASE).project
+        project.import_file(_layer_opts(ASSETS / asset, layer, dims))
+        name, sspc, opti, utf8 = _footage_parts(project)
+        assert name == ae_name
+        assert opti == ae_opti
+        assert utf8 == ae_utf8
+        _assert_sspc_matches(ae_sspc, sspc)
+
+    def test_layer_size_dimensions(self) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(_layer_opts(ASSETS / "choose_layer.psd", 3, "layer"))
+        # solo content box is L4 T6 R24 B20 -> 20x14.
+        assert (item.width, item.height) == (20, 14)
+
+    def test_source_layer_name_property(self) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(_layer_opts(ASSETS / "choose_layer.psd", 3))
+        assert isinstance(item, FootageItem)
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_name == "solo"
+        merged = project.import_file(_layer_opts(ASSETS / "choose_layer.psd"))
+        assert isinstance(merged, FootageItem)
+        merged_source = merged.main_source
+        assert isinstance(merged_source, FileSource)
+        assert merged_source.layer_name == ""
+
+    def test_duplicate_names_disambiguated_by_index(self) -> None:
+        # Both `twin` layers (indices 0 and 2, lyid 4 and 3) are
+        # individually addressable - the reason selection is by index.
+        project = parse_aep(BASE).project
+        top = project.import_file(_layer_opts(ASSETS / "choose_layer.psd", 0))
+        bottom = project.import_file(_layer_opts(ASSETS / "choose_layer.psd", 2))
+        assert isinstance(top, FootageItem) and isinstance(bottom, FootageItem)
+        top_source, bottom_source = top.main_source, bottom.main_source
+        assert isinstance(top_source, FileSource)
+        assert isinstance(bottom_source, FileSource)
+        assert top_source.layer_name == bottom_source.layer_name == "twin"
+        assert top_source._sspc.layer_id == 4
+        assert bottom_source._sspc.layer_id == 3
+
+    def test_out_of_range_layer_index_raises(self) -> None:
+        project = parse_aep(BASE).project
+        with pytest.raises(ValueError, match="layer_index 4 out of range"):
+            project.import_file(_layer_opts(ASSETS / "choose_layer.psd", 4))
+
+    def test_layer_index_with_comp_import_raises(self) -> None:
+        opts = _layer_opts(ASSETS / "choose_layer.psd", 3)
+        opts.import_as = ImportAsType.COMP
+        with pytest.raises(ValueError, match="FOOTAGE only"):
+            parse_aep(BASE).project.import_file(opts)
+
+    def test_layer_index_with_sequence_raises(self) -> None:
+        opts = _layer_opts(ASSETS / "choose_layer.psd", 3)
+        opts.sequence = True
+        with pytest.raises(ValueError, match="sequence"):
+            parse_aep(BASE).project.import_file(opts)
+
+    def test_layer_dimensions_without_layer_index_raises(self) -> None:
+        opts = ImportOptions(ASSETS / "choose_layer.psd")
+        opts.layer_dimensions = "layer"
+        with pytest.raises(ValueError, match="requires layer_index"):
+            parse_aep(BASE).project.import_file(opts)
+
+    def test_layer_index_non_layered_file_raises(self) -> None:
+        project = parse_aep(BASE).project
+        with pytest.raises(ValueError, match="layered"):
+            project.import_file(_layer_opts(ASSETS / "image_with_alpha.png", 0))
+
+    def test_ai_layer_size_not_implemented(self) -> None:
+        project = parse_aep(BASE).project
+        with pytest.raises(NotImplementedError, match="artwork bounds"):
+            project.import_file(_layer_opts(ASSETS / "ai.ai", 0, "layer"))
+
+    @pytest.mark.parametrize(
+        "fixture,layer,expected_box,expected_size",
+        [
+            # Calque 1 has artwork: its box is fractional and offset from
+            # the page origin; AE ceils the box size to 482x437 footage px.
+            (
+                "ai_choose_layer1_size.aep",
+                "Calque 1",
+                (112.748, 239.5073, 593.931, 675.999),
+                (482, 437),
+            ),
+            # Calque 2 is empty: AE stores a 1/65536-epsilon box and floors
+            # the footage at 1x1.
+            (
+                "ai_choose_layer_size.aep",
+                "Calque 2",
+                (0.0, 0.0, 1 / 65536, 1 / 65536),
+                (1, 1),
+            ),
+        ],
+    )
+    def test_ai_layer_size_opti_stores_artwork_bounds(
+        self,
+        fixture: str,
+        layer: str,
+        expected_box: tuple[float, float, float, float],
+        expected_size: tuple[int, int],
+    ) -> None:
+        # An AI Layer Size import stores the layer's artwork bounding box
+        # (4x signed BE 16.16 at 0x10, page points) in place of the
+        # full-page box; py cannot compute the box (it would require
+        # rendering the PDF content), but the builder reproduces AE's opti
+        # byte-for-byte given the box, pinning the 16.16 layout.
+        _name, sspc, ae_opti, _utf8 = _footage_parts(
+            parse_aep(IMPORT_DIR / fixture).project
+        )
+        box = tuple(v / 65536 for v in struct.unpack(">4i", ae_opti[0x10:0x20]))
+        assert box == pytest.approx(expected_box, abs=1e-4)
+        assert ae_opti == build_ai_layer_opti_data(
+            612, 792, layer, "CMYK", artwork_bounds=box
+        )
+        # sspc holds the derived integer dims and the Layer Size markers.
+        assert struct.unpack(">H", sspc[0x20:0x22])[0] == expected_size[0]
+        assert struct.unpack(">H", sspc[0x24:0x26])[0] == expected_size[1]
+        assert sspc[0xC7] == 0  # full_frame off, like a PSD Layer Size
+
+    def test_roundtrip_byte_identical(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        project.import_file(_layer_opts(ASSETS / "choose_layer.psd", 3))
+        project.import_file(_layer_opts(ASSETS / "ai.ai", 0))
+        out = tmp_path / "chooser.aep"
+        project.save(out)
+        out2 = tmp_path / "chooser2.aep"
+        parse_aep(out).project.save(out2)
+        assert out.read_bytes() == out2.read_bytes()
+
+    def test_reparse_keeps_binding(self, tmp_path: Path) -> None:
+        # Disk round-trip, not in-memory: the saved bytes must decode back
+        # to the same layer binding.
+        project = parse_aep(BASE).project
+        project.import_file(_layer_opts(ASSETS / "choose_layer.psd", 1))
+        out = tmp_path / "chooser.aep"
+        project.save(out)
+        name, sspc, _opti, utf8 = _footage_parts(parse_aep(out).project)
+        assert name == "inner/choose_layer.psd"
+        assert utf8 == "inner"
+        assert sspc[0xBC:0xC4] == bytes.fromhex("0000000600000003")
+
+
+class TestChooseLayerReplace:
+    """FootageItem.replace layer rebinding, vs the AE replace fixtures.
+
+    `choose_layer_v2.psd` `list_layers` (top first):
+    `["extra", "twin", "solo"]`, so `extra` is index 0 and `solo` index 2.
+    """
+
+    def _import(self, layer: int | None, dims: str | None = None) -> tuple:
+        project = parse_aep(BASE).project
+        item = project.import_file(
+            _layer_opts(ASSETS / "choose_layer.psd", layer, dims)
+        )
+        assert isinstance(item, FootageItem)
+        return project, item
+
+    def test_replace_explicit_index_rebinds(self) -> None:
+        # AE re-derives index/lyid/bounds/layer_count from the new file.
+        project, item = self._import(3)
+        item.replace(ASSETS / "choose_layer_v2.psd", layer_index=2)
+        ae = _footage_parts(
+            parse_aep(IMPORT_DIR / "choose_layer_replace_same.aep").project
+        )
+        name, sspc, opti, utf8 = _footage_parts(project)
+        assert name == ae[0] == "solo/choose_layer_v2.psd"
+        assert opti == ae[2]
+        assert utf8 == ae[3]
+        _assert_sspc_matches(ae[1], sspc)
+
+    def test_replace_with_flat_file_drops_binding(self) -> None:
+        project, item = self._import(3)
+        item.replace(ASSETS / "image_with_alpha.png")
+        ae = _footage_parts(
+            parse_aep(IMPORT_DIR / "choose_layer_replace_flat.aep").project
+        )
+        name, sspc, _opti, utf8 = _footage_parts(project)
+        assert name == ae[0] == "image_with_alpha.png"
+        assert utf8 == ae[3] == ""
+        # py's empty opti and unwritten 0xD0 cache size for plain stills are
+        # pre-existing accepted divergences, so mask 0xD0-0xD3 here.
+        _assert_sspc_matches(ae[1], sspc, frozenset(range(0xD0, 0xD4)))
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_name == ""
+        assert source._sspc.layer_id == 0xFFFFFFFF
+        assert source._sspc.layer_index == 0xFFFFFFFF
+
+    @pytest.mark.parametrize("initial_layer", [None, 3])
+    def test_replace_without_index_goes_merged(self, initial_layer: int | None) -> None:
+        # layer_index=None always replaces with the merged document -
+        # consistent with import_file - whether the current source was
+        # merged or bound to a single layer.
+        project, item = self._import(initial_layer)
+        item.replace(ASSETS / "choose_layer_v2.psd")
+        ae = _footage_parts(
+            parse_aep(IMPORT_DIR / "choose_layer_replace_from_merged.aep").project
+        )
+        name, sspc, opti, utf8 = _footage_parts(project)
+        assert name == ae[0] == "choose_layer_v2.psd"
+        assert opti == ae[2]
+        assert utf8 == ae[3] == ""
+        _assert_sspc_matches(ae[1], sspc)
+
+    def test_replace_current_value_rebinds_same_record(self) -> None:
+        # `solo` has record index 0 in both files, so CURRENT_VALUE lands on
+        # the same layer AE's Replace Footage dialog preselects - the
+        # replace_same fixture applies unchanged.
+        project, item = self._import(3)
+        item.replace(ASSETS / "choose_layer_v2.psd", layer_index=CURRENT_VALUE)
+        ae = _footage_parts(
+            parse_aep(IMPORT_DIR / "choose_layer_replace_same.aep").project
+        )
+        name, sspc, opti, utf8 = _footage_parts(project)
+        assert name == ae[0] == "solo/choose_layer_v2.psd"
+        assert opti == ae[2]
+        assert utf8 == ae[3]
+        _assert_sspc_matches(ae[1], sspc)
+
+    def test_replace_current_value_from_merged_raises(self) -> None:
+        _project, item = self._import(None)
+        with pytest.raises(ValueError, match="CURRENT_VALUE requires"):
+            item.replace(ASSETS / "choose_layer_v2.psd", layer_index=CURRENT_VALUE)
+
+    def test_replace_current_value_missing_record_raises(self) -> None:
+        # `inner` is record index 3 in choose_layer.psd; v2's leaf records
+        # are [0, 1, 2], so the stored index does not resolve.
+        _project, item = self._import(1)
+        with pytest.raises(ValueError, match="stored index 3"):
+            item.replace(ASSETS / "choose_layer_v2.psd", layer_index=CURRENT_VALUE)
+
+    def test_replace_current_value_flat_file_raises(self) -> None:
+        _project, item = self._import(3)
+        with pytest.raises(ValueError, match="layered"):
+            item.replace(ASSETS / "image_with_alpha.png", layer_index=CURRENT_VALUE)
+
+    def test_replace_out_of_range_index_raises(self) -> None:
+        _project, item = self._import(1)
+        with pytest.raises(ValueError, match="layer_index 3 out of range"):
+            item.replace(ASSETS / "choose_layer_v2.psd", layer_index=3)
+
+    def test_replace_flat_with_explicit_layer_raises(self) -> None:
+        _project, item = self._import(3)
+        with pytest.raises(ValueError, match="layered"):
+            item.replace(ASSETS / "image_with_alpha.png", layer_index=0)
+
+    def test_replace_explicit_layer_binds(self) -> None:
+        # An explicit layer_index binds even from a merged source.
+        _project, item = self._import(None)
+        item.replace(ASSETS / "choose_layer_v2.psd", layer_index=0)
+        assert item.name == "extra/choose_layer_v2.psd"
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_name == "extra"
+
+    def test_replace_preserves_layer_size(self) -> None:
+        _project, item = self._import(3, "layer")
+        item.replace(ASSETS / "choose_layer_v2.psd", layer_index=2)
+        # v2 solo content box is L10 T10 R40 B30 -> 30x20, still Layer Size.
+        assert (item.width, item.height) == (30, 20)
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert not source._sspc.full_frame
+
+
+class TestCompImportLayerBinding:
+    """COMP imports write the same per-layer sspc binding + Pin Utf8 as AE."""
+
+    @pytest.mark.parametrize(
+        "fixture,asset",
+        [
+            ("layer_bounds_comp.aep", "layer_bounds.psd"),
+            ("grouped_layers_comp.aep", "grouped_layers.psd"),
+            ("flattened_rgb_comp.aep", "flattened_rgb.psd"),
+            ("ai_comp.aep", "ai.ai"),
+        ],
+    )
+    def test_per_layer_binding_matches_ae(self, fixture: str, asset: str) -> None:
+        def by_name(project: object) -> dict[str, tuple[bytes, str]]:
+            out: dict[str, tuple[bytes, str]] = {}
+            for item in project.items.values():  # type: ignore[attr-defined]
+                if isinstance(item, FootageItem) and isinstance(
+                    item.main_source, FileSource
+                ):
+                    src = item.main_source
+                    pin = src._pin.chunks
+                    sspc_i = next(
+                        i for i, c in enumerate(pin) if c.chunk_type == "sspc"
+                    )
+                    out[item.name] = (_sspc_bytes(src), pin[sspc_i + 1].value)
+            return out
+
+        ae = by_name(parse_aep(IMPORT_DIR / fixture).project)
+        project = parse_aep(BASE).project
+        project.import_file(_comp_opts(ASSETS / asset))
+        mine = by_name(project)
+        assert set(ae) <= set(mine)
+        for name, (ae_sspc, ae_utf8) in ae.items():
+            sspc, utf8 = mine[name]
+            assert utf8 == ae_utf8, name
+            _assert_sspc_matches(ae_sspc, sspc)

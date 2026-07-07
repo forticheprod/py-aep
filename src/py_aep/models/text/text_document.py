@@ -429,6 +429,12 @@ class TextDocument:
         inner["0"] = normalized.rstrip("\r") + "\r"
         self._propagate_cos()
 
+    # `fontFamily`, `fontStyle`, and `fontLocation` (deprecated ExtendScript
+    # TextDocument fields) are deliberately not exposed: AE does not store them
+    # in the .aep. It resolves them at runtime from the host font engine
+    # (CoolType) given the stored PostScript name below, so their values are
+    # host-dependent and not decodable from the binary. Use `font_object`.
+
     @property
     def font(self) -> str | None:
         """The Text layer's font PostScript name. Read / Write."""

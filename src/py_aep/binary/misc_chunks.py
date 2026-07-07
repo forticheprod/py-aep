@@ -557,7 +557,7 @@ class ScalarPardChunk(PardChunk):
     property_control_type: int = u1_field(default=2)
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
-    last_value: int = s4_field()
+    last_value_raw: int = s4_field()
     _value_str: bytes = bytes_field(32, repr=False)
     _value_desc: bytes = bytes_field(32, repr=False)
     valid_min_raw: int = s4_field()
@@ -565,6 +565,30 @@ class ScalarPardChunk(PardChunk):
     slider_min_raw: int = s4_field()
     slider_max_raw: int = s4_field()
     default_raw: int | None = s4_field(optional=True, default=None)
+
+    @property
+    def last_value(self) -> float:
+        return self.last_value_raw / 65536
+
+    @property
+    def valid_min(self) -> float:
+        return self.valid_min_raw / 65536
+
+    @property
+    def valid_max(self) -> float:
+        return self.valid_max_raw / 65536
+
+    @property
+    def slider_min(self) -> float:
+        return self.slider_min_raw / 65536
+
+    @property
+    def slider_max(self) -> float:
+        return self.slider_max_raw / 65536
+
+    @property
+    def default(self) -> float | None:
+        return None if self.default_raw is None else self.default_raw / 65536
 
 
 @define
@@ -579,8 +603,16 @@ class AnglePardChunk(PardChunk):
     property_control_type: int = u1_field(default=3)
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
-    last_value: int = s4_field()
+    last_value_raw: int = s4_field()
     default_raw: int | None = s4_field(optional=True, default=None)
+
+    @property
+    def last_value(self) -> float:
+        return self.last_value_raw / 65536
+
+    @property
+    def default(self) -> float | None:
+        return None if self.default_raw is None else self.default_raw / 65536
 
 
 @define
@@ -656,6 +688,12 @@ class SliderPardChunk(PardChunk):
     display_flags: int | None = u2_field(optional=True, default=None)
     """SDK `PF_ValueDisplayFlags`: bit 0 (PERCENT) is the only flag AE
     writes reliably for float sliders (fixed-point sliders leave it 0)."""
+
+    @property
+    def displays_percent(self) -> bool:
+        """SDK `PF_ValueDisplayFlag_PERCENT` (bit 0)."""
+        flags = self.display_flags
+        return flags is not None and bool(flags & 0x01)
 
 
 @define

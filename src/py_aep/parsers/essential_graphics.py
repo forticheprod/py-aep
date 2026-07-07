@@ -64,6 +64,8 @@ def _parse_controller(cctl_chunk: ListChunk) -> EssentialGraphicsController:
     # different CPrp from the override-side OvG2/CPrp. Absent for some
     # controllers -> empty path.
     source_property_path: list[SourcePropertyRef] = []
+    source_comp_id: int | None = None
+    source_layer_id: int | None = None
     try:
         cprp = find_by_list_type(chunks=cctl_chunk.chunks, list_type="CPrp")
     except ChunkNotFoundError:
@@ -74,12 +76,22 @@ def _parse_controller(cctl_chunk: ListChunk) -> EssentialGraphicsController:
             source_property_path = _parse_source_property_path(
                 cast("Utf8Chunk", path_utf8[0]).value
             )
+        # CCId / CLId identify the source comp + layer that own the
+        # controlled property (the layer is matched by its `layer_id`).
+        ccid = filter_by_type(chunks=cprp.chunks, chunk_type="CCId")
+        if ccid:
+            source_comp_id = cast("U4Chunk", ccid[0]).value
+        clid = filter_by_type(chunks=cprp.chunks, chunk_type="CLId")
+        if clid:
+            source_layer_id = cast("U4Chunk", clid[0]).value
 
     return EssentialGraphicsController(
         _name_utf8=name_utf8,
         _ctyp=ctyp,
         uuid=uuid,
         source_property_path=source_property_path,
+        source_comp_id=source_comp_id,
+        source_layer_id=source_layer_id,
     )
 
 

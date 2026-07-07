@@ -86,7 +86,7 @@ The library provides classes that mirror After Effects' object model:
 - `Viewer`, `View`, `ViewOptions`: Viewer panels and view settings
 - `Project`: Root project object
 - `Item`, `AVItem`, `FolderItem`, `CompItem`, `FootageItem`: Project items
-- `AVLayer`, `TextLayer`, `ShapeLayer`, `ThreeDModelLayer`, `CameraLayer`, `LightLayer`: Layer types
+- `AVLayer`, `TextLayer`, `ShapeLayer`, `ThreeDModelLayer`, `CameraLayer`, `LightLayer`, `ParametricMeshLayer`: Layer types
 - `PropertyBase`, `Property`, `PropertyGroup`, `MaskPropertyGroup`: Layer properties
 - `Keyframe`, `KeyframeEase`, `MarkerValue`, `Shape`, `FeatherPoint`, `Gradient`: Animation and property value data
 - `Guide`: Composition ruler guide

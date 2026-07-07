@@ -234,6 +234,68 @@ class TestRemoveKey:
             op.remove_key(99)
 
 
+class TestMoveKeyframe:
+    """Writing Keyframe.time / frame_time re-sorts keyframes and chunks."""
+
+    def test_move_past_neighbour_resorts(self, tmp_path: Path) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        assert len(op.keyframes) >= 2
+        for i, kf in enumerate(op.keyframes):
+            kf.value = 10.0 * (i + 1)
+        first = op.keyframes[0]
+        first.time = op.keyframes[-1].time + 1.0
+        assert op.keyframes[-1] is first
+        times = [kf.frame_time for kf in op.keyframes]
+        assert times == sorted(times)
+        # prev/next chain follows the new order.
+        assert first._next is None
+        assert op.keyframes[-2]._next is first
+        app2 = _roundtrip(app, tmp_path)
+        op2 = _prop(app2, "ADBE Opacity")
+        times2 = [kf.frame_time for kf in op2.keyframes]
+        assert times2 == sorted(times2)
+        # The moved keyframe's value traveled with it through the save.
+        assert op2.keyframes[-1].value == pytest.approx(10.0)
+        assert op2.keyframes[0].value == pytest.approx(20.0)
+
+    def test_move_without_crossing_keeps_position(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        kf = op.keyframes[0]
+        kf.frame_time = op.keyframes[1].frame_time - 1
+        assert op.keyframes[0] is kf
+        times = [k.frame_time for k in op.keyframes]
+        assert times == sorted(times)
+
+    def test_move_onto_existing_keyframe_raises(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        original = op.keyframes[0].frame_time
+        with pytest.raises(ValueError, match="already exists"):
+            op.keyframes[0].frame_time = op.keyframes[1].frame_time
+        # The failed move left the keyframe untouched.
+        assert op.keyframes[0].frame_time == original
+
+    def test_move_marker_key_moves_container_value(self, tmp_path: Path) -> None:
+        # Markers keep their values in the parallel Nmrd container, paired
+        # by position: the container entry must travel with the keyframe.
+        from py_aep.models.properties.marker import MarkerValue
+
+        app = parse_aep(str(SAMPLES_ROOT / "models" / "marker" / "layer_marker.aep"))
+        comp = get_comp(app.project, "layer_multiple_markers")
+        mp = comp.layers[0]["ADBE Marker"]
+        assert len(mp.keyframes) >= 2
+        mp.keyframes[0].value = MarkerValue(comment="moved")
+        mp.keyframes[0].time = mp.keyframes[-1].time + 1.0
+        app2 = _roundtrip(app, tmp_path)
+        mp2 = get_comp(app2.project, "layer_multiple_markers").layers[0]["ADBE Marker"]
+        times2 = [kf.frame_time for kf in mp2.keyframes]
+        assert times2 == sorted(times2)
+        assert mp2.keyframes[-1].value.comment == "moved"
+        assert all(kf.value.comment != "moved" for kf in mp2.keyframes[:-1])
+
+
 class TestSetValueAtTime:
     def test_replace_existing_key(self) -> None:
         app = _fresh("keyframe_LINEAR.aep")

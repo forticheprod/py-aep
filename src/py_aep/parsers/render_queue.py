@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk, ListChunk
 from ..binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ..binary.mutations import LRDR_CHILD_ORDER, build_rq_settings_list
 from ..binary.render_chunks import ROUT_ITEMS_PER_RQ_ITEM, ArsiChunk, RoutChunk
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
@@ -63,17 +64,10 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
         )
     except ChunkNotFoundError:
         synthesized = True
-        # An LRdr present but lacking its settings 'list' is degenerate; rebuild
-        # it (lhd3 + synthetic ldat, mirroring RenderQueue._new) so the parse
-        # still yields an empty queue instead of raising.
-        list_settings_chunk = ListChunk(
-            list_type="list",
-            synthetic=True,
-            chunks=[
-                Lhd3Chunk(item_size=2246, item_type_raw=1, counter_b=1),
-                LdatChunk(chunk_type="ldat", synthetic=True),
-            ],
-        )
+        # An LRdr present but lacking its settings 'list' is degenerate;
+        # rebuild it so the parse still yields an empty queue instead of
+        # raising.
+        list_settings_chunk, _, _ = build_rq_settings_list(synthetic=True)
         lrdr_child_chunks.append(list_settings_chunk)
     settings_lhd3 = cast(
         "Lhd3Chunk", find_by_type(chunks=list_settings_chunk.chunks, chunk_type="lhd3")
@@ -118,7 +112,7 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
         # child order; reorder so a populated queue (after add() materializes
         # them) is written canonically. Only when we synthesized something, so
         # an untouched real file's order - hence its round-trip - is untouched.
-        _canon = {"Rhed": 0, "Rout": 1, "list": 2, "LItm": 3, "LSIf": 4}
+        _canon = {t: i for i, t in enumerate(LRDR_CHILD_ORDER)}
         lrdr_child_chunks.sort(
             key=lambda c: _canon.get(
                 getattr(c, "list_type", None) or c.chunk_type, len(_canon)

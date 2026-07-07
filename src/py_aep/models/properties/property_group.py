@@ -195,10 +195,16 @@ def _reorder_and_fill(
             child._auto_name = spec.auto_name
             if not isinstance(spec, _GroupSpec) and isinstance(child, Property):
                 child.__dict__["_color"] = spec.color
-                if spec.min_value is not None:
+                if spec.chunk_bounds_are_hints:
+                    # tdum/tduM hold UI slider hints, not real bounds:
+                    # the spec is authoritative (None = unbounded).
                     child._min_value_fallback = spec.min_value
-                if spec.max_value is not None:
                     child._max_value_fallback = spec.max_value
+                else:
+                    if spec.min_value is not None:
+                        child._min_value_fallback = spec.min_value
+                    if spec.max_value is not None:
+                        child._max_value_fallback = spec.max_value
                 if spec.can_vary_over_time is not None:
                     child._can_vary_over_time = spec.can_vary_over_time
                 if spec.units_text is not None:
@@ -600,6 +606,19 @@ class PropertyGroup(PropertyBase):
             return len(self.properties) > 0
         if self.match_name == "ADBE Vectors Group" and len(self.properties) > 0:
             return True
+        # Essential Properties override groups report modified whenever they
+        # hold any override, independent of whether a leaf differs from its
+        # source value (AE treats having an override as a modification).
+        if (
+            self.match_name in ("ADBE Layer Overrides", "ADBE Layer Overrides Group")
+            and len(self.properties) > 0
+        ):
+            return True
+        # A parametric-mesh Material Assignment parade reports modified
+        # whenever it holds a material atom (like an indexed group), even
+        # when the atom's own streams are all at default. (AE 2026.)
+        if self.match_name == "ADBE3D Para Mat Parade":
+            return len(self.properties) > 0
         return any(child.is_modified for child in self.properties)
 
     @property
@@ -953,9 +972,6 @@ class PropertyGroup(PropertyBase):
 
     def property(self, key: int | str) -> Property | PropertyGroup:
         """Look up a child property by index or name.
-
-        Mirrors ExtendScript `PropertyGroup.property(indexOrName)`.
-        Delegates to `__getitem__`.
 
         Args:
             key: An `int` index or a `str` display name / match name.

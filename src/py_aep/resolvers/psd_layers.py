@@ -14,6 +14,8 @@ import struct
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, Union
 
+from .media_probe import psd_layer_record_count
+
 if TYPE_CHECKING:
     import os
 
@@ -140,44 +142,25 @@ def read_psd_layers(file: str | os.PathLike[str]) -> list[PsdNode]:
         FlattenedPsdError: If the file has no layer records (a flattened
             document) - a subclass of `UnsupportedPsdLayersError`.
     """
-    data = Path(file).read_bytes()
     name = Path(file).name
-    if data[:4] != b"8BPS":
-        raise UnsupportedPsdLayersError(f"{name}: not a valid PSD/PSB file.")
     flattened = FlattenedPsdError(f"{name}: flattened document (no layer records).")
     # The byte-level parse below trusts the file layout; a truncated or
     # corrupt PSD would otherwise surface a raw struct.error/UnicodeDecodeError.
     # Convert those to the documented domain exception (FlattenedPsdError, a
     # subclass, still propagates since it is neither of the caught types).
     try:
-        is_psb = struct.unpack(">H", data[4:6])[0] == 2
-        len_size = 8 if is_psb else 4
-        off = 26
-        # Color Mode Data and Image Resources sections (4-byte lengths in both).
-        off += 4 + struct.unpack(">I", data[off : off + 4])[0]
-        off += 4 + struct.unpack(">I", data[off : off + 4])[0]
-        # Layer and Mask Information section. A truly flattened file (Photoshop's
-        # Image > Flatten) writes this section with length 0 - there is no Layer
-        # Info block to read, so check the length before stepping into it.
-        lm_fmt = ">I" if len_size == 4 else ">Q"
-        if off + len_size > len(data):
-            raise flattened
-        lm_len = struct.unpack(lm_fmt, data[off : off + len_size])[0]
-        off += len_size
-        if lm_len == 0:
-            raise flattened
-        # Layer Info block: its own length, then the (signed) layer record count.
-        # The Layer-and-Mask section can be non-empty (global layer-mask info
-        # present) while this nested block is empty, so check its length too -
-        # matching _probe_psd, which reads the count only when both are > 0.
-        layer_info_len = struct.unpack(lm_fmt, data[off : off + len_size])[0]
-        off += len_size
-        if layer_info_len == 0:
-            raise flattened
-        record_count = abs(struct.unpack(">h", data[off : off + 2])[0])
-        off += 2
-        if record_count == 0:
-            raise flattened
+        # Read only up to the Layer Info block: the layer records precede the
+        # channel image data, which dominates a PSD's size.
+        with Path(file).open("rb") as fp:
+            header = fp.read(26)
+            if header[:4] != b"8BPS":
+                raise UnsupportedPsdLayersError(f"{name}: not a valid PSD/PSB file.")
+            is_psb = struct.unpack(">H", header[4:6])[0] == 2
+            record_count, remaining = psd_layer_record_count(fp, is_psb)
+            if record_count == 0:
+                raise flattened
+            data = fp.read(remaining)
+        off = 0
 
         chan_len_size = 8 if is_psb else 4
         records: list[_Record] = []

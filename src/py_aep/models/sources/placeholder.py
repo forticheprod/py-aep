@@ -83,7 +83,6 @@ class PlaceholderSource(FootageSource):
             height=height,
             alpha_mode_raw=3,
             footage_missing_at_save=True,
-            work_area_end=0xFFFFFFFE,
         )
         sspc.native_frame_rate = frame_rate
         sspc.duration = duration

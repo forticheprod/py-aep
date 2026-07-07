@@ -35,6 +35,108 @@ class TestValueSetterOnKeyframedProperty:
         assert rot.value == 45.0
 
 
+class TestSetAlternateSource:
+    EG = SAMPLES_DIR / "essential_graphics" / "media_replacement.aep"
+
+    @staticmethod
+    def _override_leaf(app):
+        host = next(
+            c for c in app.project.compositions if c.name == "image_with_alpha 2"
+        )
+        layer = next(la for la in host.layers if la.essential_property_uuids)
+        overrides = next(
+            p for p in layer.properties if p.match_name == "ADBE Layer Overrides"
+        )
+        return layer, overrides.properties[0]
+
+    def test_set_alternate_source_roundtrips(self, tmp_path: Path) -> None:
+        app = parse_aep(self.EG)
+        _, alt = self._override_leaf(app)
+        master = next(
+            c for c in app.project.compositions if c.name == "image_with_alpha"
+        )
+        alt.set_alternate_source(master)
+        out = tmp_path / "media.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        _, alt2 = self._override_leaf(app2)
+        assert alt2.alternate_source is not None
+        assert alt2.alternate_source.id == master.id
+
+    def test_set_alternate_source_footage_autowraps(self, tmp_path: Path) -> None:
+        # A FootageItem argument is wrapped in a host-sized comp (named
+        # `{leaf name}_{unique footage basename}`) inside a root-level
+        # `Media Replacement Comps` folder, matching AE's UI. Verified in AE
+        # 2026: the wrapper's cdta clones the host comp and AE opens+resaves it.
+        from py_aep.models.items.composition import CompItem
+
+        app = parse_aep(self.EG)
+        _, alt = self._override_leaf(app)
+        host = next(
+            c for c in app.project.compositions if c.name == "image_with_alpha 2"
+        )
+        gif = next(
+            it
+            for it in app.project.items.values()
+            if it.name == "sequence_[001-003].gif"
+        )
+        before = set(app.project.items)
+        alt.set_alternate_source(gif)
+        created = set(app.project.items) - before
+        assert len(created) == 1  # only the wrapper comp
+
+        out = tmp_path / "media.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        _, alt2 = self._override_leaf(app2)
+        wrapper = alt2.alternate_source
+        assert isinstance(wrapper, CompItem)
+        assert wrapper.name == "image_with_alpha.png_sequence"
+        assert wrapper.parent_folder.name == "Media Replacement Comps"
+        assert (wrapper.width, wrapper.height) == (host.width, host.height)
+        assert wrapper.duration == host.duration
+        # cdta cloned from the host comp (not add_comp's fresh skeleton).
+        assert wrapper._cdta.shutter_phase == host._cdta.shutter_phase
+        assert wrapper._cdta.time_divisor == host._cdta.time_divisor
+        assert wrapper.num_layers == 1
+        assert wrapper.layers[0].source.name == "sequence_[001-003].gif"
+
+    def test_set_alternate_source_reuses_wrapper_folder(self) -> None:
+        # The `Media Replacement Comps` folder is reused, not duplicated.
+        app = parse_aep(self.EG)
+        _, alt = self._override_leaf(app)
+        gif = next(
+            it
+            for it in app.project.items.values()
+            if it.name == "sequence_[001-003].gif"
+        )
+        folders_before = [
+            it
+            for it in app.project.items.values()
+            if type(it).__name__ == "FolderItem"
+            and it.name == "Media Replacement Comps"
+        ]
+        alt.set_alternate_source(gif)
+        folders_after = [
+            it
+            for it in app.project.items.values()
+            if type(it).__name__ == "FolderItem"
+            and it.name == "Media Replacement Comps"
+        ]
+        assert len(folders_before) == 1
+        assert len(folders_after) == 1  # reused, not a second folder
+
+    def test_set_alternate_source_on_non_slot_raises(self) -> None:
+        app = parse_aep(self.EG)
+        layer, _ = self._override_leaf(app)
+        master = next(
+            c for c in app.project.compositions if c.name == "image_with_alpha"
+        )
+        pos = layer.transform.property("ADBE Position")
+        with pytest.raises(ValueError, match="media replacement"):
+            pos.set_alternate_source(master)
+
+
 class TestParentValidation:
     def _two_layers(self):
         app = parse_aep(SAMPLES_DIR / "property" / "all_animated.aep")

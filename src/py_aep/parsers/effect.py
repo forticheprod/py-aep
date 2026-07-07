@@ -150,6 +150,10 @@ def _apply_param_def_metadata(
     max_val = param_def.get("max_value")
     if max_val is not None:
         prop._max_value_fallback = max_val
+    # The pard UI slider range - distinct from the valid range and the
+    # source of an Essential Graphics slider controller's Smin/Smax.
+    prop._slider_min = param_def.get("slider_min")
+    prop._slider_max = param_def.get("slider_max")
     prop.nb_options = param_def.get("nb_options")
     prop.property_parameters = param_def.get("property_parameters")
     units = param_def.get("units_text")
@@ -507,9 +511,9 @@ def _pard_extractor(
 
 @_pard_extractor(PropertyControlType.ANGLE)
 def _extract_angle(body: Any, result: dict[str, Any]) -> None:
-    result["last_value"] = body.last_value / 65536
-    if body.default_raw is not None:
-        result["default"] = _intify(body.default_raw / 65536)
+    result["last_value"] = body.last_value
+    if body.default is not None:
+        result["default"] = _intify(body.default)
     result["property_value_type"] = PropertyValueType.OneD
 
 
@@ -560,11 +564,13 @@ def _extract_integer(body: Any, result: dict[str, Any]) -> None:
 
 @_pard_extractor(PropertyControlType.SCALAR)
 def _extract_scalar(body: Any, result: dict[str, Any]) -> None:
-    result["last_value"] = body.last_value / 65536
-    if body.default_raw is not None:
-        result["default"] = _intify(body.default_raw / 65536)
-    result["min_value"] = _intify(body.valid_min_raw / 65536)
-    result["max_value"] = _intify(body.valid_max_raw / 65536)
+    result["last_value"] = body.last_value
+    if body.default is not None:
+        result["default"] = _intify(body.default)
+    result["min_value"] = _intify(body.valid_min)
+    result["max_value"] = _intify(body.valid_max)
+    result["slider_min"] = body.slider_min
+    result["slider_max"] = body.slider_max
 
 
 @_pard_extractor(PropertyControlType.SLIDER)
@@ -577,9 +583,13 @@ def _extract_slider(body: Any, result: dict[str, Any]) -> None:
         result["min_value"] = _intify(body.valid_min)
     if math.isfinite(body.valid_max):
         result["max_value"] = _intify(body.valid_max)
-    # PF_ValueDisplayFlag_PERCENT (bit 0) is the only display flag AE
-    # serializes reliably for float sliders; it maps to unitsText "percent".
-    if body.display_flags and body.display_flags & 0x01:
+    if math.isfinite(body.slider_min):
+        result["slider_min"] = body.slider_min
+    if math.isfinite(body.slider_max):
+        result["slider_max"] = body.slider_max
+    # PF_ValueDisplayFlag_PERCENT is the only display flag AE serializes
+    # reliably for float sliders; it maps to unitsText "percent".
+    if body.displays_percent:
         result["units_text"] = "percent"
 
 

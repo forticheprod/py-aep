@@ -47,6 +47,12 @@ class _PropSpec(NamedTuple):
     """Whether AE writes `tdum`/`tduM` placeholder bound chunks for this
     property when materialized. `None` derives it from `min_value` /
     `max_value` (bounded, non-integer, non-color, non-spatial)."""
+    chunk_bounds_are_hints: bool = False
+    """Whether this property's binary `tdum`/`tduM` chunks hold UI slider
+    hints rather than real bounds (mesh option streams store 0/100
+    regardless of the actual clamp, e.g. Smoothing Angle is 0-180 with a
+    0/100 tduM). When True, `min_value`/`max_value` resolve ONLY from the
+    spec (`None` = unbounded) and the chunk values are ignored."""
 
 
 class _GroupSpec(NamedTuple):
@@ -379,6 +385,59 @@ _COMPOSITING_OPTIONS_SPECS: list[_PropSpec | _GroupSpec] = [
     ),
 ]
 
+_3D_COMPOSITING_OPTIONS_SPECS: list[_PropSpec] = [
+    _spec(
+        "ADBE Casts Shadows",
+        "Casts Shadows",
+        1.0,
+        PropertyValueType.OneD,
+        # ExtendScript reports isModified=True on mesh layers: the value
+        # is On (1) but the shared Casts Shadows default is Off (0).
+        default_value=0.0,
+        integer=True,
+        can_vary_over_time=False,
+        has_time_base=True,
+    ),
+    _spec(
+        "ADBE Accepts Shadows",
+        "Accepts Shadows",
+        1.0,
+        PropertyValueType.OneD,
+        integer=True,
+        can_vary_over_time=False,
+        has_time_base=True,
+    ),
+    _spec(
+        "ADBE Accepts Lights",
+        "Accepts Lights",
+        1.0,
+        PropertyValueType.OneD,
+        integer=True,
+        can_vary_over_time=False,
+        has_time_base=True,
+    ),
+    _spec(
+        "ADBE Appears in Reflections",
+        "Appears in Reflections",
+        1.0,
+        PropertyValueType.OneD,
+        integer=True,
+        can_vary_over_time=False,
+        has_time_base=True,
+    ),
+    _spec(
+        "ADBE Shadow Color",
+        "Shadow Color",
+        [0.0, 0.0, 0.0, 1.0],
+        PropertyValueType.COLOR,
+        min_value=_COLOR_MIN,
+        max_value=_COLOR_MAX,
+        has_time_base=True,
+        spatial_flags=0x07,
+        value_hint_type=2,
+    ),
+]
+
 # Canonical children of a mask atom ("ADBE Mask Atom").
 # Mask Path is parsed separately (complex shape data) and only present in
 # binary for some samples; placing it in specs ensures correct ordering.
@@ -515,6 +574,562 @@ _LIGHT_SPECS: list[_PropSpec | _GroupSpec] = [
         0.0,
         PropertyValueType.OneD,
         min_value=0,
+    ),
+]
+
+
+# Canonical children of "ADBE3D Para Mat Parade" as reported by ExtendScript.
+_PARA_MAT_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE3D Material Projection",
+        "Projection Mode",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=2,
+    ),
+    _spec(
+        "ADBE3D Material Texturre Offset",
+        "Texture Offset",
+        [0.0, 0.0],
+        PropertyValueType.TwoD,
+        units_text="percent",
+    ),
+    _spec(
+        "ADBE3D Material Rotation",
+        "Rotation",
+        0.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE3D Material Scale",
+        "Scale",
+        [100.0, 100.0],
+        PropertyValueType.TwoD,
+        units_text="percent",
+    ),
+    _spec(
+        "ADBE3D Base Color",
+        "Base Color",
+        [0.8, 0.8, 0.8, 1.0],
+        PropertyValueType.COLOR,
+        min_value=_COLOR_MIN,
+        max_value=_COLOR_MAX,
+    ),
+    _spec(
+        "ADBE3D Roughness",
+        "Roughness",
+        30.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+        units_text="percent",
+    ),
+    _spec(
+        "ADBE3D Metallic",
+        "Metallic",
+        30.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+        units_text="percent",
+    ),
+    _spec(
+        "ADBE3D Emission",
+        "Emission Color",
+        [0.99607843137255, 0.99607843137255, 0.99607843137255, 1.0],
+        PropertyValueType.COLOR,
+        min_value=_COLOR_MIN,
+        max_value=_COLOR_MAX,
+    ),
+    _spec(
+        "ADBE3D Emission Intensity",
+        "Emission Intensity",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+        units_text="percent",
+    ),
+    _spec(
+        "ADBE3D Ambient",
+        "Ambient Response",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=100,
+        units_text="percent",
+    ),
+]
+
+# Canonical children of "ADBE CubeMeshOptionsSGrp" as reported by ExtendScript.
+_CUBE_MESH_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE CubeWidthStrm",
+        "Width",
+        200.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE CubeHeightStrm",
+        "Height",
+        200.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE CubeDepthStrm",
+        "Depth",
+        200.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE CubeSmoothingAngleStrm",
+        "Smoothing Angle",
+        40.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=180,
+        units_text="degrees",
+    ),
+]
+
+# Canonical children of "ADBE CubeBevelOptionsSGrp".
+_CUBE_BEVEL_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE CubeBevelRadiusStrm",
+        "Radius",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE CubeBevelSidesStrm",
+        "Sides",
+        20.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=100,
+    ),
+]
+
+# Canonical children of "ADBE SphereMeshOptionsSGrp".
+_SPHERE_MESH_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE SphereRadiusStrm",
+        "Radius",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE SphereSidesStrm",
+        "Sides",
+        48.0,
+        PropertyValueType.OneD,
+        min_value=3,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE SphereSliceCapsStrm",
+        "Slice Caps",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE SphereStartAngleStrm",
+        "Slice Start",
+        0.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE SphereEndAngleStrm",
+        "Slice End",
+        360.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE SphereInvertSliceStrm",
+        "Invert Slice",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=1,
+    ),
+    _spec(
+        "ADBE SphereSmoothingAngleStrm",
+        "Smoothing Angle",
+        40.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=180,
+        units_text="degrees",
+    ),
+]
+
+# Canonical children of "ADBE PlaneMeshOptionsSGrp".
+_PLANE_MESH_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE PlaneWidthStrm",
+        "Width",
+        200.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE PlaneLengthStrm",
+        "Length",
+        200.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        # Default 1: AE reports the active (empty) Plane group's Corner
+        # Radius as 1/unmodified, while inactive groups store 0 (modified).
+        "ADBE PlaneCornerRadiusStrm",
+        "Corner Radius",
+        1.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE PlaneCornerSidesStrm",
+        "Corner Sides",
+        20.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=100,
+    ),
+]
+
+# Canonical children of "ADBE TorusMeshOptionsSGrp".
+_TORUS_MESH_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE TorusRingRadiusStrm",
+        "Ring Radius",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE TorusPipeRadiusStrm",
+        "Pipe Radius",
+        20.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE TorusRingSidesStrm",
+        "Ring Sides",
+        48.0,
+        PropertyValueType.OneD,
+        min_value=3,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE TorusPipeSidesStrm",
+        "Pipe Sides",
+        48.0,
+        PropertyValueType.OneD,
+        min_value=3,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE TorusCapsStrm",
+        "Caps",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE TorusStartAngleStrm",
+        "Slice Start",
+        0.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE TorusEndAngleStrm",
+        "Slice End",
+        360.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE TorusInvertSliceStrm",
+        "Invert Slice",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=1,
+    ),
+    _spec(
+        "ADBE TorusSmoothingAngleStrm",
+        "Smoothing Angle",
+        40.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=180,
+        units_text="degrees",
+    ),
+]
+
+# Canonical children of "ADBE ConeMeshOptionsSGrp".
+_CONE_MESH_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE ConeTopRadiusStrm",
+        "Top Radius",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE ConeBottomRadiusStrm",
+        "Bottom Radius",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE ConeHeightStrm",
+        "Height",
+        200.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE ConeSidesStrm",
+        "Sides",
+        48.0,
+        PropertyValueType.OneD,
+        min_value=3,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE ConeTopCapStrm",
+        "Top Cap",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE ConeBottomCapStrm",
+        "Bottom Cap",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE ConeSliceCapsStrm",
+        "Slice Caps",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE ConeStartAngleStrm",
+        "Slice Start",
+        0.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE ConeEndAngleStrm",
+        "Slice End",
+        360.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE ConeInvertSliceStrm",
+        "Invert Slice",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=1,
+    ),
+    _spec(
+        "ADBE ConeSmoothingAngleStrm",
+        "Smoothing Angle",
+        40.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=180,
+        units_text="degrees",
+    ),
+]
+
+# Canonical children of "ADBE ConeBevelBevelSGrp".
+_CONE_BEVEL_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE ConeBevelTopRadiusStrm",
+        "Top Radius",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE ConeBevelTopSidesStrm",
+        "Top Sides",
+        20.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE ConeBevelBottomRadiusStrm",
+        "Bottom Radius",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE ConeBevelBottomSidesStrm",
+        "Bottom Sides",
+        20.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=100,
+    ),
+]
+
+# Canonical children of "ADBE CylinderMeshOptionsSGrp".
+_CYLINDER_MESH_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE CylinderRadiusStrm",
+        "Radius",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE CylinderHeightStrm",
+        "Height",
+        200.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE CylinderSidesStrm",
+        "Sides",
+        48.0,
+        PropertyValueType.OneD,
+        min_value=3,
+        max_value=100,
+    ),
+    _spec(
+        "ADBE CylinderTopCapStrm",
+        "Top Cap",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE CylinderBottomCapStrm",
+        "Bottom Cap",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE CylinderSliceCapsStrm",
+        "Slice Caps",
+        1.0,
+        PropertyValueType.OneD,
+    ),
+    _spec(
+        "ADBE CylinderStartAngleStrm",
+        "Slice Start",
+        0.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE CylinderEndAngleStrm",
+        "Slice End",
+        360.0,
+        PropertyValueType.OneD,
+        units_text="degrees",
+    ),
+    _spec(
+        "ADBE CylinderInvertSliceStrm",
+        "Invert Slice",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=1,
+    ),
+    _spec(
+        "ADBE CylinderSmoothingAngleStrm",
+        "Smoothing Angle",
+        40.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=180,
+        units_text="degrees",
+    ),
+]
+
+# Canonical children of "ADBE CylinderBevelOptionsSGrp".
+_CYLINDER_BEVEL_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE CylinderBevelRadiusStrm",
+        "Radius",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+    ),
+    _spec(
+        "ADBE CylinderBevelSidesStrm",
+        "Sides",
+        20.0,
+        PropertyValueType.OneD,
+        min_value=1,
+        max_value=100,
+    ),
+]
+
+
+def _hint_bounds(specs: list[_PropSpec]) -> list[_PropSpec]:
+    """Mark every spec's tdum/tduM as UI slider hints (see
+    `_PropSpec.chunk_bounds_are_hints`)."""
+    return [s._replace(chunk_bounds_are_hints=True) for s in specs]
+
+
+# Mesh option streams store 0/100 UI slider hints in tdum/tduM regardless
+# of the actual clamp (verified against AE 2026 ExtendScript min/max).
+_CUBE_MESH_OPTIONS_SPEC = _hint_bounds(_CUBE_MESH_OPTIONS_SPEC)
+_CUBE_BEVEL_OPTIONS_SPEC = _hint_bounds(_CUBE_BEVEL_OPTIONS_SPEC)
+_SPHERE_MESH_OPTIONS_SPEC = _hint_bounds(_SPHERE_MESH_OPTIONS_SPEC)
+_PLANE_MESH_OPTIONS_SPEC = _hint_bounds(_PLANE_MESH_OPTIONS_SPEC)
+_TORUS_MESH_OPTIONS_SPEC = _hint_bounds(_TORUS_MESH_OPTIONS_SPEC)
+_CONE_MESH_OPTIONS_SPEC = _hint_bounds(_CONE_MESH_OPTIONS_SPEC)
+_CONE_BEVEL_OPTIONS_SPEC = _hint_bounds(_CONE_BEVEL_OPTIONS_SPEC)
+_CYLINDER_MESH_OPTIONS_SPEC = _hint_bounds(_CYLINDER_MESH_OPTIONS_SPEC)
+_CYLINDER_BEVEL_OPTIONS_SPEC = _hint_bounds(_CYLINDER_BEVEL_OPTIONS_SPEC)
+
+# Canonical children of "ADBE Displacement Options" (parametric mesh
+# layers). AE 26.0 does not write the group for a new mesh layer; 26.1+
+# writes and reports it, so it is synthesized for ExtendScript parity but
+# never materialized at creation.
+_DISPLACEMENT_OPTIONS_SPEC: list[_PropSpec] = [
+    _spec(
+        "ADBE Displacement Intensity",
+        "Intensity",
+        100.0,
+        PropertyValueType.OneD,
+        min_value=-1000,
+        max_value=1000,
+        units_text="percent",
+    ),
+    _spec(
+        "ADBE Subdivision Count",
+        "Subdivision Count",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        max_value=6,
+        can_vary_over_time=False,
+        chunk_bounds_are_hints=True,
     ),
 ]
 
@@ -2043,71 +2658,6 @@ def _build_text_animator_pool_specs() -> list[_PropSpec]:
 
 _TEXT_ANIMATOR_POOL_SPECS: list[_PropSpec] = _build_text_animator_pool_specs()
 
-# Mapping from group match_name to ordered list of child property specs.
-_GROUP_CHILD_SPECS: dict[str, Sequence[_PropSpec | _GroupSpec]] = {
-    "ADBE Effect Built In Params": _COMPOSITING_OPTIONS_SPECS,
-    "ADBE Mask Atom": _MASK_ATOM_SPECS,
-    "ADBE Blend Options Group": _BLEND_OPTIONS_SPECS,
-    "ADBE Adv Blend Group": _ADV_BLEND_SPECS,
-    "ADBE Material Options Group": _MATERIAL_SPECS,
-    "ADBE Extrsn Options Group": _EXTRUSION_SPECS,
-    "ADBE Plane Options Group": _PLANE_SPECS,
-    "ADBE Audio Group": _AUDIO_SPECS,
-    "ADBE Source Options Group": _SOURCE_OPTIONS_SPECS,
-    "ADBE Light Options Group": _LIGHT_SPECS,
-    "ADBE Camera Options Group": _CAMERA_SPECS,
-    "ADBE Text Properties": [
-        _spec(
-            "ADBE Text Document",
-            "Source Text",
-            None,
-            PropertyValueType.TEXT_DOCUMENT,
-        ),
-        _GroupSpec("ADBE Text Path Options", "Path Options"),
-        _GroupSpec("ADBE Text More Options", "More Options"),
-        _GroupSpec("ADBE Text Animators", "Animators"),
-    ],
-    "ADBE Text Path Options": _TEXT_PATH_OPTIONS_SPECS,
-    "ADBE Text More Options": _TEXT_MORE_OPTIONS_SPECS,
-    "ADBE Vector Shape - Star": _VECTOR_STAR_SPECS,
-    "ADBE Vector Graphic - Fill": _VECTOR_FILL_SPECS,
-    "ADBE Vector Graphic - G-Fill": _VECTOR_G_FILL_SPECS,
-    "ADBE Vector Graphic - G-Stroke": _VECTOR_G_STROKE_SPECS,
-    "ADBE Vector Graphic - Stroke": _VECTOR_STROKE_SPECS,
-    "ADBE Vector Stroke Dashes": _VECTOR_STROKE_DASHES_SPECS,
-    "ADBE Vector Stroke Taper": _VECTOR_STROKE_TAPER_SPECS,
-    "ADBE Vector Stroke Wave": _VECTOR_STROKE_WAVE_SPECS,
-    "ADBE Vector Group": _VECTOR_GROUP_SPECS,
-    "ADBE Vector Transform Group": _VECTOR_TRANSFORM_SPECS,
-    "ADBE Vector Materials Group": _VECTOR_MATERIALS_SPECS,
-    "ADBE Vector Shape - Ellipse": _VECTOR_ELLIPSE_SPECS,
-    "ADBE Vector Shape - Rect": _VECTOR_RECT_SPECS,
-    "ADBE Vector Filter - Repeater": _VECTOR_REPEATER_SPECS,
-    "ADBE Vector Repeater Transform": _VECTOR_REPEATER_TRANSFORM_SPECS,
-    "ADBE Vector Shape - Group": _VECTOR_PATH_SPECS,
-    "ADBE Vector Filter - Merge": _VECTOR_MERGE_SPECS,
-    "ADBE Vector Filter - Offset": _VECTOR_OFFSET_SPECS,
-    "ADBE Vector Filter - PB": _VECTOR_PUCKER_BLOAT_SPECS,
-    "ADBE Vector Filter - RC": _VECTOR_ROUND_CORNERS_SPECS,
-    "ADBE Vector Filter - Trim": _VECTOR_TRIM_SPECS,
-    "ADBE Vector Filter - Twist": _VECTOR_TWIST_SPECS,
-    "ADBE Vector Filter - Roughen": _VECTOR_ROUGHEN_SPECS,
-    "ADBE Vector Filter - Wiggler": _VECTOR_WIGGLER_SPECS,
-    "ADBE Vector Wiggler Transform": _VECTOR_WIGGLER_TRANSFORM_SPECS,
-    "ADBE Vector Filter - Zigzag": _VECTOR_ZIGZAG_SPECS,
-    "ADBE Text Selector": _TEXT_RANGE_SELECTOR_SPECS,
-    "ADBE Text Range Advanced": _TEXT_RANGE_ADVANCED_SPECS,
-    "ADBE Text Wiggly Selector": _TEXT_WIGGLY_SELECTOR_SPECS,
-    "ADBE Text Expressible Selector": _TEXT_EXPRESSIBLE_SELECTOR_SPECS,
-    "ADBE Text Animator Properties": _TEXT_ANIMATOR_POOL_SPECS,
-    # A text animator exposes an (initially empty) Selectors group and
-    # the Properties pool; AE writes only the latter to binary.
-    "ADBE Text Animator": [
-        _GroupSpec("ADBE Text Selectors", "Selectors"),
-        _GroupSpec("ADBE Text Animator Properties", "Properties"),
-    ],
-}
-
 # Canonical children for Layer Styles sub-groups.
 
 _DROP_SHADOW_SPECS: list[_PropSpec] = [
@@ -2836,8 +3386,6 @@ _LAYER_STYLES_SPECS: list[_GroupSpec] = [
     _GroupSpec("frameFX/enabled", "Stroke", enable_flags=2),
 ]
 
-_GROUP_CHILD_SPECS["ADBE Layer Styles"] = _LAYER_STYLES_SPECS
-
 
 # ---------------------------------------------------------------------------
 # Transform property specifications
@@ -2932,8 +3480,91 @@ _TRANSFORM_FIXED_DEFAULTS: dict[str, float | list[float]] = {
 }
 
 
+# Mapping from group match_name to ordered list of child property specs.
+_GROUP_CHILD_SPECS: dict[str, Sequence[_PropSpec | _GroupSpec]] = {
+    "ADBE Effect Built In Params": _COMPOSITING_OPTIONS_SPECS,
+    "ADBE Mask Atom": _MASK_ATOM_SPECS,
+    "ADBE Blend Options Group": _BLEND_OPTIONS_SPECS,
+    "ADBE Adv Blend Group": _ADV_BLEND_SPECS,
+    "ADBE Material Options Group": _MATERIAL_SPECS,
+    "ADBE Extrsn Options Group": _EXTRUSION_SPECS,
+    "ADBE Plane Options Group": _PLANE_SPECS,
+    "ADBE Audio Group": _AUDIO_SPECS,
+    "ADBE Source Options Group": _SOURCE_OPTIONS_SPECS,
+    "ADBE Light Options Group": _LIGHT_SPECS,
+    "ADBE Camera Options Group": _CAMERA_SPECS,
+    "ADBE Layer Styles": _LAYER_STYLES_SPECS,
+    "ADBE Text Properties": [
+        _spec(
+            "ADBE Text Document",
+            "Source Text",
+            None,
+            PropertyValueType.TEXT_DOCUMENT,
+        ),
+        _GroupSpec("ADBE Text Path Options", "Path Options"),
+        _GroupSpec("ADBE Text More Options", "More Options"),
+        _GroupSpec("ADBE Text Animators", "Animators"),
+    ],
+    "ADBE Text Path Options": _TEXT_PATH_OPTIONS_SPECS,
+    "ADBE Text More Options": _TEXT_MORE_OPTIONS_SPECS,
+    "ADBE Vector Shape - Star": _VECTOR_STAR_SPECS,
+    "ADBE Vector Graphic - Fill": _VECTOR_FILL_SPECS,
+    "ADBE Vector Graphic - G-Fill": _VECTOR_G_FILL_SPECS,
+    "ADBE Vector Graphic - G-Stroke": _VECTOR_G_STROKE_SPECS,
+    "ADBE Vector Graphic - Stroke": _VECTOR_STROKE_SPECS,
+    "ADBE Vector Stroke Dashes": _VECTOR_STROKE_DASHES_SPECS,
+    "ADBE Vector Stroke Taper": _VECTOR_STROKE_TAPER_SPECS,
+    "ADBE Vector Stroke Wave": _VECTOR_STROKE_WAVE_SPECS,
+    "ADBE Vector Group": _VECTOR_GROUP_SPECS,
+    "ADBE Vector Transform Group": _VECTOR_TRANSFORM_SPECS,
+    "ADBE Vector Materials Group": _VECTOR_MATERIALS_SPECS,
+    "ADBE Vector Shape - Ellipse": _VECTOR_ELLIPSE_SPECS,
+    "ADBE Vector Shape - Rect": _VECTOR_RECT_SPECS,
+    "ADBE Vector Filter - Repeater": _VECTOR_REPEATER_SPECS,
+    "ADBE Vector Repeater Transform": _VECTOR_REPEATER_TRANSFORM_SPECS,
+    "ADBE Vector Shape - Group": _VECTOR_PATH_SPECS,
+    "ADBE Vector Filter - Merge": _VECTOR_MERGE_SPECS,
+    "ADBE Vector Filter - Offset": _VECTOR_OFFSET_SPECS,
+    "ADBE Vector Filter - PB": _VECTOR_PUCKER_BLOAT_SPECS,
+    "ADBE Vector Filter - RC": _VECTOR_ROUND_CORNERS_SPECS,
+    "ADBE Vector Filter - Trim": _VECTOR_TRIM_SPECS,
+    "ADBE Vector Filter - Twist": _VECTOR_TWIST_SPECS,
+    "ADBE Vector Filter - Roughen": _VECTOR_ROUGHEN_SPECS,
+    "ADBE Vector Filter - Wiggler": _VECTOR_WIGGLER_SPECS,
+    "ADBE Vector Wiggler Transform": _VECTOR_WIGGLER_TRANSFORM_SPECS,
+    "ADBE Vector Filter - Zigzag": _VECTOR_ZIGZAG_SPECS,
+    "ADBE Text Selector": _TEXT_RANGE_SELECTOR_SPECS,
+    "ADBE Text Range Advanced": _TEXT_RANGE_ADVANCED_SPECS,
+    "ADBE Text Wiggly Selector": _TEXT_WIGGLY_SELECTOR_SPECS,
+    "ADBE Text Expressible Selector": _TEXT_EXPRESSIBLE_SELECTOR_SPECS,
+    "ADBE Text Animator Properties": _TEXT_ANIMATOR_POOL_SPECS,
+    # A text animator exposes an (initially empty) Selectors group and
+    # the Properties pool; AE writes only the latter to binary.
+    "ADBE Text Animator": [
+        _GroupSpec("ADBE Text Selectors", "Selectors"),
+        _GroupSpec("ADBE Text Animator Properties", "Properties"),
+    ],
+    "ADBE Compositing Options Group": _3D_COMPOSITING_OPTIONS_SPECS,
+    "ADBE3D Para Mat Parade": [_GroupSpec("ADBE3D Param Mat Atom", "Material")],
+    "ADBE3D Param Mat Atom": _PARA_MAT_SPEC,
+    "ADBE CubeMeshOptionsSGrp": _CUBE_MESH_OPTIONS_SPEC,
+    "ADBE CubeBevelOptionsSGrp": _CUBE_BEVEL_OPTIONS_SPEC,
+    "ADBE SphereMeshOptionsSGrp": _SPHERE_MESH_OPTIONS_SPEC,
+    "ADBE PlaneMeshOptionsSGrp": _PLANE_MESH_OPTIONS_SPEC,
+    "ADBE TorusMeshOptionsSGrp": _TORUS_MESH_OPTIONS_SPEC,
+    "ADBE ConeMeshOptionsSGrp": _CONE_MESH_OPTIONS_SPEC,
+    "ADBE ConeBevelBevelSGrp": _CONE_BEVEL_OPTIONS_SPEC,
+    "ADBE CylinderMeshOptionsSGrp": _CYLINDER_MESH_OPTIONS_SPEC,
+    "ADBE CylinderBevelOptionsSGrp": _CYLINDER_BEVEL_OPTIONS_SPEC,
+    "ADBE Displacement Options": _DISPLACEMENT_OPTIONS_SPEC,
+}
+
+_MARKER_SPEC: _PropSpec = _spec(
+    "ADBE Marker", "Marker", None, PropertyValueType.MARKER, dimensions=0
+)
+
 _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
-    _spec("ADBE Marker", "Marker", None, PropertyValueType.MARKER, dimensions=0),
+    _MARKER_SPEC,
     _GroupSpec("ADBE Text Properties", "Text"),
     _GroupSpec("ADBE Root Vectors Group", "Contents"),
     _spec(
@@ -2954,11 +3585,49 @@ _TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
     _GroupSpec("ADBE Plane Options Group", "Geometry Options"),
     _GroupSpec("ADBE Extrsn Options Group", "Geometry Options"),
     _GroupSpec("ADBE Material Options Group", "Material Options"),
+    _GroupSpec("ADBE Compositing Options Group", "Compositing Options"),
     _GroupSpec("ADBE Audio Group", "Audio"),
     _GroupSpec("ADBE Data Group", "Data"),
     _GroupSpec("ADBE Layer Overrides", "Essential Properties"),
     _GroupSpec("ADBE Layer Sets", "Sets"),
+    _GroupSpec("ADBE3D Para Mat Parade", "Material Assignment"),
     _GroupSpec("ADBE Source Options Group", "Replace Source"),
+]
+
+# Canonical top-level groups of a parametric mesh layer, in the order
+# ExtendScript reports AND AE writes to binary (identical; verified against
+# parametric_meshes.aep and its ExtendScript export). Note the order differs
+# from other AV layers: Geometry Options (Plane) and Essential Properties
+# come after Material Assignment. Group `enable_flags` mirror the tdsb
+# bytes AE writes for a new mesh layer; the ACTIVE mesh type's option and
+# bevel groups get `1` at creation time instead (see
+# `CompItem.add_parametric_mesh`).
+_PARAMETRIC_MESH_TOP_LEVEL_SPECS: list[_PropSpec | _GroupSpec] = [
+    _MARKER_SPEC,
+    _GroupSpec("ADBE MTrackers", "Motion Trackers"),
+    _GroupSpec("ADBE Mask Parade", "Masks"),
+    _GroupSpec("ADBE Effect Parade", "Effects"),
+    _GroupSpec("ADBE Transform Group", "Transform"),
+    _GroupSpec("ADBE Layer Styles", "Layer Styles", enable_flags=3),
+    _GroupSpec("ADBE Extrsn Options Group", "Geometry Options", enable_flags=3),
+    _GroupSpec("ADBE Material Options Group", "Material Options", enable_flags=3),
+    _GroupSpec("ADBE Compositing Options Group", "Compositing Options"),
+    _GroupSpec("ADBE Audio Group", "Audio", enable_flags=3),
+    _GroupSpec("ADBE Layer Sets", "Sets", enable_flags=3),
+    _GroupSpec("ADBE3D Para Mat Parade", "Material Assignment"),
+    _GroupSpec("ADBE Displacement Options", "Displacement Options", enable_flags=3),
+    _GroupSpec("ADBE Plane Options Group", "Geometry Options", enable_flags=3),
+    _GroupSpec("ADBE Layer Overrides", "Essential Properties", enable_flags=3),
+    _GroupSpec("ADBE Source Options Group", "Replace Source", enable_flags=3),
+    _GroupSpec("ADBE CubeMeshOptionsSGrp", "Mesh Options", enable_flags=3),
+    _GroupSpec("ADBE CubeBevelOptionsSGrp", "Bevel Options", enable_flags=3),
+    _GroupSpec("ADBE SphereMeshOptionsSGrp", "Mesh Options", enable_flags=3),
+    _GroupSpec("ADBE PlaneMeshOptionsSGrp", "Mesh Options", enable_flags=3),
+    _GroupSpec("ADBE TorusMeshOptionsSGrp", "Mesh Options", enable_flags=3),
+    _GroupSpec("ADBE ConeMeshOptionsSGrp", "Mesh Options", enable_flags=3),
+    _GroupSpec("ADBE ConeBevelBevelSGrp", "Bevel Options", enable_flags=3),
+    _GroupSpec("ADBE CylinderMeshOptionsSGrp", "Mesh Options", enable_flags=3),
+    _GroupSpec("ADBE CylinderBevelOptionsSGrp", "Bevel Options", enable_flags=3),
 ]
 
 # Groups only present on camera / light layers.
@@ -2974,16 +3643,68 @@ _REGULAR_AV_ONLY_GROUPS: frozenset[str] = frozenset(
     {
         "ADBE Time Remapping",
         "ADBE MTrackers",
-        "ADBE Plane Options Group",
         "ADBE Data Group",
         "ADBE Layer Overrides",
+    }
+)
+_REGULAR_AV_AND_PARAMETRIC_MESH_ONLY_GROUPS: frozenset[str] = frozenset(
+    {
         "ADBE Source Options Group",
+        "ADBE Plane Options Group",
     }
 )
 
 # Layer-type-specific groups that should be skipped for other types.
 _TEXT_ONLY_GROUPS: frozenset[str] = frozenset({"ADBE Text Properties"})
 _SHAPE_ONLY_GROUPS: frozenset[str] = frozenset({"ADBE Root Vectors Group"})
+# Groups only present on Advanced-3D-native layers (parametric mesh /
+# 3D model); still listed in _TOP_LEVEL_SPECS so a parsed occurrence keeps
+# its canonical position, but never synthesized for other layer types.
+_ADVANCED_3D_ONLY_GROUPS: frozenset[str] = frozenset(
+    {
+        "ADBE Compositing Options Group",
+        "ADBE3D Para Mat Parade",
+    }
+)
+
+# Per-layer-class skip sets for top-level group synthesis (the negative
+# space of which canonical groups each layer type exposes). Built once at
+# import: _synthesize_missing_top_level_groups runs for every parsed layer.
+# Parametric mesh layers have no skip set: they use their own full spec
+# list (_PARAMETRIC_MESH_TOP_LEVEL_SPECS).
+_SKIP_FOR_TEXT: frozenset[str] = (
+    _REGULAR_AV_AND_PARAMETRIC_MESH_ONLY_GROUPS
+    | _REGULAR_AV_ONLY_GROUPS
+    | _SHAPE_ONLY_GROUPS
+    | _CAMERA_LIGHT_GROUPS
+    | _ADVANCED_3D_ONLY_GROUPS
+)
+_SKIP_FOR_SHAPE: frozenset[str] = (
+    _REGULAR_AV_AND_PARAMETRIC_MESH_ONLY_GROUPS
+    | _REGULAR_AV_ONLY_GROUPS
+    | _TEXT_ONLY_GROUPS
+    | _CAMERA_LIGHT_GROUPS
+    | _ADVANCED_3D_ONLY_GROUPS
+)
+_SKIP_FOR_REGULAR_AV: frozenset[str] = (
+    _TEXT_ONLY_GROUPS
+    | _SHAPE_ONLY_GROUPS
+    | _CAMERA_LIGHT_GROUPS
+    | _ADVANCED_3D_ONLY_GROUPS
+)
+
+
+def _camera_light_skip(own_options: str) -> frozenset[str]:
+    """Cameras/lights expose only Marker, Transform and their own options."""
+    return frozenset(
+        s.match_name
+        for s in _TOP_LEVEL_SPECS
+        if s.match_name not in ("ADBE Marker", "ADBE Transform Group", own_options)
+    )
+
+
+_SKIP_FOR_CAMERA: frozenset[str] = _camera_light_skip("ADBE Camera Options Group")
+_SKIP_FOR_LIGHT: frozenset[str] = _camera_light_skip("ADBE Light Options Group")
 
 # Empty groups AE omits from a freshly created layer (it writes them only
 # once they have content).
@@ -3007,3 +3728,16 @@ _CAMERA_LIGHT_TRANSFORM_SKIP: frozenset[str] = frozenset(
         "ADBE Rotate Y",
     }
 )
+
+# The mesh-option / bevel groups owned by each mesh type (raw ldta value).
+# AE writes the ACTIVE type's option/bevel groups expanded (tdsb bit 1
+# clear -> 1) while every other top-level mesh group is collapsed (tdsb=3).
+# Used at creation to match AE's tdsb; see `_PARAMETRIC_MESH_TOP_LEVEL_SPECS`.
+_PARAMETRIC_MESH_ACTIVE_GROUPS: dict[int, tuple[str, ...]] = {
+    0: ("ADBE CubeMeshOptionsSGrp", "ADBE CubeBevelOptionsSGrp"),
+    1: ("ADBE SphereMeshOptionsSGrp",),
+    2: ("ADBE PlaneMeshOptionsSGrp",),
+    3: ("ADBE TorusMeshOptionsSGrp",),
+    4: ("ADBE ConeMeshOptionsSGrp", "ADBE ConeBevelBevelSGrp"),
+    5: ("ADBE CylinderMeshOptionsSGrp", "ADBE CylinderBevelOptionsSGrp"),
+}

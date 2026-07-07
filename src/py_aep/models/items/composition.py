@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any, List, cast
 
 from ...ae_version import requires_version
@@ -18,7 +19,15 @@ from ...binary.layer_chunks import (
     LdtaChunk,
 )
 from ...binary.misc_chunks import PguiChunk, PrinChunk
-from ...binary.mutations import build_ovg2, build_source_alternate_extras
+from ...binary.mutations import (
+    build_checkbox_cctl,
+    build_color_cctl,
+    build_media_cctl,
+    build_ovg2,
+    build_slider_cctl,
+    build_source_alternate_extras,
+    build_text_cctl,
+)
 from ...binary.property_chunks import (
     TDSN_SENTINEL,
     CdatChunk,
@@ -36,13 +45,20 @@ from ...binary.utils import (
     find_by_type,
     index_by_identity,
 )
-from ...enums import LineOrientation
+from ...enums import LineOrientation, ParametricMeshType
 from ...parsers.essential_graphics import parse_essential_graphics
+from ...resolvers.motion_graphics import (
+    CONTROLLER_CHECKBOX,
+    CONTROLLER_COLOR,
+    CONTROLLER_SLIDER,
+    font_caps_json,
+)
 from ...synthesis.specs import _CAMERA_LIGHT_TRANSFORM_SKIP, _OMITTED_EMPTY_GROUPS
 from ..descriptors import ChunkField
 from ..layers.av_layer import AVLayer
 from ..layers.camera_layer import CameraLayer
 from ..layers.light_layer import LightLayer
+from ..layers.parametric_mesh_layer import ParametricMeshLayer
 from ..layers.shape_layer import ShapeLayer
 from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
@@ -72,9 +88,10 @@ from .av_item import AVItem
 from .footage import FootageItem
 
 if TYPE_CHECKING:
-    from typing import Iterator
+    from typing import Callable, Iterator
 
     from ...binary.item_chunks import CmtaChunk
+    from ...resolvers.motion_graphics import PathNode, PropertyControllerPlan
     from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
     from ..project import Project
@@ -131,7 +148,7 @@ def _materialize_layer(layer: Layer) -> None:
     def _materialize_tree(group: PropertyGroup) -> None:
         group._ensure_materialized()
         in_transform = group.match_name == "ADBE Transform Group"
-        for child in group.properties:
+        for child in group._properties:
             if isinstance(child, PropertyGroup):
                 if child.match_name in _OMITTED_EMPTY_GROUPS and not child.properties:
                     continue
@@ -146,6 +163,22 @@ def _materialize_layer(layer: Layer) -> None:
             _materialize_tree(top)
         elif isinstance(top, Property):
             _materialize_prop(top, False)
+
+    # AE writes the `ADBE Layer Source Alternate` leaf (with its blsv/blsi
+    # skeleton) inside Source Options for every new layer. `_materialize_tree`
+    # iterates raw `_properties` and so never triggers that group's deferred
+    # child synthesis, so materialize the leaf explicitly here.
+    for top in layer.properties:
+        if (
+            isinstance(top, PropertyGroup)
+            and top.match_name == "ADBE Source Options Group"
+        ):
+            for child in top.properties:
+                if child.match_name == "ADBE Layer Source Alternate" and isinstance(
+                    child, Property
+                ):
+                    child._ensure_materialized()
+            break
 
     _insert_layer_skeleton_extras(layer)
 
@@ -544,7 +577,7 @@ class CompItem(AVItem):
 
         self._layers: list[Layer] = []
         self._layers_by_id: dict[int, Layer] | None = None
-        self._type_cache: dict[str, list[Any]] | None = None
+        self.__type_cache: dict[str, list[Any]] | None = None
         self.__layer_id_to_index: dict[int, int] | None = None
 
         self._cdta = cast(
@@ -708,6 +741,7 @@ class CompItem(AVItem):
         camera: list[CameraLayer] = []
         light: list[LightLayer] = []
         three_d_model: list[ThreeDModelLayer] = []
+        parametric_mesh: list[ParametricMeshLayer] = []
         by_id: dict[int, Layer] = {}
         for layer in self.layers:
             by_id[layer.id] = layer
@@ -719,6 +753,8 @@ class CompItem(AVItem):
                     shape.append(layer)
                 elif isinstance(layer, ThreeDModelLayer):
                     three_d_model.append(layer)
+                elif isinstance(layer, ParametricMeshLayer):
+                    parametric_mesh.append(layer)
             elif isinstance(layer, CameraLayer):
                 camera.append(layer)
             elif isinstance(layer, LightLayer):
@@ -731,13 +767,14 @@ class CompItem(AVItem):
             "camera": camera,
             "light": light,
             "three_d_model": three_d_model,
+            "parametric_mesh": parametric_mesh,
         }
-        self._type_cache = cache
+        self.__type_cache = cache
         return cache
 
     def _invalidate_layer_cache(self) -> None:
         """Reset layer caches after structural mutations."""
-        self._type_cache = None
+        self.__type_cache = None
         self._layers_by_id = None
         self.__layer_id_to_index = None
 
@@ -858,6 +895,185 @@ class CompItem(AVItem):
         `motion_graphics_template_controller_count`)."""
         return [ctrl.name for ctrl in self.motion_graphics_controllers]
 
+    def _cif_containers(self) -> list[ListChunk]:
+        """The `CIFO`/`CIF2`/`CIF3` Essential Graphics containers of this comp,
+        in file order (every comp AE or py_aep writes has all three)."""
+        return [
+            c
+            for c in self._item_list.chunks
+            if isinstance(c, ListChunk) and c.list_type in ("CIFO", "CIF2", "CIF3")
+        ]
+
+    def _build_property_cctl(
+        self, plan: PropertyControllerPlan, prop: Property, name: str, uuid_str: str
+    ) -> tuple[ListChunk, Utf8Chunk, U4Chunk]:
+        """Assemble one `LIST:CCtl` for `prop` per the resolved `plan`.
+
+        Called once per CIF container so each holds its own chunk objects.
+        """
+        comp_id = self.id
+        layer_id = plan.layer._ldta.layer_id
+        if plan.controller_type == CONTROLLER_SLIDER:
+            # AE seeds the EGP slider range from the pard UI slider range
+            # (Slider Control -> 0..100 despite its +/-1e6 valid range,
+            # Brightness -> -150..150), falling back to the valid range for
+            # pard-less properties (Transform > Opacity -> 0..100).
+            min_v = prop._slider_min if prop._slider_min is not None else prop.min_value
+            max_v = prop._slider_max if prop._slider_max is not None else prop.max_value
+            return build_slider_cctl(
+                name,
+                uuid_str,
+                float(cast("float", prop.value)),
+                float(min_v) if min_v is not None else 0.0,
+                float(max_v) if max_v is not None else 100.0,
+                comp_id,
+                layer_id,
+                plan.path_json,
+            )
+        if plan.controller_type == CONTROLLER_CHECKBOX:
+            return build_checkbox_cctl(
+                name, uuid_str, bool(prop.value), comp_id, layer_id, plan.path_json
+            )
+        if plan.controller_type == CONTROLLER_COLOR:
+            rgba = [float(c) for c in cast("list[float]", prop.value)]
+            rgba = (rgba + [1.0, 1.0, 1.0, 1.0])[:4]
+            return build_color_cctl(
+                name, uuid_str, rgba, comp_id, layer_id, plan.path_json
+            )
+        text = prop.value.text if isinstance(prop.value, TextDocument) else ""
+        return build_text_cctl(
+            name,
+            uuid_str,
+            text,
+            font_caps_json(prop),
+            comp_id,
+            layer_id,
+            plan.path_json,
+        )
+
+    def _append_controller(
+        self,
+        build: Callable[[], tuple[ListChunk, Utf8Chunk, U4Chunk]],
+    ) -> tuple[Utf8Chunk, U4Chunk] | None:
+        """Append one freshly built `LIST:CCtl` per CIF container and bump
+        each `CcCt` count (AE keeps the `CIFO`/`CIF2`/`CIF3` copies in sync).
+
+        Returns the CIF3 copy's editable chunks `(name_utf8, ctyp)` for the
+        controller model - the parser's preferred container - or `None` when
+        the comp has no CIF containers (not produced by AE or py_aep).
+        """
+        containers = self._cif_containers()
+        if not containers:
+            return None
+        model_name_utf8: Utf8Chunk | None = None
+        model_ctyp: U4Chunk | None = None
+        for cif in containers:
+            cctl, name_utf8, ctyp = build()
+            cif.chunks.append(cctl)
+            ccct = cast("U4Chunk", find_by_type(chunks=cif.chunks, chunk_type="CcCt"))
+            ccct.value += 1
+            if cif.list_type == "CIF3" or model_name_utf8 is None:
+                model_name_utf8, model_ctyp = name_utf8, ctyp
+        return cast("Utf8Chunk", model_name_utf8), cast("U4Chunk", model_ctyp)
+
+    def _register_controller(
+        self,
+        bound: tuple[Utf8Chunk, U4Chunk],
+        uuid_str: str,
+        nodes: list[PathNode],
+        layer: Layer,
+    ) -> None:
+        """Append the model for a controller just written to the containers."""
+        from ..essential_graphics import (
+            EssentialGraphicsController,
+            SourcePropertyRef,
+        )
+
+        name_utf8, ctyp = bound
+        self._eg_controllers.append(
+            EssentialGraphicsController(
+                _name_utf8=name_utf8,
+                _ctyp=ctyp,
+                uuid=uuid_str,
+                source_property_path=[
+                    SourcePropertyRef(
+                        match_name=node.match_name, prop_index=node.prop_index
+                    )
+                    for node in nodes
+                ],
+                source_comp_id=self.id,
+                source_layer_id=layer._ldta.layer_id,
+            )
+        )
+
+    def _add_property_controller(self, prop: Property, name: str | None) -> bool:
+        """Add `prop` to this comp's Essential Graphics panel.
+
+        Returns `False` (adding nothing) when `prop` cannot be exposed - see
+        `resolvers.motion_graphics`.
+        """
+        from ...resolvers.motion_graphics import property_controller_plan
+
+        self._ensure_comp_parsed()
+        plan = property_controller_plan(prop, self)
+        if plan is None:
+            return False
+        display = name if name is not None else prop.name
+        validate_name(display)
+        uuid_str = str(uuid.uuid4())
+        bound = self._append_controller(
+            lambda: self._build_property_cctl(plan, prop, display, uuid_str)
+        )
+        if bound is None:
+            return False
+        self._register_controller(bound, uuid_str, plan.nodes, plan.layer)
+        return True
+
+    def _add_layer_controller(self, layer: AVLayer, name: str | None) -> bool:
+        """Add `layer` to this comp's Essential Graphics panel as a Media
+        Replacement (type 14) controller.
+
+        Returns `False` (adding nothing) when the layer is not eligible -
+        see `resolvers.motion_graphics.can_add_layer`.
+        """
+        from ...resolvers.motion_graphics import (
+            can_add_layer,
+            media_controller_path,
+        )
+
+        self._ensure_comp_parsed()
+        if not can_add_layer(layer, self):
+            return False
+        source = layer.source
+        assert source is not None  # guaranteed by can_add_layer
+        display = name if name is not None else layer.name
+        validate_name(display)
+        uuid_str = str(uuid.uuid4())
+        timebase = self._cdta.internal_timebase
+        nodes, path_json = media_controller_path()
+        # AE names a per-controller thumbnail cache file it regenerates on
+        # open; only the uuid-shaped name is stored in the project.
+        thumbnail = f"{uuid.uuid4()}.png"
+        bound = self._append_controller(
+            lambda: build_media_cctl(
+                display,
+                uuid_str,
+                source.width,
+                source.height,
+                round(layer.in_point * timebase),
+                round(layer.out_point * timebase),
+                timebase,
+                thumbnail,
+                self.id,
+                layer._ldta.layer_id,
+                path_json,
+            )
+        )
+        if bound is None:
+            return False
+        self._register_controller(bound, uuid_str, nodes, layer)
+        return True
+
     @property
     def renderers(self) -> list[str]:
         """The available rendering plug-in module names. Read-only."""
@@ -957,14 +1173,18 @@ class CompItem(AVItem):
         )
 
     @property
-    def av_layers(self) -> list[AVLayer]:
-        """A list of all [AVLayer][] objects in this composition."""
-        cache = (
-            self._type_cache
-            if self._type_cache is not None
+    def _type_cache(self) -> dict[str, list[Any]]:
+        """Cached layer type lists for O(1) access."""
+        return (
+            self.__type_cache
+            if self.__type_cache is not None
             else self._build_type_cache()
         )
-        return cache["av"]
+
+    @property
+    def av_layers(self) -> list[AVLayer]:
+        """A list of all [AVLayer][] objects in this composition."""
+        return self._type_cache["av"]
 
     @property
     def composition_layers(self) -> list[AVLayer]:
@@ -1014,52 +1234,32 @@ class CompItem(AVItem):
     @property
     def text_layers(self) -> list[TextLayer]:
         """A list of the text layers in this composition."""
-        cache = (
-            self._type_cache
-            if self._type_cache is not None
-            else self._build_type_cache()
-        )
-        return cache["text"]
+        return self._type_cache["text"]
 
     @property
     def shape_layers(self) -> list[ShapeLayer]:
         """A list of the shape layers in this composition."""
-        cache = (
-            self._type_cache
-            if self._type_cache is not None
-            else self._build_type_cache()
-        )
-        return cache["shape"]
+        return self._type_cache["shape"]
 
     @property
     def camera_layers(self) -> list[CameraLayer]:
         """A list of the camera layers in this composition."""
-        cache = (
-            self._type_cache
-            if self._type_cache is not None
-            else self._build_type_cache()
-        )
-        return cache["camera"]
+        return self._type_cache["camera"]
 
     @property
     def light_layers(self) -> list[LightLayer]:
         """A list of the light layers in this composition."""
-        cache = (
-            self._type_cache
-            if self._type_cache is not None
-            else self._build_type_cache()
-        )
-        return cache["light"]
+        return self._type_cache["light"]
 
     @property
     def three_d_model_layers(self) -> list[ThreeDModelLayer]:
         """A list of the 3D model layers in this composition."""
-        cache = (
-            self._type_cache
-            if self._type_cache is not None
-            else self._build_type_cache()
-        )
-        return cache["three_d_model"]
+        return self._type_cache["three_d_model"]
+
+    @property
+    def parametric_mesh_layers(self) -> list[ParametricMeshLayer]:
+        """A list of the parametric mesh layers in this composition."""
+        return self._type_cache["parametric_mesh"]
 
     @property
     def null_layers(self) -> list[Layer]:
@@ -1282,6 +1482,42 @@ class CompItem(AVItem):
         position = cast("Property", transform["ADBE Position"])
         position.value = [0.0, 0.0, -zoom / 2]
 
+        return layer
+
+    def add_parametric_mesh(
+        self,
+        name: str | None = None,
+        *,
+        mesh_type: ParametricMeshType,
+    ) -> ParametricMeshLayer:
+        """Create a new parametric mesh layer at the top of the layer stack.
+
+        Args:
+            name: Layer name. Auto-generated if `None`.
+            mesh_type: The type of parametric mesh (required, keyword-only).
+
+        Returns:
+            The newly created [ParametricMeshLayer][].
+        """
+        explicit_name = name is not None
+        if name is None:
+            existing = {lyr.name for lyr in self.layers}
+            prefix = mesh_type.name.title()
+            name = auto_name(f"{prefix} {ParametricMeshLayer._auto_name}", existing)
+
+        layer = ParametricMeshLayer._new(
+            name=name,
+            layer_id=self._project._allocate_layer_id(),
+            duration=self.duration,
+            containing_comp=self,
+            mesh_type=mesh_type,
+            effect_param_defs=self._project._effect_param_defs,
+        )
+        # AE sets the ldta name bit when addParametricMesh receives an
+        # explicit name (unlike other sourceless layers); UI-created mesh
+        # layers with default names leave it clear.
+        layer._ldta.name_set = explicit_name
+        self._insert_layer(layer)
         return layer
 
     def add(

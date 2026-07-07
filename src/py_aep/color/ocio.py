@@ -6,14 +6,15 @@ Backs `Project.list_color_profiles()` in OCIO mode: given the project's
 
 The list is the OCIO *active* color spaces (`colorspaces` +
 `display_colorspaces`, minus `inactive_colorspaces`) - exactly what
-`PyOpenColorIO.Config.getColorSpaceNames()` returns (verified set-equal for both
-`samples/assets/config.ocio` (22) and AE's bundled `ACES 1.2` (353)), so no OCIO
-runtime dependency is needed. See the `color-management-write-rev-eng` notes.
+`PyOpenColorIO.Config.getColorSpaceNames()` returns (verified set-equal for
+AE's bundled `ACES 1.2` (353)), so no OCIO runtime dependency is needed.
+See the `color-management-write-rev-eng` notes.
 """
 
 from __future__ import annotations
 
 import platform
+import re
 from pathlib import Path
 from typing import Any
 
@@ -115,7 +116,18 @@ def _builtin_config_roots() -> list[Path]:
     for base in bases:
         if not base.is_dir():
             continue
-        # Newest install first.
-        for ae_dir in sorted(base.glob("Adobe After Effects *"), reverse=True):
+        # Newest install first, by release year: a plain name sort would put
+        # "Adobe After Effects CC 2019" before "Adobe After Effects 2026"
+        # ("C" > "2"). Year-less installs (CS6, bare CC) sort last.
+        for ae_dir in sorted(
+            base.glob("Adobe After Effects *"),
+            key=_install_year,
+            reverse=True,
+        ):
             roots.append(ae_dir / "Support Files" / "OpenColorIO-Configs")
     return roots
+
+
+def _install_year(install_dir: Path) -> tuple[int, str]:
+    match = re.search(r"(\d{4})", install_dir.name)
+    return (int(match.group(1)) if match else 0, install_dir.name)

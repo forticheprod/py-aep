@@ -17,7 +17,7 @@ from ...resolvers.essential_properties import resolve_essential_property_control
 from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
-from ..validators import validate_enum, validate_number
+from ..validators import validate_enum, validate_name, validate_number
 from .layer import Layer
 
 if TYPE_CHECKING:
@@ -108,27 +108,6 @@ class AVLayer(Layer):
     audio_enabled = ChunkField[bool]("_ldta", "audio_enabled")
     """When `True`, the layer's audio is enabled. This value corresponds
     to the audio toggle switch in the Timeline panel. Read / Write."""
-
-    @property
-    def blending_mode(self) -> BlendingMode:
-        """The blending mode of the layer. Read / Write."""
-        mode = BlendingMode.from_binary(self._ldta.blending_mode)
-        if mode is BlendingMode.DISSOLVE and self._ldta.dancing_dissolve:
-            return BlendingMode.DANCING_DISSOLVE
-        return mode
-
-    @blending_mode.setter
-    def blending_mode(self, value: BlendingMode) -> None:
-        validate_enum(BlendingMode)(value)
-        value = BlendingMode(value)
-        # Dancing Dissolve has no transfer-mode value of its own: AE stores it
-        # as Dissolve plus the dancing-dissolve flag in the ldta transfer byte.
-        if value is BlendingMode.DANCING_DISSOLVE:
-            self._ldta.blending_mode = BlendingMode.DISSOLVE.to_binary()
-            self._ldta.dancing_dissolve = True
-        else:
-            self._ldta.blending_mode = value.to_binary()
-            self._ldta.dancing_dissolve = False
 
     collapse_transformation = ChunkField[bool](
         "_ldta",
@@ -230,6 +209,27 @@ class AVLayer(Layer):
                 effect_param_defs=effect_param_defs,
             ),
         )
+
+    @property
+    def blending_mode(self) -> BlendingMode:
+        """The blending mode of the layer. Read / Write."""
+        mode = BlendingMode.from_binary(self._ldta.blending_mode)
+        if mode is BlendingMode.DISSOLVE and self._ldta.dancing_dissolve:
+            return BlendingMode.DANCING_DISSOLVE
+        return mode
+
+    @blending_mode.setter
+    def blending_mode(self, value: BlendingMode) -> None:
+        validate_enum(BlendingMode)(value)
+        value = BlendingMode(value)
+        # Dancing Dissolve has no transfer-mode value of its own: AE stores it
+        # as Dissolve plus the dancing-dissolve flag in the ldta transfer byte.
+        if value is BlendingMode.DANCING_DISSOLVE:
+            self._ldta.blending_mode = BlendingMode.DISSOLVE.to_binary()
+            self._ldta.dancing_dissolve = True
+        else:
+            self._ldta.blending_mode = value.to_binary()
+            self._ldta.dancing_dissolve = False
 
     @property
     def track_matte_type(self) -> TrackMatteType:
@@ -372,6 +372,49 @@ class AVLayer(Layer):
         overrides. Read-only.
         """
         return resolve_essential_property_controllers(self)
+
+    def can_add_to_motion_graphics_template(self, comp: CompItem) -> bool:
+        """Test whether this layer can be added to `comp`'s Essential Graphics
+        panel as a Media Replacement.
+
+        The layer must be a Media Replacement layer (has video, not an
+        adjustment or null layer, and its source is a footage or comp item
+        that is not a solid), must be in `comp`, and must not already be
+        exposed.
+
+        Args:
+            comp: The composition whose Essential Graphics panel to test.
+        """
+        from ...resolvers.motion_graphics import can_add_layer
+
+        return can_add_layer(self, comp)
+
+    def add_to_motion_graphics_template(self, comp: CompItem) -> bool:
+        """Add this layer to `comp`'s Essential Graphics panel as a Media
+        Replacement controller, named after the layer.
+
+        Returns `True` on success, or `False` when the layer cannot be
+        added (see `can_add_to_motion_graphics_template`).
+
+        Args:
+            comp: The composition to add the layer to.
+        """
+        return comp._add_layer_controller(self, None)
+
+    def add_to_motion_graphics_template_as(self, comp: CompItem, name: str) -> bool:
+        """Add this layer to `comp`'s Essential Graphics panel as a Media
+        Replacement controller with an explicit `name`.
+
+        Returns `True` on success, or `False` when the layer cannot be
+        added (see `can_add_to_motion_graphics_template`).
+
+        Args:
+            comp: The composition to add the layer to.
+            name: The controller name to show in the Essential Graphics
+                panel.
+        """
+        validate_name(name)
+        return comp._add_layer_controller(self, name)
 
     @property
     def has_video(self) -> bool:

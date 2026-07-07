@@ -28,7 +28,7 @@ from ...binary.ldat_chunks import (
     LHD3_BLOCK_SINGLE,
     LdatChunk,
     Lhd3Chunk,
-    sync_lhd3_counters,
+    set_lhd3_count,
 )
 from ...binary.mutations import build_om_container, build_rout_block, clone_chunk_tree
 from ...binary.render_chunks import RenderSettingsItem, RoutItem
@@ -365,8 +365,7 @@ class RenderQueueItem:
             "Lhd3Chunk",
             find_by_type(chunks=self._list_chunk.chunks, chunk_type="lhd3"),
         )
-        om_lhd3.count += 1
-        sync_lhd3_counters(om_lhd3, LHD3_BLOCK_SINGLE)
+        set_lhd3_count(om_lhd3, om_lhd3.count + 1, LHD3_BLOCK_SINGLE)
 
         self._output_modules.append(om)
         return om
@@ -763,8 +762,7 @@ class RenderQueueItem:
         idx = rq._items.index(self)
 
         del rq._rs_ldat.items[idx]
-        rq._rs_lhd3.count -= 1
-        sync_lhd3_counters(rq._rs_lhd3, LHD3_BLOCK_SINGLE)
+        set_lhd3_count(rq._rs_lhd3, rq._rs_lhd3.count - 1, LHD3_BLOCK_SINGLE)
 
         # AE stores a fixed block of Rout items per RQ item. Delete the whole
         # contiguous block (located by identity of its first entry) and refresh
@@ -826,8 +824,7 @@ class RenderQueueItem:
                 new_rcom_utf8 = cast("Utf8Chunk", new_rcom.chunks[0])
 
         rq._rs_ldat.items.insert(idx + 1, new_rsi)
-        rq._rs_lhd3.count += 1
-        sync_lhd3_counters(rq._rs_lhd3, LHD3_BLOCK_SINGLE)
+        set_lhd3_count(rq._rs_lhd3, rq._rs_lhd3.count + 1, LHD3_BLOCK_SINGLE)
 
         # Insert the duplicated Rout block right after this item's block
         # (located by identity of its first entry) and refresh the count.

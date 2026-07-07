@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from py_aep.enums import ImportAsType
-from py_aep.models import ImportOptions
+from py_aep.models import CURRENT_VALUE, ImportOptions
 
 
 class TestImportOptions:
@@ -174,3 +176,55 @@ class TestImportOptions:
         # PROJECT import for any format, so can_import_as gates it out.
         opts = ImportOptions(Path("CLIP.MOV"))
         assert opts.can_import_as(ImportAsType.PROJECT) is False
+
+
+class TestImportOptionsLayerSelection:
+    """layer_index / layer_dimensions (py_aep extensions)."""
+
+    def test_defaults(self) -> None:
+        opts = ImportOptions(Path("a.psd"))
+        assert opts.layer_index is None
+        assert opts.layer_dimensions is None
+
+    def test_layer_index_setter(self) -> None:
+        opts = ImportOptions(Path("a.psd"))
+        opts.layer_index = 0
+        assert opts.layer_index == 0
+        opts.layer_index = 3
+        assert opts.layer_index == 3
+        opts.layer_index = None
+        assert opts.layer_index is None
+
+    def test_layer_index_rejects_negative(self) -> None:
+        opts = ImportOptions(Path("a.psd"))
+        with pytest.raises(ValueError):
+            opts.layer_index = -1
+
+    def test_layer_index_rejects_non_int(self) -> None:
+        opts = ImportOptions(Path("a.psd"))
+        with pytest.raises(TypeError):
+            opts.layer_index = "Layer 1"  # type: ignore[assignment]
+
+    def test_layer_index_rejects_current_value(self) -> None:
+        # CURRENT_VALUE only makes sense for replace: an import has no
+        # current binding to keep.
+        opts = ImportOptions(Path("a.psd"))
+        with pytest.raises(ValueError, match="only valid for FootageItem.replace"):
+            opts.layer_index = CURRENT_VALUE  # type: ignore[assignment]
+
+    def test_current_value_repr(self) -> None:
+        assert repr(CURRENT_VALUE) == "CURRENT_VALUE"
+
+    def test_layer_dimensions_setter(self) -> None:
+        opts = ImportOptions(Path("a.psd"))
+        opts.layer_dimensions = "layer"
+        assert opts.layer_dimensions == "layer"
+        opts.layer_dimensions = "document"
+        assert opts.layer_dimensions == "document"
+        opts.layer_dimensions = None
+        assert opts.layer_dimensions is None
+
+    def test_layer_dimensions_rejects_unknown(self) -> None:
+        opts = ImportOptions(Path("a.psd"))
+        with pytest.raises(ValueError):
+            opts.layer_dimensions = "canvas"

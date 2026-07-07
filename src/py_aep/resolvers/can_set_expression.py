@@ -21,6 +21,10 @@ from py_aep.models.properties.overrides import (
     _LIGHT_PARALLEL_NO_EXPRESSION,
     _LIGHT_POINT_NO_EXPRESSION,
     _LIGHT_SPOT_NO_EXPRESSION,
+    _PARAMETRIC_MESH_CHECKBOX_STREAMS,
+    _PARAMETRIC_MESH_EXPRESSION_OK,
+    _PARAMETRIC_MESH_GROUP_TYPE,
+    _PARAMETRIC_MESH_NO_EXPRESSION,
 )
 
 if TYPE_CHECKING:
@@ -121,11 +125,17 @@ def resolve_can_set_expression(prop: Property) -> bool:
         if key in _EFFECT_NON_EXPRESSIONABLE:
             return False
 
-    if mn in _CANSETEXPR_FALSE_OVERRIDES:
-        return False
-
     layer = prop._containing_layer
     layer_type = layer._ldta.layer_type
+
+    # Parametric mesh layers have their own expression rules.
+    if layer_type == 7:
+        mesh_result = _can_set_expression_parametric_mesh(prop, layer, mn)
+        if mesh_result is not None:
+            return mesh_result
+
+    if mn in _CANSETEXPR_FALSE_OVERRIDES:
+        return False
 
     # Camera layers cannot set expressions on Scale/Opacity
     if layer_type == 2:
@@ -150,7 +160,7 @@ def _can_set_expression_light(layer: Any, mn: str) -> bool:
     """Determine can_set_expression for a property on a light layer."""
     if mn in _LIGHT_NO_EXPRESSION:
         return False
-    light_type = layer._ldta.light_type
+    light_type = layer._ldta.light_and_mesh_type
     if light_type == 3:  # AMBIENT
         return mn not in _LIGHT_AMBIENT_NO_EXPRESSION
     if light_type == 1:  # SPOT
@@ -159,3 +169,33 @@ def _can_set_expression_light(layer: Any, mn: str) -> bool:
         return mn not in _LIGHT_PARALLEL_NO_EXPRESSION
     # POINT (2) / ENVIRONMENT (4)
     return mn not in _LIGHT_POINT_NO_EXPRESSION
+
+
+def _can_set_expression_parametric_mesh(
+    prop: Property, layer: Any, mn: str
+) -> bool | None:
+    """Determine can_set_expression for a property on a parametric mesh layer.
+
+    Returns a bool for mesh-specific rules, or `None` to fall through to
+    the generic (layer-type-agnostic) resolution. Rules verified against
+    AE 2026 ExtendScript (parametric_meshes.json):
+
+    * A fixed set of streams is never expressionable (`Light Transmission`,
+      `Displacement Intensity`, the material texture-projection params).
+    * `Shadow Color` and the Plane geometry streams are always expressionable.
+    * Mesh-option / bevel streams are expressionable only when they belong
+      to the layer's ACTIVE mesh type; checkbox toggles (caps / invert
+      slice) are expressionable regardless of active type.
+    """
+    if mn in _PARAMETRIC_MESH_NO_EXPRESSION:
+        return False
+    if mn in _PARAMETRIC_MESH_EXPRESSION_OK:
+        return True
+    parent = prop.parent_property
+    group_mn = parent.match_name if parent is not None else ""
+    group_type = _PARAMETRIC_MESH_GROUP_TYPE.get(group_mn)
+    if group_type is not None:
+        if mn in _PARAMETRIC_MESH_CHECKBOX_STREAMS:
+            return True
+        return bool(group_type == layer._ldta.light_and_mesh_type)
+    return None

@@ -36,6 +36,7 @@ from ..color.envelope import (
     build_icc_envelope,
     build_ocio_colorspace_envelope,
     build_ocio_display_envelope,
+    envelope_profile_name,
 )
 from ..color.icc import IccProfileLibrary
 from ..color.ocio import list_config_color_spaces, resolve_ocio_config
@@ -207,9 +208,7 @@ class Project:
     """When `True`, thumbnail views use the transparency checkerboard
     pattern. Read / Write."""
 
-    revision = ChunkField[int](
-        "_head", "file_revision", validate=validate_u2
-    )
+    revision = ChunkField[int]("_head", "file_revision", validate=validate_u2)
     """The current revision of the project. Every user action increases the
     revision number by one. A new project starts at revision 1. Read / Write.
 
@@ -587,8 +586,7 @@ class Project:
         installed.
         """
         if self._ws_utf8 is not None:
-            data = json.loads(self._ws_utf8.value)
-            return str(data.get("baseColorProfile", {}).get("colorProfileName", "None"))
+            return envelope_profile_name(self._ws_utf8.value)
         if not any(c.chunk_type == "pcms" for c in self._root_chunks):
             return "sRGB IEC61966-2.1"
         return "None"
@@ -664,8 +662,7 @@ class Project:
             Not exposed in ExtendScript
         """
         if self._dcs_utf8 is not None:
-            data = json.loads(self._dcs_utf8.value)
-            return str(data.get("baseColorProfile", {}).get("colorProfileName", "None"))
+            return envelope_profile_name(self._dcs_utf8.value)
         return "None"
 
     @display_color_space.setter
@@ -765,8 +762,8 @@ class Project:
     def list_color_profiles(self) -> list[str]:
         """Return the color-space names assignable in the current CMS mode.
 
-        Mirrors ExtendScript `app.project.listColorProfiles()`: the names valid
-        for [working_space][] (and, in Adobe mode, [media_color_space][
+        These are the names valid for [working_space][] (and, in Adobe mode,
+        [media_color_space][
         py_aep.models.sources.footage.FootageSource.media_color_space] and the
         output color space).
 
@@ -880,7 +877,12 @@ class Project:
         Args:
             options: The import settings. `ImportAsType.FOOTAGE`, `COMP`
                 (layered `.ai`/`.pdf`/`.psd`/`.psb`), and (for SVG)
-                `COMP_CROPPED_LAYERS` are supported.
+                `COMP_CROPPED_LAYERS` are supported. With
+                `ImportOptions.layer_index` set (py_aep extension mirroring
+                the "Choose Layer" option of AE's import dialog), a FOOTAGE
+                import of a layered file references that single layer
+                instead of the merged/whole document; see also
+                `ImportOptions.layer_dimensions` and `py_aep.list_layers`.
 
         Returns:
             The newly created [FootageItem][] or [CompItem][].
@@ -900,6 +902,17 @@ class Project:
         """
         if not isinstance(options, ImportOptions):
             raise ValueError(f"Expected ImportOptions, got {type(options).__name__}")
+
+        if options.layer_index is not None:
+            if options.import_as != ImportAsType.FOOTAGE:
+                raise ValueError(
+                    "layer_index applies to ImportAsType.FOOTAGE only; COMP "
+                    "imports include every layer"
+                )
+            if options.sequence:
+                raise ValueError("layer_index cannot be combined with sequence")
+        elif options.layer_dimensions is not None:
+            raise ValueError("layer_dimensions requires layer_index")
 
         suffix = options.file.suffix.lower()
         if options.import_as == ImportAsType.COMP_CROPPED_LAYERS:
@@ -931,11 +944,18 @@ class Project:
                 f"got {options.import_as.name}"
             )
 
-        source = FileSource._from_file(
-            options.file,
-            sequence=options.sequence,
-            force_alphabetical=options.force_alphabetical,
-        )
+        if options.layer_index is not None:
+            source = FileSource._from_layer(
+                options.file,
+                options.layer_index,
+                dimensions=options.layer_dimensions,
+            )
+        else:
+            source = FileSource._from_file(
+                options.file,
+                sequence=options.sequence,
+                force_alphabetical=options.force_alphabetical,
+            )
 
         item = FootageItem._new(source, project=self, parent_folder=self.root_folder)
         container = self.root_folder._children_container
@@ -1082,6 +1102,10 @@ class Project:
                 opti_data=spec.opti_data,
                 embedded_profile_name=embedded_profile_name,
                 full_frame=spec.full_frame,
+                layer_name=spec.name if spec.layer_index is not None else "",
+                layer_id=spec.layer_id,
+                layer_index=spec.layer_index,
+                data_size=spec.data_size,
             )
             footage = FootageItem._new(source, project=self, parent_folder=folder)
             folder._children_container.append(footage._item_list)
@@ -1108,16 +1132,21 @@ class Project:
 
     def _import_ai_layered(self, file: Path) -> CompItem:
         """Import a layered Illustrator/PDF file as a composition."""
-        info = probe_media(file)
-        color_space, profile_name = read_ai_color_info(file)
+        # Read once: the probe, the ICC scan and the layer scan all consume
+        # the same bytes.
+        data = file.read_bytes()
+        info = probe_media(file, data)
+        color_space, profile_name = read_ai_color_info(file, data)
         specs: list[LayerSpec | LayerGroupSpec] = [
             LayerSpec(
                 name,
                 build_ai_layer_opti_data(info.width, info.height, name, color_space),
                 info.width,
                 info.height,
+                layer_index=index,
+                data_size=len(data),
             )
-            for name in read_ai_layers(file)
+            for index, name in enumerate(read_ai_layers(file, data))
         ]
         return self._import_layered_comp(file, "TEXT", specs, info, profile_name)
 
@@ -1170,6 +1199,13 @@ class Project:
                 ),
                 info.width,
                 info.height,
+                # AE marks the flattened merged-still layer as not spanning a
+                # full frame and caches its actual channel count (both from
+                # the flattened_rgb_comp.aep fixture).
+                full_frame=False,
+                data_size=(
+                    info.width * info.height * info.channels * (info.bit_depth // 8)
+                ),
             )
             return self._import_layered_comp(file, "8BPS", [spec], info)
         specs = self._psd_layer_specs(
@@ -1219,8 +1255,11 @@ class Project:
                 node.name,
                 node.bounds,
             )
+            left, top, right, bottom = node.bounds
+            data_size = (
+                max(right - left, 0) * max(bottom - top, 0) * 4 * (bit_depth // 8)
+            )
             if cropped:
-                left, top, right, bottom = node.bounds
                 # AE stores an empty layer as 1x1 (its content box is degenerate).
                 crop_w = max(1, right - left)
                 crop_h = max(1, bottom - top)
@@ -1239,6 +1278,9 @@ class Project:
                         transform,
                         full_frame=False,
                         is_adjustment=node.is_adjustment,
+                        layer_id=node.layer_id,
+                        layer_index=node.record_index,
+                        data_size=data_size,
                     )
                 )
             else:
@@ -1249,6 +1291,9 @@ class Project:
                         canvas_w,
                         canvas_h,
                         is_adjustment=node.is_adjustment,
+                        layer_id=node.layer_id,
+                        layer_index=node.record_index,
+                        data_size=data_size,
                     )
                 )
         return specs

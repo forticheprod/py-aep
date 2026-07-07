@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 
 from ..data.dropdown_control import DROPDOWN_CONTROL
 from .chunk import Chunk, ContainerChunk, ListChunk, read_chunks, write_chunk
+from .composition_chunks import CsctChunk
 from .ldat_chunks import (
     GdtaChunk,
     KfColor,
@@ -48,7 +49,7 @@ from .property_chunks import (
     TdsnChunk,
 )
 from .render_chunks import RoutItem
-from .scalar_chunks import S4Chunk, U4Chunk, Utf8Chunk
+from .scalar_chunks import F8Chunk, S4Chunk, U4Chunk, Utf8Chunk
 
 if TYPE_CHECKING:
     from typing import Any, Callable
@@ -180,6 +181,31 @@ def build_keyframe_list(
     )
     ldat = LdatChunk(items=[], item_type=item_type, item_size=item_size)
     inner = ListChunk(list_type="list", chunks=[lhd3, ldat])
+    return inner, lhd3, ldat
+
+
+# AE's canonical LIST:LRdr child order: header, output-frames blob,
+# render-settings list, item list, settings info.
+LRDR_CHILD_ORDER = ("Rhed", "Rout", "list", "LItm", "LSIf")
+
+
+def build_rq_settings_list(
+    *, synthetic: bool = False
+) -> tuple[ListChunk, Lhd3Chunk, LdatChunk]:
+    """Build the render-queue settings `LIST:list` skeleton (lhd3 + ldat).
+
+    The lhd3 is sized for the 2246-byte render-settings items AE writes; the
+    ldat starts synthetic so `write_aep()` skips it until the queue's first
+    `add()`. Shared by `RenderQueue._new` and `parse_render_queue`'s
+    degenerate-file rebuild so the two skeletons cannot drift.
+
+    Returns:
+        `(inner, lhd3, ldat)` - the `LIST:list`, its header, and the data
+        chunk.
+    """
+    lhd3 = Lhd3Chunk(item_size=2246, item_type_raw=1, counter_b=1)
+    ldat = LdatChunk(synthetic=True)
+    inner = ListChunk(list_type="list", synthetic=synthetic, chunks=[lhd3, ldat])
     return inner, lhd3, ldat
 
 
@@ -332,6 +358,185 @@ def build_source_alternate_extras() -> list[Chunk]:
     ]
 
 
+def _build_cctl(
+    name: str,
+    uuid_str: str,
+    controller_type: int,
+    value_chunks: list[Chunk],
+    comp_id: int,
+    layer_id: int,
+    path_json: str,
+) -> tuple[ListChunk, Utf8Chunk, U4Chunk]:
+    """Assemble a `LIST:CCtl` Essential Graphics controller.
+
+    Layout per the AE 2025 `essential_graphics` fixtures: localized name
+    (CpS2), Premiere caption (CapS), uuid, CTyp, the type-specific value
+    chunks, then the controlled-property reference (CprC + CPrp holding
+    the source comp item id, the source layer id and the root-to-leaf
+    path JSON).
+
+    Returns `(cctl, name_utf8, ctyp)` so callers can bind the editable
+    chunks to the controller model.
+    """
+    name_utf8 = Utf8Chunk(value=name)
+    cps2 = ListChunk(
+        list_type="CpS2",
+        chunks=[CsctChunk(), name_utf8, Utf8Chunk(value="en_US")],
+    )
+    caps = ListChunk(
+        list_type="CapS",
+        chunks=[CsctChunk(), U4Chunk(chunk_type="CapL"), Utf8Chunk(value=name)],
+    )
+    ctyp = U4Chunk(chunk_type="CTyp", value=controller_type)
+    cprp = ListChunk(
+        list_type="CPrp",
+        chunks=[
+            U4Chunk(chunk_type="CCId", value=comp_id),
+            U4Chunk(chunk_type="CLId", value=layer_id),
+            Utf8Chunk(value=path_json),
+        ],
+    )
+    cctl = ListChunk(
+        list_type="CCtl",
+        chunks=[
+            cps2,
+            caps,
+            Utf8Chunk(value=uuid_str),
+            ctyp,
+            *value_chunks,
+            U4Chunk(chunk_type="CprC", value=1),
+            cprp,
+        ],
+    )
+    return cctl, name_utf8, ctyp
+
+
+def build_slider_cctl(
+    name: str,
+    uuid_str: str,
+    value: float,
+    slider_min: float,
+    slider_max: float,
+    comp_id: int,
+    layer_id: int,
+    path_json: str,
+) -> tuple[ListChunk, Utf8Chunk, U4Chunk]:
+    """Build a Slider (CTyp 2) controller. `CVal`/`CDef` both take the
+    property's value at add time, matching AE."""
+    value_chunks: list[Chunk] = [
+        Chunk(chunk_type="CVal", data=struct.pack(">d", value)),
+        Chunk(chunk_type="CDef", data=struct.pack(">d", value)),
+        F8Chunk(chunk_type="Smin", value=slider_min),
+        F8Chunk(chunk_type="Smax", value=slider_max),
+    ]
+    return _build_cctl(name, uuid_str, 2, value_chunks, comp_id, layer_id, path_json)
+
+
+def build_checkbox_cctl(
+    name: str,
+    uuid_str: str,
+    value: bool,
+    comp_id: int,
+    layer_id: int,
+    path_json: str,
+) -> tuple[ListChunk, Utf8Chunk, U4Chunk]:
+    """Build a Checkbox (CTyp 1) controller."""
+    byte = b"\x01" if value else b"\x00"
+    value_chunks: list[Chunk] = [
+        Chunk(chunk_type="CVal", data=byte),
+        Chunk(chunk_type="CDef", data=byte),
+    ]
+    return _build_cctl(name, uuid_str, 1, value_chunks, comp_id, layer_id, path_json)
+
+
+def build_color_cctl(
+    name: str,
+    uuid_str: str,
+    rgba: list[float],
+    comp_id: int,
+    layer_id: int,
+    path_json: str,
+) -> tuple[ListChunk, Utf8Chunk, U4Chunk]:
+    """Build a Color (CTyp 4) controller. `rgba` is 4 floats in 0-1."""
+    data = struct.pack(">4f", *rgba)
+    value_chunks: list[Chunk] = [
+        Chunk(chunk_type="CVal", data=data),
+        Chunk(chunk_type="CDef", data=data),
+    ]
+    return _build_cctl(name, uuid_str, 4, value_chunks, comp_id, layer_id, path_json)
+
+
+def build_text_cctl(
+    name: str,
+    uuid_str: str,
+    text: str,
+    font_caps_json: str,
+    comp_id: int,
+    layer_id: int,
+    path_json: str,
+) -> tuple[ListChunk, Utf8Chunk, U4Chunk]:
+    """Build a Source Text (CTyp 6) controller.
+
+    The two `CFEd` / `CSEd` byte flags mirror the `capProp*Edit` booleans
+    of `font_caps_json` (all disabled); the second JSON is the
+    no-alternate-source reference AE writes for a fresh controller.
+    """
+    value_chunks: list[Chunk] = [
+        Utf8Chunk(value=text),
+        Utf8Chunk(value=text),
+        Chunk(chunk_type="CFEd", data=b"\x00"),
+        Chunk(chunk_type="CSEd", data=b"\x00"),
+        Chunk(chunk_type="CFEd", data=b"\x00"),
+        Utf8Chunk(value=font_caps_json),
+        Utf8Chunk(value='{"compId":-1,"isEnabled":false,"layerId":-1}'),
+        Chunk(chunk_type="CTov", data=b"\x07\x00\x00\x00"),
+    ]
+    return _build_cctl(name, uuid_str, 6, value_chunks, comp_id, layer_id, path_json)
+
+
+_NULL_UUID = "00000000-0000-0000-0000-000000000000"
+
+
+def build_media_cctl(
+    name: str,
+    uuid_str: str,
+    width: int,
+    height: int,
+    in_units: int,
+    out_units: int,
+    timebase: int,
+    thumbnail_name: str,
+    comp_id: int,
+    layer_id: int,
+    path_json: str,
+) -> tuple[ListChunk, Utf8Chunk, U4Chunk]:
+    """Build a Media Replacement (CTyp 14) controller.
+
+    Decoded from the AE 2025 `media_replacement.aep` fixture: the two null
+    uuids are the not-yet-assigned alternate source, `CSMw`/`CSMh` the
+    source item's pixel dimensions, `CSMs`/`CSMe` the layer's in/out points
+    in the comp's internal timebase units (verified: out 30.03003s x 23976
+    = 720000), `CSMt` that timebase, and the trailing Utf8 a thumbnail
+    cache file name AE regenerates on open. `CSMp` (8 bytes), `CCEx` and
+    `CSMd` are written as the constants AE emits for a fresh controller;
+    their semantics are undecoded.
+    """
+    value_chunks: list[Chunk] = [
+        Utf8Chunk(value=_NULL_UUID),
+        Utf8Chunk(value=_NULL_UUID),
+        U4Chunk(chunk_type="CSMw", value=width),
+        U4Chunk(chunk_type="CSMh", value=height),
+        U4Chunk(chunk_type="CSMs", value=in_units),
+        U4Chunk(chunk_type="CSMe", value=out_units),
+        U4Chunk(chunk_type="CSMt", value=timebase),
+        Chunk(chunk_type="CSMp", data=b"\x00\x00\x00\x00\x00\x00\x00\x01"),
+        Chunk(chunk_type="CCEx", data=b"\x01"),
+        Utf8Chunk(value=thumbnail_name),
+        U4Chunk(chunk_type="CSMd", value=2),
+    ]
+    return _build_cctl(name, uuid_str, 14, value_chunks, comp_id, layer_id, path_json)
+
+
 def build_pin_list(
     sspc: Chunk,
     opti: Chunk,
@@ -339,6 +544,7 @@ def build_pin_list(
     is_solid: bool = False,
     path_chunks: list[Chunk] | None = None,
     embedded_profile_name: str | None = None,
+    layer_name: str = "",
 ) -> ListChunk:
     """Build a complete `LIST:Pin` with required companion chunks.
 
@@ -346,6 +552,11 @@ def build_pin_list(
     prefix/extension `Utf8` chunks) are inserted between the leading
     empty `Utf8` and `opti`. File sources pass them; solid/placeholder
     sources (no file path) pass nothing.
+
+    `layer_name` fills the `Utf8` slot after `sspc`: AE stores the
+    referenced layer's name there when the footage is a single layer of a
+    layered file (chosen-layer or comp import), and leaves it empty
+    otherwise.
 
     When `embedded_profile_name` is given, the source's embedded color
     profile is recorded in `LIST:CLRS` as an `empd` flag plus a `Utf8`
@@ -386,7 +597,7 @@ def build_pin_list(
         list_type="Pin ",
         chunks=[
             sspc,
-            Utf8Chunk(),
+            Utf8Chunk(value=layer_name),
             *(path_chunks or []),
             opti,
             PguiChunk.new(),

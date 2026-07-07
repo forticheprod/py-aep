@@ -491,9 +491,11 @@ class Keyframe:
     def spatial_auto_bezier(self, value: bool) -> None:
         # Only spatial kf_data carries this flag. Non-spatial kinds (e.g.
         # Orientation, whose kf_data is KfMultiDimensional) have no slot for
-        # it; match the tolerant getter and no-op rather than AttributeError.
-        if hasattr(self._ldat_item.kf_data, "spatial_auto_bezier"):
-            self._ldat_item.kf_data.spatial_auto_bezier = value
+        # it; the getter tolerantly reads False there, but a write must not
+        # silently vanish (ExtendScript's setSpatialAutoBezierAtKey errors).
+        if not hasattr(self._ldat_item.kf_data, "spatial_auto_bezier"):
+            raise ValueError("spatial_auto_bezier can only be set on spatial keyframes")
+        self._ldat_item.kf_data.spatial_auto_bezier = value
 
     @property
     def spatial_continuous(self) -> bool:
@@ -507,8 +509,9 @@ class Keyframe:
     @spatial_continuous.setter
     def spatial_continuous(self, value: bool) -> None:
         # See spatial_auto_bezier: non-spatial kf_data has no such slot.
-        if hasattr(self._ldat_item.kf_data, "spatial_continuous"):
-            self._ldat_item.kf_data.spatial_continuous = value
+        if not hasattr(self._ldat_item.kf_data, "spatial_continuous"):
+            raise ValueError("spatial_continuous can only be set on spatial keyframes")
+        self._ldat_item.kf_data.spatial_continuous = value
 
     @property
     def frame_time(self) -> int:
@@ -535,11 +538,26 @@ class Keyframe:
                 f"keyframe time out of supported range: frame {value} "
                 f"does not fit the 32-bit keyframe time field"
             )
+        prop = self._property
+        if prop is not None:
+            prop._guard_keyframe_move(self, value)
         self._ldat_item.time_units = units
+        if prop is not None:
+            prop._reposition_keyframe(self)
 
     @property
     def time(self) -> float:
-        """Time of the keyframe, in seconds."""
+        """Time of the keyframe, in seconds.
+
+        Writable: moving a keyframe past a neighbour re-sorts the
+        property's keyframes (and their backing chunks). Spatial/temporal
+        tangents are left as-is, like dragging a keyframe in AE's
+        timeline.
+
+        Raises:
+            ValueError: When another keyframe already sits at the target
+                time.
+        """
         return self.frame_time / self._frame_rate
 
     @time.setter

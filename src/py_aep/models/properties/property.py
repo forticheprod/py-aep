@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
+import re
 from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
@@ -15,7 +16,7 @@ from ...binary.ldat_chunks import (
     LHD3_BLOCK_KEYFRAMES,
     LdatItemType,
     ShapePoint,
-    sync_lhd3_counters,
+    set_lhd3_count,
 )
 from ...binary.mutations import (
     ITEM_SIZE_BY_TYPE,
@@ -49,6 +50,7 @@ from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
 from ..validators import (
     _validate_number,
+    validate_name,
     validate_number,
     validate_sequence,
     validate_string,
@@ -81,8 +83,14 @@ if TYPE_CHECKING:
     from ...binary.chunk import Chunk
     from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
     from ...binary.misc_chunks import ShphChunk
+    from ...binary.scalar_chunks import U4Chunk
     from ...synthesis.specs import _PropSpec
+    from ..items.av_item import AVItem
     from ..items.composition import CompItem
+    from ..items.folder import FolderItem
+    from ..items.footage import FootageItem
+    from ..layers.av_layer import AVLayer
+    from ..project import Project
     from .property_group import PropertyGroup
 
     _ValueType = Union[
@@ -439,10 +447,16 @@ class Property(PropertyBase):
             prop.default_value = (
                 final_value if spec.default_value is _USE_VALUE else spec.default_value
             )
-        if spec.min_value is not None:
+        if spec.chunk_bounds_are_hints:
+            # tdum/tduM hold UI slider hints, not real bounds: the spec is
+            # authoritative (None = unbounded).
             prop._min_value_fallback = spec.min_value
-        if spec.max_value is not None:
             prop._max_value_fallback = spec.max_value
+        else:
+            if spec.min_value is not None:
+                prop._min_value_fallback = spec.min_value
+            if spec.max_value is not None:
+                prop._max_value_fallback = spec.max_value
         if spec.bound_chunks is not None:
             prop._bound_chunks_hint = spec.bound_chunks
         else:
@@ -516,6 +530,13 @@ class Property(PropertyBase):
         # properties whose pristine state stores a bare tdbs.
         self._wrapper: ListChunk | None = None
 
+        # Media-replacement slot chunks (blsv/blsi), siblings of this leaf's
+        # tdbs inside an `ADBE Layer Source Alternate` group run. Set by the
+        # tdbs dispatcher only for that match name; None otherwise. `blsi` is
+        # the alternate-source item id (0 = no replacement set).
+        self._blsv: U4Chunk | None = None
+        self._blsi: U4Chunk | None = None
+
         self._can_vary_over_time = can_vary_over_time
 
         # Expressions can never be set on this parameter (from the pard
@@ -546,6 +567,9 @@ class Property(PropertyBase):
 
         self._min_value_fallback: Any = _UNSET
         self._max_value_fallback: Any = _UNSET
+        # The pard UI slider range (effect params only; None elsewhere).
+        self._slider_min: float | None = None
+        self._slider_max: float | None = None
         self._scale_z_override: float | None = None
 
         self.nb_options = None
@@ -567,12 +591,13 @@ class Property(PropertyBase):
         Each keyframe gets a reference to its owning property and to its
         prev/next neighbours for lazy ease computation.
         """
+        # Assign None explicitly at the boundaries: after a removal or a
+        # reorder the previous links are stale, and boundary keyframes
+        # must read prev/next as None (ease resolution depends on it).
         for i, kf in enumerate(self.keyframes):
             kf._bind_property(self)
-            if i > 0:
-                kf._prev = self.keyframes[i - 1]
-            if i < len(self.keyframes) - 1:
-                kf._next = self.keyframes[i + 1]
+            kf._prev = self.keyframes[i - 1] if i > 0 else None
+            kf._next = self.keyframes[i + 1] if i < len(self.keyframes) - 1 else None
 
     def _link_inserted_key(self, idx: int) -> None:
         """Re-link only the keyframe inserted at `idx` and its neighbours.
@@ -587,6 +612,56 @@ class Property(PropertyBase):
         if idx + 1 < len(self.keyframes):
             kf._next = self.keyframes[idx + 1]
             self.keyframes[idx + 1]._prev = kf
+
+    def _guard_keyframe_move(self, kf: Keyframe, new_frame: int) -> None:
+        """Reject moving `kf` onto another keyframe's frame.
+
+        Only applies to a keyframe already in `keyframes`: during
+        `add_key` construction the time is assigned before insertion, and
+        landing on an existing frame legitimately returns that keyframe's
+        index instead.
+        """
+        try:
+            index_by_identity(self.keyframes, kf)
+        except ValueError:
+            return
+        if any(k is not kf and k.frame_time == new_frame for k in self.keyframes):
+            raise ValueError(f"another keyframe already exists at frame {new_frame}")
+
+    def _reposition_keyframe(self, kf: Keyframe) -> None:
+        """Restore sorted keyframe order after `kf`'s time changed.
+
+        The binary and the model pair several structures positionally
+        with `keyframes`: the ldat header items, the parallel value
+        container's chunks (otda / Nmrd / shap / Utf8) and a text
+        property's COS document array. Moving a keyframe past a
+        neighbour must move all of them together and re-link the
+        prev/next chain (LINEAR ease speeds and `value_at_time` read
+        neighbours by order). No-op for a keyframe not (yet) in
+        `keyframes` or whose sorted position is unchanged.
+        """
+        try:
+            old = index_by_identity(self.keyframes, kf)
+        except ValueError:
+            return
+        new_ft = kf.frame_time
+        new = sum(1 for k in self.keyframes if k is not kf and k.frame_time < new_ft)
+        if new == old:
+            return
+        _lhd3, ldat = self._ensure_animated()
+        self.keyframes.insert(new, self.keyframes.pop(old))
+        ldat.items.insert(new, ldat.items.pop(old))
+        container = self._kf_value_container
+        if container is not None and old < len(container.chunks):
+            container.chunks.insert(new, container.chunks.pop(old))
+        if self._parallel_kind() is TEXT_KIND:
+            td = kf.value
+            if isinstance(td, TextDocument):
+                doc_array = cos_get(td._cos_data, "1", "1")
+                if old < len(doc_array):
+                    doc_array.insert(new, doc_array.pop(old))
+                td._propagate_cos()
+        self._link_keyframes()
 
     def _ensure_materialized(self) -> None:
         """Flip synthetic flags so backing chunks become visible to write_aep().
@@ -1614,6 +1689,119 @@ class Property(PropertyBase):
         return False
 
     @property
+    def can_set_alternate_source(self) -> bool:
+        """`True` if this is an Essential Property that supports Media
+        Replacement (its alternate source can be set). Read-only.
+
+        Decoded from the `blsi` chunk beside an `ADBE Layer Source Alternate`
+        slot: a non-zero item id means a replacement source is configured.
+        """
+        return self._blsi is not None and self._blsi.value != 0
+
+    @property
+    def alternate_source(self) -> AVItem | None:
+        """The alternate source item set for a Media Replacement slot, or
+        `None` when unset / unsupported. Read / Write.
+
+        After Effects wraps the replacement footage in a composition, so this
+        resolves to that wrapper item (the `blsi` item id).
+        """
+        if self._blsi is None or self._blsi.value == 0 or self._composition is None:
+            return None
+        return cast(
+            "AVItem | None",
+            self._composition._project.items.get(self._blsi.value),
+        )
+
+    @alternate_source.setter
+    def alternate_source(self, source: AVItem) -> None:
+        """Set the alternate (replacement) source for a Media Replacement
+        slot.
+
+        `source` must be an item already in the project. When `source` is a
+        `FootageItem`, After Effects wraps it in a composition - placed in a
+        root-level `Media Replacement Comps` folder and sized to the host comp -
+        and points the slot at that wrapper; py_aep matches this. A `CompItem`
+        is used directly (it is assumed to already be a wrapper).
+
+        Raises `ValueError` when this property is not a media-replacement slot
+        (`can_set_alternate_source` is `False`) or `source` is not in the
+        project, and `TypeError` when `source` is not an `AVItem`.
+        """
+        from ..items.av_item import AVItem  # noqa: PLC0415
+        from ..items.footage import FootageItem  # noqa: PLC0415
+
+        if not self.can_set_alternate_source or self._blsi is None:
+            raise ValueError(
+                "This property does not support media replacement "
+                "(can_set_alternate_source is False)."
+            )
+        if not isinstance(source, AVItem):
+            raise TypeError(
+                f"alternate source must be an AVItem, not {type(source).__name__}"
+            )
+        if (
+            self._composition is None
+            or source.id not in self._composition._project.items
+        ):
+            raise ValueError(
+                f"Item {source.name!r} (id={source.id}) is not in the project."
+            )
+        if isinstance(source, FootageItem):
+            self._blsi.value = self._build_replacement_wrapper(source).id
+        else:
+            self._blsi.value = source.id
+
+    def _build_replacement_wrapper(self, footage: FootageItem) -> CompItem:
+        """Build the AE-faithful wrapper `CompItem` for a footage media
+        replacement: a host-sized comp in a root-level `Media Replacement Comps`
+        folder holding `footage` as its single layer, named
+        `{this property's name}_{unique footage basename}`.
+        """
+        host = self._composition
+        assert host is not None  # guarded by the caller's project check
+        project = host._project
+        folder = _find_or_create_wrapper_folder(project)
+        name = f"{self.name}_{_unique_wrapper_suffix(footage, project)}"
+        wrapper = folder.add_comp(
+            name,
+            host.width,
+            host.height,
+            host.pixel_aspect,
+            host.duration,
+            host.frame_rate,
+        )
+        # AE's wrapper comp shares the host comp's cdta exactly (timebase,
+        # shutter phase, work area) - `add_comp`'s fresh skeleton diverges on
+        # time_divisor/work_area_start_divisor/shutter_phase, so clone the host
+        # cdta over it. idta/iide (the item ids) are separate chunks and stay
+        # the wrapper's own.
+        new_cdta = copy.deepcopy(host._cdta)
+        chunks = wrapper._item_list.chunks
+        chunks[chunks.index(wrapper._cdta)] = new_cdta
+        wrapper._cdta = new_cdta
+        wrapper.add(footage)
+        return wrapper
+
+    @property
+    def essential_property_source(self) -> Property | PropertyGroup | AVLayer | None:
+        """The originating source an Essential Property points at - a
+        `Property`/`PropertyGroup` (created from a Property) or an `AVLayer`
+        (Media Replacement Footage), or `None`. Read-only.
+
+        Media-replacement overrides resolve to the source composition's
+        `AVLayer` (matched by the controller's `CCId`/`CLId`). Property-source
+        essential properties resolve to the source `Property` (or
+        `PropertyGroup` for a grouped controller) by walking the controller's
+        source-property path by match name.
+        """
+        from ...resolvers.essential_properties import (  # noqa: PLC0415
+            resolve_essential_property_source,
+        )
+
+        return resolve_essential_property_source(self)
+
+    @property
     def is_dropdown_effect(self) -> bool:
         """`True` if the property is the Menu property of a Dropdown Menu Control effect."""
         return self._property_control_type == PropertyControlType.ENUM
@@ -1796,6 +1984,54 @@ class Property(PropertyBase):
             idx += 1
         return idx, False
 
+    def can_add_to_motion_graphics_template(self, comp: CompItem) -> bool:
+        """Test whether this property can be added to `comp`'s Essential
+        Graphics panel (a Motion Graphics template).
+
+        Gates on what py_aep can produce: the supported control types are
+        Checkbox, Color, single-value numeric Slider and Source Text (a
+        Dropdown param reports `False` - AE would build a type-13 Dropdown
+        controller, which py_aep does not). Paths through indexed groups -
+        effects, masks, shape contents, text animators - are addressed by AE's
+        child index (validated against AE 2026 output), so their children are
+        addable, including on duplicate siblings. Reports `False` for an effect
+        param whose parT definitions are unavailable, children of `ADBE Effect
+        Built In Params`, a by-name node ambiguous among its siblings, a
+        property already exposed, or a layer not in `comp`.
+
+        Args:
+            comp: The composition whose Essential Graphics panel to test.
+        """
+        from ...resolvers.motion_graphics import can_add_property
+
+        return can_add_property(self, comp)
+
+    def add_to_motion_graphics_template(self, comp: CompItem) -> bool:
+        """Add this property to `comp`'s Essential Graphics panel, using the
+        property's own name for the controller.
+
+        Returns `True` on success, or `False` when the property cannot be added
+        (see `can_add_to_motion_graphics_template`).
+
+        Args:
+            comp: The composition to add the property to.
+        """
+        return comp._add_property_controller(self, None)
+
+    def add_to_motion_graphics_template_as(self, comp: CompItem, name: str) -> bool:
+        """Add this property to `comp`'s Essential Graphics panel with an
+        explicit controller `name`.
+
+        Returns `True` on success, or `False` when the property cannot be
+        added (see `can_add_to_motion_graphics_template`).
+
+        Args:
+            comp: The composition to add the property to.
+            name: The controller name to show in the Essential Graphics panel.
+        """
+        validate_name(name)
+        return comp._add_property_controller(self, name)
+
     def add_key(self, time: float) -> int:
         """Add a keyframe at the given time and return its 0-based index.
 
@@ -1855,8 +2091,7 @@ class Property(PropertyBase):
             return idx
         ldat.items.insert(idx, ldat_item)
         self.keyframes.insert(idx, kf)
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         kf.value = new_value
         self._link_inserted_key(idx)
         return idx
@@ -1892,8 +2127,7 @@ class Property(PropertyBase):
         removed_value = removed.value
         del ldat.items[key_index]
         del self.keyframes[key_index]
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         self._link_keyframes()
         if not self.keyframes:
             self._deanimate(removed_value)
@@ -2044,8 +2278,7 @@ class Property(PropertyBase):
         kf.time = time
         ldat.items.append(ldat_item)
         self.keyframes.append(kf)
-        lhd3.count = 1
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, 1, LHD3_BLOCK_KEYFRAMES)
         kf._value = template
         self._value = None
         if isinstance(value, str):
@@ -2100,8 +2333,7 @@ class Property(PropertyBase):
             # The text setter above already re-serializes the COS blob; when
             # no text was supplied, propagate the structural insert ourselves.
             td._propagate_cos()
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         self._link_inserted_key(idx)
         return idx
 
@@ -2121,8 +2353,7 @@ class Property(PropertyBase):
         if key_index < len(doc_array):
             del doc_array[key_index]
         del self.keyframes[key_index]
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         removed._propagate_cos()
         self._link_keyframes()
 
@@ -2225,8 +2456,7 @@ class Property(PropertyBase):
             container.chunks[0] = value_chunk
         else:
             container.chunks.insert(idx, value_chunk)
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         # The header item already carries the value (`build_header_item`) and
         # the container chunk is inserted above, so set the shadow directly:
         # the public `kf.value` setter would re-route complex kinds back into
@@ -2261,8 +2491,7 @@ class Property(PropertyBase):
         del self.keyframes[key_index]
         if container is not None and key_index < len(container.chunks):
             del container.chunks[key_index]
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         self._link_keyframes()
 
     def _deanimate_parallel(self, kind: ParallelKind) -> None:
@@ -2524,3 +2753,115 @@ class Property(PropertyBase):
                 factor = dist_px / dist_norm
                 for ease in ease_list:
                     ease._speed_factor = factor
+
+
+class _EssentialOverrideProperty(Property):
+    """An Essential Properties override leaf (a child of `ADBE Layer Overrides`).
+
+    Its `value` is its own override (the leaf `cdat`), but its derived metadata
+    - `enabled`, `min_value`/`max_value` (hence `has_min`/`has_max`) and
+    `is_modified` - reflects the Essential Graphics *source* property the
+    override points at, matching After Effects: the override leaf's own `tdsb`
+    enable bit and `tdum`/`tduM` bounds are the EGP slider state, not what
+    ExtendScript reports. Leaves are re-classed to this type after the override
+    group is parsed (see `parsers/property.py::_dispatch_ovg2`); this keeps the
+    base `Property` accessors - and round-trip serialization - untouched.
+    """
+
+    def _override_source(self) -> Property | None:
+        """The resolved source `Property`, or `None` when it does not resolve
+        (e.g. a Media Replacement leaf whose source is an `AVLayer`). Cached."""
+        cached = self.__dict__.get("_ov_src", _UNSET)
+        if cached is not _UNSET:
+            return cast("Property | None", cached)
+        src = self.essential_property_source
+        resolved = src if isinstance(src, Property) else None
+        self.__dict__["_ov_src"] = resolved
+        return resolved
+
+    def _override_controller_name(self) -> str | None:
+        """The name of the override leaf's Essential Graphics controller, or
+        `None` when it does not resolve. Cached. This is the display name AE
+        shows for the override - the leaf's own `tdsn` may be empty."""
+        cached = self.__dict__.get("_ov_ctrl_name", _UNSET)
+        if cached is not _UNSET:
+            return cast("str | None", cached)
+        from ...resolvers.essential_properties import (  # noqa: PLC0415
+            resolve_essential_property_controller,
+        )
+
+        controller = resolve_essential_property_controller(self)
+        name = controller.name if controller is not None else None
+        self.__dict__["_ov_ctrl_name"] = name
+        return name
+
+    @property
+    def name(self) -> str:
+        ctrl_name = self._override_controller_name()
+        return ctrl_name if ctrl_name is not None else super().name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        PropertyBase.__dict__["name"].fset(self, value)
+
+    @property
+    def enabled(self) -> bool:
+        src = self._override_source()
+        return src.enabled if src is not None else super().enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        PropertyBase.__dict__["enabled"].__set__(self, value)
+
+    @property
+    def min_value(self) -> Any:
+        src = self._override_source()
+        return src.min_value if src is not None else super().min_value
+
+    @property
+    def max_value(self) -> Any:
+        src = self._override_source()
+        return src.max_value if src is not None else super().max_value
+
+    @property
+    def is_modified(self) -> bool:
+        src = self._override_source()
+        if src is not None:
+            return not _values_equal(self.value, src.value)
+        return super().is_modified
+
+
+def _find_or_create_wrapper_folder(project: Project) -> FolderItem:
+    """The root-level `Media Replacement Comps` folder, reused if present
+    (matching AE) or created at the project root."""
+    from ..items.folder import FolderItem  # noqa: PLC0415
+
+    root = project.root_folder
+    for item in project.items.values():
+        if (
+            isinstance(item, FolderItem)
+            and item.name == "Media Replacement Comps"
+            and item.parent_folder is root
+        ):
+            return item
+    return root.add_folder("Media Replacement Comps")
+
+
+def _unique_wrapper_suffix(footage: FootageItem, project: Project) -> str:
+    """The placed footage's basename, made unique against existing item names
+    with AE's ` N` scheme (bare if free, else the first free integer >= 2)."""
+    base = _strip_sequence_basename(footage.name)
+    names = {item.name for item in project.items.values()}
+    if base not in names:
+        return base
+    n = 2
+    while f"{base} {n}" in names:
+        n += 1
+    return f"{base} {n}"
+
+
+def _strip_sequence_basename(name: str) -> str:
+    """Footage display name -> AE wrapper basename: drop the extension and any
+    trailing image-sequence frame range (`foo_[001-003].gif` -> `foo`)."""
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return re.sub(r"[ _]?\[\d+-\d+\]$", "", stem)

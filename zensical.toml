@@ -34,6 +34,7 @@ nav = [
             { "Camera Layer" = "api/layers/camera_layer.md" },
             { "Light Layer" = "api/layers/light_layer.md" },
             { "3D Model Layer" = "api/layers/three_d_model_layer.md" },
+            { "Parametric Mesh Layer" = "api/layers/parametric_mesh_layer.md" },
         ] },
         { "Properties" = [
             { "Property Base" = "api/properties/property_base.md" },

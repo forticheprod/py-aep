@@ -161,6 +161,57 @@ class TestSvgImportGradients:
 class TestSvgImportByteFidelity:
     """Byte-level fidelity fixes surfaced by aep-compare vs AE's import."""
 
+    def test_gradient_paint_opacity_from_group(self, tmp_path: Path) -> None:
+        # A group/element opacity over a GRADIENT fill/stroke goes into the
+        # Fill/Stroke Opacity leaf (AE 2026 ground truth), NOT the alpha stops.
+        # Unlike solid paints it is the RAW percentage, not 8-bit quantized:
+        # AE reads the SVG opacity as float32, so 0.3 -> 30.000001907 (not the
+        # solid-path 30.196). A fully-opaque gradient leaves Opacity defaulted.
+        from py_aep import new
+
+        svg = tmp_path / "go.svg"
+        svg.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+            '<defs><linearGradient id="g" gradientUnits="objectBoundingBox"'
+            ' x1="0" y1="0" x2="1" y2="0">'
+            '<stop offset="0" stop-color="#f00"/>'
+            '<stop offset="1" stop-color="#00f"/></linearGradient></defs>'
+            '<g opacity="0.3"><rect width="40" height="40" fill="url(#g)"/></g>'
+            '<g opacity="0.5"><rect x="50" y="50" width="40" height="40"'
+            ' fill="none" stroke="url(#g)" stroke-width="6"/></g>'
+            '<rect x="50" width="40" height="40" fill="url(#g)"/>'
+            "</svg>"
+        )
+        app = new()
+        opts = ImportOptions(svg)
+        opts.import_as = ImportAsType.COMP_CROPPED_LAYERS
+        comp = app.project.import_file(opts)
+        assert isinstance(comp, CompItem)
+        contents = comp.layers[0].property("ADBE Root Vectors Group")
+        assert isinstance(contents, PropertyGroup)
+
+        fill_ops: list[float] = []
+        stroke_ops: list[float] = []
+        for group in contents.properties:
+            if group.match_name != "ADBE Vector Group":
+                continue
+            inner = group["ADBE Vectors Group"]
+            for child in inner.properties:
+                if child.match_name == "ADBE Vector Graphic - G-Fill":
+                    fill_ops.append(child["ADBE Vector Fill Opacity"].value)
+                    # opacity lives in the leaf, not the gradient alpha stops
+                    grad = child["ADBE Vector Grad Colors"].value
+                    assert all(s.alpha == 1.0 for s in grad.alpha_stops)
+                elif child.match_name == "ADBE Vector Graphic - G-Stroke":
+                    stroke_ops.append(child["ADBE Vector Stroke Opacity"].value)
+
+        # 0.3 fill (float32-exact, not 8-bit), opaque control fill (default 100)
+        assert sorted(fill_ops) == [
+            pytest.approx(30.000001907, abs=1e-5),
+            pytest.approx(100.0),
+        ]
+        assert stroke_ops == [pytest.approx(50.0)]
+
     def test_shape_layer_anchor_written_raw(self) -> None:
         # AE stores a shape layer's anchor in raw pixels (not normalized by
         # comp size). Setting it must write the raw cdat, not value/comp.
@@ -192,6 +243,39 @@ class TestSvgImportByteFidelity:
             if getattr(c, "chunk_type", None) == "tdsb"
         )
         assert tdsb._enable_flags == 3
+
+    def test_compound_path_gets_merge_paths(self) -> None:
+        # A compound path (one SVG <path> with several subpaths) needs a Merge
+        # Paths op so overlapping subpaths cut holes via the nonzero winding
+        # rule; without it AE fills each subpath solid and the holes vanish. AE
+        # adds exactly one (Merge Type 1) to every multi-subpath group and none
+        # to single-subpath groups - mirror that.
+        _app, comp = _import("butterfly")
+        contents = comp.layers[0].property("ADBE Root Vectors Group")
+        assert isinstance(contents, PropertyGroup)
+        multi = single = 0
+        for group in contents.properties:
+            if group.match_name != "ADBE Vector Group":
+                continue
+            inner = group["ADBE Vectors Group"]
+            nshapes = sum(
+                1
+                for c in inner.properties
+                if c.match_name == "ADBE Vector Shape - Group"
+            )
+            merges = [
+                c
+                for c in inner.properties
+                if c.match_name == "ADBE Vector Filter - Merge"
+            ]
+            if nshapes > 1:
+                multi += 1
+                assert len(merges) == 1, f"{group.name}: nshapes={nshapes}"
+                assert merges[0]["ADBE Vector Merge Type"].value == 1.0
+            else:
+                single += 1
+                assert not merges, f"{group.name} (single subpath) has a Merge"
+        assert multi == 3 and single == 18  # butterfly: 3 compound, 18 simple
 
     def test_layer_styles_synthesized_disabled(self, tmp_path: Path) -> None:
         # Every layer style must stay OFF on a freshly synthesized layer. The

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 from ..binary.chunk import ListChunk
 from ..binary.misc_chunks import MkifChunk
 from ..binary.property_chunks import TdsbChunk
-from ..binary.scalar_chunks import Utf8Chunk
+from ..binary.scalar_chunks import U4Chunk, Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
     filter_by_list_type,
@@ -220,6 +220,15 @@ def _dispatch_tdbs(ctx: _ParseContext) -> list[Property | PropertyGroup]:
         property_depth=ctx.child_depth,
         tdmn=ctx.tdmn,
     )
+    # A media-replacement slot (`ADBE Layer Source Alternate`) carries blsv/blsi
+    # beside its tdbs in the group run; attach them so the Property can decode
+    # `can_set_alternate_source` / `alternate_source`.
+    blsi = filter_by_type(chunks=ctx.chunks, chunk_type="blsi")
+    if blsi:
+        prop._blsi = cast(U4Chunk, blsi[0])
+        blsv = filter_by_type(chunks=ctx.chunks, chunk_type="blsv")
+        if blsv:
+            prop._blsv = cast(U4Chunk, blsv[0])
     return [prop]
 
 
@@ -289,9 +298,45 @@ def _dispatch_mrst(ctx: _ParseContext) -> list[Property | PropertyGroup]:
 
 @_property_parser("OvG2")
 def _dispatch_ovg2(ctx: _ParseContext) -> list[Property | PropertyGroup]:
-    """Skip Essential Properties override metadata."""
-    logger.debug("Skipping OvG2 metadata (match name '%s')", ctx.match_name)
-    return []
+    """Parse the Essential Properties override group ("ADBE Layer Overrides").
+
+    The match-name run holds the `LIST:OvG2` metadata block (override count +
+    controller UUIDs, already parsed at the layer level into
+    `Layer.essential_property_uuids`) followed by a sibling `LIST:tdgp` that
+    carries the override properties themselves.
+
+    All override groups are exposed (media replacement and grouped/regular
+    controllers alike). Leaf properties are re-classed to
+    `_EssentialOverrideProperty` so their derived metadata (enabled, bounds,
+    is_modified) reflects the Essential Graphics source property rather than the
+    override leaf's own partial-copy chunks - the leaf's `value` stays its own.
+    """
+    tdgps = list(filter_by_list_type(chunks=ctx.chunks, list_type="tdgp"))
+    if not tdgps:
+        return []
+    group = parse_property_group(
+        tdgp_chunk=tdgps[0],
+        group_match_name=ctx.match_name,
+        property_depth=ctx.child_depth,
+        effect_param_defs=ctx.effect_param_defs,
+        composition=ctx.composition,
+        tdmn=ctx.tdmn,
+    )
+    _reclass_override_leaves(group)
+    return [group]
+
+
+def _reclass_override_leaves(group: PropertyGroup) -> None:
+    """Re-class the leaf `Property` children of an override group to
+    `_EssentialOverrideProperty`. Group nodes recurse; any `Property` subclass
+    (e.g. a specialized property) is left as-is - only plain leaves convert."""
+    from ..models.properties.property import Property, _EssentialOverrideProperty
+
+    for child in group.properties:
+        if isinstance(child, PropertyGroup):
+            _reclass_override_leaves(child)
+        elif type(child) is Property:
+            child.__class__ = _EssentialOverrideProperty
 
 
 @_suppress_materialization()

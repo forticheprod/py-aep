@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Tuple
 
-from ._util import NUMBER_RE
+from ._util import NUMBER_RE, parse_number
 from .errors import UnsupportedSVGError
 from .path_data import RawSubpath, parse_path
 from .transform import Affine
@@ -25,11 +25,7 @@ _KAPPA = 0.5522847498307936
 
 
 def _f(attrs: dict[str, str], key: str, default: float = 0.0) -> float:
-    raw = attrs.get(key)
-    if raw is None or raw == "":
-        return default
-    m = NUMBER_RE.match(raw.strip())
-    return float(m.group()) if m else default
+    return parse_number(attrs.get(key), default)
 
 
 def element_subpaths(tag: str, attrs: dict[str, str]) -> list[RawSubpath]:

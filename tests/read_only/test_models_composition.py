@@ -748,6 +748,165 @@ class TestEssentialGraphics:
         assert len(ctrls) == 1
         assert ctrls[0].controller_type == 14
         assert ctrls[0].name == "image_with_alpha.png"
+        # The controller records the source comp + layer it controls.
+        assert ctrls[0].source_comp_id == 2
+        assert ctrls[0].source_layer_id == 14
+
+    def test_media_replacement_override_attributes(self) -> None:
+        # The precomp layer's Essential Properties override now exposes its
+        # ADBE Layer Source Alternate child, and the media-replacement
+        # attributes decode from the blsi slot (AE wraps the replacement
+        # footage in a composition, so alternate_source is that comp).
+        project = parse_project(EG_SAMPLES_DIR / "media_replacement.aep")
+        host = next(c for c in project.compositions if c.name == "image_with_alpha 2")
+        layer = next(la for la in host.layers if la.essential_property_uuids)
+
+        overrides = next(
+            p for p in layer.properties if p.match_name == "ADBE Layer Overrides"
+        )
+        assert overrides.num_properties == 1
+        alt = overrides.properties[0]
+        assert alt.match_name == "ADBE Layer Source Alternate"
+        assert alt.name == "image_with_alpha.png"
+        assert alt.can_set_alternate_source is True
+        assert alt.is_modified is True
+        assert alt.alternate_source is not None
+        assert alt.alternate_source.name == "image_with_alpha.png_sequence"
+        # essential_property_source resolves the override to its source layer
+        # in the master comp (matched via the controller's CCId/CLId).
+        src = alt.essential_property_source
+        assert src is not None
+        assert src.name == "image_with_alpha.png"
+        assert src.containing_comp.name == "image_with_alpha"
+
+        # The Source Options copy is an unset slot (blsi == 0).
+        src_group = next(
+            p for p in layer.properties if p.match_name == "ADBE Source Options Group"
+        )
+        src_alt = next(
+            c
+            for c in src_group.properties
+            if c.match_name == "ADBE Layer Source Alternate"
+        )
+        assert src_alt.can_set_alternate_source is False
+        assert src_alt.alternate_source is None
+
+    def test_property_source_essential_property_walk(self) -> None:
+        # A Property-source controller (created from a Property, not Media
+        # Replacement Footage) resolves to its source Property by walking the
+        # controller's source-property path BY MATCH NAME - prop_index is
+        # AE-internal and ignored, so the hidden `-0001`/`-0002` effect leaves
+        # resolve correctly. This drives the resolver helpers directly via the
+        # controllers (the public `essential_property_source` path is exercised
+        # by test_essential_property_override_metadata).
+        from py_aep.resolvers.essential_properties import (
+            _resolve_controller_source_layer,
+            _walk_source_property,
+            resolve_essential_property_controllers,
+        )
+
+        project = parse_project(EG_SAMPLES_DIR / "group_controller.aep")
+        layer = next(
+            la
+            for comp in project.compositions
+            for la in comp.layers
+            if resolve_essential_property_controllers(la)
+        )
+        ctrls = resolve_essential_property_controllers(layer)
+        by_name = {c.name: c for c in ctrls}
+
+        blur = by_name["Gaussian Blur Blurriness"]
+        src_layer = _resolve_controller_source_layer(project, blur)
+        assert src_layer is not None
+        leaf = _walk_source_property(src_layer, blur.source_property_path)
+        assert leaf is not None
+        assert leaf.match_name == "ADBE Gaussian Blur 2-0001"
+        assert leaf.enabled is True
+        assert leaf.min_value == 0
+        assert leaf.max_value == 30000
+        assert leaf.value == 25.0
+
+        # The override leaf carries its OWN value; the source Property here is
+        # the effect's source value ([1,0,0,1]), distinct from any override.
+        fill = by_name["Fill Color"]
+        fill_leaf = _walk_source_property(
+            _resolve_controller_source_layer(project, fill),
+            fill.source_property_path,
+        )
+        assert fill_leaf is not None
+        assert fill_leaf.match_name == "ADBE Fill-0002"
+        assert list(fill_leaf.value) == [1.0, 0.0, 0.0, 1.0]
+
+        # A Group controller (type 10) stores no source-property path -> no leaf.
+        group = by_name["Group"]
+        assert group.source_property_path == []
+
+    def test_essential_property_override_metadata(self) -> None:
+        # Non-media-replacement override groups are exposed; each leaf's derived
+        # metadata (enabled, bounds, is_modified, name) reflects its Essential
+        # Graphics SOURCE property, while its value is its own override cdat.
+        project = parse_project(EG_SAMPLES_DIR / "group_controller.aep")
+        layer = next(
+            la
+            for comp in project.compositions
+            for la in comp.layers
+            if any(p.match_name == "ADBE Layer Overrides" for p in la.properties)
+            and next(
+                p for p in la.properties if p.match_name == "ADBE Layer Overrides"
+            ).num_properties
+            > 0
+        )
+        overrides = next(
+            p for p in layer.properties if p.match_name == "ADBE Layer Overrides"
+        )
+        assert overrides.num_properties == 1
+        assert overrides.is_modified is True  # non-empty override group
+
+        grp = overrides.properties[0]
+        assert grp.match_name == "ADBE Layer Overrides Group"
+        assert grp.num_properties == 2
+        assert grp.is_modified is True
+
+        blur, fill = grp.properties
+        # Source-derived bounds/enabled (leaf's own tduM is 50, source is 30000).
+        assert blur.name == "Gaussian Blur Blurriness"
+        assert blur.enabled is True
+        assert blur.has_min and blur.has_max
+        assert (blur.min_value, blur.max_value) == (0, 30000)
+        assert blur.value == 25.0  # own override value
+        assert blur.is_modified is False  # equals source value
+
+        # Fill leaf has no tdum/tduM; bounds come from the source Fill Color.
+        assert fill.name == "Fill Color"
+        assert fill.has_min and fill.has_max
+        assert round(fill.max_value, 2) == 3921568.63
+        assert fill.is_modified is True  # override differs from source [1,0,0,1]
+        assert [round(c, 4) for c in fill.value] == [0.2475, 0.7255, 0.6299, 1.0]
+
+        # Public essential_property_source resolves the override to its source
+        # Property (a different object than the override leaf).
+        src = blur.essential_property_source
+        assert src is not None and src is not blur
+        assert src.match_name == "ADBE Gaussian Blur 2-0001"
+
+    def test_essential_property_override_name_from_controller(self) -> None:
+        # When an override leaf's own tdsn is empty, its display name comes from
+        # the Essential Graphics controller, not the match-name fallback.
+        project = parse_project(EG_SAMPLES_DIR / "multiple_controllers.aep")
+        layer = next(
+            la
+            for comp in project.compositions
+            for la in comp.layers
+            if any(
+                p.match_name == "ADBE Layer Overrides" and p.num_properties > 0
+                for p in la.properties
+            )
+        )
+        overrides = next(
+            p for p in layer.properties if p.match_name == "ADBE Layer Overrides"
+        )
+        names = [leaf.name for leaf in overrides.properties]
+        assert names == ["Brightness", "Layer Opacity", "Background Color"]
 
     def test_pre_cif3_falls_back_to_legacy_container(self) -> None:
         # Pre-CIF3 files (AE < 2022) store Essential Graphics in CIF2/CIFO.

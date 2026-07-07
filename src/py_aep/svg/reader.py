@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Union
 from xml.etree.ElementTree import Element, fromstring
 
-from ._util import NUMBER_RE, clamp01, local_name
+from ._util import local_name, parse_number, parse_ratio
 from .colors import parse_color
 from .document import canvas
 from .errors import UnsupportedSVGError
@@ -119,7 +119,8 @@ def read_svg(source: str | os.PathLike[str] | bytes) -> SvgDocument:
     root_style = resolve_properties({}, "svg", root.attrib, reader._css)
     root_tf = root_tf.multiply(parse_transform(root.get("transform", "")))
     reader._root_ctm = root_tf
-    root_opacity = _ratio(root_style.get("opacity"), 1.0)
+    reader._viewport = (width, height)
+    root_opacity = parse_ratio(root_style.get("opacity"), 1.0)
     drawables = reader.walk(root, root_tf, root_style, root_opacity)
     return SvgDocument(width=width, height=height, drawables=drawables)
 
@@ -141,6 +142,7 @@ class _Reader:
         # base (viewBox + root transform), set by read_svg before the walk.
         self._parents: dict[Element, Element] | None = None
         self._root_ctm: Affine = Affine()
+        self._viewport: tuple[float, float] = (0.0, 0.0)
         self._use_stack: list[str] = []
 
     @staticmethod
@@ -214,7 +216,7 @@ class _Reader:
         # `opacity` is a non-inherited compositing factor; AE flattens an SVG
         # group/element opacity by multiplying it into the leaf's paint
         # opacity, so accumulate it down the tree and fold it into the leaf.
-        eff_opacity = opacity * _ratio(style.get("opacity"), 1.0)
+        eff_opacity = opacity * parse_ratio(style.get("opacity"), 1.0)
 
         if tag in _CONTAINER_TAGS:
             out.extend(self.walk(elem, local_tf, style, eff_opacity, depth + 1))
@@ -252,8 +254,8 @@ class _Reader:
         target = self._by_id.get(target_id)
         if target is None:
             return
-        x = _num(elem.get("x", "0"))
-        y = _num(elem.get("y", "0"))
+        x = parse_number(elem.get("x", "0"))
+        y = parse_number(elem.get("y", "0"))
         use_tf = ctm.multiply(Affine(e=x, f=y))
         self._use_stack.append(target_id)
         try:
@@ -275,8 +277,8 @@ class _Reader:
     ) -> None:
         # A <text> is outlined into vector shapes: its direct text and each
         # <tspan> become a run (carrying its own font/fill), laid out
-        # left-to-right. <textPath> and per-chunk anchor (absolute-x tspans)
-        # are not yet handled.
+        # left-to-right. <textPath> children are dispatched to _add_text_path;
+        # a run with an absolute x starts a new anchor chunk (outline_runs).
         if style.get("visibility") == "hidden":
             return
         runs: list[tuple[TextRun, dict[str, str]]] = []
@@ -317,25 +319,14 @@ class _Reader:
         # space between runs stays significant.
         runs[0][0].text = runs[0][0].text.lstrip(" ")
         runs[-1][0].text = runs[-1][0].text.rstrip(" ")
-        origin_x = _num(elem.get("x", "0"))
-        origin_y = _num(elem.get("y", "0"))
+        origin_x = parse_number(elem.get("x", "0"))
+        origin_y = parse_number(elem.get("y", "0"))
         anchor = (style.get("text-anchor") or "start").strip()
         per_run = outline_runs([r for r, _ in runs], origin_x, origin_y, ctm, anchor)
         for (_, run_style), subpaths in zip(runs, per_run):
             if not subpaths:
                 continue
-            bbox = _bbox(subpaths)
-            fill = self._paint(run_style.get("fill", "black"), bbox, ctm)
-            stroke = self._stroke(run_style, bbox, ctm)
-            out.append(
-                SvgDrawable(
-                    subpaths=subpaths,
-                    fill=fill,
-                    stroke=stroke,
-                    name=elem.get("id"),
-                    opacity=opacity,
-                )
-            )
+            out.append(self._emit(subpaths, run_style, ctm, elem.get("id"), opacity))
 
     def _make_run(
         self, text: str, style: dict[str, str], elem: Element | None
@@ -352,16 +343,24 @@ class _Reader:
         if resolved is None:
             return None
         font_path, font_number = resolved
-        abs_x = _num(elem.get("x")) if elem is not None and elem.get("x") else None
-        abs_y = _num(elem.get("y")) if elem is not None and elem.get("y") else None
-        dx = _num(elem.get("dx")) if elem is not None and elem.get("dx") else 0.0
-        dy = _num(elem.get("dy")) if elem is not None and elem.get("dy") else 0.0
+        abs_x = (
+            parse_number(elem.get("x")) if elem is not None and elem.get("x") else None
+        )
+        abs_y = (
+            parse_number(elem.get("y")) if elem is not None and elem.get("y") else None
+        )
+        dx = (
+            parse_number(elem.get("dx")) if elem is not None and elem.get("dx") else 0.0
+        )
+        dy = (
+            parse_number(elem.get("dy")) if elem is not None and elem.get("dy") else 0.0
+        )
         return TextRun(
             text=text,
             font_path=font_path,
             font_number=font_number,
-            font_size=_num(style.get("font-size") or "16"),
-            letter_spacing=_num(style.get("letter-spacing") or "0"),
+            font_size=parse_number(style.get("font-size") or "16"),
+            letter_spacing=parse_number(style.get("letter-spacing") or "0"),
             abs_x=abs_x,
             abs_y=abs_y,
             dx=dx,
@@ -396,9 +395,9 @@ class _Reader:
             return  # referenced element is not a path/basic shape
         raw_off = (tp_elem.get("startOffset") or "0").strip()
         if raw_off.endswith("%"):
-            off_abs, off_frac = 0.0, _num(raw_off) / 100.0
+            off_abs, off_frac = 0.0, parse_number(raw_off) / 100.0
         else:
-            off_abs, off_frac = _num(raw_off), None
+            off_abs, off_frac = parse_number(raw_off), None
         subpaths = outline_text_path(
             _collapse_ws(tp_elem.text).strip(),
             path,
@@ -412,18 +411,7 @@ class _Reader:
         )
         if not subpaths:
             return
-        bbox = _bbox(subpaths)
-        fill = self._paint(style.get("fill", "black"), bbox, ctm)
-        stroke = self._stroke(style, bbox, ctm)
-        out.append(
-            SvgDrawable(
-                subpaths=subpaths,
-                fill=fill,
-                stroke=stroke,
-                name=text_elem.get("id"),
-                opacity=opacity,
-            )
-        )
+        out.append(self._emit(subpaths, style, ctm, text_elem.get("id"), opacity))
 
     def _build_drawable(
         self,
@@ -444,16 +432,24 @@ class _Reader:
         if style.get("visibility") == "hidden":
             return None
 
-        bbox = _bbox(subpaths)
-        fill = self._paint(style.get("fill", "black"), bbox, ctm)
-        stroke = self._stroke(style, bbox, ctm)
         # `opacity` already includes this element's own opacity (folded in by
         # the caller alongside every ancestor's), so use it directly.
+        return self._emit(subpaths, style, ctm, elem.get("id"), opacity)
+
+    def _emit(
+        self,
+        subpaths: list[Subpath],
+        style: dict[str, str],
+        ctm: Affine,
+        name: str | None,
+        opacity: float,
+    ) -> SvgDrawable:
+        bbox = _bbox(subpaths)
         return SvgDrawable(
             subpaths=subpaths,
-            fill=fill,
-            stroke=stroke,
-            name=elem.get("id"),
+            fill=self._paint(style.get("fill", "black"), bbox, ctm),
+            stroke=self._stroke(style, bbox, ctm),
+            name=name,
             opacity=opacity,
         )
 
@@ -467,7 +463,7 @@ class _Reader:
         if url:
             gd = self._gradients.get(url.group(1))
             if gd is not None and gd.stops:
-                return resolve_gradient(gd, bbox, ctm)
+                return resolve_gradient(gd, bbox, ctm, self._viewport)
             # Unknown paint server (pattern, missing gradient): no paint.
             return None
         color = parse_color(value)
@@ -485,14 +481,14 @@ class _Reader:
         paint = self._paint(style.get("stroke", "none"), bbox, ctm)
         if paint is None:
             return None
-        width = _num(style.get("stroke-width", "1")) * ctm.mean_scale
+        width = parse_number(style.get("stroke-width", "1")) * ctm.mean_scale
         if width <= 0:
             return None
         cap = _CAP.get((style.get("stroke-linecap") or "").strip(), 1)
         join = _JOIN.get((style.get("stroke-linejoin") or "").strip(), 1)
-        miter = _num(style.get("stroke-miterlimit", "4"))
+        miter = parse_number(style.get("stroke-miterlimit", "4"))
         dashes = [
-            _num(t) * ctm.mean_scale
+            parse_number(t) * ctm.mean_scale
             for t in re.split(r"[,\s]+", (style.get("stroke-dasharray") or "").strip())
             if t and t != "none"
         ]
@@ -518,13 +514,6 @@ def _bbox(subpaths: list[Subpath]) -> Bbox:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def _num(text: str | None) -> float:
-    if not text:
-        return 0.0
-    m = NUMBER_RE.search(text)
-    return float(m.group()) if m else 0.0
-
-
 _WS_RE = re.compile(r"\s+")
 
 
@@ -537,16 +526,3 @@ def _collapse_ws(text: str) -> str:
     trimmed once across the whole run sequence by the caller.
     """
     return _WS_RE.sub(" ", text)
-
-
-def _ratio(text: str | None, default: float) -> float:
-    if text is None or text == "":
-        return default
-    text = text.strip()
-    # A non-numeric value (e.g. the CSS keyword `inherit`) has no leading
-    # number; fall back to the default rather than raising, matching `_num`.
-    m = NUMBER_RE.search(text)
-    if m is None:
-        return default
-    val = float(m.group()) / 100.0 if text.endswith("%") else float(m.group())
-    return clamp01(val)

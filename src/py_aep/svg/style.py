@@ -9,7 +9,10 @@ inline `style` attribute.
 from __future__ import annotations
 
 import re
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from typing import Collection
 
 # Presentation properties py_aep tracks (the paintable subset plus the text
 # properties needed to outline `<text>`/`<tspan>`).
@@ -35,30 +38,9 @@ _TRACKED = (
     "text-anchor",
     "letter-spacing",
 )
-# Properties that inherit from parent to child (CSS-defined). `opacity`,
-# `display` and `visibility` do NOT inherit; the font/text properties do.
-INHERITABLE = frozenset(
-    {
-        "fill",
-        "fill-opacity",
-        "fill-rule",
-        "stroke",
-        "stroke-opacity",
-        "stroke-width",
-        "stroke-linecap",
-        "stroke-linejoin",
-        "stroke-miterlimit",
-        "stroke-dasharray",
-        "color",
-        "visibility",
-        "font-family",
-        "font-size",
-        "font-weight",
-        "font-style",
-        "text-anchor",
-        "letter-spacing",
-    }
-)
+# Properties that inherit from parent to child (CSS-defined). Of the tracked
+# set, only `opacity` and `display` do NOT inherit (`visibility` does).
+INHERITABLE = frozenset(_TRACKED) - {"opacity", "display"}
 
 
 class CssRule(NamedTuple):
@@ -99,14 +81,16 @@ def parse_css(text: str) -> list[CssRule]:
 _IMPORTANT_RE = re.compile(r"\s*!\s*important\s*$", re.IGNORECASE)
 
 
-def _parse_declarations(body: str) -> dict[str, str]:
+def _parse_declarations(
+    body: str, tracked: Collection[str] = _TRACKED
+) -> dict[str, str]:
     out: dict[str, str] = {}
     for decl in body.split(";"):
         if ":" not in decl:
             continue
         key, _, val = decl.partition(":")
         key = key.strip().lower()
-        if key in _TRACKED:
+        if key in tracked:
             # Drop the CSS `!important` priority flag so it does not leak into
             # the value and break downstream color/number parsing.
             out[key] = _IMPORTANT_RE.sub("", val).strip()

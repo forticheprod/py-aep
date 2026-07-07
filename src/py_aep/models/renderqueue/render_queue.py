@@ -7,8 +7,9 @@ from ...binary.ldat_chunks import (
     LHD3_BLOCK_SINGLE,
     LdatChunk,
     Lhd3Chunk,
-    sync_lhd3_counters,
+    set_lhd3_count,
 )
+from ...binary.mutations import build_rq_settings_list
 from ...binary.project_chunks import RhedChunk
 from ...binary.render_chunks import ArsiChunk, RoutChunk
 
@@ -87,8 +88,7 @@ class RenderQueue:
         """
         rhed = RhedChunk()
         rout = RoutChunk()
-        rs_lhd3 = Lhd3Chunk(item_size=2246, item_type_raw=1, counter_b=1)
-        rs_ldat = LdatChunk(chunk_type="ldat", synthetic=True)
+        settings, rs_lhd3, rs_ldat = build_rq_settings_list()
         litm = ListChunk(list_type="LItm")
         arsi = ArsiChunk()
         lrdr = ListChunk(
@@ -96,7 +96,7 @@ class RenderQueue:
             chunks=[
                 rhed,
                 rout,
-                ListChunk(list_type="list", chunks=[rs_lhd3, rs_ldat]),
+                settings,
                 litm,
                 ListChunk(list_type="LSIf", chunks=[arsi]),
             ],
@@ -166,8 +166,7 @@ class RenderQueue:
         # _counter_a / _counter_b equal to `count` for this list and rejects
         # the file ("Invalid read length") when they go stale.
         self._rs_ldat.items.append(rqi._ldat)
-        self._rs_lhd3.count += 1
-        sync_lhd3_counters(self._rs_lhd3, LHD3_BLOCK_SINGLE)
+        set_lhd3_count(self._rs_lhd3, self._rs_lhd3.count + 1, LHD3_BLOCK_SINGLE)
 
         # Append Rout items (5 per RQ item) and update header
         for ri in rqi._rout_items:

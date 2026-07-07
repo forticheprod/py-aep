@@ -304,6 +304,33 @@ var AepExport = AepExport || {};
     }
 
     /**
+     * Export a Property.essentialPropertySource reference. Per the AE
+     * scripting docs this returns a Property (when the source was a
+     * Property) or an AVLayer (when the source was Media Replacement
+     * Footage), never an AVItem - so it cannot be reduced to an {id, name}
+     * like alternateSource. Emit a small descriptor identifying the source.
+     * Property vs AVLayer is told apart by propertyValueType, which only a
+     * leaf Property has (a Layer is a PropertyGroup subclass and lacks it).
+     */
+    function exportEssentialPropertySource(src) {
+        if (src === null || typeof src === "undefined") return null;
+        var isProperty = false;
+        try { isProperty = (typeof src.propertyValueType !== "undefined"); } catch (e) {}
+        var desc = {};
+        if (isProperty) {
+            desc.sourceType = "Property";
+            try { desc.matchName = src.matchName; } catch (e) {}
+            try { desc.name = src.name; } catch (e) {}
+        } else {
+            desc.sourceType = "AVLayer";
+            try { desc.name = src.name; } catch (e) {}
+            try { desc.index = src.index; } catch (e) {}
+            try { desc.comp = (src.containingComp ? src.containingComp.name : null); } catch (e) {}
+        }
+        return desc;
+    }
+
+    /**
      * Export a single property (not a group).
      */
     function exportProperty(prop) {
@@ -327,6 +354,28 @@ var AepExport = AepExport || {};
         try { result.unitsText = prop.unitsText; } catch (e) {}
         try { result.expression = prop.expression; } catch (e) {}
         try { result.expressionEnabled = prop.expressionEnabled; } catch (e) {}
+
+        // Media-replacement alternate source: getAllAttributes drops it
+        // because a set alternateSource is an AVItem object (not a simple
+        // value), so the for..in loop skips it via isSimpleValue. Export it
+        // as an {id, name} reference (id matches the binary/project item id)
+        // so the parser's alternate_source can be validated; null when unset.
+        try {
+            var altSource = prop.alternateSource;
+            if (altSource === null || typeof altSource === "undefined") {
+                result.alternateSource = null;
+            } else {
+                result.alternateSource = {id: altSource.id, name: altSource.name};
+            }
+        } catch (e) {}
+
+        // Essential Property source: a Property or AVLayer object (never an
+        // AVItem), so getAllAttributes skips it like alternateSource. Emit a
+        // descriptor via the helper; null for non-Essential-Property nodes.
+        try {
+            result.essentialPropertySource =
+                exportEssentialPropertySource(prop.essentialPropertySource);
+        } catch (e) {}
 
         // Export TextDocument value for text properties (propertyValueType 6424)
         try {
@@ -461,11 +510,16 @@ var AepExport = AepExport || {};
         // Dynamically get all layer attributes
         var result = getAllAttributes(layer);
 
-        // Determine layer type
+        // Determine layer type. NOTE: in AE 2026, a ParametricMeshLayer is
+        // NOT `instanceof AVLayer` (it is its own leaf type that merely
+        // exposes the AVLayer attributes), so it must be tested BEFORE the
+        // AVLayer branch or it falls through to the generic "Layer".
         if (layer instanceof CameraLayer) {
             result.layerType = "CameraLayer";
         } else if (layer instanceof LightLayer) {
             result.layerType = "LightLayer";
+        } else if (typeof ParametricMeshLayer !== "undefined" && layer instanceof ParametricMeshLayer) {
+            result.layerType = "ParametricMeshLayer";
         } else if (layer instanceof AVLayer) {
             // AVLayer includes TextLayer, ShapeLayer
             if (layer instanceof TextLayer) {
