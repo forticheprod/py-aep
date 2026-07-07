@@ -27,6 +27,8 @@ from ...binary.mutations import (
     build_slider_cctl,
     build_source_alternate_extras,
     build_text_cctl,
+    clone_chunk_tree,
+    rewrite_owner_tdpi,
 )
 from ...binary.property_chunks import (
     TDSN_SENTINEL,
@@ -55,7 +57,7 @@ from ...resolvers.motion_graphics import (
 )
 from ...synthesis.specs import _CAMERA_LIGHT_TRANSFORM_SKIP, _OMITTED_EMPTY_GROUPS
 from ..descriptors import ChunkField
-from ..layers.av_layer import AVLayer
+from ..layers.av_layer import AVLayer, _unregister_source_usage
 from ..layers.camera_layer import CameraLayer
 from ..layers.light_layer import LightLayer
 from ..layers.parametric_mesh_layer import ParametricMeshLayer
@@ -1123,6 +1125,14 @@ class CompItem(AVItem):
             [kf.value for kf in self.marker_property.keyframes],
         )
 
+    def remove_all_markers(self) -> None:
+        """Remove all markers from this composition.
+
+        A no-op when the composition has no markers.
+        """
+        if self.marker_property is not None:
+            self.marker_property.remove_all_keys()
+
     @property
     def num_layers(self) -> int:
         """The number of layers in the composition."""
@@ -1557,6 +1567,237 @@ class CompItem(AVItem):
             item._used_in.add(self)
 
         return cast("AVLayer", layer)
+
+    def precompose(
+        self,
+        layer_indices: list[int],
+        name: str,
+        move_all_attributes: bool = True,
+    ) -> CompItem:
+        """Create a new [CompItem][] and move the specified layers into it.
+
+        The moved layers are replaced in this composition by a single new
+        layer whose source is the new composition, placed at the topmost
+        moved layer's index. The new composition inherits this composition's
+        settings and is stored at the alphabetical position in this
+        composition's folder.
+
+        Parent and track-matte links follow AE's rules: links inside the
+        moved set are kept; a stayer referencing a moved layer retargets
+        to the replacement layer; a moved layer whose parent stays is
+        unparented; a moved layer whose track matte stays gets a copy of
+        the matte layer inside the new composition (the original stays
+        untouched).
+
+        When `move_all_attributes` is `False` (allowed for a single
+        source-backed layer only), the selected layer stays in this
+        composition with all its attributes and its source is swapped to
+        the new composition, which is sized from the layer's source and
+        contains one fresh layer referencing that source.
+
+        Warning:
+            References to moved `Layer` objects become stale (the layers
+            are re-created inside the new composition), mirroring
+            ExtendScript's reference invalidation.
+
+        Args:
+            layer_indices: 0-based indices of the layers to precompose
+                (ExtendScript uses 1-based indices).
+            name: The name of the new composition.
+            move_all_attributes: `True` (default) to move all attributes
+                into the new composition; `False` to leave them on the
+                retained layer ("Leave all attributes" in the
+                Pre-compose dialog).
+
+        Returns:
+            The newly created [CompItem][].
+
+        Raises:
+            ValueError: If `layer_indices` is empty or contains an
+                out-of-range index, or if `move_all_attributes` is
+                `False` with more than one index or with a layer that
+                has no source.
+        """
+        validate_string(name)
+        if not isinstance(layer_indices, (list, tuple)) or not layer_indices:
+            raise ValueError("layer_indices must be a non-empty list.")
+        check_index = _validate_number(integer=True, min=0, max=len(self.layers) - 1)
+        for idx in layer_indices:
+            check_index(idx)
+        indices = sorted(set(layer_indices))
+        if not move_all_attributes:
+            if len(indices) != 1:
+                raise ValueError(
+                    "move_all_attributes=False requires exactly one layer index."
+                )
+            layer = self.layers[indices[0]]
+            # 3D model layers cannot swap sources (replace_source raises);
+            # check before mutating so a failure leaves the project intact.
+            if (
+                not isinstance(layer, AVLayer)
+                or layer.source is None
+                or layer._ldta.layer_type == 5
+            ):
+                raise ValueError(
+                    "move_all_attributes=False requires a layer with a "
+                    "replaceable source."
+                )
+            return self._precompose_leave_attributes(layer, name)
+        return self._precompose_move(indices, name)
+
+    def _create_precomp_item(self, name: str, width: int, height: int) -> CompItem:
+        """Create the precompose target composition.
+
+        Built via `add_comp` for the skeleton, then this composition's
+        settings are inherited by byte-copying its cdta (AE writes the
+        new comp's cdta byte-identical to the parent's, with only
+        width/height overridden in the leave-attributes path), and the
+        item is stored at the alphabetical position AE uses.
+        """
+        folder = self.parent_folder
+        assert folder is not None
+        new_comp = folder.add_comp(
+            name, width, height, self.pixel_aspect, self.duration, self.frame_rate
+        )
+        cloned = cast("CdtaChunk", clone_chunk_tree(self._cdta))
+        cloned.width = width
+        cloned.height = height
+        cdta_idx = index_by_identity(new_comp._item_list.chunks, new_comp._cdta)
+        new_comp._item_list.chunks[cdta_idx] = cloned
+        new_comp._cdta = cloned
+        folder._reposition_child_sorted(new_comp)
+        return new_comp
+
+    def _precompose_leave_attributes(self, layer: AVLayer, name: str) -> CompItem:
+        """The `move_all_attributes=False` path: the retained layer only
+        swaps its source to the new comp (sized from the layer's source),
+        which holds one fresh layer referencing the original source."""
+        source = layer.source
+        assert source is not None
+        new_comp = self._create_precomp_item(name, source.width, source.height)
+        new_comp.add(source)
+        layer.replace_source(new_comp)
+        return new_comp
+
+    def _precompose_move(self, indices: list[int], name: str) -> CompItem:
+        """The `move_all_attributes=True` path: verbatim chunk-block moves
+        with fresh layer ids."""
+        # Circular: parsers.layer -> models.layers -> models.items
+        from ...parsers.layer import parse_layer  # noqa: PLC0415
+
+        project = self._project
+        moved = [self.layers[i] for i in indices]
+        top_index = indices[0]
+        old_ids = {ly.id for ly in moved}
+        repl_enabled = moved[0].enabled
+
+        new_comp = self._create_precomp_item(name, self.width, self.height)
+
+        # Detach the moved layers' chunk blocks (top-down keeps their
+        # relative stacking order).
+        blocks: list[list[Chunk]] = []
+        for ly in moved:
+            start, end = self._layer_block_slice(ly)
+            blocks.append(self._item_list.chunks[start:end])
+            del self._item_list.chunks[start:end]
+            self._layers.remove(ly)
+        self._invalidate_layer_cache()
+
+        # AE reallocates layer ids on precompose; owner tdpi values inside
+        # each layer's tdgp reference the owning layer id and must follow.
+        id_map: dict[int, int] = {}
+        for ly in moved:
+            new_id = project._allocate_layer_id()
+            id_map[ly.id] = new_id
+            ly._ldta.layer_id = new_id
+            rewrite_owner_tdpi(ly._layer_list, new_id)
+
+        # A moved layer whose track matte stays behind gets a verbatim
+        # COPY of the matte layer directly below it in the new comp; the
+        # original matte layer stays untouched in this comp (AE 2026).
+        matte_map: dict[int, int] = {}
+        final_blocks: list[list[Chunk]] = []
+        for ly, block in zip(moved, blocks):
+            final_blocks.append(block)
+            ldta = ly._ldta
+            matte_id = (
+                ldta.matte_layer_id if hasattr(ldta, "matte_layer_id") else 0
+            ) or 0
+            if matte_id and matte_id not in id_map and matte_id not in matte_map:
+                matte_layer = next((m for m in self._layers if m.id == matte_id), None)
+                if matte_layer is not None:
+                    m_start, m_end = self._layer_block_slice(matte_layer)
+                    m_block = [
+                        clone_chunk_tree(c)
+                        for c in self._item_list.chunks[m_start:m_end]
+                    ]
+                    m_list = cast("ListChunk", m_block[0])
+                    m_ldta = cast(
+                        "LdtaChunk",
+                        find_by_type(chunks=m_list.chunks, chunk_type="ldta"),
+                    )
+                    copy_id = project._allocate_layer_id()
+                    m_ldta.layer_id = copy_id
+                    rewrite_owner_tdpi(m_list, copy_id)
+                    matte_map[matte_id] = copy_id
+                    final_blocks.append(m_block)
+
+        # Remap references inside the moved set: both ends moved -> new
+        # id; parent stayed behind -> unparented; matte stayed behind ->
+        # the copy created above.
+        for ly in moved:
+            ldta = ly._ldta
+            if ldta.parent_id:
+                ldta.parent_id = id_map.get(ldta.parent_id, 0)
+            matte_id = (
+                ldta.matte_layer_id if hasattr(ldta, "matte_layer_id") else 0
+            ) or 0
+            if matte_id:
+                ldta.matte_layer_id = id_map.get(matte_id) or matte_map.get(matte_id, 0)
+
+        # Insert the blocks and re-parse each layer in the new comp's
+        # context (the old Layer models go stale, like ExtendScript).
+        new_comp._ensure_layers_loaded()
+        insert_at = new_comp._find_first_layer_position()
+        effect_defs = project._effect_param_defs
+        for block in final_blocks:
+            new_comp._item_list.chunks[insert_at:insert_at] = block
+            insert_at += len(block)
+            new_layer = parse_layer(cast("ListChunk", block[0]), new_comp, effect_defs)
+            new_comp._layers.append(new_layer)
+        new_comp._invalidate_layer_cache()
+
+        # Source usage bookkeeping for the moved (and copied) layers.
+        project._ensure_used_in_linked()
+        for new_layer in new_comp._layers:
+            source = getattr(new_layer, "source", None)
+            if source is not None and hasattr(source, "_used_in"):
+                _unregister_source_usage(source, self)
+                source._used_in.add(new_comp)
+
+        # Replacement layer at the topmost moved index. AE writes label
+        # 15 and inherits the topmost moved layer's video switch (a matte
+        # layer moved alone keeps serving as matte, so it stays off).
+        repl = self.add(new_comp)
+        if top_index > 0:
+            repl.move_after(self.layers[top_index])
+        repl._ldta.label = 15
+        repl.enabled = repl_enabled
+
+        # Stayers referencing a moved layer retarget to the replacement
+        # layer (both parenting and track matte).
+        repl_id = repl.id
+        for ly in self.layers:
+            if ly is repl:
+                continue
+            ldta = ly._ldta
+            if ldta.parent_id in old_ids:
+                ldta.parent_id = repl_id
+            if hasattr(ldta, "matte_layer_id") and ldta.matte_layer_id in old_ids:
+                ldta.matte_layer_id = repl_id
+
+        self._invalidate_layer_cache()
+        return new_comp
 
     def add_solid(
         self,

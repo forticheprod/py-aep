@@ -262,3 +262,35 @@ class FolderItem(Item):
         blocks.sort(key=lambda b: b[0].name.lower())
         container[:] = header + [c for _, chunks in blocks for c in chunks]
         self.items.sort(key=lambda item: item.name.lower())
+
+    def _reposition_child_sorted(self, item: Item) -> None:
+        """Move one child to its case-insensitive alphabetical position
+        among the current siblings.
+
+        AE stores folder children in Project-panel display order and
+        inserts a precompose result comp at that position. Unlike
+        `_sort_children_by_name` this moves only `item`, leaving the
+        other children's stored order untouched.
+        """
+        container = self._children_container
+        by_item_list = {id(it._item_list): it for it in self.items}
+        header: list[Chunk] = []
+        blocks: list[tuple[Item, list[Chunk]]] = []
+        for chunk in container:
+            owner = by_item_list.get(id(chunk))
+            if owner is not None:
+                blocks.append((owner, [chunk]))
+            elif blocks:
+                blocks[-1][1].append(chunk)
+            else:
+                header.append(chunk)
+        moved = next(b for b in blocks if b[0] is item)
+        blocks.remove(moved)
+        key = item.name.lower()
+        pos = next(
+            (i for i, b in enumerate(blocks) if b[0].name.lower() > key),
+            len(blocks),
+        )
+        blocks.insert(pos, moved)
+        container[:] = header + [c for _, chunks in blocks for c in chunks]
+        self.items[:] = [b[0] for b in blocks]

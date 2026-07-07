@@ -323,3 +323,21 @@ class ParagraphJustification(IntEnum):
     def to_binary(self) -> int:
         """Convert ParagraphJustification to COS value (0-6)."""
         return int(self) - 7413
+
+
+class VariableFontSpacing(IntEnum):
+    """Variable Font Spacing behavior for a text layer.
+
+    The value of the `ADBE Text Variable Font Spacing` property in the
+    text layer's More Options group. Controls how After Effects handles
+    character-spacing compensation when animating variable-font axes
+    changes character widths.
+
+    Note:
+        This functionality was added in After Effects 26.0. The enum
+        values match the property's stored value directly.
+    """
+
+    ADAPTIVE = 1
+    PER_CHARACTER = 2
+    DEFAULT = 3

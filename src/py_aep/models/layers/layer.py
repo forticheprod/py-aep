@@ -444,6 +444,14 @@ class Layer(PropertyGroup):
             [kf.value for kf in self.marker.keyframes],
         )
 
+    def remove_all_markers(self) -> None:
+        """Remove all markers from this layer.
+
+        A no-op when the layer has no markers.
+        """
+        if self.marker is not None:
+            self.marker.remove_all_keys()
+
     @property
     def transform(self) -> PropertyGroup:
         """

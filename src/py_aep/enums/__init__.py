@@ -138,6 +138,7 @@ from .text_document import (
     LineOrientation,
     ParagraphDirection,
     ParagraphJustification,
+    VariableFontSpacing,
 )
 
 __all__ = [
@@ -253,4 +254,5 @@ __all__ = [
     "LineOrientation",
     "ParagraphDirection",
     "ParagraphJustification",
+    "VariableFontSpacing",
 ]

@@ -11,13 +11,14 @@ from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
-from ...binary.chunk import ListChunk
+from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.ldat_chunks import (
     LHD3_BLOCK_KEYFRAMES,
     LdatItemType,
     ShapePoint,
     set_lhd3_count,
 )
+from ...binary.misc_chunks import EnumPardChunk
 from ...binary.mutations import (
     ITEM_SIZE_BY_TYPE,
     build_keyframe_list,
@@ -34,6 +35,7 @@ from ...binary.property_chunks import (
     TdsbChunk,
     TdsnChunk,
     TdumChunk,
+    VfdnChunk,
     tdb4_apply_animated_template,
     tdb4_apply_static_template,
 )
@@ -171,11 +173,54 @@ def _validate_value(prop: Property, value: Any) -> None:
         return
     if prop.property_value_type not in _NUMERIC_VALUE_TYPES:
         return
+    # Variable-font axis properties are 2-dimensional in the binary
+    # ([value, tag]) but scalar in ExtendScript; accept both forms.
+    if prop._is_vf_axis and isinstance(value, (int, float)):
+        _validate_scalar(value, prop)
+        return
     expects_list = prop.dimensions > 1 or prop._color
     if expects_list:
         _validate_list(value, prop)
     else:
         _validate_scalar(value, prop)
+
+
+_VF_AXIS_PREFIX = "ADBE Text VF Axis"
+
+# Standard OpenType design-axis display names (AE shows the axis name from
+# the font itself; these cover the registered tags, custom tags fall back
+# to the raw tag).
+_VF_AXIS_STANDARD_NAMES = {
+    "wght": "Weight",
+    "wdth": "Width",
+    "slnt": "Slant",
+    "ital": "Italic",
+    "opsz": "Optical Size",
+}
+
+
+def _vf_tag_to_str(raw: float) -> str | None:
+    """Decode a variable-font axis tag stored as a 4CC number.
+
+    The axis property's second dimension holds the tag packed big-endian
+    (e.g. 2003265652.0 = 0x77676874 = `wght`). Returns `None` for values
+    that do not decode to four printable ASCII characters.
+    """
+    n = int(raw)
+    if n <= 0 or n > 0xFFFFFFFF:
+        return None
+    chars = [(n >> shift) & 0xFF for shift in (24, 16, 8, 0)]
+    if any(c < 0x20 or c > 0x7E for c in chars):
+        return None
+    return "".join(chr(c) for c in chars)
+
+
+def _vf_tag_from_str(tag: str) -> int:
+    """Encode a 4-character axis tag to its packed 4CC number."""
+    n = 0
+    for c in tag:
+        n = (n << 8) | ord(c)
+    return n
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -253,12 +298,6 @@ class Property(PropertyBase):
     nb_options: int | None
     """The number of options in a dropdown property."""
 
-    property_parameters: list[str] | None
-    """An array of all item strings in a dropdown menu property. This
-    attribute applies to dropdown menu properties of effects and layers,
-    including custom strings in the Menu property of the Dropdown Menu
-    Control. Read-only."""
-
     _animated = ChunkField[bool]("_tdb4", "animated")
 
     _color = ChunkField[bool]("_tdb4", "color")
@@ -291,6 +330,19 @@ class Property(PropertyBase):
         override = _NAME_OVERRIDES.get(self.match_name)
         if override is not None:
             return override
+        # Active variable-font axes display as e.g. "Font Axis Weight".
+        # AE stores the name (from the font's axis name table) in a vfdn
+        # sibling chunk; fall back to mapping the registered OpenType
+        # tags, with custom tags showing the raw tag.
+        if self._is_vf_axis:
+            if self._vfdn is not None:
+                try:
+                    return self._vfdn.utf8.value
+                except ChunkNotFoundError:
+                    pass
+            tag = self.axis_tag
+            if tag is not None:
+                return "Font Axis " + _VF_AXIS_STANDARD_NAMES.get(tag, tag)
         base_name = super().name
         # NO_VALUE effect properties that store the match_name in tdsn
         # are unnamed separators/group headers - ExtendScript returns "".
@@ -574,9 +626,61 @@ class Property(PropertyBase):
 
         self.nb_options = None
 
-        self.property_parameters = None
+        self._property_parameters: list[str] | None = None
 
         self._property_type = PropertyType.PROPERTY
+
+        # Cached raw axis-tag number for variable-font axis properties;
+        # survives de-animation (the tag lives in the value data, which
+        # keyframe removal deletes before `_deanimate` re-writes it).
+        self._vf_tag_cache: float | None = None
+
+        self._vfdn: VfdnChunk | None = None
+        """The axis display-name container AE writes after an active
+        variable-font axis slot's tdbs (set by the parser)."""
+
+    @property
+    def _is_vf_axis(self) -> bool:
+        """`True` for a variable-font axis slot property."""
+        return self.match_name.startswith(_VF_AXIS_PREFIX)
+
+    def _vf_axis_tag_raw(self) -> float | None:
+        """The raw 4CC tag number of an ACTIVE axis property, else `None`.
+
+        Read from the static value's second dimension or the first
+        keyframe's, then cached (see `_vf_tag_cache`).
+        """
+        if not self._is_vf_axis:
+            return None
+        if self._vf_tag_cache is not None:
+            return self._vf_tag_cache
+        raw: float | None = None
+        if self._cdat is not None and len(self._cdat.values) >= 2:
+            raw = self._cdat.values[1]
+        elif self.keyframes:
+            kf_raw = self.keyframes[0]._extract_raw_value()
+            if isinstance(kf_raw, list) and len(kf_raw) >= 2:
+                raw = kf_raw[1]
+        if raw:
+            self._vf_tag_cache = raw
+            return raw
+        return None
+
+    @property
+    def axis_tag(self) -> str | None:
+        """The 4-character variable-font axis tag (e.g. `wght`) bound to
+        this `ADBE Text VF Axis` property. `None` for non-axis properties
+        and for unused axis slots. Read-only.
+
+        Warning:
+            `axis_tag` does not exist in the ExtendScript API. It has
+            been added for convenience (ExtendScript surfaces the tag
+            only through the property's display name).
+        """
+        raw = self._vf_axis_tag_raw()
+        if raw is None:
+            return None
+        return _vf_tag_to_str(raw)
 
     @property
     def _speed_factor(self) -> float:
@@ -1043,6 +1147,12 @@ class Property(PropertyBase):
         """
         if raw is None:
             return None
+        # 0. Variable-font axis: the binary stores [value, tag4cc] but
+        #    ExtendScript exposes only the scalar axis value.
+        if self._is_vf_axis and isinstance(raw, list) and len(raw) >= 2:
+            if self._vf_tag_cache is None and raw[1]:
+                self._vf_tag_cache = raw[1]
+            return raw[0]
         # 1. Percent scaling (0-1 fraction -> 0-100 percentage)
         if self.match_name in _PERCENT_MATCH_NAMES:
             if isinstance(raw, (int, float)):
@@ -1079,6 +1189,13 @@ class Property(PropertyBase):
         if not isinstance(value, (int, float, list)):
             return value
         if isinstance(value, list) and value and not isinstance(value[0], (int, float)):
+            return value
+        # 0. Variable-font axis: re-attach the tag dimension to a scalar
+        #    ExtendScript-style value (raw 2-dim lists pass through).
+        if self._is_vf_axis and isinstance(value, (int, float)):
+            tag = self._vf_axis_tag_raw()
+            if tag is not None:
+                return [float(value), tag]
             return value
         # 3. Reverse effect point (pixel coordinates -> 0-1 fraction)
         if self._effect_scale is not None:
@@ -1348,6 +1465,181 @@ class Property(PropertyBase):
         ):
             return "pixels"
         return ""
+
+    @property
+    def value_text(self) -> str | None:
+        """The text string of the currently-selected item in a dropdown
+        menu property.
+
+        Only custom dropdown menus are supported (the `Menu` property of
+        a Dropdown Menu Control, whose item strings are stored in the
+        project file); returns `None` for every other property.
+        ExtendScript additionally covers built-in dropdowns, but their
+        item strings are application resources absent from the file.
+        Read-only.
+
+        Note:
+            This functionality was added in After Effects 26.0.
+        """
+        params = self.property_parameters
+        if not params:
+            return None
+        value = self.value
+        if not isinstance(value, (int, float)):
+            return None
+        # Dropdown values are 1-based indices into the menu strings.
+        index = int(value) - 1
+        if 0 <= index < len(params):
+            return params[index]
+        return None
+
+    @property
+    def property_parameters(self) -> list[str] | None:
+        """An array of all item strings in a dropdown menu property. This
+        attribute applies to dropdown menu properties of effects and
+        layers, including custom strings in the Menu property of the
+        Dropdown Menu Control. Read / Write.
+
+        Writing is only supported on the Menu property of a Dropdown
+        Menu Control (see `is_dropdown_effect`; mirrors ExtendScript
+        `Property.setPropertyParameters()`): the new items replace the
+        existing menu entries in the project file. Items must be
+        non-empty unique strings without `\\` or `|` characters; the
+        string `(-` inserts a separator line (and may repeat).
+        """
+        return self._property_parameters
+
+    @property_parameters.setter
+    def property_parameters(self, items: list[str]) -> None:
+        effect = self._parent_property
+        if not (
+            self.is_dropdown_effect
+            and effect is not None
+            and effect.match_name.startswith("Pseudo/")
+        ):
+            raise ValueError(
+                "property_parameters can only be set on the Menu property "
+                "of a Dropdown Menu Control."
+            )
+        if not isinstance(items, (list, tuple)) or not items:
+            raise ValueError("items must be a non-empty list of strings.")
+        seen = set()
+        for item in items:
+            if not isinstance(item, str) or not item:
+                raise ValueError("menu items must be non-empty strings.")
+            # The items are stored pipe-delimited, so "|" is as
+            # unencodable as ExtendScript's forbidden "\".
+            if "\\" in item or "|" in item:
+                raise ValueError(
+                    "menu items must not contain the '\\' or '|' characters."
+                )
+            if item != "(-":
+                if item in seen:
+                    raise ValueError(f"duplicate menu item {item!r}.")
+                seen.add(item)
+        items = list(items)
+        self._write_dropdown_items(items)
+        self._property_parameters = items
+        self.nb_options = len(items)
+        self._max_value_fallback = len(items)
+
+    def _dropdown_param_defs(self) -> list[ListChunk]:
+        """The `parT` containers holding this Menu param's definition.
+
+        A dropdown's parameter definition lives in the owning effect's
+        layer-level `sspc` and is mirrored in the project-level
+        `LIST:EfdG`; both copies must stay in sync when the menu items
+        change.
+        """
+        effect = self._parent_property
+        assert effect is not None
+        parts: list[ListChunk] = []
+        parade = effect._parent_property
+        if parade is not None and parade._tdgp is not None:
+            for chunk in parade._tdgp.chunks:
+                if (
+                    isinstance(chunk, ListChunk)
+                    and chunk.list_type == "sspc"
+                    and any(c is effect._tdgp for c in chunk.chunks)
+                ):
+                    try:
+                        parts.append(
+                            find_by_list_type(chunks=chunk.chunks, list_type="parT")
+                        )
+                    except ChunkNotFoundError:
+                        pass
+                    break
+        # Effect params parse without a composition ref; reach the project
+        # through the owning layer instead.
+        comp = self._composition
+        if comp is None:
+            owner = self._parent_property
+            while owner is not None and not hasattr(owner, "_containing_comp"):
+                owner = owner._parent_property
+            if owner is not None:
+                # The walk stops on the owning Layer.
+                comp = cast("Any", owner)._containing_comp
+        project = comp._project if comp is not None else None
+        if project is not None:
+            try:
+                efdg = find_by_list_type(chunks=project._rifx.chunks, list_type="EfdG")
+            except ChunkNotFoundError:
+                efdg = None
+            if efdg is not None:
+                for efdf in efdg.chunks:
+                    if not (isinstance(efdf, ListChunk) and efdf.list_type == "EfDf"):
+                        continue
+                    tdmn = find_by_type(chunks=efdf.chunks, chunk_type="tdmn")
+                    if cast("TdmnChunk", tdmn).value != effect.match_name:
+                        continue
+                    try:
+                        sspc = find_by_list_type(chunks=efdf.chunks, list_type="sspc")
+                        parts.append(
+                            find_by_list_type(chunks=sspc.chunks, list_type="parT")
+                        )
+                    except ChunkNotFoundError:
+                        pass
+                    break
+        return parts
+
+    def _write_dropdown_items(self, items: list[str]) -> None:
+        """Write new menu items into every copy of this param's definition."""
+        joined = "|".join(items)
+        written = False
+        for part in self._dropdown_param_defs():
+            current: str | None = None
+            for chunk in part.chunks:
+                if chunk.chunk_type == "tdmn":
+                    current = cast("TdmnChunk", chunk).value
+                elif current == self.match_name:
+                    if isinstance(chunk, EnumPardChunk):
+                        # The option count lives in the high 16 bits; AE
+                        # keeps the low 16 bits unchanged.
+                        chunk.nb_options = (len(items) << 16) | (
+                            chunk.nb_options & 0xFFFF
+                        )
+                    elif chunk.chunk_type == "pdnm":
+                        utf8 = find_by_type(
+                            chunks=cast("ContainerChunk", chunk).chunks,
+                            chunk_type="Utf8",
+                        )
+                        cast("Utf8Chunk", utf8).value = joined
+                        written = True
+        if not written:
+            raise ValueError(
+                "No stored menu definition (pdnm) found for this property."
+            )
+        # Keep the synthesis-side parameter definitions in sync.
+        effect = self._parent_property
+        project = self._composition._project if self._composition else None
+        if project is not None and effect is not None:
+            param_def = project._effect_param_defs.get(effect.match_name, {}).get(
+                self.match_name
+            )
+            if param_def is not None:
+                param_def["property_parameters"] = list(items)
+                param_def["nb_options"] = len(items)
+                param_def["max_value"] = len(items)
 
     @property
     def can_vary_over_time(self) -> bool:
@@ -1939,6 +2231,17 @@ class Property(PropertyBase):
             t._pad7b = 0
             t._pad7c = 0
             return
+        if self._is_vf_axis:
+            # AE keeps a variable-font axis's value-hint flag, cvot flags
+            # and time base unchanged across the static<->animated
+            # transition (verified against the variable_font_axis_animated
+            # AE 2026 fixture).
+            preserved = (t._value_hint_flag, t._cvot_flags, t._time_base)
+            tdb4_apply_animated_template(
+                t, color=bool(self._color), spatial=self.is_spatial
+            )
+            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
+            return
         tdb4_apply_animated_template(
             t, color=bool(self._color), spatial=self.is_spatial
         )
@@ -2132,6 +2435,17 @@ class Property(PropertyBase):
         if not self.keyframes:
             self._deanimate(removed_value)
 
+    def remove_all_keys(self) -> None:
+        """Remove every keyframe from this property.
+
+        Equivalent to calling `remove_key` for each keyframe: the
+        property reverts to a static value (the first keyframe's value).
+        Markers have no static value: the property is left empty. A
+        no-op when the property has no keyframes.
+        """
+        while self.keyframes:
+            self.remove_key(len(self.keyframes) - 1)
+
     def _static_tdb4(self) -> None:
         """Revert tdb4 metadata to AE's static (non-animated) state.
 
@@ -2147,6 +2461,15 @@ class Property(PropertyBase):
             t.static = True
             t.animated = False
             t._spatial_marker = bool(t._spatial_static_flags & 0x02)
+            return
+        if self._is_vf_axis:
+            # Mirror `_animate_tdb4`: the axis keeps its value-hint flag,
+            # cvot flags and time base across the transition too.
+            preserved = (t._value_hint_flag, t._cvot_flags, t._time_base)
+            tdb4_apply_static_template(
+                t, color=bool(self._color), spatial=self.is_spatial
+            )
+            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
             return
         tdb4_apply_static_template(t, color=bool(self._color), spatial=self.is_spatial)
 

@@ -471,3 +471,34 @@ class TdsnChunk(ContainerChunk):
         chunk = find_by_type(chunks=self.chunks, chunk_type="Utf8")
         assert isinstance(chunk, Utf8Chunk)
         return chunk
+
+
+@register("vfdn")
+@define
+class VfdnChunk(ContainerChunk):
+    """Variable-font axis display-name container (`vfdn`) wrapping a
+    single `Utf8` child (e.g. `Font Axis Weight`).
+
+    AE 26+ writes one after each active `ADBE Text VF Axis` slot's tdbs
+    inside a text animator's Properties group; the name comes from the
+    font's own axis name table.
+    """
+
+    chunk_type: str = "vfdn"
+
+    @classmethod
+    def new(cls, name: str) -> VfdnChunk:
+        """Build a vfdn wrapping `name`."""
+        return cls(chunks=[Utf8Chunk(value=name)])
+
+    @property
+    def utf8(self) -> Utf8Chunk:
+        """The `Utf8` child holding the axis display name.
+
+        Raises:
+            ChunkNotFoundError: If the vfdn has no Utf8 child, so callers
+                can degrade to the tag-derived name like any missing chunk.
+        """
+        chunk = find_by_type(chunks=self.chunks, chunk_type="Utf8")
+        assert isinstance(chunk, Utf8Chunk)
+        return chunk

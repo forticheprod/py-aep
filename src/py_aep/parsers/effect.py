@@ -155,7 +155,9 @@ def _apply_param_def_metadata(
     prop._slider_min = param_def.get("slider_min")
     prop._slider_max = param_def.get("slider_max")
     prop.nb_options = param_def.get("nb_options")
-    prop.property_parameters = param_def.get("property_parameters")
+    # Direct write: the public setter has user-write semantics (validation
+    # plus pdnm/pard chunk rewrites).
+    prop._property_parameters = param_def.get("property_parameters")
     units = param_def.get("units_text")
     if units is not None:
         prop._units_text = units
