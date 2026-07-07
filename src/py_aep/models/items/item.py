@@ -256,6 +256,16 @@ class Item:
         if self._lhd3.count == 0:
             self._empty_guides_container()
 
+    @requires_version(16)
+    def remove_all_guides(self) -> None:
+        """Remove all guides from the item.
+
+        Equivalent to calling `remove_guide` for each guide. A no-op
+        when the item has no guides.
+        """
+        while self._guides:
+            self.remove_guide(len(self._guides) - 1)
+
     def _ensure_guides_container(self) -> None:
         """Create the guides container if needed."""
         if self._ldat is not None:

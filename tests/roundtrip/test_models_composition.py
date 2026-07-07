@@ -874,6 +874,42 @@ class TestRemoveGuide:
         assert comp2.guides[0].position == 400.0
 
 
+class TestRemoveAllGuides:
+    """Tests for Item.remove_all_guides()."""
+
+    def test_remove_all_guides(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_both")
+        assert len(comp.guides) > 1
+
+        comp.remove_all_guides()
+        assert comp.guides == []
+        # Same end state as removing the last guide by index: the empty
+        # LIST:Gide stays, its ldat is dropped.
+        assert comp._lhd3 is not None
+        assert comp._lhd3.count == 0
+        assert comp._ldat is None
+
+        out = tmp_path / "remove_all_guides.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_both")
+        assert comp2.guides == []
+
+    def test_remove_all_guides_noop(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_none")
+        assert comp.guides == []
+        comp.remove_all_guides()
+        assert comp.guides == []
+
+    def test_remove_all_then_add(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_both")
+        comp.remove_all_guides()
+        assert comp.add_guide(1, 250) == 0
+        assert comp.guides[0].position == 250.0
+
+
 class TestRoundtripDraft3d:
     """Roundtrip tests for CompItem.draft3d."""
 

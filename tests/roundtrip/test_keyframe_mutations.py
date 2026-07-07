@@ -234,6 +234,52 @@ class TestRemoveKey:
             op.remove_key(99)
 
 
+def _keyframed_props(group) -> list:
+    """Collect every descendant property that has keyframes."""
+    out: list = []
+    for p in getattr(group, "properties", []):
+        if getattr(p, "keyframes", None):
+            out.append(p)
+        out.extend(_keyframed_props(p))
+    return out
+
+
+class TestRemoveAllKeys:
+    def test_property_reverts_to_first_key_value(self, tmp_path: Path) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        first_val = op.keyframes[0].value
+        op.remove_all_keys()
+        assert op.keyframes == []
+        app2 = _roundtrip(app, tmp_path)
+        op2 = _prop(app2, "ADBE Opacity")
+        assert op2.keyframes == []
+        assert op2.value == pytest.approx(first_val)
+
+    def test_noop_when_no_keyframes(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        op.remove_all_keys()
+        op.remove_all_keys()
+        assert op.keyframes == []
+
+    def test_layer_remove_all_keys_recursive(self, tmp_path: Path) -> None:
+        app = parse_aep(str(SAMPLES_ROOT / "models" / "property" / "all_animated.aep"))
+        assert any(
+            _keyframed_props(lay)
+            for comp in app.project.compositions
+            for lay in comp.layers
+        )
+        for comp in app.project.compositions:
+            for lay in comp.layers:
+                lay.remove_all_keys()
+                assert _keyframed_props(lay) == []
+        app2 = _roundtrip(app, tmp_path)
+        for comp in app2.project.compositions:
+            for lay in comp.layers:
+                assert _keyframed_props(lay) == []
+
+
 class TestSetValueAtTime:
     def test_replace_existing_key(self) -> None:
         app = _fresh("keyframe_LINEAR.aep")

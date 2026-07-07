@@ -10,6 +10,11 @@ if TYPE_CHECKING:
     from typing import Any
 
 
+def _design_vector_from_cos(raw: list[int]) -> list[float]:
+    """Decode the COS design vector (16.16 fixed-point ints) to floats."""
+    return [v / 65536.0 for v in raw]
+
+
 class FontObject:
     """Provides information about a specific font.
 
@@ -38,6 +43,31 @@ class FontObject:
 
     version = CosField[str]("_font_data", "5", transform=str, default=None)
     """The version number of the font. Read-only."""
+
+    design_vector = CosField["list[float] | None"](
+        "_font_data", "4", transform=_design_vector_from_cos, read_only=True
+    )
+    """For variable fonts, an ordered array with a length matching the
+    number of design axes defined by the font. `None` for non-variable
+    fonts. Read-only.
+
+    Stored in the file as 16.16 fixed-point integers; exposed as floats
+    (e.g. `[700.0, 87.5]`).
+    """
+
+    @property
+    def has_design_axes(self) -> bool:
+        """Returns `True` if the font is a variable font. Read-only."""
+        return self.design_vector is not None
+
+    @property
+    def family_prefix(self) -> str | None:
+        """The family prefix of the variable font. For example, the family
+        of the PostScript name `SFPro-Bold` is `SFPro`. `None` for
+        non-variable fonts. Read-only."""
+        if not self.has_design_axes:
+            return None
+        return self.post_script_name.split("-", 1)[0]
 
     def __init__(
         self,

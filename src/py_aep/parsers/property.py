@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from ..binary.chunk import Chunk
     from ..binary.misc_chunks import MkifChunk
-    from ..binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
+    from ..binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk, VfdnChunk
     from ..binary.scalar_chunks import Utf8Chunk
     from ..models.items.composition import CompItem
     from ..models.properties.property import Property
@@ -220,6 +220,15 @@ def _dispatch_tdbs(ctx: _ParseContext) -> list[Property | PropertyGroup]:
         property_depth=ctx.child_depth,
         tdmn=ctx.tdmn,
     )
+    # AE 26+ writes a vfdn sibling (the axis display name from the font)
+    # after an active variable-font axis slot's tdbs.
+    try:
+        vfdn_chunk = cast(
+            "VfdnChunk", find_by_type(chunks=ctx.chunks, chunk_type="vfdn")
+        )
+        prop._vfdn = vfdn_chunk
+    except ChunkNotFoundError:
+        pass
     return [prop]
 
 
