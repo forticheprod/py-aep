@@ -22,6 +22,7 @@ from py_aep.enums import (
 )
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
+TEXT_SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "text"
 
 
 def _get_text_document(aep_path: Path, comp_name: str | None = None):
@@ -33,6 +34,27 @@ def _get_text_document(aep_path: Path, comp_name: str | None = None):
         comp = app.project.compositions[0]
     text_layer = comp.text_layers[0]
     return app.project, text_layer.text.source_text.value
+
+
+class TestBoxOverflow:
+    """box_overflow derived from the persisted layout cache."""
+
+    def _doc(self, layer_name: str):
+        app = parse_aep(TEXT_SAMPLES_DIR / "box_overflow.aep")
+        comp = app.project.compositions[0]
+        layer = next(ly for ly in comp.text_layers if ly.name == layer_name)
+        return layer.text.source_text.value
+
+    def test_overflowing_box(self) -> None:
+        assert self._doc("BoxOverflows").box_overflow is True
+
+    def test_fitting_box(self) -> None:
+        assert self._doc("BoxFits").box_overflow is False
+
+    def test_point_text_reads_none(self) -> None:
+        # ExtendScript reads undefined for point text.
+        _project, doc = _get_text_document(SAMPLES_DIR / "type.aep", "type_text")
+        assert doc.box_overflow is None
 
 
 class TestTextDocumentParsing:

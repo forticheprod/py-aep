@@ -39,6 +39,22 @@ be derived from the `.aep` file alone:
 | `RenderQueue.rendering` | Runtime state |
 | `Viewer.maximized` | Non-persisting window state |
 
+## Composed Lines Are a Layout Cache
+
+`TextDocument.composed_line_count`, `composed_line_range()` and
+`composed_line_character_indexes_at()` read the line-layout cache After
+Effects persisted into the `.aep` at save time. py_aep has no text engine
+and cannot recompose text, so after py-side edits the cache goes stale.
+
+This matches ExtendScript's own behavior for a TextDocument value that has
+not been reapplied to a layer: the composed-line count stays cached, line
+boundaries clamp to the current text, and lines falling wholly outside it
+raise. The difference is that AE recomposes when the document is applied
+back to a layer (`setValue`), while a file written by py_aep keeps the
+stale cache until After Effects itself opens and resaves it. Character
+and paragraph ranges are unaffected - they derive from the style runs,
+which py_aep keeps consistent.
+
 ## Expressions
 
 ### Property.value When Expressions Are Enabled
