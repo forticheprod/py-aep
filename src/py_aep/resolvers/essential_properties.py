@@ -69,15 +69,8 @@ def _resolve_controller_source_layer(
     comp = project.items.get(controller.source_comp_id)
     if not isinstance(comp, CompItem):
         return None
-    return next(
-        (
-            layer
-            for layer in comp.layers
-            if isinstance(layer, AVLayer)
-            and layer._ldta.layer_id == controller.source_layer_id
-        ),
-        None,
-    )
+    layer = comp.layers_by_id.get(controller.source_layer_id)
+    return layer if isinstance(layer, AVLayer) else None
 
 
 def _resolve_indexed_child(

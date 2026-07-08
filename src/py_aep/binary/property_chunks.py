@@ -8,7 +8,7 @@ have variable-length or context-dependent layouts.
 from __future__ import annotations
 
 import struct
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from attrs import Factory, define
 
@@ -246,6 +246,22 @@ def tdb4_apply_static_template(t: Tdb4Chunk, *, color: bool, spatial: bool) -> N
         t._pad2a = 0
 
 
+def tdb4_apply_vf_axis_template(t: Tdb4Chunk) -> None:
+    """Apply AE's active variable-font-axis tdb4 field set in-place.
+
+    AE 2026 canon for an active `ADBE Text VF Axis` slot (byte-diffed
+    against the variable_font_axis_static fixture).
+
+    Args:
+        t: The `Tdb4Chunk` to mutate.
+    """
+    t.dimensions = 2
+    t._value_hint_type = 1
+    t._cvot_flags = 7
+    t._type_flags = 8
+    t._property_category = 9
+
+
 # ---------------------------------------------------------------------------
 # cdat - property value doubles (variable length, optional LE for OTST)
 # ---------------------------------------------------------------------------
@@ -440,6 +456,8 @@ class TdmnChunk(_StringChunkBase):
 # the name then resolves from the auto-name.
 TDSN_SENTINEL = "-_0_/-"
 
+_TdsnT = TypeVar("_TdsnT", bound="TdsnChunk")
+
 
 @register("tdsn")
 @define
@@ -453,7 +471,7 @@ class TdsnChunk(ContainerChunk):
     chunk_type: str = "tdsn"
 
     @classmethod
-    def new(cls, name: str = "", *, synthetic: bool = False) -> TdsnChunk:
+    def new(cls: type[_TdsnT], name: str = "", *, synthetic: bool = False) -> _TdsnT:
         """Build a tdsn wrapping `name`."""
         return cls(
             chunks=[Utf8Chunk(value=name, synthetic=synthetic)],
@@ -475,30 +493,14 @@ class TdsnChunk(ContainerChunk):
 
 @register("vfdn")
 @define
-class VfdnChunk(ContainerChunk):
+class VfdnChunk(TdsnChunk):
     """Variable-font axis display-name container (`vfdn`) wrapping a
     single `Utf8` child (e.g. `Font Axis Weight`).
 
     AE 26+ writes one after each active `ADBE Text VF Axis` slot's tdbs
     inside a text animator's Properties group; the name comes from the
-    font's own axis name table.
+    font's own axis name table. Structurally a `tdsn`; a missing Utf8
+    child degrades to the tag-derived name.
     """
 
     chunk_type: str = "vfdn"
-
-    @classmethod
-    def new(cls, name: str) -> VfdnChunk:
-        """Build a vfdn wrapping `name`."""
-        return cls(chunks=[Utf8Chunk(value=name)])
-
-    @property
-    def utf8(self) -> Utf8Chunk:
-        """The `Utf8` child holding the axis display name.
-
-        Raises:
-            ChunkNotFoundError: If the vfdn has no Utf8 child, so callers
-                can degrade to the tag-derived name like any missing chunk.
-        """
-        chunk = find_by_type(chunks=self.chunks, chunk_type="Utf8")
-        assert isinstance(chunk, Utf8Chunk)
-        return chunk

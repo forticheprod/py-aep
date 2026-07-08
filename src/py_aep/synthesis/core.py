@@ -38,7 +38,7 @@ from ..models.properties.property_group import (
     _derive_layer_styles_enabled,
     _reorder_and_fill,
 )
-from .specs import (
+from .property import (
     _PARAMETRIC_MESH_TOP_LEVEL_SPECS,
     _SKIP_FOR_CAMERA,
     _SKIP_FOR_LIGHT,

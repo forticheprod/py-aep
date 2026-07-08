@@ -31,10 +31,15 @@ class _CurrentValue:
 
 
 CURRENT_VALUE = _CurrentValue()
-"""Sentinel for `FootageItem.replace`: bind the new file at the layer whose
-stored binary index (the `sspc` layer index: PSD record index / AI document
-index) matches the current source's. Not valid for
-`ImportOptions.layer_index` - an import has no current binding."""
+"""Sentinel for `FootageItem.replace`: keep the current source's choice for the
+argument it is passed to.
+
+For `layer_index`, binds the new file at the layer whose stored binary index
+(the `sspc` layer index: PSD record index / AI document index) matches the
+current source's. For `layer_dimensions`, preserves the current single-layer
+binding's Document/Layer Size choice.
+
+Not valid for `ImportOptions.layer_index` - an import has no current binding."""
 
 
 class ImportOptions:

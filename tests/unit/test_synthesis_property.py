@@ -1,4 +1,4 @@
-"""Validate _PropSpec and _GroupSpec entries for internal consistency.
+"""Validate PropSpec and GroupSpec entries for internal consistency.
 
 These tests catch typos, wrong PropertyValueType, incorrect dimensions, and
 other silent data errors in the spec tables used for property synthesis.
@@ -10,7 +10,7 @@ import pytest
 
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyValueType
-from py_aep.synthesis.specs import (
+from py_aep.synthesis.property import (
     _ADV_BLEND_SPECS,
     _AUDIO_SPECS,
     _BEVEL_EMBOSS_SPECS,
@@ -53,8 +53,8 @@ from py_aep.synthesis.specs import (
     _VECTOR_STROKE_TAPER_SPECS,
     _VECTOR_STROKE_WAVE_SPECS,
     _VECTOR_TRANSFORM_SPECS,
-    _GroupSpec,
-    _PropSpec,
+    GroupSpec,
+    PropSpec,
 )
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ from py_aep.synthesis.specs import (
 # for parametrized testing.
 # ---------------------------------------------------------------------------
 
-_NAMED_SPEC_LISTS: list[tuple[str, list[_PropSpec | _GroupSpec]]] = [
+_NAMED_SPEC_LISTS: list[tuple[str, list[PropSpec | GroupSpec]]] = [
     ("MATERIAL", _MATERIAL_SPECS),
     ("EXTRUSION", _EXTRUSION_SPECS),
     ("PLANE", _PLANE_SPECS),
@@ -109,16 +109,16 @@ for _key, _specs in _GROUP_CHILD_SPECS.items():
 for _key, _specs in _LAYER_STYLE_CHILD_SPECS.items():
     _NAMED_SPEC_LISTS.append((f"LAYER_STYLE[{_key}]", list(_specs)))
 
-# Flat list of all _PropSpec entries with readable IDs.
-_ALL_PROP_SPECS: list[tuple[str, _PropSpec]] = [
+# Flat list of all PropSpec entries with readable IDs.
+_ALL_PROP_SPECS: list[tuple[str, PropSpec]] = [
     (f"{list_name}/{spec.match_name}", spec)
     for list_name, specs in _NAMED_SPEC_LISTS
     for spec in specs
-    if isinstance(spec, _PropSpec)
+    if isinstance(spec, PropSpec)
 ]
 
 # Flat list of all specs (both types) with readable IDs.
-_ALL_SPECS: list[tuple[str, _PropSpec | _GroupSpec]] = [
+_ALL_SPECS: list[tuple[str, PropSpec | GroupSpec]] = [
     (f"{list_name}/{spec.match_name}", spec)
     for list_name, specs in _NAMED_SPEC_LISTS
     for spec in specs
@@ -149,14 +149,14 @@ _SPATIAL_PVTS = frozenset(
 
 
 class TestPropSpecFieldConsistency:
-    """Validate individual _PropSpec field invariants."""
+    """Validate individual PropSpec field invariants."""
 
     @pytest.mark.parametrize(
         "spec_id, spec",
         _ALL_PROP_SPECS,
         ids=[s[0] for s in _ALL_PROP_SPECS],
     )
-    def test_pvt_dimensions_consistency(self, spec_id: str, spec: _PropSpec) -> None:
+    def test_pvt_dimensions_consistency(self, spec_id: str, spec: PropSpec) -> None:
         expected = _PVT_EXPECTED_DIMENSIONS.get(spec.pvt)
         if expected is not None:
             assert spec.dimensions == expected, (
@@ -169,7 +169,7 @@ class TestPropSpecFieldConsistency:
         _ALL_PROP_SPECS,
         ids=[s[0] for s in _ALL_PROP_SPECS],
     )
-    def test_color_flag_iff_color_pvt(self, spec_id: str, spec: _PropSpec) -> None:
+    def test_color_flag_iff_color_pvt(self, spec_id: str, spec: PropSpec) -> None:
         is_color_pvt = spec.pvt == PropertyValueType.COLOR
         assert spec.color == is_color_pvt, (
             f"{spec_id}: color={spec.color!r} but pvt={spec.pvt.name}"
@@ -181,7 +181,7 @@ class TestPropSpecFieldConsistency:
         ids=[s[0] for s in _ALL_PROP_SPECS],
     )
     def test_spatial_pvt_requires_is_spatial(
-        self, spec_id: str, spec: _PropSpec
+        self, spec_id: str, spec: PropSpec
     ) -> None:
         if spec.pvt in _SPATIAL_PVTS:
             assert spec.is_spatial, (
@@ -194,7 +194,7 @@ class TestPropSpecFieldConsistency:
         ids=[s[0] for s in _ALL_PROP_SPECS],
     )
     def test_value_shape_matches_dimensions(
-        self, spec_id: str, spec: _PropSpec
+        self, spec_id: str, spec: PropSpec
     ) -> None:
         if spec.value is None:
             return
@@ -215,7 +215,7 @@ class TestPropSpecFieldConsistency:
         _ALL_PROP_SPECS,
         ids=[s[0] for s in _ALL_PROP_SPECS],
     )
-    def test_color_specs_have_bounds(self, spec_id: str, spec: _PropSpec) -> None:
+    def test_color_specs_have_bounds(self, spec_id: str, spec: PropSpec) -> None:
         if spec.pvt != PropertyValueType.COLOR:
             return
         assert spec.min_value == _COLOR_MIN, (
@@ -230,7 +230,7 @@ class TestPropSpecFieldConsistency:
         _ALL_PROP_SPECS,
         ids=[s[0] for s in _ALL_PROP_SPECS],
     )
-    def test_min_max_ordering(self, spec_id: str, spec: _PropSpec) -> None:
+    def test_min_max_ordering(self, spec_id: str, spec: PropSpec) -> None:
         if spec.min_value is not None and spec.max_value is not None:
             assert spec.min_value <= spec.max_value, (
                 f"{spec_id}: min_value={spec.min_value!r} > max_value={spec.max_value!r}"
@@ -246,7 +246,7 @@ class TestSpecStringFields:
         ids=[s[0] for s in _ALL_SPECS],
     )
     def test_non_empty_match_name(
-        self, spec_id: str, spec: _PropSpec | _GroupSpec
+        self, spec_id: str, spec: PropSpec | GroupSpec
     ) -> None:
         assert isinstance(spec.match_name, str) and spec.match_name
 
@@ -256,7 +256,7 @@ class TestSpecStringFields:
         ids=[s[0] for s in _ALL_SPECS],
     )
     def test_non_empty_auto_name(
-        self, spec_id: str, spec: _PropSpec | _GroupSpec
+        self, spec_id: str, spec: PropSpec | GroupSpec
     ) -> None:
         # Variable-font axis properties have empty display names in AE
         # (they are populated dynamically from the font's named axes).
@@ -277,7 +277,7 @@ class TestSpecListUniqueness:
     def test_unique_match_names(
         self,
         list_name: str,
-        specs: list[_PropSpec | _GroupSpec],
+        specs: list[PropSpec | GroupSpec],
     ) -> None:
         match_names = [s.match_name for s in specs]
         duplicates = [mn for mn in match_names if match_names.count(mn) > 1]
@@ -322,7 +322,7 @@ class TestSpecNamesMatchRegistry:
         ids=[s[0] for s in _REGISTRY_SPECS],
     )
     def test_name_matches_registry(
-        self, spec_id: str, spec: _PropSpec | _GroupSpec
+        self, spec_id: str, spec: PropSpec | GroupSpec
     ) -> None:
         expected = MATCH_NAME_TO_AUTO_NAME[spec.match_name]
         assert spec.auto_name == expected, (

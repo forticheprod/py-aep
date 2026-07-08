@@ -46,8 +46,10 @@ from ...binary.utils import (
     find_by_type,
     index_by_identity,
 )
+from ...data.match_names import VF_AXIS_PREFIX
 from ...data.units import UNITS_TEXT_MAP
-from ...synthesis.specs import _USE_VALUE
+from ...resolvers.motion_graphics import can_add_property
+from ...synthesis.property import _USE_VALUE
 from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
 from ..validators import (
@@ -86,7 +88,7 @@ if TYPE_CHECKING:
     from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
     from ...binary.misc_chunks import ShphChunk
     from ...binary.scalar_chunks import U4Chunk
-    from ...synthesis.specs import _PropSpec
+    from ...synthesis.property import PropSpec
     from ..items.av_item import AVItem
     from ..items.composition import CompItem
     from ..items.folder import FolderItem
@@ -171,12 +173,16 @@ def _validate_value(prop: Property, value: Any) -> None:
     """Validate type, length and bounds of a property value."""
     if value is None:
         return
-    if prop.property_value_type not in _NUMERIC_VALUE_TYPES:
-        return
     # Variable-font axis properties are 2-dimensional in the binary
-    # ([value, tag]) but scalar in ExtendScript; accept both forms.
+    # ([value, tag]) but scalar in ExtendScript. They carry the
+    # VARIABLE_FONT_AXIS value type, which is NOT in _NUMERIC_VALUE_TYPES,
+    # so this must run BEFORE the numeric-type gate below - otherwise the
+    # gate returns early and axis values skip finite/range validation
+    # entirely (a NaN/inf or out-of-[min,max] weight would be written).
     if prop._is_vf_axis and isinstance(value, (int, float)):
         _validate_scalar(value, prop)
+        return
+    if prop.property_value_type not in _NUMERIC_VALUE_TYPES:
         return
     expects_list = prop.dimensions > 1 or prop._color
     if expects_list:
@@ -184,8 +190,6 @@ def _validate_value(prop: Property, value: Any) -> None:
     else:
         _validate_scalar(value, prop)
 
-
-_VF_AXIS_PREFIX = "ADBE Text VF Axis"
 
 # Standard OpenType design-axis display names (AE shows the axis name from
 # the font itself; these cover the registered tags, custom tags fall back
@@ -361,7 +365,7 @@ class Property(PropertyBase):
     @classmethod
     def _new(
         cls,
-        spec: _PropSpec,
+        spec: PropSpec,
         property_depth: int,
         *,
         parent_property: PropertyGroup,
@@ -370,7 +374,7 @@ class Property(PropertyBase):
         synthetic: bool = False,
         control_type: PropertyControlType | None = None,
     ) -> Property:
-        """Create a Property from a `_PropSpec`.
+        """Create a Property from a `PropSpec`.
 
         Used to synthesize properties expected by ExtendScript but absent
         from the binary.
@@ -642,7 +646,7 @@ class Property(PropertyBase):
     @property
     def _is_vf_axis(self) -> bool:
         """`True` for a variable-font axis slot property."""
-        return self.match_name.startswith(_VF_AXIS_PREFIX)
+        return self.match_name.startswith(VF_AXIS_PREFIX)
 
     def _vf_axis_tag_raw(self) -> float | None:
         """The raw 4CC tag number of an ACTIVE axis property, else `None`.
@@ -1555,51 +1559,30 @@ class Property(PropertyBase):
         assert effect is not None
         parts: list[ListChunk] = []
         parade = effect._parent_property
-        if parade is not None and parade._tdgp is not None:
-            for chunk in parade._tdgp.chunks:
-                if (
-                    isinstance(chunk, ListChunk)
-                    and chunk.list_type == "sspc"
-                    and any(c is effect._tdgp for c in chunk.chunks)
-                ):
+        if parade is not None:
+            if parade._tdgp is not None:
+                sspc = effect._backing_list_chunk(parade._tdgp)
+                if sspc.list_type == "sspc":
                     try:
-                        parts.append(
-                            find_by_list_type(chunks=chunk.chunks, list_type="parT")
-                        )
-                    except ChunkNotFoundError:
-                        pass
-                    break
-        # Effect params parse without a composition ref; reach the project
-        # through the owning layer instead.
-        comp = self._composition
-        if comp is None:
-            owner = self._parent_property
-            while owner is not None and not hasattr(owner, "_containing_comp"):
-                owner = owner._parent_property
-            if owner is not None:
-                # The walk stops on the owning Layer.
-                comp = cast("Any", owner)._containing_comp
-        project = comp._project if comp is not None else None
-        if project is not None:
-            try:
-                efdg = find_by_list_type(chunks=project._rifx.chunks, list_type="EfdG")
-            except ChunkNotFoundError:
-                efdg = None
-            if efdg is not None:
-                for efdf in efdg.chunks:
-                    if not (isinstance(efdf, ListChunk) and efdf.list_type == "EfDf"):
-                        continue
-                    tdmn = find_by_type(chunks=efdf.chunks, chunk_type="tdmn")
-                    if cast("TdmnChunk", tdmn).value != effect.match_name:
-                        continue
-                    try:
-                        sspc = find_by_list_type(chunks=efdf.chunks, list_type="sspc")
                         parts.append(
                             find_by_list_type(chunks=sspc.chunks, list_type="parT")
                         )
                     except ChunkNotFoundError:
                         pass
-                    break
+            # The project-level EfdG mirror, via the parade's cached
+            # definitions lookup. Effect params can parse without a
+            # composition ref, leaving the project unreachable.
+            try:
+                entry = parade._installed_effect_def(effect.match_name)
+            except ValueError:
+                entry = None
+            if entry is not None:
+                try:
+                    parts.append(
+                        find_by_list_type(chunks=entry[2].chunks, list_type="parT")
+                    )
+                except ChunkNotFoundError:
+                    pass
         return parts
 
     def _write_dropdown_items(self, items: list[str]) -> None:
@@ -1629,11 +1612,19 @@ class Property(PropertyBase):
             raise ValueError(
                 "No stored menu definition (pdnm) found for this property."
             )
-        # Keep the synthesis-side parameter definitions in sync.
+        # Keep the synthesis-side parameter definitions in sync. Effect
+        # params parse without a composition ref; reach the project
+        # through the owning layer instead.
         effect = self._parent_property
-        project = self._composition._project if self._composition else None
-        if project is not None and effect is not None:
-            param_def = project._effect_param_defs.get(effect.match_name, {}).get(
+        assert effect is not None
+        comp = self._composition
+        if comp is None:
+            try:
+                comp = self._containing_layer.containing_comp
+            except ValueError:
+                comp = None
+        if comp is not None:
+            param_def = comp._project._effect_param_defs.get(effect.match_name, {}).get(
                 self.match_name
             )
             if param_def is not None:
@@ -1822,9 +1813,21 @@ class Property(PropertyBase):
                     if self.is_spatial
                     else PropertyValueType.ThreeD
                 )
+        elif self.dimensions == 1:
+            # A plain 1-D scalar: AE clears the tdb4 vector bit for single
+            # value properties (Opacity, Rotation, the last separation
+            # follower, effect sliders), so they miss the vector branch
+            # above. They are still OneD scalars.
+            pct = PropertyControlType.SCALAR
+            pvt = PropertyValueType.OneD
 
+        # Flag-based inference is a fallback for when the authoritative type
+        # is not cached (e.g. transiently during synthesis, before the parser
+        # populates it). Types that tdb4 flags cannot express - markers,
+        # custom-value slots - come from the parser instead, so a miss here is
+        # expected and not user-actionable: log at debug, not warning.
         if pct == PropertyControlType.UNKNOWN:
-            logger.warning(
+            logger.debug(
                 "Could not determine type for property %s"
                 " | dimensions: %s"
                 " | integer: %s"
@@ -2231,20 +2234,20 @@ class Property(PropertyBase):
             t._pad7b = 0
             t._pad7c = 0
             return
-        if self._is_vf_axis:
-            # AE keeps a variable-font axis's value-hint flag, cvot flags
-            # and time base unchanged across the static<->animated
-            # transition (verified against the variable_font_axis_animated
-            # AE 2026 fixture).
-            preserved = (t._value_hint_flag, t._cvot_flags, t._time_base)
-            tdb4_apply_animated_template(
-                t, color=bool(self._color), spatial=self.is_spatial
-            )
-            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
-            return
+        # AE keeps a variable-font axis's value-hint flag, cvot flags
+        # and time base unchanged across the static<->animated
+        # transition (verified against the variable_font_axis_animated
+        # AE 2026 fixture).
+        preserved = (
+            (t._value_hint_flag, t._cvot_flags, t._time_base)
+            if self._is_vf_axis
+            else None
+        )
         tdb4_apply_animated_template(
             t, color=bool(self._color), spatial=self.is_spatial
         )
+        if preserved is not None:
+            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
 
     def _ensure_animated(self) -> tuple[Lhd3Chunk, LdatChunk]:
         """Return the keyframe `(lhd3, ldat)`, creating them if static.
@@ -2305,8 +2308,6 @@ class Property(PropertyBase):
         Args:
             comp: The composition whose Essential Graphics panel to test.
         """
-        from ...resolvers.motion_graphics import can_add_property
-
         return can_add_property(self, comp)
 
     def add_to_motion_graphics_template(self, comp: CompItem) -> bool:
@@ -2443,8 +2444,22 @@ class Property(PropertyBase):
         Markers have no static value: the property is left empty. A
         no-op when the property has no keyframes.
         """
-        while self.keyframes:
-            self.remove_key(len(self.keyframes) - 1)
+        if self._parallel_kind() is not None:
+            while self.keyframes:
+                self.remove_key(len(self.keyframes) - 1)
+            return
+        if not self.keyframes:
+            return
+        # Bulk path: clearing key-by-key would re-link the remaining
+        # keyframes after every removal (quadratic) and decode values
+        # that are thrown away.
+        self._ensure_materialized()
+        lhd3, ldat = self._ensure_animated()
+        first_value = self.keyframes[0].value
+        del ldat.items[:]
+        del self.keyframes[:]
+        set_lhd3_count(lhd3, 0, LHD3_BLOCK_KEYFRAMES)
+        self._deanimate(first_value)
 
     def _static_tdb4(self) -> None:
         """Revert tdb4 metadata to AE's static (non-animated) state.
@@ -2462,16 +2477,16 @@ class Property(PropertyBase):
             t.animated = False
             t._spatial_marker = bool(t._spatial_static_flags & 0x02)
             return
-        if self._is_vf_axis:
-            # Mirror `_animate_tdb4`: the axis keeps its value-hint flag,
-            # cvot flags and time base across the transition too.
-            preserved = (t._value_hint_flag, t._cvot_flags, t._time_base)
-            tdb4_apply_static_template(
-                t, color=bool(self._color), spatial=self.is_spatial
-            )
-            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
-            return
+        # Mirror `_animate_tdb4`: the axis keeps its value-hint flag,
+        # cvot flags and time base across the transition too.
+        preserved = (
+            (t._value_hint_flag, t._cvot_flags, t._time_base)
+            if self._is_vf_axis
+            else None
+        )
         tdb4_apply_static_template(t, color=bool(self._color), spatial=self.is_spatial)
+        if preserved is not None:
+            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
 
     def _deanimate(self, value: _ValueType) -> None:
         """Revert an emptied animated property to a static `value`."""

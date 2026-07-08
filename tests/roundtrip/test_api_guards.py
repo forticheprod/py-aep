@@ -55,7 +55,7 @@ class TestSetAlternateSource:
         master = next(
             c for c in app.project.compositions if c.name == "image_with_alpha"
         )
-        alt.set_alternate_source(master)
+        alt.alternate_source = master
         out = tmp_path / "media.aep"
         app.project.save(out)
         app2 = parse_aep(out)
@@ -81,7 +81,7 @@ class TestSetAlternateSource:
             if it.name == "sequence_[001-003].gif"
         )
         before = set(app.project.items)
-        alt.set_alternate_source(gif)
+        alt.alternate_source = gif
         created = set(app.project.items) - before
         assert len(created) == 1  # only the wrapper comp
 
@@ -116,7 +116,7 @@ class TestSetAlternateSource:
             if type(it).__name__ == "FolderItem"
             and it.name == "Media Replacement Comps"
         ]
-        alt.set_alternate_source(gif)
+        alt.alternate_source = gif
         folders_after = [
             it
             for it in app.project.items.values()
@@ -134,7 +134,7 @@ class TestSetAlternateSource:
         )
         pos = layer.transform.property("ADBE Position")
         with pytest.raises(ValueError, match="media replacement"):
-            pos.set_alternate_source(master)
+            pos.alternate_source = master
 
 
 class TestParentValidation:

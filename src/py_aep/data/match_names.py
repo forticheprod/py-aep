@@ -9,6 +9,10 @@ See: https://ae-scripting.docsforadobe.dev/matchnames/layer/avlayer/
 
 from __future__ import annotations
 
+# The 8 fixed variable-font axis slots (AE 26+) share this match-name
+# prefix (`ADBE Text VF Axis 1` .. `ADBE Text VF Axis 8`).
+VF_AXIS_PREFIX = "ADBE Text VF Axis"
+
 MATCH_NAME_TO_AUTO_NAME = {
     # AV Layer > Top-Level
     "ADBE Marker": "Marker",

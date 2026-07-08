@@ -16,6 +16,7 @@ from ..binary.utils import (
     find_by_list_type,
     find_by_type,
 )
+from ..data.match_names import VF_AXIS_PREFIX
 from ..models.descriptors import _suppress_materialization
 from ..models.properties.mask_property_group import MaskPropertyGroup
 from ..models.properties.property_group import PropertyGroup
@@ -222,22 +223,21 @@ def _dispatch_tdbs(ctx: _ParseContext) -> list[Property | PropertyGroup]:
     )
     # A media-replacement slot (`ADBE Layer Source Alternate`) carries blsv/blsi
     # beside its tdbs in the group run; attach them so the Property can decode
-    # `can_set_alternate_source` / `alternate_source`.
-    blsi = filter_by_type(chunks=ctx.chunks, chunk_type="blsi")
-    if blsi:
-        prop._blsi = cast(U4Chunk, blsi[0])
-        blsv = filter_by_type(chunks=ctx.chunks, chunk_type="blsv")
-        if blsv:
-            prop._blsv = cast(U4Chunk, blsv[0])
+    # `can_set_alternate_source` / `alternate_source`. Gated on the match name
+    # so the scans do not run for every leaf on the hot parse path.
+    if ctx.match_name == "ADBE Layer Source Alternate":
+        blsi = filter_by_type(chunks=ctx.chunks, chunk_type="blsi")
+        if blsi:
+            prop._blsi = cast(U4Chunk, blsi[0])
+            blsv = filter_by_type(chunks=ctx.chunks, chunk_type="blsv")
+            if blsv:
+                prop._blsv = cast(U4Chunk, blsv[0])
     # AE 26+ writes a vfdn sibling (the axis display name from the font)
     # after an active variable-font axis slot's tdbs.
-    try:
-        vfdn_chunk = cast(
-            "VfdnChunk", find_by_type(chunks=ctx.chunks, chunk_type="vfdn")
-        )
-        prop._vfdn = vfdn_chunk
-    except ChunkNotFoundError:
-        pass
+    if ctx.match_name.startswith(VF_AXIS_PREFIX):
+        vfdn = filter_by_type(chunks=ctx.chunks, chunk_type="vfdn")
+        if vfdn:
+            prop._vfdn = cast("VfdnChunk", vfdn[0])
     return [prop]
 
 

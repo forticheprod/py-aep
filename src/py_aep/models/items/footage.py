@@ -10,12 +10,12 @@ from ...binary.misc_chunks import FtgiChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ...data.file_formats import AI_COMP_EXTENSIONS, PSD_COMP_EXTENSIONS
 from ...resolvers.source_layers import layer_index_for_stored
-from ..import_options import _CurrentValue
+from ..import_options import CURRENT_VALUE, _CurrentValue
 from ..naming import auto_name
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
-from ..validators import validate_positive_int
+from ..validators import validate_one_of, validate_positive_int
 from .av_item import AVItem
 
 if TYPE_CHECKING:
@@ -330,7 +330,10 @@ class FootageItem(AVItem):
         self._replace_main_source(source)
 
     def replace(
-        self, file: str | os.PathLike[str], layer_index: int | _CurrentValue | None = None
+        self,
+        file: str | os.PathLike[str],
+        layer_index: int | _CurrentValue | None = None,
+        layer_dimensions: str | _CurrentValue = CURRENT_VALUE,
     ) -> None:
         """Replace the footage source with a file on disk.
 
@@ -351,9 +354,16 @@ class FootageItem(AVItem):
         references a single layer - consistent with `import_file`, where
         `layer_index=None` imports merged. Pass `CURRENT_VALUE` to rebind at
         the current source's stored layer index (the `sspc` layer index:
-        PSD record index / AI document index) in the new file. When a
-        layer is selected, the footage dimensions choice (Document vs
-        Layer Size) of a current single-layer binding is preserved.
+        PSD record index / AI document index) in the new file.
+
+        `layer_dimensions` chooses the footage dimensions when a layer is
+        selected (see `ImportOptions.layer_dimensions`): `"document"` (the
+        full canvas) or `"layer"` (the layer's content box). `CURRENT_VALUE`
+        (the default) preserves the current single-layer binding's choice.
+        Layer Size is only representable for PSD targets - AI/PDF always use
+        Document size, and `"layer"` on an AI/PDF file raises
+        `NotImplementedError`. `layer_dimensions` is ignored when
+        `layer_index` is `None` (a merged document is always document-sized).
 
         Note:
             Unlike ExtendScript, if the specified file has an unlabeled alpha channel,
@@ -364,22 +374,28 @@ class FootageItem(AVItem):
             layer_index: Layer of the new file to reference, as its 0-based
                 `list_layers` position, or `CURRENT_VALUE` (layered files
                 only); `None` replaces with the merged/whole document.
+            layer_dimensions: `"document"`, `"layer"`, or `CURRENT_VALUE` to
+                keep the current binding's choice (the default).
 
         Raises:
             ValueError: If the extension is not a supported footage format,
                 if `layer_index` is passed for a non-layered file, if
-                `layer_index` is out of range for the new file, or if
-                `CURRENT_VALUE` is passed while the current source does not
-                reference a single layer (or the new file has no layer at
+                `layer_index` is out of range for the new file, if
+                `layer_dimensions` is not `"document"`/`"layer"`/`CURRENT_VALUE`,
+                or if `CURRENT_VALUE` is passed while the current source does
+                not reference a single layer (or the new file has no layer at
                 the stored index).
             NotImplementedError: If After Effects requires a format-specific
-                `opti` header not implemented for this format.
+                `opti` header not implemented for this format, or if
+                `layer_dimensions="layer"` is requested for an AI/PDF file.
         """
         if layer_index is None:
             self._replace_main_source(FileSource._from_file(file))
             return
         if not isinstance(layer_index, _CurrentValue):
             validate_positive_int(layer_index)
+        if not isinstance(layer_dimensions, _CurrentValue):
+            validate_one_of(("document", "layer"))(layer_dimensions)
         suffix = Path(file).suffix.lower()
         if suffix not in PSD_COMP_EXTENSIONS and suffix not in AI_COMP_EXTENSIONS:
             raise ValueError(
@@ -394,15 +410,22 @@ class FootageItem(AVItem):
                     "a single layer of a layered file"
                 )
             layer_index = layer_index_for_stored(file, current._sspc.layer_index)
-        # Preserve the Document/Layer Size choice of the current binding.
-        dimensions = None
-        current = self._main_source
-        if (
-            isinstance(current, FileSource)
-            and current.layer_name
-            and not current._sspc.full_frame
-        ):
-            dimensions = "layer"
+        if isinstance(layer_dimensions, _CurrentValue):
+            # Preserve the Document/Layer Size choice of the current binding.
+            # Layer Size is only representable for PSD targets (_from_layer
+            # raises NotImplementedError for .ai/.pdf), so fall back to
+            # Document size when switching to a format that cannot keep it.
+            dimensions = None
+            current = self._main_source
+            if (
+                suffix in PSD_COMP_EXTENSIONS
+                and isinstance(current, FileSource)
+                and current.layer_name
+                and not current._sspc.full_frame
+            ):
+                dimensions = "layer"
+        else:
+            dimensions = layer_dimensions
         self._replace_main_source(
             FileSource._from_layer(file, layer_index, dimensions=dimensions)
         )

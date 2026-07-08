@@ -1420,6 +1420,37 @@ class TestChooseLayerReplace:
         assert isinstance(source, FileSource)
         assert not source._sspc.full_frame
 
+    def test_replace_layer_dimensions_document_overrides_current(self) -> None:
+        # Current binding is Layer Size; an explicit "document" forces the
+        # full canvas instead of preserving it.
+        _project, item = self._import(3, "layer")
+        item.replace(
+            ASSETS / "choose_layer_v2.psd", layer_index=2, layer_dimensions="document"
+        )
+        assert (item.width, item.height) != (30, 20)
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source._sspc.full_frame
+
+    def test_replace_layer_dimensions_layer_overrides_current(self) -> None:
+        # Current binding is Document Size; an explicit "layer" forces the
+        # layer content box (v2 solo box L10 T10 R40 B30 -> 30x20).
+        _project, item = self._import(3)
+        item.replace(
+            ASSETS / "choose_layer_v2.psd", layer_index=2, layer_dimensions="layer"
+        )
+        assert (item.width, item.height) == (30, 20)
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert not source._sspc.full_frame
+
+    def test_replace_invalid_layer_dimensions_raises(self) -> None:
+        _project, item = self._import(3)
+        with pytest.raises(ValueError, match="must be one of"):
+            item.replace(
+                ASSETS / "choose_layer_v2.psd", layer_index=2, layer_dimensions="huge"
+            )
+
 
 class TestCompImportLayerBinding:
     """COMP imports write the same per-layer sspc binding + Pin Utf8 as AE."""

@@ -191,7 +191,7 @@ Each property in the tree is in one of two states:
 | State | Backing | Created by | Value source | Writable? |
 |---|---|---|---|---|
 | **Real** | `TdsbChunk` + `Tdb4Chunk` + `CdatChunk` (synthetic=False) | `parse_property()`, `parse_property_group()`, `parse_effect()` (existing params) | `cdat` chunk or keyframes | Yes, directly |
-| **Synthesized** | `TdsbChunk` + `Tdb4Chunk` (synthetic=True) | `Property._new()`, `_synthesize_effect_property()`, `_reorder_and_fill()` (in `models/properties/property_group.py`) | `_PropSpec.value` / `_PropSpec.default_value` / effect param def | Yes, triggers materialization on first write |
+| **Synthesized** | `TdsbChunk` + `Tdb4Chunk` (synthetic=True) | `Property._new()`, `_synthesize_effect_property()`, `_reorder_and_fill()` (in `models/properties/property_group.py`) | `PropSpec.value` / `PropSpec.default_value` / effect param def | Yes, triggers materialization on first write |
 
 ##### Lifecycle Phases in Detail
 
@@ -268,17 +268,17 @@ When adding a new writable `@property` on `PropertyBase`, `Property`, or `Proper
 All static synthesis sites delegate to `_reorder_and_fill()` (in `models/properties/property_group.py`). This function takes a container (layer or group), a list of canonical specs, and:
 
 1. **Preserves** existing children: moves them to canonical position, updates metadata (`_auto_name`, `color`, `min_value`, `max_value`, `default_value`, `can_vary_over_time`)
-2. **Synthesizes** missing children: creates `Property._new()` (for `_PropSpec`) or empty `PropertyGroup` (for `_GroupSpec`) with `synthetic=True` backing
+2. **Synthesizes** missing children: creates `Property._new()` (for `PropSpec`) or empty `PropertyGroup` (for `GroupSpec`) with `synthetic=True` backing
 3. **Skips** match names in the `skip` set (layer-type filtering)
 4. **Appends** non-spec children at the end, controlled by `tail_mode`:
    - `"none"` - drop non-spec children (transform)
    - `"groups"` - keep only `PropertyGroup` children (default)
    - `"all"` - keep everything (top-level groups)
 
-#### Key Spec Tables (in `synthesis/specs.py`)
+#### Key Spec Tables (in `synthesis/property.py`)
 
-- **`_PropSpec`** - Metadata for synthesizing a leaf `Property` (match_name, name, value, type, dimensions, spatial, color, min/max, default_value, can_vary_over_time)
-- **`_GroupSpec`** - Metadata for synthesizing an empty `PropertyGroup` (match_name, name)
+- **`PropSpec`** - Metadata for synthesizing a leaf `Property` (match_name, name, value, type, dimensions, spatial, color, min/max, default_value, can_vary_over_time)
+- **`GroupSpec`** - Metadata for synthesizing an empty `PropertyGroup` (match_name, name)
 - **`_GROUP_CHILD_SPECS`** - Maps group match_name to ordered child specs (Material Options, Camera, Light, Masks, Blend Options, Vector shapes, etc.)
 - **`_LAYER_STYLE_CHILD_SPECS`** - Maps Layer Style sub-group match_name to child specs (Drop Shadow, Inner Glow, etc.)
 - **`_TRANSFORM_SPECS`** / **`_TRANSFORM_FIXED_DEFAULTS`** - Transform property canonical order and fixed defaults

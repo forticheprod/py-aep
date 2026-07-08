@@ -352,7 +352,8 @@ def can_add_layer(layer: AVLayer, comp: CompItem) -> bool:
             return False
     elif not isinstance(source, _CompItem):
         return False
-    for ctrl in comp.motion_graphics_controllers:
-        if ctrl.source_layer_id == layer._ldta.layer_id:
-            return False
-    return True
+    # Only an existing MEDIA controller blocks the layer; property
+    # controllers (slider/checkbox/...) on the same layer coexist with a
+    # Media Replacement in AE.
+    nodes, _ = media_controller_path()
+    return not _already_added(comp, layer._ldta.layer_id, nodes)

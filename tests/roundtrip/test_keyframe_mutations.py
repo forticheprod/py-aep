@@ -939,3 +939,20 @@ class TestParallelValueAliasing:
         app2 = _roundtrip(app, tmp_path)
         t2 = _text_static_prop(app2)
         assert t2.value.text == "CHANGED_TEXT"
+
+
+class TestSpatialFlagGuards:
+    """Non-spatial keyframes reject spatial-flag writes (ExtendScript's
+    setSpatialAutoBezierAtKey errors regardless of the value written)."""
+
+    def test_spatial_auto_bezier_on_non_spatial_raises(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        kf = _prop(app, "ADBE Opacity").keyframes[0]
+        with pytest.raises(ValueError, match="spatial keyframes"):
+            kf.spatial_auto_bezier = False
+
+    def test_spatial_continuous_on_non_spatial_raises(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        kf = _prop(app, "ADBE Opacity").keyframes[0]
+        with pytest.raises(ValueError, match="spatial keyframes"):
+            kf.spatial_continuous = False

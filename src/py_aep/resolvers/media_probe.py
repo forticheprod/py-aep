@@ -382,6 +382,13 @@ def psd_layer_record_count(fp: IO[bytes], is_psb: bool) -> tuple[int, int]:
     return abs(struct.unpack(">h", fp.read(2))[0]), layer_info_len - 2
 
 
+# Color-channel count per PSD color mode. A channel beyond the mode's
+# color-channel count is alpha: 4 channels mean alpha for RGB but are all
+# color for CMYK.
+# Modes: 0 Bitmap, 1 Grayscale, 2 Indexed, 3 RGB, 4 CMYK, 8 Duotone, 9 Lab.
+_PSD_BASE_CHANNELS = {0: 1, 1: 1, 2: 1, 3: 3, 4: 4, 8: 1, 9: 3}
+
+
 def _probe_psd(fp: IO[bytes]) -> MediaInfo:
     if fp.read(4) != b"8BPS":
         raise ValueError("Not a valid PSD/PSB file (bad signature)")
@@ -390,15 +397,16 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
     channels = struct.unpack(">H", fp.read(2))[0]
     height, width = struct.unpack(">II", fp.read(8))
     bit_depth = struct.unpack(">H", fp.read(2))[0]
-    fp.read(2)  # color mode
+    color_mode = struct.unpack(">H", fp.read(2))[0]
     layer_count, _ = psd_layer_record_count(fp, version == 2)
     # AE composites a layered PSD to RGBA (alpha from layer transparency),
     # but treats a flattened document as opaque unless it carries an alpha
     # channel (flattened_rgb_comp.aep: AE writes alpha_mode 3 = no alpha).
+    base_channels = _PSD_BASE_CHANNELS.get(color_mode, 3)
     return MediaInfo(
         width=width,
         height=height,
-        has_alpha=layer_count > 0 or channels >= 4,
+        has_alpha=layer_count > 0 or channels > base_channels,
         bit_depth=bit_depth,
         layer_count=layer_count,
         channels=channels,

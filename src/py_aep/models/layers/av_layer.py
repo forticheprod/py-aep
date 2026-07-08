@@ -14,6 +14,7 @@ from py_aep.enums import (
 from ...ae_version import requires_version
 from ...binary.layer_chunks import LdtaChunk
 from ...resolvers.essential_properties import resolve_essential_property_controllers
+from ...resolvers.motion_graphics import can_add_layer
 from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
@@ -385,8 +386,6 @@ class AVLayer(Layer):
         Args:
             comp: The composition whose Essential Graphics panel to test.
         """
-        from ...resolvers.motion_graphics import can_add_layer
-
         return can_add_layer(self, comp)
 
     def add_to_motion_graphics_template(self, comp: CompItem) -> bool:

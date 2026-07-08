@@ -205,7 +205,7 @@ child, and these `Property` attributes are available:
   (decoded from the slot's `blsi` item-id).
 - `Property.alternate_source` - the replacement `AVItem`. After Effects wraps
   the replacement footage in a composition, so this is that wrapper comp.
-  Set it with `Property.set_alternate_source()`, which requires an existing
+  Set it with `Property.alternate_source = <value>`, which requires an existing
   slot; unlike the After Effects UI it does **not** auto-wrap a footage item
   in a composition, so pass the wrapper `CompItem` for an AE-faithful result.
 - `Property.essential_property_source` - the source `AVLayer` a

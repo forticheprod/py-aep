@@ -47,16 +47,20 @@ from ...binary.utils import (
     find_by_type,
     index_by_identity,
 )
-from ...enums import LineOrientation, ParametricMeshType
+from ...enums import Label, LayerType, LineOrientation, ParametricMeshType
 from ...parsers.essential_graphics import parse_essential_graphics
 from ...resolvers.motion_graphics import (
     CONTROLLER_CHECKBOX,
     CONTROLLER_COLOR,
     CONTROLLER_SLIDER,
+    can_add_layer,
     font_caps_json,
+    media_controller_path,
+    property_controller_plan,
 )
-from ...synthesis.specs import _CAMERA_LIGHT_TRANSFORM_SKIP, _OMITTED_EMPTY_GROUPS
+from ...synthesis.property import _CAMERA_LIGHT_TRANSFORM_SKIP, _OMITTED_EMPTY_GROUPS
 from ..descriptors import ChunkField
+from ..essential_graphics import EssentialGraphicsController, SourcePropertyRef
 from ..layers.av_layer import AVLayer, _unregister_source_usage
 from ..layers.camera_layer import CameraLayer
 from ..layers.light_layer import LightLayer
@@ -94,7 +98,6 @@ if TYPE_CHECKING:
 
     from ...binary.item_chunks import CmtaChunk
     from ...resolvers.motion_graphics import PathNode, PropertyControllerPlan
-    from ..essential_graphics import EssentialGraphicsController
     from ..layers.layer import Layer
     from ..project import Project
     from ..properties.marker import MarkerValue
@@ -986,11 +989,6 @@ class CompItem(AVItem):
         layer: Layer,
     ) -> None:
         """Append the model for a controller just written to the containers."""
-        from ..essential_graphics import (
-            EssentialGraphicsController,
-            SourcePropertyRef,
-        )
-
         name_utf8, ctyp = bound
         self._eg_controllers.append(
             EssentialGraphicsController(
@@ -1014,8 +1012,6 @@ class CompItem(AVItem):
         Returns `False` (adding nothing) when `prop` cannot be exposed - see
         `resolvers.motion_graphics`.
         """
-        from ...resolvers.motion_graphics import property_controller_plan
-
         self._ensure_comp_parsed()
         plan = property_controller_plan(prop, self)
         if plan is None:
@@ -1038,11 +1034,6 @@ class CompItem(AVItem):
         Returns `False` (adding nothing) when the layer is not eligible -
         see `resolvers.motion_graphics.can_add_layer`.
         """
-        from ...resolvers.motion_graphics import (
-            can_add_layer,
-            media_controller_path,
-        )
-
         self._ensure_comp_parsed()
         if not can_add_layer(layer, self):
             return False
@@ -1636,7 +1627,7 @@ class CompItem(AVItem):
             if (
                 not isinstance(layer, AVLayer)
                 or layer.source is None
-                or layer._ldta.layer_type == 5
+                or layer._ldta.layer_type == LayerType.THREE_D_MODEL
             ):
                 raise ValueError(
                     "move_all_attributes=False requires a layer with a "
@@ -1719,12 +1710,9 @@ class CompItem(AVItem):
         final_blocks: list[list[Chunk]] = []
         for ly, block in zip(moved, blocks):
             final_blocks.append(block)
-            ldta = ly._ldta
-            matte_id = (
-                ldta.matte_layer_id if hasattr(ldta, "matte_layer_id") else 0
-            ) or 0
+            matte_id = ly._ldta.matte_layer_id or 0
             if matte_id and matte_id not in id_map and matte_id not in matte_map:
-                matte_layer = next((m for m in self._layers if m.id == matte_id), None)
+                matte_layer = self.layers_by_id.get(matte_id)
                 if matte_layer is not None:
                     m_start, m_end = self._layer_block_slice(matte_layer)
                     m_block = [
@@ -1739,6 +1727,13 @@ class CompItem(AVItem):
                     copy_id = project._allocate_layer_id()
                     m_ldta.layer_id = copy_id
                     rewrite_owner_tdpi(m_list, copy_id)
+                    # The clone's own references point at old-comp layer
+                    # ids: follow a parent/matte that moved, drop one that
+                    # stayed behind (it does not exist in the new comp).
+                    if m_ldta.parent_id:
+                        m_ldta.parent_id = id_map.get(m_ldta.parent_id, 0)
+                    if m_ldta.matte_layer_id:
+                        m_ldta.matte_layer_id = id_map.get(m_ldta.matte_layer_id, 0)
                     matte_map[matte_id] = copy_id
                     final_blocks.append(m_block)
 
@@ -1749,9 +1744,7 @@ class CompItem(AVItem):
             ldta = ly._ldta
             if ldta.parent_id:
                 ldta.parent_id = id_map.get(ldta.parent_id, 0)
-            matte_id = (
-                ldta.matte_layer_id if hasattr(ldta, "matte_layer_id") else 0
-            ) or 0
+            matte_id = ldta.matte_layer_id or 0
             if matte_id:
                 ldta.matte_layer_id = id_map.get(matte_id) or matte_map.get(matte_id, 0)
 
@@ -1775,13 +1768,14 @@ class CompItem(AVItem):
                 _unregister_source_usage(source, self)
                 source._used_in.add(new_comp)
 
-        # Replacement layer at the topmost moved index. AE writes label
-        # 15 and inherits the topmost moved layer's video switch (a matte
-        # layer moved alone keeps serving as matte, so it stays off).
+        # Replacement layer at the topmost moved index. AE writes the
+        # Sandstone label and inherits the topmost moved layer's video
+        # switch (a matte layer moved alone keeps serving as matte, so
+        # it stays off).
         repl = self.add(new_comp)
         if top_index > 0:
             repl.move_after(self.layers[top_index])
-        repl._ldta.label = 15
+        repl.label = Label.SANDSTONE
         repl.enabled = repl_enabled
 
         # Stayers referencing a moved layer retarget to the replacement
@@ -1793,7 +1787,7 @@ class CompItem(AVItem):
             ldta = ly._ldta
             if ldta.parent_id in old_ids:
                 ldta.parent_id = repl_id
-            if hasattr(ldta, "matte_layer_id") and ldta.matte_layer_id in old_ids:
+            if ldta.matte_layer_id in old_ids:
                 ldta.matte_layer_id = repl_id
 
         self._invalidate_layer_cache()

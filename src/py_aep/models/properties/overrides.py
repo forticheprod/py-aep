@@ -401,7 +401,7 @@ _PARAMETRIC_MESH_NO_EXPRESSION: frozenset[str] = frozenset(
 # Mesh option / bevel group -> owning mesh type (raw ldta value).
 # ExtendScript allows expressions only on the ACTIVE mesh type's numeric
 # streams; the inactive types' streams report canSetExpression=False.
-# (Creation-side counterpart: `specs._PARAMETRIC_MESH_ACTIVE_GROUPS`.)
+# (Creation-side counterpart: `property._PARAMETRIC_MESH_ACTIVE_GROUPS`.)
 _PARAMETRIC_MESH_GROUP_TYPE: dict[str, int] = {
     "ADBE CubeMeshOptionsSGrp": 0,
     "ADBE CubeBevelOptionsSGrp": 0,

@@ -147,6 +147,18 @@ class TestAddVariableFontAxis:
         assert axis2.value == 90.0
         assert axis2.axis_tag == "wdth"
 
+    @needs_bahnschrift
+    def test_axis_value_rejects_invalid(self) -> None:
+        # The VARIABLE_FONT_AXIS value type is not numeric, so validation
+        # used to be skipped and NaN/inf/out-of-range weights were written.
+        _, props = _fresh_vf()
+        axis = props.add_variable_font_axis("wght")  # font bounds 300..700
+        for bad in (float("nan"), float("inf"), 100000.0, -9999.0):
+            with pytest.raises(ValueError):
+                axis.value = bad
+        axis.value = 650.0  # in range still accepted
+        assert axis.value == 650.0
+
 
 class TestValueTextDropdown:
     def test_value_text_for_custom_dropdown(self) -> None:

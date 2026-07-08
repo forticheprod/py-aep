@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast
 
 from ...enums import LayerType, ParametricMeshType
-from ...synthesis.specs import _PARAMETRIC_MESH_ACTIVE_GROUPS
+from ...synthesis.property import _PARAMETRIC_MESH_ACTIVE_GROUPS
 from ..descriptors import ChunkField
 from .av_layer import AVLayer
 

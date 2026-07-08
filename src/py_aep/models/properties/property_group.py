@@ -10,7 +10,7 @@ from py_aep.resolvers.can_add_property import (
     can_add_property as _can_add_property,
 )
 
-from ...ae_version import get_ae_version_major
+from ...ae_version import get_ae_version_major, requires_version
 from ...binary.chunk import ListChunk
 from ...binary.mutations import (
     build_dropdown_control,
@@ -28,17 +28,18 @@ from ...binary.property_chunks import (
     TdsnChunk,
     TdumChunk,
     VfdnChunk,
+    tdb4_apply_vf_axis_template,
 )
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import ChunkNotFoundError, find_by_list_type, index_by_identity
 from ...data.dropdown_control import DROPDOWN_CONTROL
 from ...resolvers.font_axes import read_design_axes
 from ...svg.fonts import resolve_font_exact
-from ...synthesis.specs import (
+from ...synthesis.property import (
     _GROUP_CHILD_SPECS,
     _LAYER_STYLE_CHILD_SPECS,
     _USE_VALUE,
-    _GroupSpec,
+    GroupSpec,
 )
 from ..validators import validate_string
 from .overrides import _PROPERTY_MIN_MAX
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Literal
 
-    from ...synthesis.specs import _PropSpec
+    from ...synthesis.property import PropSpec
     from .mask_property_group import MaskPropertyGroup
 
 
@@ -164,7 +165,7 @@ def _reset_to_default_values(group: PropertyGroup) -> None:
 
 def _reorder_and_fill(
     container: PropertyGroup,
-    specs: Sequence[_PropSpec | _GroupSpec],
+    specs: Sequence[PropSpec | GroupSpec],
     child_depth: int,
     *,
     skip: frozenset[str] = frozenset(),
@@ -176,7 +177,7 @@ def _reorder_and_fill(
 
     Existing children whose match name appears in `specs` are preserved in
     canonical order. Missing children are created via `Property.synthesized`
-    (for `_PropSpec`) or as empty `PropertyGroup` instances (for `_GroupSpec`).
+    (for `PropSpec`) or as empty `PropertyGroup` instances (for `GroupSpec`).
 
     Args:
         container: Object whose `.properties` list is reordered/filled.
@@ -203,7 +204,7 @@ def _reorder_and_fill(
         if mn in existing:
             child = existing[mn]
             child._auto_name = spec.auto_name
-            if not isinstance(spec, _GroupSpec) and isinstance(child, Property):
+            if not isinstance(spec, GroupSpec) and isinstance(child, Property):
                 child.__dict__["_color"] = spec.color
                 if spec.chunk_bounds_are_hints:
                     # tdum/tduM hold UI slider hints, not real bounds:
@@ -232,7 +233,7 @@ def _reorder_and_fill(
             continue
         elif spec.min_major is not None and spec.min_major > ae_major:
             continue
-        elif isinstance(spec, _GroupSpec):
+        elif isinstance(spec, GroupSpec):
             group = PropertyGroup._new(
                 spec.match_name,
                 spec.auto_name,
@@ -667,6 +668,7 @@ class PropertyGroup(PropertyBase):
             return True
         return self._installed_effect_def(name) is not None
 
+    @requires_version(26)
     def add_variable_font_axis(
         self,
         axis_tag: str,
@@ -711,25 +713,14 @@ class PropertyGroup(PropertyBase):
                 "add_variable_font_axis() can only be called on the "
                 "'ADBE Text Animator Properties' group of a text animator."
             )
-        # Walk up to the owning layer (for the version gate and the font).
-        obj: PropertyBase | None = self
-        while obj is not None and not hasattr(obj, "_containing_comp"):
-            obj = obj._parent_property
-        if obj is None:
-            raise ValueError("The property group is not attached to a layer.")
-        layer = obj
-        major = get_ae_version_major(layer)
-        if major < 26:
-            raise AttributeError(
-                f"add_variable_font_axis() requires AE 26+ file format "
-                f"(file is AE {major})."
-            )
+        # Typed Any: `.text.source_text` only resolves on a text layer.
+        layer: Any = self._containing_layer
 
         font_number = 0
         if font_file is None:
             # The .aep stores only the PostScript name; its prefix is the
             # variable font's family (FontObject.familyPrefix semantics).
-            text_doc = layer.text.source_text.value  # type: ignore[attr-defined]
+            text_doc = layer.text.source_text.value
             ps_name: str = text_doc.font or ""
             family = ps_name.split("-", 1)[0]
             resolved = resolve_font_exact(family) if family else None
@@ -760,35 +751,23 @@ class PropertyGroup(PropertyBase):
         slot._ensure_materialized()
         tag_raw = float(_vf_tag_from_str(axis_tag))
         tdbs = slot._tdbs
-        tdb4 = slot._tdb4
-        tdb4.dimensions = 2
-        # AE 2026 canon for an active axis slot (byte-diffed against the
-        # variable_font_axis_static fixture).
-        tdb4._value_hint_type = 1
-        tdb4._cvot_flags = 7
-        tdb4._type_flags = 8
-        tdb4._property_category = 9
+        tdb4_apply_vf_axis_template(slot._tdb4)
         assert slot._cdat is not None
         # AE writes [value, tag] plus eight zero-padding slots.
         slot._cdat.values = [axis.default_value, tag_raw] + [0.0] * 8
         slot._value = None
         # Axis bounds come from the font's range (single-component).
-        bounds = {
-            c.chunk_type: c
-            for c in tdbs.chunks
-            if isinstance(c, TdumChunk) and c.chunk_type in ("tdum", "tduM")
-        }
-        for chunk_type, bound in (("tdum", axis.min_value), ("tduM", axis.max_value)):
-            existing = bounds.get(chunk_type)
+        for attr, chunk_type, bound in (
+            ("_tdum", "tdum", axis.min_value),
+            ("_tduM", "tduM", axis.max_value),
+        ):
+            existing = getattr(slot, attr)
             if existing is None:
                 existing = TdumChunk(chunk_type=chunk_type, values=[bound])
                 tdbs.chunks.append(existing)
+                setattr(slot, attr, existing)
             else:
                 existing.values = [bound]
-            if chunk_type == "tdum":
-                slot._tdum = existing
-            else:
-                slot._tduM = existing
         # AE stores the axis display name in a vfdn sibling after the tdbs.
         vfdn = VfdnChunk.new(f"Font Axis {axis.name}")
         assert self._tdgp is not None
