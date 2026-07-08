@@ -12,11 +12,15 @@ def get_ae_version_major(obj: Any) -> int:
     """Navigate from a model object to the AE version major number.
 
     Supports Layer (via `containing_comp`), Item (via `_project`),
-    ViewOptions (via `_item`), and Project (via `_head`).
+    ViewOptions (via `_item`), Property / PropertyGroup (via
+    `_containing_layer`), and Project (via `_head`).
     """
     # Layer -> CompItem -> Project -> HeadChunk
     if hasattr(obj, "_containing_comp"):
         return int(obj._containing_comp._project._head.ae_version_major)
+    # Property / PropertyGroup -> owning Layer (parent_property chain)
+    if hasattr(obj, "_containing_layer"):
+        return get_ae_version_major(obj._containing_layer)
     # Item / RenderQueueItem -> Project -> HeadChunk
     if hasattr(obj, "_project"):
         return int(obj._project._head.ae_version_major)

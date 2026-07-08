@@ -37,6 +37,7 @@ Layers are the building blocks of compositions:
 - [Camera Layer](layers/camera_layer.md) - Camera layers
 - [Light Layer](layers/light_layer.md) - Light layers
 - [3D Model Layer](layers/three_d_model_layer.md) - 3D model layers
+- [Parametric Mesh Layer](layers/parametric_mesh_layer.md) - Parametric mesh layers
 
 ### Properties
 

@@ -63,6 +63,7 @@ class Layer(PropertyGroup):
         LayerType.TEXT: "ADBE Text Layer",
         LayerType.SHAPE: "ADBE Vector Layer",
         LayerType.THREE_D_MODEL: "ADBE 3D Model Layer",
+        LayerType.PARAMETRIC_MESH: "ADBE3D ParametricMeshLayer",
     }
 
     _LAYER_TYPE_NAMES: dict[LayerType, str] = {
@@ -72,6 +73,7 @@ class Layer(PropertyGroup):
         LayerType.TEXT: "Layer",
         LayerType.SHAPE: "Layer",
         LayerType.THREE_D_MODEL: "Layer",
+        LayerType.PARAMETRIC_MESH: "ParametricMeshLayer",
     }
 
     enabled = ChunkField[bool]("_ldta", "enabled")
@@ -246,8 +248,15 @@ class Layer(PropertyGroup):
         # inherited) name, and when the name is set back to the source item's
         # own name (verified against the MyGroup precomp layer in
         # grouped_layers_comp.aep, where name == source comp name -> bit 0).
+        # Parametric mesh layers are the exception among sourceless layers:
+        # renaming one in AE 2026 sets the bit, and it STAYS set even when
+        # renamed back to the original default name (headless rename
+        # experiment on parametric_meshes.aep), matching addParametricMesh's
+        # explicit-name behavior.
         source_id = self._ldta.source_id
-        if not value or source_id == 0:
+        if self._ldta.layer_type == LayerType.PARAMETRIC_MESH:
+            self._ldta.name_set = True
+        elif not value or source_id == 0:
             self._ldta.name_set = False
         else:
             source_item = self.containing_comp._project.items.get(source_id)
@@ -279,8 +288,8 @@ class Layer(PropertyGroup):
     @property
     def layer_type(self) -> str:
         """The type of layer. Matches ExtendScript `layerType` values:
-        `"AVLayer"`, `"LightLayer"`, `"CameraLayer"`, or `"Layer"`.
-        Read-only."""
+        `"AVLayer"`, `"LightLayer"`, `"CameraLayer"`,
+        `"ParametricMeshLayer"`, or `"Layer"`. Read-only."""
         return self._LAYER_TYPE_NAMES.get(LayerType(self._ldta.layer_type), "AVLayer")
 
     @property
@@ -434,6 +443,14 @@ class Layer(PropertyGroup):
             "list[MarkerValue]",
             [kf.value for kf in self.marker.keyframes],
         )
+
+    def remove_all_markers(self) -> None:
+        """Remove all markers from this layer.
+
+        A no-op when the layer has no markers.
+        """
+        if self.marker is not None:
+            self.marker.remove_all_keys()
 
     @property
     def transform(self) -> PropertyGroup:

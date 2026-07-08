@@ -319,3 +319,44 @@ class TestMarkerLazyParseRoundtrip:
         out = tmp_path / "out.aep"
         project.save(out)
         assert out.read_bytes() == src
+
+
+class TestRemoveAllMarkers:
+    """CompItem.remove_all_markers and Layer.remove_all_markers."""
+
+    def test_comp_remove_all_markers(self, tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "comp_marker.aep")
+        comp = get_comp(project, "comment")
+        assert comp.markers
+
+        comp.remove_all_markers()
+        assert comp.markers == []
+        out = tmp_path / "no_comp_markers.aep"
+        project.save(out)
+        comp2 = get_comp(parse_project_fresh(out), "comment")
+        assert comp2.markers == []
+
+    def test_layer_remove_all_markers(self, tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "layer_marker.aep")
+        comp = get_comp(project, "layer_multiple_markers")
+        layer = comp.layers[0]
+        assert layer.markers
+
+        layer.remove_all_markers()
+        assert layer.markers == []
+        out = tmp_path / "no_layer_markers.aep"
+        project.save(out)
+        comp2 = get_comp(parse_project_fresh(out), "layer_multiple_markers")
+        assert comp2.layers[0].markers == []
+
+    def test_remove_all_markers_noop_without_markers(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "layer_marker.aep")
+        comp = get_comp(project, "layer_multiple_markers")
+        layer = comp.layers[0]
+        # The comp itself has no markers; layers keep an empty marker
+        # property after draining. Both cases must be no-ops.
+        comp.remove_all_markers()
+        assert comp.markers == []
+        layer.remove_all_markers()
+        layer.remove_all_markers()
+        assert layer.markers == []

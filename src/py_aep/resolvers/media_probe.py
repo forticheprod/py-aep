@@ -10,6 +10,7 @@ This reads external media files (not `.aep` chunks), so `struct` is used here.
 
 from __future__ import annotations
 
+import io
 import json
 import lzma
 import re
@@ -44,11 +45,13 @@ class MediaInfo(NamedTuple):
     """Channel count from the file header (PSD/PSB only; 3 for RGB, 4 RGBA)."""
 
 
-def probe_media(file: Path) -> MediaInfo:
+def probe_media(file: Path, data: bytes | None = None) -> MediaInfo:
     """Read footage metadata from a media file's header.
 
     Args:
-        file: Path to the source media file.
+        file: Path to the source media file (drives the format dispatch).
+        data: The file's bytes, if the caller already read them; probed
+            in memory instead of re-reading `file`.
 
     Raises:
         NotImplementedError: If header probing is not implemented for the
@@ -61,6 +64,8 @@ def probe_media(file: Path) -> MediaInfo:
             f"Media-header probing is not implemented for {suffix!r}. "
             f"Supported: {', '.join(sorted(_PARSERS))}."
         )
+    if data is not None:
+        return parser(io.BytesIO(data))
     with file.open("rb") as fp:
         return parser(fp)
 
@@ -344,6 +349,46 @@ def _probe_gif(fp: IO[bytes]) -> MediaInfo:
 # ---------------------------------------------------------------------------
 
 
+def psd_layer_record_count(fp: IO[bytes], is_psb: bool) -> tuple[int, int]:
+    """Walk a PSD/PSB stream to its layer records.
+
+    `fp` must be positioned right after the 26-byte header. Skips the Color
+    Mode Data and Image Resources sections and steps into the Layer and Mask
+    Information section's nested Layer Info block.
+
+    Returns:
+        `(record_count, remaining)` - the layer record count (`0` for a
+        flattened document: an empty or truncated Layer-and-Mask or Layer
+        Info section) and the Layer Info bytes left after the count. On a
+        non-zero count, `fp` is positioned at the first layer record.
+
+    Shared by `_probe_psd` and `resolvers.psd_layers.read_psd_layers` so the
+    two agree on which files count as flattened.
+    """
+    # Color Mode Data and Image Resources sections (4-byte lengths in both).
+    fp.seek(struct.unpack(">I", fp.read(4))[0], 1)
+    fp.seek(struct.unpack(">I", fp.read(4))[0], 1)
+    # The section length and the nested layer-info length are 8 bytes in PSB,
+    # 4 in PSD. The signed record count follows; a negative value flags
+    # merged-transparency in the first alpha channel.
+    len_fmt = ">Q" if is_psb else ">I"
+    len_size = 8 if is_psb else 4
+    raw = fp.read(len_size)
+    if len(raw) < len_size or struct.unpack(len_fmt, raw)[0] == 0:
+        return 0, 0
+    layer_info_len = struct.unpack(len_fmt, fp.read(len_size))[0]
+    if layer_info_len == 0:
+        return 0, 0
+    return abs(struct.unpack(">h", fp.read(2))[0]), layer_info_len - 2
+
+
+# Color-channel count per PSD color mode. A channel beyond the mode's
+# color-channel count is alpha: 4 channels mean alpha for RGB but are all
+# color for CMYK.
+# Modes: 0 Bitmap, 1 Grayscale, 2 Indexed, 3 RGB, 4 CMYK, 8 Duotone, 9 Lab.
+_PSD_BASE_CHANNELS = {0: 1, 1: 1, 2: 1, 3: 3, 4: 4, 8: 1, 9: 3}
+
+
 def _probe_psd(fp: IO[bytes]) -> MediaInfo:
     if fp.read(4) != b"8BPS":
         raise ValueError("Not a valid PSD/PSB file (bad signature)")
@@ -352,24 +397,16 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
     channels = struct.unpack(">H", fp.read(2))[0]
     height, width = struct.unpack(">II", fp.read(8))
     bit_depth = struct.unpack(">H", fp.read(2))[0]
-    fp.read(2)  # color mode
-    # Skip the Color Mode Data and Image Resources sections (length-prefixed).
-    fp.seek(struct.unpack(">I", fp.read(4))[0], 1)
-    fp.seek(struct.unpack(">I", fp.read(4))[0], 1)
-    # Layer and Mask Information: section length and the nested layer-info
-    # length are 8 bytes in PSB, 4 in PSD. The signed layer count follows;
-    # a negative value flags merged-transparency in the first alpha channel.
-    len_fmt = ">Q" if version == 2 else ">I"
-    len_size = 8 if version == 2 else 4
-    layer_count = 0
-    if struct.unpack(len_fmt, fp.read(len_size))[0] > 0:
-        if struct.unpack(len_fmt, fp.read(len_size))[0] > 0:
-            layer_count = abs(struct.unpack(">h", fp.read(2))[0])
-    # AE composites a PSD to RGBA, so the merged footage always has alpha.
+    color_mode = struct.unpack(">H", fp.read(2))[0]
+    layer_count, _ = psd_layer_record_count(fp, version == 2)
+    # AE composites a layered PSD to RGBA (alpha from layer transparency),
+    # but treats a flattened document as opaque unless it carries an alpha
+    # channel (flattened_rgb_comp.aep: AE writes alpha_mode 3 = no alpha).
+    base_channels = _PSD_BASE_CHANNELS.get(color_mode, 3)
     return MediaInfo(
         width=width,
         height=height,
-        has_alpha=True,
+        has_alpha=layer_count > 0 or channels > base_channels,
         bit_depth=bit_depth,
         layer_count=layer_count,
         channels=channels,
@@ -651,11 +688,18 @@ def _skip_id3v2(raw: bytes) -> int:
 
 
 def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
-    raw = fp.read()
-    audio_start = _skip_id3v2(raw)
-    if len(raw) < audio_start + 4:
+    # The duration math needs only the file size, the first frame header and
+    # the fixed-offset Xing/Info tag - never the audio payload, so read a
+    # bounded window instead of the whole file.
+    audio_start = _skip_id3v2(fp.read(10))
+    fp.seek(0, 2)
+    file_size = fp.tell()
+    fp.seek(audio_start)
+    # Frame header (4) + max side info (32) + Xing tag header (12).
+    raw = fp.read(48)
+    if len(raw) < 4:
         return MediaInfo(has_audio=True)
-    h = struct.unpack_from(">I", raw, audio_start)[0]
+    h = struct.unpack_from(">I", raw, 0)[0]
     if (h >> 21) & 0x7FF != 0x7FF:  # 11-bit frame sync
         return MediaInfo(has_audio=True)
     mpeg_ver = (h >> 19) & 0x3  # 3=MPEG1, 2=MPEG2, 0=MPEG2.5
@@ -672,7 +716,7 @@ def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
     # A Xing/Info header (VBR) carries the exact frame count; else assume CBR.
     side = (17 if mono else 32) if mpeg_ver == 3 else (9 if mono else 17)
     duration = 0.0
-    tag_at = audio_start + 4 + side
+    tag_at = 4 + side
     if raw[tag_at : tag_at + 4] in (b"Xing", b"Info"):
         flags = struct.unpack_from(">I", raw, tag_at + 4)[0]
         if flags & 0x1 and sr:
@@ -681,7 +725,7 @@ def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
     elif bitrate and sr:
         # bitrate >= 32 kbps and sr >= 8 kHz, so frame_size is always > 0.
         frame_size = spf // 8 * bitrate // sr + padding
-        duration = (len(raw) - audio_start) // frame_size * spf / sr
+        duration = (file_size - audio_start) // frame_size * spf / sr
     return MediaInfo(duration=duration, has_audio=True, audio_sample_rate=float(sr))
 
 
@@ -740,30 +784,41 @@ def _probe_aac(fp: IO[bytes]) -> MediaInfo:
     different duration (decoder priming), but it re-derives the value from
     the located file on open, so the header estimate never affects playback.
     """
-    raw = fp.read()
-    audio_start = _skip_id3v2(raw)
-    n = len(raw)
+    audio_start = _skip_id3v2(fp.read(10))
+    fp.seek(0, 2)
+    file_size = fp.tell()
+    fp.seek(audio_start)
     # Locate the first real ADTS frame: a valid header whose successor also
     # syncs (or which ends the file). Requiring the next frame guards against
-    # locking onto a coincidental sync word in leading non-ADTS bytes.
-    pos = audio_start
+    # locking onto a coincidental sync word in leading non-ADTS bytes. A
+    # 64 KiB window holds several max-size (8191-byte) frames, so only a
+    # pathological amount of leading garbage escapes it.
+    window = fp.read(65536)
+    n = len(window)
+    pos = 0
     while pos + 7 <= n:
-        if _is_adts_header(raw, pos, n):
-            nxt = pos + _adts_frame_len(raw, pos)
-            if nxt >= n or _is_adts_header(raw, nxt, n):
+        if _is_adts_header(window, pos, n):
+            nxt = pos + _adts_frame_len(window, pos)
+            if audio_start + nxt >= file_size or _is_adts_header(window, nxt, n):
                 break
         pos += 1
     else:
         return MediaInfo(has_audio=True)
-    sr_i = (raw[pos + 2] >> 2) & 0xF
+    sr_i = (window[pos + 2] >> 2) & 0xF
     sr = _AAC_SR[sr_i] if sr_i < len(_AAC_SR) else 0
+    # Walk the stream header-to-header, seeking over the audio payloads so
+    # the file is never loaded whole.
     total_samples = 0
-    while pos + 7 <= n and raw[pos] == 0xFF and raw[pos + 1] & 0xF0 == 0xF0:
-        frame_len = _adts_frame_len(raw, pos)
+    fp.seek(audio_start + pos)
+    while True:
+        hdr = fp.read(7)
+        if len(hdr) < 7 or hdr[0] != 0xFF or hdr[1] & 0xF0 != 0xF0:
+            break
+        frame_len = _adts_frame_len(hdr, 0)
         if frame_len < 7:  # shorter than the header: corrupt, stop scanning
             break
-        total_samples += 1024 * ((raw[pos + 6] & 0x03) + 1)
-        pos += frame_len
+        total_samples += 1024 * ((hdr[6] & 0x03) + 1)
+        fp.seek(frame_len - 7, 1)
     duration = total_samples / sr if sr else 0.0
     return MediaInfo(duration=duration, has_audio=True, audio_sample_rate=float(sr))
 

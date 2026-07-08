@@ -15,8 +15,9 @@ from __future__ import annotations
 import math
 from xml.etree.ElementTree import Element
 
-from ._util import NUMBER_RE, local_name
+from ._util import local_name, parse_number, parse_ratio
 from .colors import parse_color
+from .style import _parse_declarations
 from .transform import Affine, parse_transform
 from .types import GradientPaint, GradientStop
 
@@ -73,10 +74,10 @@ def _parse_stops(elem: Element) -> list[GradientStop]:
         if local_name(child.tag) != "stop":
             continue
         # SVG spec clamps stop offsets to [0, 1] (offsets > 100% round down).
-        offset = _parse_ratio(child.get("offset", "0"), allow_over_one=False)
+        offset = parse_ratio(child.get("offset"), 0.0)
         style = _stop_style(child)
         color = parse_color(style.get("stop-color", "#000000")) or (0.0, 0.0, 0.0, 1.0)
-        opacity = _parse_ratio(style.get("stop-opacity", "1"), allow_over_one=False)
+        opacity = parse_ratio(style.get("stop-opacity"), 1.0)
         stops.append(
             GradientStop(
                 offset=offset, color=(color[0], color[1], color[2], color[3] * opacity)
@@ -86,43 +87,22 @@ def _parse_stops(elem: Element) -> list[GradientStop]:
     return stops
 
 
+_STOP_PROPS = ("stop-color", "stop-opacity")
+
+
 def _stop_style(elem: Element) -> dict[str, str]:
-    out = {k: v for k, v in elem.attrib.items() if k in ("stop-color", "stop-opacity")}
-    inline = elem.get("style", "")
-    for decl in inline.split(";"):
-        if ":" in decl:
-            k, _, v = decl.partition(":")
-            out[k.strip()] = v.strip()
+    out = {k: v for k, v in elem.attrib.items() if k in _STOP_PROPS}
+    out.update(_parse_declarations(elem.get("style", ""), tracked=_STOP_PROPS))
     return out
-
-
-def _parse_ratio(text: str, allow_over_one: bool = True) -> float:
-    text = text.strip()
-    if text.endswith("%"):
-        val = float(text[:-1]) / 100.0
-    else:
-        val = float(text) if text else 0.0
-    if val < 0:
-        return 0.0
-    if not allow_over_one and val > 1:
-        return 1.0
-    return val
-
-
-def _num(text: str) -> float:
-    """Leading numeric value of `text`, ignoring any unit suffix (e.g.
-    `"40px"` -> `40.0`); `0.0` if no number is present."""
-    m = NUMBER_RE.search(text)
-    return float(m.group()) if m else 0.0
 
 
 def _coord(text: str, span: float, origin: float, object_bbox: bool) -> float:
     """Resolve a gradient coordinate to absolute (bbox or userspace)."""
     text = text.strip()
     if text.endswith("%"):
-        frac = _num(text) / 100.0
+        frac = parse_number(text) / 100.0
         return origin + frac * span if object_bbox else frac * span
-    val = _num(text)
+    val = parse_number(text)
     return origin + val * span if object_bbox else val
 
 
@@ -130,6 +110,7 @@ def resolve_gradient(
     gd: GradientDef,
     bbox: tuple[float, float, float, float],
     ctm: Affine,
+    viewport: tuple[float, float],
 ) -> GradientPaint:
     """Resolve a gradient to absolute viewBox geometry.
 
@@ -140,6 +121,8 @@ def resolve_gradient(
         ctm: The element's current transform (applied for
             `userSpaceOnUse`; for `objectBoundingBox` the bbox is already
             absolute so only `gradientTransform` is applied).
+        viewport: The viewBox `(width, height)` - the reference for
+            percentage coordinates under `userSpaceOnUse`.
 
     Returns:
         A `GradientPaint` with absolute `start`/`end` points and stops.
@@ -148,28 +131,39 @@ def resolve_gradient(
     object_bbox = units != "userSpaceOnUse"
     min_x, min_y, max_x, max_y = bbox
     bw, bh = (max_x - min_x), (max_y - min_y)
+    vp_w, vp_h = viewport
+    # Percentage reference: the bbox in objectBoundingBox, the viewport in
+    # userSpaceOnUse (per the SVG spec).
+    span_x = bw if object_bbox else vp_w
+    span_y = bh if object_bbox else vp_h
     gt = parse_transform(gd.attr("gradientTransform", ""))
     # In objectBoundingBox the bbox is absolute, so user-space CTM is not
     # re-applied; in userSpaceOnUse the CTM maps local coords to absolute.
     base = gt if object_bbox else ctm.multiply(gt)
 
     if gd.kind == "linear":
-        x1 = _coord(gd.attr("x1", "0%"), bw, min_x, object_bbox)
-        y1 = _coord(gd.attr("y1", "0%"), bh, min_y, object_bbox)
-        x2 = _coord(gd.attr("x2", "100%"), bw, min_x, object_bbox)
-        y2 = _coord(gd.attr("y2", "0%"), bh, min_y, object_bbox)
+        x1 = _coord(gd.attr("x1", "0%"), span_x, min_x, object_bbox)
+        y1 = _coord(gd.attr("y1", "0%"), span_y, min_y, object_bbox)
+        x2 = _coord(gd.attr("x2", "100%"), span_x, min_x, object_bbox)
+        y2 = _coord(gd.attr("y2", "0%"), span_y, min_y, object_bbox)
         start = base.apply(x1, y1)
         end = base.apply(x2, y2)
         return GradientPaint(kind=gd.kind, stops=gd.stops, start=start, end=end)
 
-    cx = _coord(gd.attr("cx", "50%"), bw, min_x, object_bbox)
-    cy = _coord(gd.attr("cy", "50%"), bh, min_y, object_bbox)
-    # Radius as a fraction of the bbox diagonal-ish span.
+    cx = _coord(gd.attr("cx", "50%"), span_x, min_x, object_bbox)
+    cy = _coord(gd.attr("cy", "50%"), span_y, min_y, object_bbox)
     r_text = gd.attr("r", "50%").strip()
     if r_text.endswith("%"):
-        r = _num(r_text) / 100.0 * (bw if object_bbox else 1.0)
+        frac = parse_number(r_text) / 100.0
+        if object_bbox:
+            # Radius as a fraction of the bbox diagonal-ish span.
+            r = frac * bw
+        else:
+            # Spec: axis-less percentage lengths resolve against the
+            # normalized viewport diagonal sqrt(w^2 + h^2) / sqrt(2).
+            r = frac * math.hypot(vp_w, vp_h) / math.sqrt(2)
     else:
-        r = _num(r_text)
+        r = parse_number(r_text)
     start = base.apply(cx, cy)
     end = base.apply(cx + r, cy)
     # `start`/`end` only carry the x-radius, so a `gradientTransform` that

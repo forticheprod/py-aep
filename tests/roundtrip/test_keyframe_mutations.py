@@ -234,6 +234,114 @@ class TestRemoveKey:
             op.remove_key(99)
 
 
+class TestMoveKeyframe:
+    """Writing Keyframe.time / frame_time re-sorts keyframes and chunks."""
+
+    def test_move_past_neighbour_resorts(self, tmp_path: Path) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        assert len(op.keyframes) >= 2
+        for i, kf in enumerate(op.keyframes):
+            kf.value = 10.0 * (i + 1)
+        first = op.keyframes[0]
+        first.time = op.keyframes[-1].time + 1.0
+        assert op.keyframes[-1] is first
+        times = [kf.frame_time for kf in op.keyframes]
+        assert times == sorted(times)
+        # prev/next chain follows the new order.
+        assert first._next is None
+        assert op.keyframes[-2]._next is first
+        app2 = _roundtrip(app, tmp_path)
+        op2 = _prop(app2, "ADBE Opacity")
+        times2 = [kf.frame_time for kf in op2.keyframes]
+        assert times2 == sorted(times2)
+        # The moved keyframe's value traveled with it through the save.
+        assert op2.keyframes[-1].value == pytest.approx(10.0)
+        assert op2.keyframes[0].value == pytest.approx(20.0)
+
+    def test_move_without_crossing_keeps_position(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        kf = op.keyframes[0]
+        kf.frame_time = op.keyframes[1].frame_time - 1
+        assert op.keyframes[0] is kf
+        times = [k.frame_time for k in op.keyframes]
+        assert times == sorted(times)
+
+    def test_move_onto_existing_keyframe_raises(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        original = op.keyframes[0].frame_time
+        with pytest.raises(ValueError, match="already exists"):
+            op.keyframes[0].frame_time = op.keyframes[1].frame_time
+        # The failed move left the keyframe untouched.
+        assert op.keyframes[0].frame_time == original
+
+    def test_move_marker_key_moves_container_value(self, tmp_path: Path) -> None:
+        # Markers keep their values in the parallel Nmrd container, paired
+        # by position: the container entry must travel with the keyframe.
+        from py_aep.models.properties.marker import MarkerValue
+
+        app = parse_aep(str(SAMPLES_ROOT / "models" / "marker" / "layer_marker.aep"))
+        comp = get_comp(app.project, "layer_multiple_markers")
+        mp = comp.layers[0]["ADBE Marker"]
+        assert len(mp.keyframes) >= 2
+        mp.keyframes[0].value = MarkerValue(comment="moved")
+        mp.keyframes[0].time = mp.keyframes[-1].time + 1.0
+        app2 = _roundtrip(app, tmp_path)
+        mp2 = get_comp(app2.project, "layer_multiple_markers").layers[0]["ADBE Marker"]
+        times2 = [kf.frame_time for kf in mp2.keyframes]
+        assert times2 == sorted(times2)
+        assert mp2.keyframes[-1].value.comment == "moved"
+        assert all(kf.value.comment != "moved" for kf in mp2.keyframes[:-1])
+
+
+def _keyframed_props(group) -> list:
+    """Collect every descendant property that has keyframes."""
+    out: list = []
+    for p in getattr(group, "properties", []):
+        if getattr(p, "keyframes", None):
+            out.append(p)
+        out.extend(_keyframed_props(p))
+    return out
+
+
+class TestRemoveAllKeys:
+    def test_property_reverts_to_first_key_value(self, tmp_path: Path) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        first_val = op.keyframes[0].value
+        op.remove_all_keys()
+        assert op.keyframes == []
+        app2 = _roundtrip(app, tmp_path)
+        op2 = _prop(app2, "ADBE Opacity")
+        assert op2.keyframes == []
+        assert op2.value == pytest.approx(first_val)
+
+    def test_noop_when_no_keyframes(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        op = _prop(app, "ADBE Opacity")
+        op.remove_all_keys()
+        op.remove_all_keys()
+        assert op.keyframes == []
+
+    def test_layer_remove_all_keys_recursive(self, tmp_path: Path) -> None:
+        app = parse_aep(str(SAMPLES_ROOT / "models" / "property" / "all_animated.aep"))
+        assert any(
+            _keyframed_props(lay)
+            for comp in app.project.compositions
+            for lay in comp.layers
+        )
+        for comp in app.project.compositions:
+            for lay in comp.layers:
+                lay.remove_all_keys()
+                assert _keyframed_props(lay) == []
+        app2 = _roundtrip(app, tmp_path)
+        for comp in app2.project.compositions:
+            for lay in comp.layers:
+                assert _keyframed_props(lay) == []
+
+
 class TestSetValueAtTime:
     def test_replace_existing_key(self) -> None:
         app = _fresh("keyframe_LINEAR.aep")
@@ -831,3 +939,20 @@ class TestParallelValueAliasing:
         app2 = _roundtrip(app, tmp_path)
         t2 = _text_static_prop(app2)
         assert t2.value.text == "CHANGED_TEXT"
+
+
+class TestSpatialFlagGuards:
+    """Non-spatial keyframes reject spatial-flag writes (ExtendScript's
+    setSpatialAutoBezierAtKey errors regardless of the value written)."""
+
+    def test_spatial_auto_bezier_on_non_spatial_raises(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        kf = _prop(app, "ADBE Opacity").keyframes[0]
+        with pytest.raises(ValueError, match="spatial keyframes"):
+            kf.spatial_auto_bezier = False
+
+    def test_spatial_continuous_on_non_spatial_raises(self) -> None:
+        app = _fresh("keyframe_HOLD.aep")
+        kf = _prop(app, "ADBE Opacity").keyframes[0]
+        with pytest.raises(ValueError, match="spatial keyframes"):
+            kf.spatial_continuous = False

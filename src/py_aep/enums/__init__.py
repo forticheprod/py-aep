@@ -70,6 +70,7 @@ from .general import (
     MaskFeatherFalloff,
     MaskMode,
     MaskMotionBlur,
+    ParametricMeshType,
     PlayMode,
     PREFType,
     ProjectThread,
@@ -137,6 +138,7 @@ from .text_document import (
     LineOrientation,
     ParagraphDirection,
     ParagraphJustification,
+    VariableFontSpacing,
 )
 
 __all__ = [
@@ -189,6 +191,7 @@ __all__ = [
     "MaskFeatherFalloff",
     "MaskMode",
     "MaskMotionBlur",
+    "ParametricMeshType",
     "PlayMode",
     "PREFType",
     "ProjectThread",
@@ -251,4 +254,5 @@ __all__ = [
     "LineOrientation",
     "ParagraphDirection",
     "ParagraphJustification",
+    "VariableFontSpacing",
 ]

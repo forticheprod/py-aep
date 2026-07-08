@@ -26,7 +26,7 @@ from ..models.descriptors import _suppress_materialization
 from ..models.properties.overrides import _CANVARY_OVERRIDES, _PROPERTY_DEFAULTS
 from ..models.properties.property import Property
 from ..models.properties.property_group import PropertyGroup
-from ..synthesis.specs import _PropSpec
+from ..synthesis.property import PropSpec
 from .utils import (
     get_chunks_by_match_name,
     get_match_name_runs,
@@ -51,15 +51,15 @@ _PVT_DIMENSIONS: dict[PropertyValueType, int] = {
 def _param_def_to_spec(
     match_name: str,
     param_def: dict[str, Any],
-) -> _PropSpec:
-    """Convert an effect parameter definition dict into a `_PropSpec`.
+) -> PropSpec:
+    """Convert an effect parameter definition dict into a `PropSpec`.
 
     Args:
         match_name: The property's match name.
         param_def: The parameter definition dict from parT parsing.
 
     Returns:
-        A `_PropSpec` suitable for `Property._new()`.
+        A `PropSpec` suitable for `Property._new()`.
     """
     pvt = param_def.get("property_value_type", PropertyValueType.OneD)
     control_type = param_def["property_control_type"]
@@ -70,7 +70,7 @@ def _param_def_to_spec(
         or is_color
     )
     value, default_value = _resolve_effect_value(match_name, param_def, control_type)
-    return _PropSpec(
+    return PropSpec(
         match_name=match_name,
         auto_name=param_def.get("name") or match_name,
         value=value,
@@ -150,8 +150,14 @@ def _apply_param_def_metadata(
     max_val = param_def.get("max_value")
     if max_val is not None:
         prop._max_value_fallback = max_val
+    # The pard UI slider range - distinct from the valid range and the
+    # source of an Essential Graphics slider controller's Smin/Smax.
+    prop._slider_min = param_def.get("slider_min")
+    prop._slider_max = param_def.get("slider_max")
     prop.nb_options = param_def.get("nb_options")
-    prop.property_parameters = param_def.get("property_parameters")
+    # Direct write: the public setter has user-write semantics (validation
+    # plus pdnm/pard chunk rewrites).
+    prop._property_parameters = param_def.get("property_parameters")
     units = param_def.get("units_text")
     if units is not None:
         prop._units_text = units
@@ -507,9 +513,9 @@ def _pard_extractor(
 
 @_pard_extractor(PropertyControlType.ANGLE)
 def _extract_angle(body: Any, result: dict[str, Any]) -> None:
-    result["last_value"] = body.last_value / 65536
-    if body.default_raw is not None:
-        result["default"] = _intify(body.default_raw / 65536)
+    result["last_value"] = body.last_value
+    if body.default is not None:
+        result["default"] = _intify(body.default)
     result["property_value_type"] = PropertyValueType.OneD
 
 
@@ -560,11 +566,13 @@ def _extract_integer(body: Any, result: dict[str, Any]) -> None:
 
 @_pard_extractor(PropertyControlType.SCALAR)
 def _extract_scalar(body: Any, result: dict[str, Any]) -> None:
-    result["last_value"] = body.last_value / 65536
-    if body.default_raw is not None:
-        result["default"] = _intify(body.default_raw / 65536)
-    result["min_value"] = _intify(body.valid_min_raw / 65536)
-    result["max_value"] = _intify(body.valid_max_raw / 65536)
+    result["last_value"] = body.last_value
+    if body.default is not None:
+        result["default"] = _intify(body.default)
+    result["min_value"] = _intify(body.valid_min)
+    result["max_value"] = _intify(body.valid_max)
+    result["slider_min"] = body.slider_min
+    result["slider_max"] = body.slider_max
 
 
 @_pard_extractor(PropertyControlType.SLIDER)
@@ -577,9 +585,13 @@ def _extract_slider(body: Any, result: dict[str, Any]) -> None:
         result["min_value"] = _intify(body.valid_min)
     if math.isfinite(body.valid_max):
         result["max_value"] = _intify(body.valid_max)
-    # PF_ValueDisplayFlag_PERCENT (bit 0) is the only display flag AE
-    # serializes reliably for float sliders; it maps to unitsText "percent".
-    if body.display_flags and body.display_flags & 0x01:
+    if math.isfinite(body.slider_min):
+        result["slider_min"] = body.slider_min
+    if math.isfinite(body.slider_max):
+        result["slider_max"] = body.slider_max
+    # PF_ValueDisplayFlag_PERCENT is the only display flag AE serializes
+    # reliably for float sliders; it maps to unitsText "percent".
+    if body.displays_percent:
         result["units_text"] = "percent"
 
 

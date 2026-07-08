@@ -71,6 +71,13 @@ def _add_drawable(contents: PropertyGroup, drawable: SvgDrawable) -> None:
             closed=subpath.closed,
         )
 
+    # A compound path (one SVG `<path>` with several subpaths) needs a Merge
+    # Paths op so overlapping subpaths cut holes via the nonzero winding rule;
+    # without it AE fills each subpath solid and the holes disappear. AE adds
+    # one (Merge Type 1 = "Merge", the default) after the paths, before paint.
+    if len(drawable.subpaths) > 1:
+        inner.add_property("ADBE Vector Filter - Merge")
+
     # Stroke is listed before fill so it renders on top (SVG paint order).
     # AE flattens an SVG group/element opacity into the paint's Fill/Stroke
     # Opacity (verified against AE's own import), so pass it through.
@@ -107,40 +114,64 @@ def _opacity_pct(alpha: float) -> float | None:
     return to_f4(a8 / 255.0 * 100.0)
 
 
+def _grad_opacity_pct(opacity: float) -> float | None:
+    """Gradient Fill/Stroke Opacity percentage for a 0-1 group opacity.
+
+    Unlike a solid paint (`_opacity_pct`), a gradient fill/stroke stores the
+    group/element opacity as the RAW percentage, NOT 8-bit-quantized: AE 2026
+    writes `0.5 -> 50.0` and `0.3 -> 30.0` (vs `50.196` / `30.196` for solids,
+    which route opacity through the 8-bit colour alpha). The gradient's own
+    per-stop alpha stays in Grad Colors. Returns `None` when fully opaque,
+    since AE leaves the default 100%.
+
+    AE reads the SVG opacity as float32 before scaling, so quantize to f4
+    first to match its exact byte (e.g. `0.3 -> 30.000001907`, not `30.0`).
+    """
+    if opacity >= 1.0:
+        return None
+    return to_f4(to_f4(opacity) * 100.0)
+
+
 def _add_fill(
-    inner: PropertyGroup, paint: object, cx: float, cy: float, opacity: float
+    inner: PropertyGroup,
+    paint: SolidPaint | GradientPaint,
+    cx: float,
+    cy: float,
+    opacity: float,
 ) -> None:
-    if isinstance(paint, GradientPaint):
-        gfill = _grp(inner.add_property("ADBE Vector Graphic - G-Fill"))
-        # Group opacity on a gradient paint is not yet AE-validated, so it is
-        # left unapplied here (same as the gradient->AE mapping deferral).
-        _apply_gradient(gfill, paint, cx, cy)
-        return
-    fill = _grp(inner.add_property("ADBE Vector Graphic - Fill"))
-    rgb, alpha = _solid(paint)
-    _leaf(fill, "ADBE Vector Fill Color").value = [rgb[0], rgb[1], rgb[2], 1.0]
-    pct = _opacity_pct(alpha * opacity)
-    if pct is not None:
-        _leaf(fill, "ADBE Vector Fill Opacity").value = pct
+    _apply_paint(inner, paint, "Fill", cx, cy, opacity)
 
 
 def _add_stroke(
     inner: PropertyGroup, stroke: StrokeStyle, cx: float, cy: float, opacity: float
 ) -> None:
-    if isinstance(stroke.paint, GradientPaint):
-        sg = _grp(inner.add_property("ADBE Vector Graphic - G-Stroke"))
-        _apply_gradient(sg, stroke.paint, cx, cy)
-        _leaf(sg, "ADBE Vector Stroke Width").value = stroke.width
-        _apply_stroke_style(sg, stroke)
-        return
-    sg = _grp(inner.add_property("ADBE Vector Graphic - Stroke"))
-    rgb, alpha = _solid(stroke.paint)
-    _leaf(sg, "ADBE Vector Stroke Color").value = [rgb[0], rgb[1], rgb[2], 1.0]
-    pct = _opacity_pct(alpha * opacity)
-    if pct is not None:
-        _leaf(sg, "ADBE Vector Stroke Opacity").value = pct
+    sg = _apply_paint(inner, stroke.paint, "Stroke", cx, cy, opacity)
     _leaf(sg, "ADBE Vector Stroke Width").value = stroke.width
     _apply_stroke_style(sg, stroke)
+
+
+def _apply_paint(
+    inner: PropertyGroup,
+    paint: SolidPaint | GradientPaint,
+    kind: str,
+    cx: float,
+    cy: float,
+    opacity: float,
+) -> PropertyGroup:
+    """Add a paint group ("Fill"/"Stroke" match-name stem `kind`) and set
+    its gradient-or-solid color and opacity. Returns the added group."""
+    if isinstance(paint, GradientPaint):
+        grp = _grp(inner.add_property(f"ADBE Vector Graphic - G-{kind}"))
+        _apply_gradient(grp, paint, cx, cy)
+        pct = _grad_opacity_pct(opacity)
+    else:
+        grp = _grp(inner.add_property(f"ADBE Vector Graphic - {kind}"))
+        c = paint.color
+        _leaf(grp, f"ADBE Vector {kind} Color").value = [c[0], c[1], c[2], 1.0]
+        pct = _opacity_pct(c[3] * opacity)
+    if pct is not None:
+        _leaf(grp, f"ADBE Vector {kind} Opacity").value = pct
+    return grp
 
 
 def _apply_stroke_style(sg: PropertyGroup, stroke: StrokeStyle) -> None:
@@ -212,11 +243,3 @@ def _set_if_present(
     when importing into an older project; skip them rather than raise."""
     if any(p.match_name == match_name for p in group.properties):
         _leaf(group, match_name).value = value
-
-
-def _solid(paint: object) -> tuple[tuple[float, float, float], float]:
-    """Reduce a solid paint to `((r, g, b), alpha)`."""
-    if isinstance(paint, SolidPaint):
-        c = paint.color
-        return ((c[0], c[1], c[2]), c[3])
-    return ((0.0, 0.0, 0.0), 1.0)

@@ -19,7 +19,7 @@ import re
 import sys
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from py_aep import parse
@@ -171,7 +171,7 @@ def to_dict(obj: Any) -> Any:
                 continue
             try:
                 value = getattr(obj, name)
-            except AttributeError:
+            except (AttributeError, KeyError):  # missing chunk or field
                 continue
             result[name] = to_dict(value)
         # Include @property attributes (non-private, non-skipped)
@@ -180,9 +180,9 @@ def to_dict(obj: Any) -> Any:
                 continue
             try:
                 value = getattr(obj, name)
-                result[name] = to_dict(value)
             except (AttributeError, KeyError):  # missing chunk or field
-                pass
+                continue
+            result[name] = to_dict(value)
         return result
     return obj
 
@@ -650,6 +650,7 @@ def compare_property(
         "isSeparationFollower": "is_separation_follower",
         "unitsText": "units_text",
         "separationDimension": "separation_dimension",
+        "canSetAlternateSource": "can_set_alternate_source",
     }
 
     _compare_fields(
@@ -766,6 +767,92 @@ def compare_property(
                 f"{path}.shapeValue",
                 result,
             )
+
+    # Compare alternateSource (Media Replacement wrapper reference). to_dict
+    # serializes the AVItem fully, so id/name are available; compare on id (the
+    # binary blsi item id, the strongest invariant) then name.
+    result.track_field(
+        "Property", "alternate_source", "alternateSource" in expected_prop
+    )
+    if "alternateSource" in expected_prop:
+        exp_alt = expected_prop["alternateSource"]
+        parsed_alt = parsed_prop.get("alternate_source")
+        if exp_alt is None:
+            if parsed_alt is not None:
+                pid = (
+                    parsed_alt.get("id") if isinstance(parsed_alt, dict) else parsed_alt
+                )
+                result.add_diff(f"{path}.alternateSource", None, pid, "properties")
+        elif isinstance(exp_alt, dict):
+            if not isinstance(parsed_alt, dict):
+                result.add_diff(f"{path}.alternateSource", exp_alt, None, "properties")
+            else:
+                for key in ("id", "name"):
+                    if exp_alt.get(key) != parsed_alt.get(key):
+                        result.add_diff(
+                            f"{path}.alternateSource.{key}",
+                            exp_alt.get(key),
+                            parsed_alt.get(key),
+                            "properties",
+                        )
+
+    # Compare essentialPropertySource (originating source of an Essential
+    # Property). ExtendScript emits a {sourceType, ...} descriptor: an AVLayer
+    # source (Media Replacement Footage) is compared on name + index (index is
+    # 1-based, parsed is 0-based; the containing-comp name is not serialized by
+    # to_dict - circular-ref guard - so comp is not compared). A Property source
+    # is compared on matchName.
+    result.track_field(
+        "Property",
+        "essential_property_source",
+        "essentialPropertySource" in expected_prop,
+    )
+    if "essentialPropertySource" in expected_prop:
+        exp_eps = expected_prop["essentialPropertySource"]
+        parsed_eps = parsed_prop.get("essential_property_source")
+        if exp_eps is None:
+            if parsed_eps is not None:
+                pname = (
+                    parsed_eps.get("name")
+                    if isinstance(parsed_eps, dict)
+                    else parsed_eps
+                )
+                result.add_diff(
+                    f"{path}.essentialPropertySource", None, pname, "properties"
+                )
+        elif not isinstance(parsed_eps, dict):
+            result.add_diff(
+                f"{path}.essentialPropertySource", exp_eps, None, "properties"
+            )
+        elif exp_eps.get("sourceType") == "AVLayer":
+            if exp_eps.get("name") != parsed_eps.get("name"):
+                result.add_diff(
+                    f"{path}.essentialPropertySource.name",
+                    exp_eps.get("name"),
+                    parsed_eps.get("name"),
+                    "properties",
+                )
+            exp_idx = exp_eps.get("index")
+            parsed_idx = parsed_eps.get("index")
+            if (
+                exp_idx is not None
+                and parsed_idx is not None
+                and exp_idx != parsed_idx + 1
+            ):
+                result.add_diff(
+                    f"{path}.essentialPropertySource.index",
+                    exp_idx,
+                    parsed_idx + 1,
+                    "properties",
+                )
+        elif exp_eps.get("sourceType") == "Property":
+            if exp_eps.get("matchName") != parsed_eps.get("match_name"):
+                result.add_diff(
+                    f"{path}.essentialPropertySource.matchName",
+                    exp_eps.get("matchName"),
+                    parsed_eps.get("match_name"),
+                    "properties",
+                )
 
 
 def compare_shape_value(
@@ -943,13 +1030,16 @@ def compare_text_document(
         path: Dotted path for error messages.
         result: ValidationResult to accumulate differences.
     """
+    # fontFamily/fontStyle/fontLocation are intentionally omitted: AE does not
+    # store them in the .aep. It resolves them at runtime by feeding the stored
+    # PostScript name to CoolType against the host's installed font database, so
+    # the ExtendScript ground truth is host-dependent (e.g. a live Windows font
+    # path) and there is nothing in the binary to decode. `font` (the stored
+    # PostScript name) is compared instead.
     text_mappings = {
         "text": "text",
         "font": "font",
         "fontSize": "font_size",
-        "fontFamily": "font_family",
-        "fontStyle": "font_style",
-        "fontLocation": "font_location",
         "fauxBold": "faux_bold",
         "fauxItalic": "faux_italic",
         "autoKernType": "auto_kern_type",
@@ -1311,10 +1401,13 @@ def compare_footage_item(
         if "filePath" in exp_source:
             exp_file = exp_source["filePath"]
             parsed_file = parsed_source.get("file", "")
-            # Compare only the filename portion
+            # Compare only the filename portion. PureWindowsPath splits on
+            # both / and \ on every host OS (AE stores Windows-style paths,
+            # and a parsed sequence frame path mixes the two); plain Path
+            # fails to split backslashes when the validator runs on POSIX.
             if exp_file and parsed_file:
-                exp_name = Path(exp_file).name
-                parsed_name = Path(parsed_file).name
+                exp_name = PureWindowsPath(exp_file).name
+                parsed_name = PureWindowsPath(parsed_file).name
                 if exp_name != parsed_name:
                     result.add_diff(
                         f"{source_path}.fileName",
@@ -1547,8 +1640,10 @@ def compare_render_queue(
                 exp_file = exp_om["file"]
                 parsed_file = parsed_om.get("file", "")
                 if exp_file and parsed_file:
-                    exp_name = Path(exp_file).name
-                    parsed_name = Path(str(parsed_file)).name
+                    # See the footage-source note: PureWindowsPath keeps
+                    # basename extraction host-OS-independent.
+                    exp_name = PureWindowsPath(exp_file).name
+                    parsed_name = PureWindowsPath(str(parsed_file)).name
                     if exp_name != parsed_name:
                         result.add_diff(
                             f"{om_path}.fileName",

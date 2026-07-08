@@ -4,21 +4,28 @@
  * This script iterates through all .aep files in the selected folder
  * and exports each one to JSON using the export_project_json module.
  * 
- * Usage:
+ * Usage (interactive):
  *   1. Open After Effects (the latest version you have to get the most attributes)
  *   2. Run this script: File > Scripts > Run Script File
  *   3. Select a folder
  *   4. All .aep files in selected folder and subfolders will be exported to .json files in the same location
  * 
+ * Usage (headless):
+ *   Set targetFolder below, then run:
+ *   & "C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\AfterFX.com" -noui -ro <path>
+ *   Poll the log file for a "DONE" marker.
+ * 
  * Output:
  *   - Each .aep file gets a corresponding .json file next to it
- *   - A summary is printed to the console with success/failure counts
+ *   - A summary is written to the log file (and console) with success/failure counts
  */
 
-// Polyfill for JSON (AE uses ES3)
-//@include "json2.jsx"
+// ── Configuration ─────────────────────────────────────────────────────────
+// Set this to a folder path for headless mode, or leave empty for interactive dialog
+var targetFolder = "";
 
 // Set library mode before including export module
+// (export_project_json.jsx includes json2.jsx internally)
 var AEP_EXPORT_AS_LIBRARY = true;
 
 // Include the export module
@@ -26,6 +33,15 @@ var AEP_EXPORT_AS_LIBRARY = true;
 
 (function() {
     "use strict";
+
+    // ── Logging ───────────────────────────────────────────────────────────
+    var logPath = targetFolder ? targetFolder + "/_batch_export_log.txt" : Folder.myDocuments.fsName + "/_batch_export_log.txt";
+    var logFile = new File(logPath);
+    logFile.open("w");
+    function log(msg) {
+        logFile.writeln(msg);
+        $.writeln(msg);
+    }
 
     // =========================================================================
     // Batch Processing Functions
@@ -44,8 +60,9 @@ var AEP_EXPORT_AS_LIBRARY = true;
             var file = files[i];
 
             if (file instanceof Folder) {
-                // Skip assets folder (contains source files, not AEP projects)
-                if (file.name.toLowerCase() !== "assets") {
+                // Skip non-project folders: assets (source files) and auto-save
+                var lowerName = file.name.toLowerCase();
+                if (lowerName !== "assets" && lowerName.indexOf("auto-save") === -1) {
                     findAepFiles(file, fileList);
                 }
             } else if (file instanceof File) {
@@ -107,31 +124,44 @@ var AEP_EXPORT_AS_LIBRARY = true;
     function main() {
         // Check that AepExport is available
         if (typeof AepExport === "undefined" || typeof AepExport.exportProject !== "function") {
-            $.writeln("ERROR: export_project_json.jsx must be included before this script.\n" +
-                  "Make sure the @include directive is uncommented and the file path is correct.");
+            log("ERROR: export_project_json.jsx must be included before this script.");
+            log("Make sure the @include directive is uncommented and the file path is correct.");
+            logFile.close();
             return;
         }
 
-        // Ask user to select a folder
-        var selectedFolder = Folder.selectDialog("Select folder containing .aep files");
-        if (!selectedFolder) {
-            return;
+        // Determine target folder: use config variable or interactive dialog
+        var selectedFolder;
+        if (targetFolder && targetFolder.length > 0) {
+            selectedFolder = new Folder(targetFolder);
+            if (!selectedFolder.exists) {
+                log("ERROR: Configured targetFolder does not exist: " + targetFolder);
+                logFile.close();
+                return;
+            }
+        } else {
+            selectedFolder = Folder.selectDialog("Select folder containing .aep files");
+            if (!selectedFolder) {
+                logFile.close();
+                return;
+            }
         }
 
-        $.writeln("=== Batch Export to JSON ===");
-        $.writeln("Selected folder: " + selectedFolder.fsName);
-        $.writeln("");
+        log("=== Batch Export to JSON ===");
+        log("Selected folder: " + selectedFolder.fsName);
+        log("");
 
         // Find all .aep files
         var aepFiles = findAepFiles(selectedFolder, []);
 
         if (aepFiles.length === 0) {
-            $.writeln("ERROR: No .aep files found in: " + selectedFolder.fsName);
+            log("ERROR: No .aep files found in: " + selectedFolder.fsName);
+            logFile.close();
             return;
         }
 
-        $.writeln("Found " + aepFiles.length + " .aep files");
-        $.writeln("");
+        log("Found " + aepFiles.length + " .aep files");
+        log("");
 
         // Process each file
         var successCount = 0;
@@ -142,45 +172,39 @@ var AEP_EXPORT_AS_LIBRARY = true;
             var aepFile = aepFiles[i];
             var relativePath = aepFile.fsName.replace(selectedFolder.fsName, "");
 
-            $.writeln("[" + (i + 1) + "/" + aepFiles.length + "] " + relativePath);
+            log("[" + (i + 1) + "/" + aepFiles.length + "] " + relativePath);
 
             var result = processAepFile(aepFile);
 
             if (result.success) {
-                $.writeln("  -> OK");
+                log("  -> OK");
                 successCount++;
             } else {
-                $.writeln("  -> FAILED: " + result.error);
+                log("  -> FAILED: " + result.error);
                 failureCount++;
                 failures.push({ file: relativePath, error: result.error });
             }
         }
 
         // Summary
-        $.writeln("");
-        $.writeln("=== Summary ===");
-        $.writeln("Success: " + successCount);
-        $.writeln("Failed: " + failureCount);
-        $.writeln("Total: " + aepFiles.length);
+        log("");
+        log("=== Summary ===");
+        log("Success: " + successCount);
+        log("Failed: " + failureCount);
+        log("Total: " + aepFiles.length);
 
         if (failures.length > 0) {
-            $.writeln("");
-            $.writeln("Failed files:");
-            for (var i = 0; i < failures.length; i++) {
-                $.writeln("  " + failures[i].file + ": " + failures[i].error);
+            log("");
+            log("Failed files:");
+            for (var j = 0; j < failures.length; j++) {
+                log("  " + failures[j].file + ": " + failures[j].error);
             }
         }
 
-        var message = "Batch export complete!\n\n" +
-                      "Success: " + successCount + "\n" +
-                      "Failed: " + failureCount + "\n" +
-                      "Total: " + aepFiles.length;
-
-        if (failures.length > 0) {
-            message += "\n\nCheck console for details on failures.";
-        }
-
-        $.writeln(message);
+        log("");
+        log("Success: " + successCount + "  Failed: " + failureCount + "  Total: " + aepFiles.length);
+        log("DONE");
+        logFile.close();
     }
 
     main();

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...binary.chunk import Chunk, ListChunk
@@ -7,10 +8,14 @@ from ...binary.comp_skeleton import build_item_view_chunks
 from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.misc_chunks import FtgiChunk
 from ...binary.scalar_chunks import Utf8Chunk
+from ...data.file_formats import AI_COMP_EXTENSIONS, PSD_COMP_EXTENSIONS
+from ...resolvers.source_layers import layer_index_for_stored
+from ..import_options import CURRENT_VALUE, _CurrentValue
 from ..naming import auto_name
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
+from ..validators import validate_one_of, validate_positive_int
 from .av_item import AVItem
 
 if TYPE_CHECKING:
@@ -324,7 +329,12 @@ class FootageItem(AVItem):
         )
         self._replace_main_source(source)
 
-    def replace(self, file: str | os.PathLike[str]) -> None:
+    def replace(
+        self,
+        file: str | os.PathLike[str],
+        layer_index: int | _CurrentValue | None = None,
+        layer_dimensions: str | _CurrentValue = CURRENT_VALUE,
+    ) -> None:
         """Replace the footage source with a file on disk.
 
         Changes the source of this `FootageItem` to the specified file.
@@ -337,19 +347,88 @@ class FootageItem(AVItem):
         The method preserves interpretation parameters from the previous `main_source`
         object.
 
+        py_aep extension: `layer_index` binds the new source to a single
+        layer of a layered file, by `list_layers` position (see
+        `ImportOptions.layer_index`). `None` (the default) always replaces
+        with the merged/whole document, even when the current source
+        references a single layer - consistent with `import_file`, where
+        `layer_index=None` imports merged. Pass `CURRENT_VALUE` to rebind at
+        the current source's stored layer index (the `sspc` layer index:
+        PSD record index / AI document index) in the new file.
+
+        `layer_dimensions` chooses the footage dimensions when a layer is
+        selected (see `ImportOptions.layer_dimensions`): `"document"` (the
+        full canvas) or `"layer"` (the layer's content box). `CURRENT_VALUE`
+        (the default) preserves the current single-layer binding's choice.
+        Layer Size is only representable for PSD targets - AI/PDF always use
+        Document size, and `"layer"` on an AI/PDF file raises
+        `NotImplementedError`. `layer_dimensions` is ignored when
+        `layer_index` is `None` (a merged document is always document-sized).
+
         Note:
             Unlike ExtendScript, if the specified file has an unlabeled alpha channel,
             this method does not estimate the alpha interpretation.
 
         Args:
             file: Path to the new source file.
+            layer_index: Layer of the new file to reference, as its 0-based
+                `list_layers` position, or `CURRENT_VALUE` (layered files
+                only); `None` replaces with the merged/whole document.
+            layer_dimensions: `"document"`, `"layer"`, or `CURRENT_VALUE` to
+                keep the current binding's choice (the default).
 
         Raises:
-            ValueError: If the extension is not a supported footage format.
+            ValueError: If the extension is not a supported footage format,
+                if `layer_index` is passed for a non-layered file, if
+                `layer_index` is out of range for the new file, if
+                `layer_dimensions` is not `"document"`/`"layer"`/`CURRENT_VALUE`,
+                or if `CURRENT_VALUE` is passed while the current source does
+                not reference a single layer (or the new file has no layer at
+                the stored index).
             NotImplementedError: If After Effects requires a format-specific
-                `opti` header not implemented for this format.
+                `opti` header not implemented for this format, or if
+                `layer_dimensions="layer"` is requested for an AI/PDF file.
         """
-        self._replace_main_source(FileSource._from_file(file))
+        if layer_index is None:
+            self._replace_main_source(FileSource._from_file(file))
+            return
+        if not isinstance(layer_index, _CurrentValue):
+            validate_positive_int(layer_index)
+        if not isinstance(layer_dimensions, _CurrentValue):
+            validate_one_of(("document", "layer"))(layer_dimensions)
+        suffix = Path(file).suffix.lower()
+        if suffix not in PSD_COMP_EXTENSIONS and suffix not in AI_COMP_EXTENSIONS:
+            raise ValueError(
+                f"layer_index requires a layered .psd/.psb/.ai/.pdf "
+                f"file, got {suffix!r}"
+            )
+        if isinstance(layer_index, _CurrentValue):
+            current = self._main_source
+            if not (isinstance(current, FileSource) and current.layer_name):
+                raise ValueError(
+                    "CURRENT_VALUE requires the current source to reference "
+                    "a single layer of a layered file"
+                )
+            layer_index = layer_index_for_stored(file, current._sspc.layer_index)
+        if isinstance(layer_dimensions, _CurrentValue):
+            # Preserve the Document/Layer Size choice of the current binding.
+            # Layer Size is only representable for PSD targets (_from_layer
+            # raises NotImplementedError for .ai/.pdf), so fall back to
+            # Document size when switching to a format that cannot keep it.
+            dimensions = None
+            current = self._main_source
+            if (
+                suffix in PSD_COMP_EXTENSIONS
+                and isinstance(current, FileSource)
+                and current.layer_name
+                and not current._sspc.full_frame
+            ):
+                dimensions = "layer"
+        else:
+            dimensions = layer_dimensions
+        self._replace_main_source(
+            FileSource._from_layer(file, layer_index, dimensions=dimensions)
+        )
 
     def replace_with_sequence(
         self, file: str | os.PathLike[str], force_alphabetical: bool = False

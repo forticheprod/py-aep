@@ -142,16 +142,32 @@ class SspcChunk(Chunk):
 
     # -- Extended settings (bytes 184-221) ---------------------------------
     _reserved_b8: bytes = bytes_field(4, repr=False)
-    work_area_start: int = u4_field(default=0xFFFFFFFF)
-    work_area_end: int = u4_field(default=0xFFFFFFFF)
+    layer_id: int = u4_field(default=0xFFFFFFFF)
+    """Byte 0xBC: Photoshop layer id (`lyid`) when the footage references a
+    single layer of a layered file; `0xFFFFFFFF` otherwise (merged,
+    whole-file, and AI/PDF layers, which have no ids)."""
+
+    layer_index: int = u4_field(default=0xFFFFFFFF)
+    """Byte 0xC0: 0-based index of the referenced layer (PSD: document
+    record index counting group dividers; AI/PDF: OCG order). `0xFFFFFFFF`
+    for merged/whole-file footage; placeholders store `0xFFFFFFFE`."""
+
     _reserved_c4: bytes = bytes_field(3, repr=False)
     full_frame: bool = bool_field()
-    """Byte 0xC7: `True` when the footage spans its full source frame,
-    `False` for a layer cropped to its content box (`COMP_CROPPED_LAYERS`).
-    Written only for file footage; solids/placeholders leave it `False`."""
+    """Byte 0xC7: `True` when the footage spans its full source frame
+    (including a chosen layer imported at Document Size), `False` for a
+    layer cropped to its content box (`COMP_CROPPED_LAYERS` or a chosen
+    layer imported at Layer Size). Written only for file footage;
+    solids/placeholders leave it `False`."""
 
     _reserved_c8: bytes = bytes_field(2, repr=False)
-    _reserved_ca: bytes = bytes_field(10, repr=False)
+    _reserved_ca: bytes = bytes_field(6, repr=False)
+    data_size: int = u4_field()
+    """Byte 0xD0: cached source data size. For a PSD layer (chosen or
+    comp-imported) the content box's pixel bytes (`w * h * 4` at 8 bpc);
+    for merged PSD footage the canvas equivalent; for whole files (PNG,
+    AI, ...) the file size on disk. AE re-derives it on a cache miss, so
+    `0` is accepted."""
     _reserved_d4: bytes = bytes_field(10, default=b"\x01" + b"\x00" * 9, repr=False)
 
     # -- BitField descriptors (not attrs fields) ---------------------------
@@ -496,7 +512,11 @@ def build_text_opti_data(width: int, height: int) -> bytes:
 
 
 def build_ai_layer_opti_data(
-    width: int, height: int, layer_name: str, color_space: str | None = None
+    width: int,
+    height: int,
+    layer_name: str,
+    color_space: str | None = None,
+    artwork_bounds: tuple[float, float, float, float] | None = None,
 ) -> bytes:
     """Build the 596-byte `TEXT` `opti` for one layer of a layered AI/PDF import.
 
@@ -511,13 +531,31 @@ def build_ai_layer_opti_data(
     - bytes 0x248/0x24C: the redundant page-dimension tail (height/width, BE u16).
     - byte 0x33: 2 (a flag AE also sets for whole-document footage).
 
-    The artwork bounding box (0x10-0x1c, BE signed 16.16) keeps the full-page
-    value `build_text_opti_data` already writes; a cropped
-    (`COMP_CROPPED_LAYERS`) import would set it to the layer's artwork bounds.
+    Bytes 0x10-0x1F hold the artwork bounding box as `(x0, y0, x1, y1)` in
+    page points, four signed BE 16.16 values. Document Size keeps the
+    full-page box `(0, 0, width, height)` that `build_text_opti_data`
+    already writes (its "dimensions at 24/28" are that box's integral x1/y1
+    parts). A chosen layer imported at Layer Size stores the layer's actual
+    artwork box - fractional, and offset from the page origin - from which
+    AE derives the integer footage pixel dimensions by ceiling the box size
+    with a 1px floor (an empty layer stores a `1/65536` epsilon box).
     Byte-verified against AE 2026's import of ai.ai ("Calque 1"/"Calque 2",
-    612x792).
+    612x792) and its Choose Layer footage imports at both Footage
+    Dimensions settings (`ai_choose_layer*.aep`: Calque 1 artwork box
+    112.748, 239.507, 593.931, 675.999 -> 482x437 footage).
+
+    Args:
+        width: Document width in points.
+        height: Document height in points.
+        layer_name: The referenced layer's name.
+        color_space: The document color space (`"CMYK"` flags byte 0x33).
+        artwork_bounds: The layer's artwork box `(x0, y0, x1, y1)` in page
+            points for a Layer Size import; `None` keeps the full-page box
+            (Document Size and comp imports).
     """
     buf = bytearray(build_text_opti_data(width, height))
+    if artwork_bounds is not None:
+        struct.pack_into(">4i", buf, 0x10, *(round(v * 65536) for v in artwork_bounds))
     # byte 0x33 = document color-space flag: 0x02 for CMYK, 0x08 otherwise
     # (RGB + default). AE 2026-verified: ai.ai (CMYK)=0x02, complex.ai (RGB)=0x08.
     buf[0x33] = 0x02 if color_space == "CMYK" else 0x08

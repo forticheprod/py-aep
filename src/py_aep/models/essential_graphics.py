@@ -61,6 +61,8 @@ class EssentialGraphicsController:
         _ctyp: U4Chunk,
         uuid: str,
         source_property_path: list[SourcePropertyRef],
+        source_comp_id: int | None = None,
+        source_layer_id: int | None = None,
     ) -> None:
         self._name_utf8 = _name_utf8
         self._ctyp = _ctyp
@@ -70,6 +72,12 @@ class EssentialGraphicsController:
         """The path (root to leaf) to the source-composition property this
         controller exposes, as `SourcePropertyRef` nodes. Empty when the
         path is not stored. Read-only."""
+        self.source_comp_id = source_comp_id
+        """The item id of the source composition that owns the controlled
+        property (the `CCId` chunk), or `None` when not stored. Read-only."""
+        self.source_layer_id = source_layer_id
+        """The `layer_id` of the source layer that owns the controlled
+        property (the `CLId` chunk), or `None` when not stored. Read-only."""
 
     def __repr__(self) -> str:
         return (

@@ -1422,6 +1422,86 @@ class TestAddProperty:
         assert menu2.property_parameters == ["Item 1", "Item 2", "Item 3"]
 
 
+class TestSetPropertyParameters:
+    """Tests for the writable Property.property_parameters."""
+
+    AEP = (
+        Path(__file__).parent.parent.parent
+        / "samples"
+        / "models"
+        / "property"
+        / "2_gaussian.aep"
+    )
+    ITEMS = ["First Item", "Second Item", "(-", "Another Item", "Last Item"]
+
+    def _menu(self, app):
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        fx = layer.effects.add_property("ADBE Dropdown Control")
+        menu = fx.properties[0]
+        assert isinstance(menu, Property)
+        return fx, menu
+
+    def test_set_items_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(self.AEP)
+        fx, menu = self._menu(app)
+        menu.property_parameters = self.ITEMS
+        assert menu.property_parameters == self.ITEMS
+        assert menu.nb_options == 5
+        assert menu.max_value == 5
+        assert menu.value_text == "First Item"
+
+        out = tmp_path / "dropdown_items.aep"
+        app.project.save(out)
+        layer2 = parse_aep(out).project.compositions[0].layers[0]
+        assert layer2.effects is not None
+        fx2 = next(
+            e for e in layer2.effects.properties if e.match_name == fx.match_name
+        )
+        menu2 = fx2.properties[0]
+        assert menu2.property_parameters == self.ITEMS
+        assert menu2.nb_options == 5
+        assert menu2.max_value == 5
+        assert menu2.value_text == "First Item"
+
+    def test_builtin_effect_dropdown_raises(self) -> None:
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.effects is not None
+        blur = layer.effects.properties[0]
+        blur_dims = next(p for p in blur.properties if p.name == "Blur Dimensions")
+        assert blur_dims.property_parameters is not None
+        with pytest.raises(ValueError, match="Dropdown Menu Control"):
+            blur_dims.property_parameters = ["A", "B"]
+
+    def test_regular_property_raises(self) -> None:
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        opacity = layer.transform.property("ADBE Opacity")
+        with pytest.raises(ValueError, match="Dropdown Menu Control"):
+            opacity.property_parameters = ["A", "B"]
+
+    def test_invalid_items_raise(self) -> None:
+        app = parse_aep(self.AEP)
+        _, menu = self._menu(app)
+        for bad in (
+            [],
+            ["ok", ""],
+            ["dup", "dup"],
+            ["back\\slash"],
+            ["pi|pe"],
+            "not a list",
+        ):
+            with pytest.raises(ValueError):
+                menu.property_parameters = bad  # type: ignore[assignment]
+
+    def test_separator_may_repeat(self) -> None:
+        app = parse_aep(self.AEP)
+        _, menu = self._menu(app)
+        menu.property_parameters = ["A", "(-", "B", "(-", "C"]
+        assert menu.nb_options == 5
+
+
 class TestAddEffect:
     """Tests for PropertyGroup.add_property() (expression controls)."""
 

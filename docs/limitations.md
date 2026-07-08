@@ -197,15 +197,26 @@ and `motion_graphics_template_controller_count` is one lower than
 ExtendScript's `motionGraphicsTemplateControllerCount` (by one per group). The media-replacement controller itself, by contrast, matches ExtendScript
 exactly (no synthesized drop zone).
 
-The override *values* on a precomp layer are not exposed as individual
-properties: the layer's `"ADBE Layer Overrides"` group parses with no
-children, so ExtendScript's `numProperties`/`isModified` on that group (and
-its nested `ADBE Layer Overrides Group` for a grouped override) are not
-reflected. The following media-replacement attributes are also not parsed:
+Media-replacement overrides on a precomp layer are parsed: the layer's
+`"ADBE Layer Overrides"` group exposes its `ADBE Layer Source Alternate`
+child, and these `Property` attributes are available:
 
-- `Property.essentialPropertySource`
-- `Property.alternateSource`
-- `Property.canSetAlternateSource`
+- `Property.can_set_alternate_source` - `True` for a media-replacement slot
+  (decoded from the slot's `blsi` item-id).
+- `Property.alternate_source` - the replacement `AVItem`. After Effects wraps
+  the replacement footage in a composition, so this is that wrapper comp.
+  Set it with `Property.alternate_source = <value>`, which requires an existing
+  slot; unlike the After Effects UI it does **not** auto-wrap a footage item
+  in a composition, so pass the wrapper `CompItem` for an AE-faithful result.
+- `Property.essential_property_source` - the source `AVLayer` a
+  media-replacement override points at (matched via the controller's source
+  comp/layer ids). `None` for Property-source essential properties, which are
+  not yet resolved.
+
+Other (non-media-replacement) override *values* are still not exposed: for
+those overrides the `"ADBE Layer Overrides"` group parses with no children,
+so ExtendScript's `numProperties`/`isModified` on the group (and its nested
+`ADBE Layer Overrides Group` for a grouped override) are not reflected.
 
 ## Missing Classes
 
@@ -265,10 +276,28 @@ values are extracted from the source file at import time.
   composition with one footage layer per Photoshop layer (layer groups become
   nested compositions); a flattened (layerless) file becomes a one-layer
   composition of the merged still. Other unrecognized extensions raise.
+- **Single-layer import** (py_aep extension - ExtendScript has no API for the
+  "Choose Layer" option of AE's import dialog): setting
+  `ImportOptions.layer_index` on a `FOOTAGE` import of a layered
+  `.psd`/`.psb`/`.ai`/`.pdf` references that single layer, and
+  `ImportOptions.layer_dimensions` selects Document vs Layer Size
+  (`.psd`/`.psb` only - an AI/PDF layer's artwork bounds would require
+  rendering the PDF content, so `"layer"` raises `NotImplementedError`
+  there). The index is the layer's 0-based position in the list returned
+  by [list_layers][py_aep.resolvers.source_layers.list_layers] (top layer
+  first, the dropdown order); an index - not a name - selects the layer
+  because layer names need not be unique, and AE's own dialog
+  disambiguates duplicates by dropdown position. `FootageItem.replace()`
+  takes the same optional `layer_index` argument; `layer_index=None`
+  always replaces with the merged/whole document, consistent with
+  `import_file`, and `py_aep.CURRENT_VALUE` rebinds the new file at the
+  current source's stored layer index (PSD record index / AI document
+  index).
 - **`has_alpha` is a per-format heuristic**, not a full media decode. After
-  Effects allocates an alpha channel for PNG/TIFF/BMP/PSD/GIF regardless of the
+  Effects allocates an alpha channel for PNG/TIFF/BMP/GIF regardless of the
   file's actual channel count, treats JPEG as opaque, and derives alpha from
-  the channel list (EXR), bit depth (TGA: 32-bit only), or codec depth (MOV).
+  the channel list (EXR), bit depth (TGA: 32-bit only), codec depth (MOV), or
+  layer transparency and channel count (PSD/PSB: layered or >= 4 channels).
   These match AE's import for the tested samples.
 - **Image-sequence dimensions**: image sequences - and PSD/TIFF stills - get a
   full format-specific `opti` asset-info header with the dimensions embedded

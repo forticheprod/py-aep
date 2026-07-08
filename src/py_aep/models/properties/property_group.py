@@ -10,7 +10,7 @@ from py_aep.resolvers.can_add_property import (
     can_add_property as _can_add_property,
 )
 
-from ...ae_version import get_ae_version_major
+from ...ae_version import get_ae_version_major, requires_version
 from ...binary.chunk import ListChunk
 from ...binary.mutations import (
     build_dropdown_control,
@@ -21,25 +21,36 @@ from ...binary.mutations import (
     clone_chunk_tree,
     rewrite_owner_tdpi,
 )
-from ...binary.property_chunks import TDSN_SENTINEL, TdmnChunk, TdsbChunk, TdsnChunk
+from ...binary.property_chunks import (
+    TDSN_SENTINEL,
+    TdmnChunk,
+    TdsbChunk,
+    TdsnChunk,
+    TdumChunk,
+    VfdnChunk,
+    tdb4_apply_vf_axis_template,
+)
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import ChunkNotFoundError, find_by_list_type
+from ...binary.utils import ChunkNotFoundError, find_by_list_type, index_by_identity
 from ...data.dropdown_control import DROPDOWN_CONTROL
-from ...synthesis.specs import (
+from ...resolvers.font_axes import read_design_axes
+from ...svg.fonts import resolve_font_exact
+from ...synthesis.property import (
     _GROUP_CHILD_SPECS,
     _LAYER_STYLE_CHILD_SPECS,
     _USE_VALUE,
-    _GroupSpec,
+    GroupSpec,
 )
+from ..validators import validate_string
 from .overrides import _PROPERTY_MIN_MAX
-from .property import Property, _values_equal
+from .property import Property, _values_equal, _vf_tag_from_str
 from .property_base import _INDEXED_GROUP_MATCH_NAMES, PropertyBase
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Literal
 
-    from ...synthesis.specs import _PropSpec
+    from ...synthesis.property import PropSpec
     from .mask_property_group import MaskPropertyGroup
 
 
@@ -154,7 +165,7 @@ def _reset_to_default_values(group: PropertyGroup) -> None:
 
 def _reorder_and_fill(
     container: PropertyGroup,
-    specs: Sequence[_PropSpec | _GroupSpec],
+    specs: Sequence[PropSpec | GroupSpec],
     child_depth: int,
     *,
     skip: frozenset[str] = frozenset(),
@@ -166,7 +177,7 @@ def _reorder_and_fill(
 
     Existing children whose match name appears in `specs` are preserved in
     canonical order. Missing children are created via `Property.synthesized`
-    (for `_PropSpec`) or as empty `PropertyGroup` instances (for `_GroupSpec`).
+    (for `PropSpec`) or as empty `PropertyGroup` instances (for `GroupSpec`).
 
     Args:
         container: Object whose `.properties` list is reordered/filled.
@@ -193,12 +204,18 @@ def _reorder_and_fill(
         if mn in existing:
             child = existing[mn]
             child._auto_name = spec.auto_name
-            if not isinstance(spec, _GroupSpec) and isinstance(child, Property):
+            if not isinstance(spec, GroupSpec) and isinstance(child, Property):
                 child.__dict__["_color"] = spec.color
-                if spec.min_value is not None:
+                if spec.chunk_bounds_are_hints:
+                    # tdum/tduM hold UI slider hints, not real bounds:
+                    # the spec is authoritative (None = unbounded).
                     child._min_value_fallback = spec.min_value
-                if spec.max_value is not None:
                     child._max_value_fallback = spec.max_value
+                else:
+                    if spec.min_value is not None:
+                        child._min_value_fallback = spec.min_value
+                    if spec.max_value is not None:
+                        child._max_value_fallback = spec.max_value
                 if spec.can_vary_over_time is not None:
                     child._can_vary_over_time = spec.can_vary_over_time
                 if spec.units_text is not None:
@@ -216,7 +233,7 @@ def _reorder_and_fill(
             continue
         elif spec.min_major is not None and spec.min_major > ae_major:
             continue
-        elif isinstance(spec, _GroupSpec):
+        elif isinstance(spec, GroupSpec):
             group = PropertyGroup._new(
                 spec.match_name,
                 spec.auto_name,
@@ -600,6 +617,19 @@ class PropertyGroup(PropertyBase):
             return len(self.properties) > 0
         if self.match_name == "ADBE Vectors Group" and len(self.properties) > 0:
             return True
+        # Essential Properties override groups report modified whenever they
+        # hold any override, independent of whether a leaf differs from its
+        # source value (AE treats having an override as a modification).
+        if (
+            self.match_name in ("ADBE Layer Overrides", "ADBE Layer Overrides Group")
+            and len(self.properties) > 0
+        ):
+            return True
+        # A parametric-mesh Material Assignment parade reports modified
+        # whenever it holds a material atom (like an indexed group), even
+        # when the atom's own streams are all at default. (AE 2026.)
+        if self.match_name == "ADBE3D Para Mat Parade":
+            return len(self.properties) > 0
         return any(child.is_modified for child in self.properties)
 
     @property
@@ -609,6 +639,18 @@ class PropertyGroup(PropertyBase):
         Equivalent to ExtendScript `PropertyGroup.numProperties`.
         """
         return len(self.properties)
+
+    def remove_all_keys(self) -> None:
+        """Remove every keyframe from all properties in this group,
+        recursively.
+
+        Calling this on a [Layer][] clears the keyframes of every
+        property on the layer, including its marker keyframes. Each
+        animated property reverts to a static value; see
+        `Property.remove_all_keys`.
+        """
+        for child in self._properties:
+            child.remove_all_keys()
 
     def can_add_property(self, name: str) -> bool:
         """Check whether a property with the given name can be added.
@@ -625,6 +667,114 @@ class PropertyGroup(PropertyBase):
         if _can_add_property(self.match_name, self.property_type, name):
             return True
         return self._installed_effect_def(name) is not None
+
+    @requires_version(26)
+    def add_variable_font_axis(
+        self,
+        axis_tag: str,
+        font_file: str | None = None,
+    ) -> Property:
+        """Create and return a [Property][] for a variable font axis, and
+        add it to this group.
+
+        Mirrors ExtendScript `PropertyGroup.addVariableFontAxis()`. Can
+        only be called on the `ADBE Text Animator Properties` group
+        within a text animator. The axis binds to the first free of the
+        8 `ADBE Text VF Axis` slots; calling it again with an already
+        active tag returns the existing property.
+
+        The axis bounds, default value, and display name are read from
+        the variable font file with fontTools (After Effects reads them
+        from the installed font; the project file does not store a font
+        path). Pass `font_file` explicitly, or leave it `None` to locate
+        the installed font from the text document's font family.
+
+        Note:
+            This functionality was added in After Effects 26.0.
+
+        Args:
+            axis_tag: The 4-character tag identifying the variable font
+                axis (e.g. `wght`, `wdth`, `slnt`, `ital`, `opsz`).
+            font_file: Optional path to the variable font file. When
+                `None`, the font is located in the OS font directories
+                by the text document's font family.
+
+        Raises:
+            ValueError: If this group is not a text animator Properties
+                group, the font cannot be located or is not a variable
+                font, `axis_tag` is not one of the font's axes, or all
+                8 axis slots are in use.
+        """
+        validate_string(axis_tag)
+        if len(axis_tag) != 4:
+            raise ValueError("axis_tag must be a 4-character tag (e.g. 'wght').")
+        if self.match_name != "ADBE Text Animator Properties":
+            raise ValueError(
+                "add_variable_font_axis() can only be called on the "
+                "'ADBE Text Animator Properties' group of a text animator."
+            )
+        # Typed Any: `.text.source_text` only resolves on a text layer.
+        layer: Any = self._containing_layer
+
+        font_number = 0
+        if font_file is None:
+            # The .aep stores only the PostScript name; its prefix is the
+            # variable font's family (FontObject.familyPrefix semantics).
+            text_doc = layer.text.source_text.value
+            ps_name: str = text_doc.font or ""
+            family = ps_name.split("-", 1)[0]
+            resolved = resolve_font_exact(family) if family else None
+            if resolved is None:
+                raise ValueError(
+                    f"Could not locate an installed font for family "
+                    f"{family!r}; pass font_file explicitly."
+                )
+            font_file, font_number = str(resolved[0]), resolved[1]
+        axes = read_design_axes(font_file, font_number)
+        axis = next((a for a in axes if a.tag == axis_tag), None)
+        if axis is None:
+            available = ", ".join(a.tag for a in axes)
+            raise ValueError(
+                f"The font has no {axis_tag!r} axis (available: {available})."
+            )
+
+        slots = [
+            p for p in self._properties if isinstance(p, Property) and p._is_vf_axis
+        ]
+        for p in slots:
+            if p.axis_tag == axis_tag:
+                return p
+        slot = next((p for p in slots if p.axis_tag is None), None)
+        if slot is None:
+            raise ValueError("All 8 variable-font axis slots are in use.")
+
+        slot._ensure_materialized()
+        tag_raw = float(_vf_tag_from_str(axis_tag))
+        tdbs = slot._tdbs
+        tdb4_apply_vf_axis_template(slot._tdb4)
+        assert slot._cdat is not None
+        # AE writes [value, tag] plus eight zero-padding slots.
+        slot._cdat.values = [axis.default_value, tag_raw] + [0.0] * 8
+        slot._value = None
+        # Axis bounds come from the font's range (single-component).
+        for attr, chunk_type, bound in (
+            ("_tdum", "tdum", axis.min_value),
+            ("_tduM", "tduM", axis.max_value),
+        ):
+            existing = getattr(slot, attr)
+            if existing is None:
+                existing = TdumChunk(chunk_type=chunk_type, values=[bound])
+                tdbs.chunks.append(existing)
+                setattr(slot, attr, existing)
+            else:
+                existing.values = [bound]
+        # AE stores the axis display name in a vfdn sibling after the tdbs.
+        vfdn = VfdnChunk.new(f"Font Axis {axis.name}")
+        assert self._tdgp is not None
+        self._tdgp.chunks.insert(index_by_identity(self._tdgp.chunks, tdbs) + 1, vfdn)
+        slot._vfdn = vfdn
+        slot._vf_tag_cache = tag_raw
+        return slot
 
     def add_property(self, name: str) -> Property | PropertyGroup:
         """Create and return a new property with the specified name,
@@ -953,9 +1103,6 @@ class PropertyGroup(PropertyBase):
 
     def property(self, key: int | str) -> Property | PropertyGroup:
         """Look up a child property by index or name.
-
-        Mirrors ExtendScript `PropertyGroup.property(indexOrName)`.
-        Delegates to `__getitem__`.
 
         Args:
             key: An `int` index or a `str` display name / match name.

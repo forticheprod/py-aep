@@ -12,7 +12,7 @@ from ...binary.ldat_chunks import (
     LdatChunk,
     LdatItemType,
     Lhd3Chunk,
-    sync_lhd3_counters,
+    set_lhd3_count,
 )
 from ...binary.mutations import build_gide_list
 from ...binary.scalar_chunks import Utf8Chunk
@@ -227,8 +227,7 @@ class Item:
         guide = Guide._new(orientation_type, position)
         self._guides.append(guide)
         self._ldat.items.append(guide._guide_item)
-        self._lhd3.count += 1
-        sync_lhd3_counters(self._lhd3, LHD3_BLOCK_GUIDES)
+        set_lhd3_count(self._lhd3, len(self._ldat.items), LHD3_BLOCK_GUIDES)
         return self._lhd3.count - 1
 
     @requires_version(16)
@@ -251,10 +250,19 @@ class Item:
         assert self._ldat is not None
         del self._ldat.items[guide_index]
         del self._guides[guide_index]
-        self._lhd3.count -= 1
-        sync_lhd3_counters(self._lhd3, LHD3_BLOCK_GUIDES)
+        set_lhd3_count(self._lhd3, len(self._ldat.items), LHD3_BLOCK_GUIDES)
         if self._lhd3.count == 0:
             self._empty_guides_container()
+
+    @requires_version(16)
+    def remove_all_guides(self) -> None:
+        """Remove all guides from the item.
+
+        Equivalent to calling `remove_guide` for each guide. A no-op
+        when the item has no guides.
+        """
+        while self._guides:
+            self.remove_guide(len(self._guides) - 1)
 
     def _ensure_guides_container(self) -> None:
         """Create the guides container if needed."""

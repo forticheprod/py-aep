@@ -89,14 +89,14 @@ class LdtaChunk(Chunk):
     stretch_divisor: int = u4_field(default=1)
     _reserved_70: bytes = bytes_field(7, repr=False)
     _unknown_ae26_flag: int = u1_field(repr=False)
-    """Byte 151: AE 26+ boolean flag (zero in earlier versions)."""
+    """AE 26+ boolean flag (zero in earlier versions)."""
     _unknown_ae26_float: float = f8_field(repr=False)
-    """Bytes 152-159: AE 26+ float64 value (zero in earlier versions)."""
+    """AE 26+ float64 value (zero in earlier versions)."""
     _reserved_70b: bytes = bytes_field(3, repr=False)
     layer_type: int = u1_field()
     parent_id: int = u4_field()
     _reserved_88: bytes = bytes_field(3, repr=False)
-    light_type: int = u1_field()
+    light_and_mesh_type: int = u1_field()
     _reserved_8c: bytes = bytes_field(20, repr=False)
 
     # -- Optional field (bytes 160-163, AE >= 23) --------------------------

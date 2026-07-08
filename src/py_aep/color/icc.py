@@ -175,11 +175,14 @@ class IccProfileLibrary:
                 platform's standard Adobe Color directories are used.
         """
         self._dirs = dirs if dirs is not None else default_icc_directories()
-        self._by_name: dict[str, bytes] | None = None
+        self._by_name: dict[str, Path] | None = None
 
-    def _index(self) -> dict[str, bytes]:
+    def _index(self) -> dict[str, Path]:
+        # Indexing reads each file once to extract its description, but keeps
+        # only the path: the OS color store commonly holds hundreds of
+        # profiles, and the library singleton lives for the whole process.
         if self._by_name is None:
-            by_name: dict[str, bytes] = {}
+            by_name: dict[str, Path] = {}
             for directory in self._dirs:
                 if not directory.is_dir():
                     continue
@@ -195,7 +198,7 @@ class IccProfileLibrary:
                     desc = icc_profile_description(data)
                     # First directory wins (MPProfiles is the canonical set).
                     if desc and desc not in by_name:
-                        by_name[desc] = data
+                        by_name[desc] = f
             self._by_name = by_name
         return self._by_name
 
@@ -206,10 +209,10 @@ class IccProfileLibrary:
             ColorProfileNotFoundError: If no profile with that description is
                 found in the searched directories.
         """
-        data = self._index().get(name)
-        if data is None:
+        path = self._index().get(name)
+        if path is None:
             raise ColorProfileNotFoundError(name, self._dirs)
-        return data
+        return path.read_bytes()
 
     def hash_for(self, name: str) -> bytes:
         """Return the 16-byte ICC Profile ID for a profile name.
@@ -224,10 +227,10 @@ class IccProfileLibrary:
         known = profile_id_for_name(name)
         if known is not None:
             return known
-        data = self._index().get(name)
-        if data is None:
+        path = self._index().get(name)
+        if path is None:
             raise ColorProfileNotFoundError(name, self._dirs)
-        return icc_profile_id(data)
+        return icc_profile_id(path.read_bytes())
 
 
 _default_library: IccProfileLibrary | None = None

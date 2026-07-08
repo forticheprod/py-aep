@@ -138,15 +138,17 @@ LHD3_BLOCK_GUIDES = 2
 LHD3_BLOCK_SINGLE = 1
 
 
-def sync_lhd3_counters(lhd3: Lhd3Chunk, block: int) -> None:
-    """Recompute the lhd3 capacity counters from `lhd3.count`.
+def set_lhd3_count(lhd3: Lhd3Chunk, count: int, block: int) -> None:
+    """Set `lhd3.count` and recompute the capacity counters from it.
 
     AE keeps `_count_b = ceil(count / block)` (minimum 1), `_counter_b =
     _count_b * block`, and `_counter_a = _count_b` for single-item blocks
-    (render queue / output modules) else 1. Call this after every change to
-    `lhd3.count`; otherwise the stale counters make AE reject the file.
+    (render queue / output modules) else 1. Count and counters are set in
+    one step because AE validates them together on load; a count written
+    without the derived counters makes AE reject the file.
     """
-    n = max(1, math.ceil(lhd3.count / block))
+    lhd3.count = count
+    n = max(1, math.ceil(count / block))
     lhd3._count_b = n
     lhd3._counter_b = n * block
     lhd3._counter_a = n if block == 1 else 1

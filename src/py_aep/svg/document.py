@@ -4,16 +4,8 @@ from __future__ import annotations
 
 from xml.etree.ElementTree import Element
 
-from ._util import NUMBER_RE
+from ._util import NUMBER_RE, parse_number
 from .transform import Affine
-
-
-def _length(value: str | None, default: float) -> float:
-    """Parse an SVG length, dropping a trailing unit (treated as px)."""
-    if not value:
-        return default
-    m = NUMBER_RE.match(value.strip())
-    return float(m.group()) if m else default
 
 
 def canvas(root: Element) -> tuple[float, float, Affine]:
@@ -34,6 +26,6 @@ def canvas(root: Element) -> tuple[float, float, Affine]:
             # SVG; a width/height that differs from the viewBox would add a
             # preserveAspectRatio scale - deferred until AE-validated).
             return vb_w, vb_h, Affine(e=-min_x, f=-min_y)
-    width = _length(root.get("width"), 0.0)
-    height = _length(root.get("height"), 0.0)
+    width = parse_number(root.get("width"))
+    height = parse_number(root.get("height"))
     return width, height, Affine()

@@ -31,7 +31,7 @@ Note:
 | Class | Status | Missing |
 |-------|--------|---------|
 | Item | 🚧 | `dynamicLinkGUID`, `selected` |
-| AVItem | 🚧 | `isMediaReplacementCompatible`, `proxySource`, `useProxy` |
+| AVItem | 🚧 | `isMediaReplacementCompatible` |
 | CompItem | 🚧 | `selectedProperties` |
 | FolderItem | ✅ | |
 | FootageItem | ✅ | |
@@ -56,7 +56,7 @@ Note:
 |-------|--------|---------|
 | PropertyBase | 🚧 | `selected` |
 | PropertyGroup | ✅ | |
-| Property | 🚧 | `alternateSource`, `canSetAlternateSource`, `canSetExpression`, `essentialPropertySource`, `selectedKeys`, `valueText` |
+| Property | 🚧 | `selectedKeys`, `valueText` |
 | MaskPropertyGroup | ✅ | |
 
 
@@ -65,8 +65,8 @@ Note:
 | Class | Status | Missing |
 |-------|--------|---------|
 | RenderQueue | 🚧 | `canQueueInAME`, `rendering` |
-| RenderQueueItem | 🚧 | `templates` |
-| OutputModule | 🚧 | `templates` |
+| RenderQueueItem | ✅ | |
+| OutputModule | ✅ | |
 
 
 ## Sources
@@ -86,7 +86,7 @@ Note:
 | Shape | ✅ | |
 | KeyframeEase | ✅ | |
 | MarkerValue | ✅ | |
-| ImportOptions | ❌ | `file`, `forceAlphabetical`, `importAs`, `rangeEnd`, `rangeStart`, `sequence` |
+| ImportOptions | ✅ | |
 | Viewer | ✅ | |
 | ViewOptions | ✅ | |
 | View | ✅ | |

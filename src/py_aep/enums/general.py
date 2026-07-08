@@ -65,6 +65,28 @@ class LayerType(IntEnum):
     TEXT = 3
     SHAPE = 4
     THREE_D_MODEL = 5
+    PARAMETRIC_MESH = 7
+
+
+class ParametricMeshType(IntEnum):
+    """Type of parametric mesh.
+    """
+
+    CUBE = 14612
+    SPHERE = 14613
+    PLANE = 14614
+    TORUS = 14615
+    CONE = 14616
+    CYLINDER = 14617
+
+    @classmethod
+    def from_binary(cls, value: int) -> ParametricMeshType:
+        """Convert the ldta value (0-5) to ParametricMeshType."""
+        return cls(value + 14612)
+
+    def to_binary(self) -> int:
+        """Convert ParametricMeshType to the ldta value (0-5)."""
+        return int(self) - 14612
 
 
 class AlphaMode(IntEnum):

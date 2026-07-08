@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
+import re
 from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
@@ -10,13 +11,14 @@ from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
-from ...binary.chunk import ListChunk
+from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.ldat_chunks import (
     LHD3_BLOCK_KEYFRAMES,
     LdatItemType,
     ShapePoint,
-    sync_lhd3_counters,
+    set_lhd3_count,
 )
+from ...binary.misc_chunks import EnumPardChunk
 from ...binary.mutations import (
     ITEM_SIZE_BY_TYPE,
     build_keyframe_list,
@@ -33,6 +35,7 @@ from ...binary.property_chunks import (
     TdsbChunk,
     TdsnChunk,
     TdumChunk,
+    VfdnChunk,
     tdb4_apply_animated_template,
     tdb4_apply_static_template,
 )
@@ -43,12 +46,15 @@ from ...binary.utils import (
     find_by_type,
     index_by_identity,
 )
+from ...data.match_names import VF_AXIS_PREFIX
 from ...data.units import UNITS_TEXT_MAP
-from ...synthesis.specs import _USE_VALUE
+from ...resolvers.motion_graphics import can_add_property
+from ...synthesis.property import _USE_VALUE
 from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
 from ..validators import (
     _validate_number,
+    validate_name,
     validate_number,
     validate_sequence,
     validate_string,
@@ -81,8 +87,14 @@ if TYPE_CHECKING:
     from ...binary.chunk import Chunk
     from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
     from ...binary.misc_chunks import ShphChunk
-    from ...synthesis.specs import _PropSpec
+    from ...binary.scalar_chunks import U4Chunk
+    from ...synthesis.property import PropSpec
+    from ..items.av_item import AVItem
     from ..items.composition import CompItem
+    from ..items.folder import FolderItem
+    from ..items.footage import FootageItem
+    from ..layers.av_layer import AVLayer
+    from ..project import Project
     from .property_group import PropertyGroup
 
     _ValueType = Union[
@@ -161,6 +173,15 @@ def _validate_value(prop: Property, value: Any) -> None:
     """Validate type, length and bounds of a property value."""
     if value is None:
         return
+    # Variable-font axis properties are 2-dimensional in the binary
+    # ([value, tag]) but scalar in ExtendScript. They carry the
+    # VARIABLE_FONT_AXIS value type, which is NOT in _NUMERIC_VALUE_TYPES,
+    # so this must run BEFORE the numeric-type gate below - otherwise the
+    # gate returns early and axis values skip finite/range validation
+    # entirely (a NaN/inf or out-of-[min,max] weight would be written).
+    if prop._is_vf_axis and isinstance(value, (int, float)):
+        _validate_scalar(value, prop)
+        return
     if prop.property_value_type not in _NUMERIC_VALUE_TYPES:
         return
     expects_list = prop.dimensions > 1 or prop._color
@@ -168,6 +189,42 @@ def _validate_value(prop: Property, value: Any) -> None:
         _validate_list(value, prop)
     else:
         _validate_scalar(value, prop)
+
+
+# Standard OpenType design-axis display names (AE shows the axis name from
+# the font itself; these cover the registered tags, custom tags fall back
+# to the raw tag).
+_VF_AXIS_STANDARD_NAMES = {
+    "wght": "Weight",
+    "wdth": "Width",
+    "slnt": "Slant",
+    "ital": "Italic",
+    "opsz": "Optical Size",
+}
+
+
+def _vf_tag_to_str(raw: float) -> str | None:
+    """Decode a variable-font axis tag stored as a 4CC number.
+
+    The axis property's second dimension holds the tag packed big-endian
+    (e.g. 2003265652.0 = 0x77676874 = `wght`). Returns `None` for values
+    that do not decode to four printable ASCII characters.
+    """
+    n = int(raw)
+    if n <= 0 or n > 0xFFFFFFFF:
+        return None
+    chars = [(n >> shift) & 0xFF for shift in (24, 16, 8, 0)]
+    if any(c < 0x20 or c > 0x7E for c in chars):
+        return None
+    return "".join(chr(c) for c in chars)
+
+
+def _vf_tag_from_str(tag: str) -> int:
+    """Encode a 4-character axis tag to its packed 4CC number."""
+    n = 0
+    for c in tag:
+        n = (n << 8) | ord(c)
+    return n
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -245,12 +302,6 @@ class Property(PropertyBase):
     nb_options: int | None
     """The number of options in a dropdown property."""
 
-    property_parameters: list[str] | None
-    """An array of all item strings in a dropdown menu property. This
-    attribute applies to dropdown menu properties of effects and layers,
-    including custom strings in the Menu property of the Dropdown Menu
-    Control. Read-only."""
-
     _animated = ChunkField[bool]("_tdb4", "animated")
 
     _color = ChunkField[bool]("_tdb4", "color")
@@ -283,6 +334,19 @@ class Property(PropertyBase):
         override = _NAME_OVERRIDES.get(self.match_name)
         if override is not None:
             return override
+        # Active variable-font axes display as e.g. "Font Axis Weight".
+        # AE stores the name (from the font's axis name table) in a vfdn
+        # sibling chunk; fall back to mapping the registered OpenType
+        # tags, with custom tags showing the raw tag.
+        if self._is_vf_axis:
+            if self._vfdn is not None:
+                try:
+                    return self._vfdn.utf8.value
+                except ChunkNotFoundError:
+                    pass
+            tag = self.axis_tag
+            if tag is not None:
+                return "Font Axis " + _VF_AXIS_STANDARD_NAMES.get(tag, tag)
         base_name = super().name
         # NO_VALUE effect properties that store the match_name in tdsn
         # are unnamed separators/group headers - ExtendScript returns "".
@@ -301,7 +365,7 @@ class Property(PropertyBase):
     @classmethod
     def _new(
         cls,
-        spec: _PropSpec,
+        spec: PropSpec,
         property_depth: int,
         *,
         parent_property: PropertyGroup,
@@ -310,7 +374,7 @@ class Property(PropertyBase):
         synthetic: bool = False,
         control_type: PropertyControlType | None = None,
     ) -> Property:
-        """Create a Property from a `_PropSpec`.
+        """Create a Property from a `PropSpec`.
 
         Used to synthesize properties expected by ExtendScript but absent
         from the binary.
@@ -439,10 +503,16 @@ class Property(PropertyBase):
             prop.default_value = (
                 final_value if spec.default_value is _USE_VALUE else spec.default_value
             )
-        if spec.min_value is not None:
+        if spec.chunk_bounds_are_hints:
+            # tdum/tduM hold UI slider hints, not real bounds: the spec is
+            # authoritative (None = unbounded).
             prop._min_value_fallback = spec.min_value
-        if spec.max_value is not None:
             prop._max_value_fallback = spec.max_value
+        else:
+            if spec.min_value is not None:
+                prop._min_value_fallback = spec.min_value
+            if spec.max_value is not None:
+                prop._max_value_fallback = spec.max_value
         if spec.bound_chunks is not None:
             prop._bound_chunks_hint = spec.bound_chunks
         else:
@@ -516,6 +586,13 @@ class Property(PropertyBase):
         # properties whose pristine state stores a bare tdbs.
         self._wrapper: ListChunk | None = None
 
+        # Media-replacement slot chunks (blsv/blsi), siblings of this leaf's
+        # tdbs inside an `ADBE Layer Source Alternate` group run. Set by the
+        # tdbs dispatcher only for that match name; None otherwise. `blsi` is
+        # the alternate-source item id (0 = no replacement set).
+        self._blsv: U4Chunk | None = None
+        self._blsi: U4Chunk | None = None
+
         self._can_vary_over_time = can_vary_over_time
 
         # Expressions can never be set on this parameter (from the pard
@@ -546,13 +623,68 @@ class Property(PropertyBase):
 
         self._min_value_fallback: Any = _UNSET
         self._max_value_fallback: Any = _UNSET
+        # The pard UI slider range (effect params only; None elsewhere).
+        self._slider_min: float | None = None
+        self._slider_max: float | None = None
         self._scale_z_override: float | None = None
 
         self.nb_options = None
 
-        self.property_parameters = None
+        self._property_parameters: list[str] | None = None
 
         self._property_type = PropertyType.PROPERTY
+
+        # Cached raw axis-tag number for variable-font axis properties;
+        # survives de-animation (the tag lives in the value data, which
+        # keyframe removal deletes before `_deanimate` re-writes it).
+        self._vf_tag_cache: float | None = None
+
+        self._vfdn: VfdnChunk | None = None
+        """The axis display-name container AE writes after an active
+        variable-font axis slot's tdbs (set by the parser)."""
+
+    @property
+    def _is_vf_axis(self) -> bool:
+        """`True` for a variable-font axis slot property."""
+        return self.match_name.startswith(VF_AXIS_PREFIX)
+
+    def _vf_axis_tag_raw(self) -> float | None:
+        """The raw 4CC tag number of an ACTIVE axis property, else `None`.
+
+        Read from the static value's second dimension or the first
+        keyframe's, then cached (see `_vf_tag_cache`).
+        """
+        if not self._is_vf_axis:
+            return None
+        if self._vf_tag_cache is not None:
+            return self._vf_tag_cache
+        raw: float | None = None
+        if self._cdat is not None and len(self._cdat.values) >= 2:
+            raw = self._cdat.values[1]
+        elif self.keyframes:
+            kf_raw = self.keyframes[0]._extract_raw_value()
+            if isinstance(kf_raw, list) and len(kf_raw) >= 2:
+                raw = kf_raw[1]
+        if raw:
+            self._vf_tag_cache = raw
+            return raw
+        return None
+
+    @property
+    def axis_tag(self) -> str | None:
+        """The 4-character variable-font axis tag (e.g. `wght`) bound to
+        this `ADBE Text VF Axis` property. `None` for non-axis properties
+        and for unused axis slots. Read-only.
+
+        Warning:
+            `axis_tag` does not exist in the ExtendScript API. It has
+            been added for convenience (ExtendScript surfaces the tag
+            only through the property's display name).
+        """
+        raw = self._vf_axis_tag_raw()
+        if raw is None:
+            return None
+        return _vf_tag_to_str(raw)
 
     @property
     def _speed_factor(self) -> float:
@@ -567,12 +699,13 @@ class Property(PropertyBase):
         Each keyframe gets a reference to its owning property and to its
         prev/next neighbours for lazy ease computation.
         """
+        # Assign None explicitly at the boundaries: after a removal or a
+        # reorder the previous links are stale, and boundary keyframes
+        # must read prev/next as None (ease resolution depends on it).
         for i, kf in enumerate(self.keyframes):
             kf._bind_property(self)
-            if i > 0:
-                kf._prev = self.keyframes[i - 1]
-            if i < len(self.keyframes) - 1:
-                kf._next = self.keyframes[i + 1]
+            kf._prev = self.keyframes[i - 1] if i > 0 else None
+            kf._next = self.keyframes[i + 1] if i < len(self.keyframes) - 1 else None
 
     def _link_inserted_key(self, idx: int) -> None:
         """Re-link only the keyframe inserted at `idx` and its neighbours.
@@ -587,6 +720,56 @@ class Property(PropertyBase):
         if idx + 1 < len(self.keyframes):
             kf._next = self.keyframes[idx + 1]
             self.keyframes[idx + 1]._prev = kf
+
+    def _guard_keyframe_move(self, kf: Keyframe, new_frame: int) -> None:
+        """Reject moving `kf` onto another keyframe's frame.
+
+        Only applies to a keyframe already in `keyframes`: during
+        `add_key` construction the time is assigned before insertion, and
+        landing on an existing frame legitimately returns that keyframe's
+        index instead.
+        """
+        try:
+            index_by_identity(self.keyframes, kf)
+        except ValueError:
+            return
+        if any(k is not kf and k.frame_time == new_frame for k in self.keyframes):
+            raise ValueError(f"another keyframe already exists at frame {new_frame}")
+
+    def _reposition_keyframe(self, kf: Keyframe) -> None:
+        """Restore sorted keyframe order after `kf`'s time changed.
+
+        The binary and the model pair several structures positionally
+        with `keyframes`: the ldat header items, the parallel value
+        container's chunks (otda / Nmrd / shap / Utf8) and a text
+        property's COS document array. Moving a keyframe past a
+        neighbour must move all of them together and re-link the
+        prev/next chain (LINEAR ease speeds and `value_at_time` read
+        neighbours by order). No-op for a keyframe not (yet) in
+        `keyframes` or whose sorted position is unchanged.
+        """
+        try:
+            old = index_by_identity(self.keyframes, kf)
+        except ValueError:
+            return
+        new_ft = kf.frame_time
+        new = sum(1 for k in self.keyframes if k is not kf and k.frame_time < new_ft)
+        if new == old:
+            return
+        _lhd3, ldat = self._ensure_animated()
+        self.keyframes.insert(new, self.keyframes.pop(old))
+        ldat.items.insert(new, ldat.items.pop(old))
+        container = self._kf_value_container
+        if container is not None and old < len(container.chunks):
+            container.chunks.insert(new, container.chunks.pop(old))
+        if self._parallel_kind() is TEXT_KIND:
+            td = kf.value
+            if isinstance(td, TextDocument):
+                doc_array = cos_get(td._cos_data, "1", "1")
+                if old < len(doc_array):
+                    doc_array.insert(new, doc_array.pop(old))
+                td._propagate_cos()
+        self._link_keyframes()
 
     def _ensure_materialized(self) -> None:
         """Flip synthetic flags so backing chunks become visible to write_aep().
@@ -968,6 +1151,12 @@ class Property(PropertyBase):
         """
         if raw is None:
             return None
+        # 0. Variable-font axis: the binary stores [value, tag4cc] but
+        #    ExtendScript exposes only the scalar axis value.
+        if self._is_vf_axis and isinstance(raw, list) and len(raw) >= 2:
+            if self._vf_tag_cache is None and raw[1]:
+                self._vf_tag_cache = raw[1]
+            return raw[0]
         # 1. Percent scaling (0-1 fraction -> 0-100 percentage)
         if self.match_name in _PERCENT_MATCH_NAMES:
             if isinstance(raw, (int, float)):
@@ -1004,6 +1193,13 @@ class Property(PropertyBase):
         if not isinstance(value, (int, float, list)):
             return value
         if isinstance(value, list) and value and not isinstance(value[0], (int, float)):
+            return value
+        # 0. Variable-font axis: re-attach the tag dimension to a scalar
+        #    ExtendScript-style value (raw 2-dim lists pass through).
+        if self._is_vf_axis and isinstance(value, (int, float)):
+            tag = self._vf_axis_tag_raw()
+            if tag is not None:
+                return [float(value), tag]
             return value
         # 3. Reverse effect point (pixel coordinates -> 0-1 fraction)
         if self._effect_scale is not None:
@@ -1275,6 +1471,168 @@ class Property(PropertyBase):
         return ""
 
     @property
+    def value_text(self) -> str | None:
+        """The text string of the currently-selected item in a dropdown
+        menu property.
+
+        Only custom dropdown menus are supported (the `Menu` property of
+        a Dropdown Menu Control, whose item strings are stored in the
+        project file); returns `None` for every other property.
+        ExtendScript additionally covers built-in dropdowns, but their
+        item strings are application resources absent from the file.
+        Read-only.
+
+        Note:
+            This functionality was added in After Effects 26.0.
+        """
+        params = self.property_parameters
+        if not params:
+            return None
+        value = self.value
+        if not isinstance(value, (int, float)):
+            return None
+        # Dropdown values are 1-based indices into the menu strings.
+        index = int(value) - 1
+        if 0 <= index < len(params):
+            return params[index]
+        return None
+
+    @property
+    def property_parameters(self) -> list[str] | None:
+        """An array of all item strings in a dropdown menu property. This
+        attribute applies to dropdown menu properties of effects and
+        layers, including custom strings in the Menu property of the
+        Dropdown Menu Control. Read / Write.
+
+        Writing is only supported on the Menu property of a Dropdown
+        Menu Control (see `is_dropdown_effect`; mirrors ExtendScript
+        `Property.setPropertyParameters()`): the new items replace the
+        existing menu entries in the project file. Items must be
+        non-empty unique strings without `\\` or `|` characters; the
+        string `(-` inserts a separator line (and may repeat).
+        """
+        return self._property_parameters
+
+    @property_parameters.setter
+    def property_parameters(self, items: list[str]) -> None:
+        effect = self._parent_property
+        if not (
+            self.is_dropdown_effect
+            and effect is not None
+            and effect.match_name.startswith("Pseudo/")
+        ):
+            raise ValueError(
+                "property_parameters can only be set on the Menu property "
+                "of a Dropdown Menu Control."
+            )
+        if not isinstance(items, (list, tuple)) or not items:
+            raise ValueError("items must be a non-empty list of strings.")
+        seen = set()
+        for item in items:
+            if not isinstance(item, str) or not item:
+                raise ValueError("menu items must be non-empty strings.")
+            # The items are stored pipe-delimited, so "|" is as
+            # unencodable as ExtendScript's forbidden "\".
+            if "\\" in item or "|" in item:
+                raise ValueError(
+                    "menu items must not contain the '\\' or '|' characters."
+                )
+            if item != "(-":
+                if item in seen:
+                    raise ValueError(f"duplicate menu item {item!r}.")
+                seen.add(item)
+        items = list(items)
+        self._write_dropdown_items(items)
+        self._property_parameters = items
+        self.nb_options = len(items)
+        self._max_value_fallback = len(items)
+
+    def _dropdown_param_defs(self) -> list[ListChunk]:
+        """The `parT` containers holding this Menu param's definition.
+
+        A dropdown's parameter definition lives in the owning effect's
+        layer-level `sspc` and is mirrored in the project-level
+        `LIST:EfdG`; both copies must stay in sync when the menu items
+        change.
+        """
+        effect = self._parent_property
+        assert effect is not None
+        parts: list[ListChunk] = []
+        parade = effect._parent_property
+        if parade is not None:
+            if parade._tdgp is not None:
+                sspc = effect._backing_list_chunk(parade._tdgp)
+                if sspc.list_type == "sspc":
+                    try:
+                        parts.append(
+                            find_by_list_type(chunks=sspc.chunks, list_type="parT")
+                        )
+                    except ChunkNotFoundError:
+                        pass
+            # The project-level EfdG mirror, via the parade's cached
+            # definitions lookup. Effect params can parse without a
+            # composition ref, leaving the project unreachable.
+            try:
+                entry = parade._installed_effect_def(effect.match_name)
+            except ValueError:
+                entry = None
+            if entry is not None:
+                try:
+                    parts.append(
+                        find_by_list_type(chunks=entry[2].chunks, list_type="parT")
+                    )
+                except ChunkNotFoundError:
+                    pass
+        return parts
+
+    def _write_dropdown_items(self, items: list[str]) -> None:
+        """Write new menu items into every copy of this param's definition."""
+        joined = "|".join(items)
+        written = False
+        for part in self._dropdown_param_defs():
+            current: str | None = None
+            for chunk in part.chunks:
+                if chunk.chunk_type == "tdmn":
+                    current = cast("TdmnChunk", chunk).value
+                elif current == self.match_name:
+                    if isinstance(chunk, EnumPardChunk):
+                        # The option count lives in the high 16 bits; AE
+                        # keeps the low 16 bits unchanged.
+                        chunk.nb_options = (len(items) << 16) | (
+                            chunk.nb_options & 0xFFFF
+                        )
+                    elif chunk.chunk_type == "pdnm":
+                        utf8 = find_by_type(
+                            chunks=cast("ContainerChunk", chunk).chunks,
+                            chunk_type="Utf8",
+                        )
+                        cast("Utf8Chunk", utf8).value = joined
+                        written = True
+        if not written:
+            raise ValueError(
+                "No stored menu definition (pdnm) found for this property."
+            )
+        # Keep the synthesis-side parameter definitions in sync. Effect
+        # params parse without a composition ref; reach the project
+        # through the owning layer instead.
+        effect = self._parent_property
+        assert effect is not None
+        comp = self._composition
+        if comp is None:
+            try:
+                comp = self._containing_layer.containing_comp
+            except ValueError:
+                comp = None
+        if comp is not None:
+            param_def = comp._project._effect_param_defs.get(effect.match_name, {}).get(
+                self.match_name
+            )
+            if param_def is not None:
+                param_def["property_parameters"] = list(items)
+                param_def["nb_options"] = len(items)
+                param_def["max_value"] = len(items)
+
+    @property
     def can_vary_over_time(self) -> bool:
         """
         When `True`, the named property can vary over time - that is, keyframe
@@ -1455,9 +1813,21 @@ class Property(PropertyBase):
                     if self.is_spatial
                     else PropertyValueType.ThreeD
                 )
+        elif self.dimensions == 1:
+            # A plain 1-D scalar: AE clears the tdb4 vector bit for single
+            # value properties (Opacity, Rotation, the last separation
+            # follower, effect sliders), so they miss the vector branch
+            # above. They are still OneD scalars.
+            pct = PropertyControlType.SCALAR
+            pvt = PropertyValueType.OneD
 
+        # Flag-based inference is a fallback for when the authoritative type
+        # is not cached (e.g. transiently during synthesis, before the parser
+        # populates it). Types that tdb4 flags cannot express - markers,
+        # custom-value slots - come from the parser instead, so a miss here is
+        # expected and not user-actionable: log at debug, not warning.
         if pct == PropertyControlType.UNKNOWN:
-            logger.warning(
+            logger.debug(
                 "Could not determine type for property %s"
                 " | dimensions: %s"
                 " | integer: %s"
@@ -1614,6 +1984,119 @@ class Property(PropertyBase):
         return False
 
     @property
+    def can_set_alternate_source(self) -> bool:
+        """`True` if this is an Essential Property that supports Media
+        Replacement (its alternate source can be set). Read-only.
+
+        Decoded from the `blsi` chunk beside an `ADBE Layer Source Alternate`
+        slot: a non-zero item id means a replacement source is configured.
+        """
+        return self._blsi is not None and self._blsi.value != 0
+
+    @property
+    def alternate_source(self) -> AVItem | None:
+        """The alternate source item set for a Media Replacement slot, or
+        `None` when unset / unsupported. Read / Write.
+
+        After Effects wraps the replacement footage in a composition, so this
+        resolves to that wrapper item (the `blsi` item id).
+        """
+        if self._blsi is None or self._blsi.value == 0 or self._composition is None:
+            return None
+        return cast(
+            "AVItem | None",
+            self._composition._project.items.get(self._blsi.value),
+        )
+
+    @alternate_source.setter
+    def alternate_source(self, source: AVItem) -> None:
+        """Set the alternate (replacement) source for a Media Replacement
+        slot.
+
+        `source` must be an item already in the project. When `source` is a
+        `FootageItem`, After Effects wraps it in a composition - placed in a
+        root-level `Media Replacement Comps` folder and sized to the host comp -
+        and points the slot at that wrapper; py_aep matches this. A `CompItem`
+        is used directly (it is assumed to already be a wrapper).
+
+        Raises `ValueError` when this property is not a media-replacement slot
+        (`can_set_alternate_source` is `False`) or `source` is not in the
+        project, and `TypeError` when `source` is not an `AVItem`.
+        """
+        from ..items.av_item import AVItem  # noqa: PLC0415
+        from ..items.footage import FootageItem  # noqa: PLC0415
+
+        if not self.can_set_alternate_source or self._blsi is None:
+            raise ValueError(
+                "This property does not support media replacement "
+                "(can_set_alternate_source is False)."
+            )
+        if not isinstance(source, AVItem):
+            raise TypeError(
+                f"alternate source must be an AVItem, not {type(source).__name__}"
+            )
+        if (
+            self._composition is None
+            or source.id not in self._composition._project.items
+        ):
+            raise ValueError(
+                f"Item {source.name!r} (id={source.id}) is not in the project."
+            )
+        if isinstance(source, FootageItem):
+            self._blsi.value = self._build_replacement_wrapper(source).id
+        else:
+            self._blsi.value = source.id
+
+    def _build_replacement_wrapper(self, footage: FootageItem) -> CompItem:
+        """Build the AE-faithful wrapper `CompItem` for a footage media
+        replacement: a host-sized comp in a root-level `Media Replacement Comps`
+        folder holding `footage` as its single layer, named
+        `{this property's name}_{unique footage basename}`.
+        """
+        host = self._composition
+        assert host is not None  # guarded by the caller's project check
+        project = host._project
+        folder = _find_or_create_wrapper_folder(project)
+        name = f"{self.name}_{_unique_wrapper_suffix(footage, project)}"
+        wrapper = folder.add_comp(
+            name,
+            host.width,
+            host.height,
+            host.pixel_aspect,
+            host.duration,
+            host.frame_rate,
+        )
+        # AE's wrapper comp shares the host comp's cdta exactly (timebase,
+        # shutter phase, work area) - `add_comp`'s fresh skeleton diverges on
+        # time_divisor/work_area_start_divisor/shutter_phase, so clone the host
+        # cdta over it. idta/iide (the item ids) are separate chunks and stay
+        # the wrapper's own.
+        new_cdta = copy.deepcopy(host._cdta)
+        chunks = wrapper._item_list.chunks
+        chunks[chunks.index(wrapper._cdta)] = new_cdta
+        wrapper._cdta = new_cdta
+        wrapper.add(footage)
+        return wrapper
+
+    @property
+    def essential_property_source(self) -> Property | PropertyGroup | AVLayer | None:
+        """The originating source an Essential Property points at - a
+        `Property`/`PropertyGroup` (created from a Property) or an `AVLayer`
+        (Media Replacement Footage), or `None`. Read-only.
+
+        Media-replacement overrides resolve to the source composition's
+        `AVLayer` (matched by the controller's `CCId`/`CLId`). Property-source
+        essential properties resolve to the source `Property` (or
+        `PropertyGroup` for a grouped controller) by walking the controller's
+        source-property path by match name.
+        """
+        from ...resolvers.essential_properties import (  # noqa: PLC0415
+            resolve_essential_property_source,
+        )
+
+        return resolve_essential_property_source(self)
+
+    @property
     def is_dropdown_effect(self) -> bool:
         """`True` if the property is the Menu property of a Dropdown Menu Control effect."""
         return self._property_control_type == PropertyControlType.ENUM
@@ -1751,9 +2234,20 @@ class Property(PropertyBase):
             t._pad7b = 0
             t._pad7c = 0
             return
+        # AE keeps a variable-font axis's value-hint flag, cvot flags
+        # and time base unchanged across the static<->animated
+        # transition (verified against the variable_font_axis_animated
+        # AE 2026 fixture).
+        preserved = (
+            (t._value_hint_flag, t._cvot_flags, t._time_base)
+            if self._is_vf_axis
+            else None
+        )
         tdb4_apply_animated_template(
             t, color=bool(self._color), spatial=self.is_spatial
         )
+        if preserved is not None:
+            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
 
     def _ensure_animated(self) -> tuple[Lhd3Chunk, LdatChunk]:
         """Return the keyframe `(lhd3, ldat)`, creating them if static.
@@ -1795,6 +2289,52 @@ class Property(PropertyBase):
         while idx < len(self.keyframes) and self.keyframes[idx].frame_time < frame_time:
             idx += 1
         return idx, False
+
+    def can_add_to_motion_graphics_template(self, comp: CompItem) -> bool:
+        """Test whether this property can be added to `comp`'s Essential
+        Graphics panel (a Motion Graphics template).
+
+        Gates on what py_aep can produce: the supported control types are
+        Checkbox, Color, single-value numeric Slider and Source Text (a
+        Dropdown param reports `False` - AE would build a type-13 Dropdown
+        controller, which py_aep does not). Paths through indexed groups -
+        effects, masks, shape contents, text animators - are addressed by AE's
+        child index (validated against AE 2026 output), so their children are
+        addable, including on duplicate siblings. Reports `False` for an effect
+        param whose parT definitions are unavailable, children of `ADBE Effect
+        Built In Params`, a by-name node ambiguous among its siblings, a
+        property already exposed, or a layer not in `comp`.
+
+        Args:
+            comp: The composition whose Essential Graphics panel to test.
+        """
+        return can_add_property(self, comp)
+
+    def add_to_motion_graphics_template(self, comp: CompItem) -> bool:
+        """Add this property to `comp`'s Essential Graphics panel, using the
+        property's own name for the controller.
+
+        Returns `True` on success, or `False` when the property cannot be added
+        (see `can_add_to_motion_graphics_template`).
+
+        Args:
+            comp: The composition to add the property to.
+        """
+        return comp._add_property_controller(self, None)
+
+    def add_to_motion_graphics_template_as(self, comp: CompItem, name: str) -> bool:
+        """Add this property to `comp`'s Essential Graphics panel with an
+        explicit controller `name`.
+
+        Returns `True` on success, or `False` when the property cannot be
+        added (see `can_add_to_motion_graphics_template`).
+
+        Args:
+            comp: The composition to add the property to.
+            name: The controller name to show in the Essential Graphics panel.
+        """
+        validate_name(name)
+        return comp._add_property_controller(self, name)
 
     def add_key(self, time: float) -> int:
         """Add a keyframe at the given time and return its 0-based index.
@@ -1855,8 +2395,7 @@ class Property(PropertyBase):
             return idx
         ldat.items.insert(idx, ldat_item)
         self.keyframes.insert(idx, kf)
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         kf.value = new_value
         self._link_inserted_key(idx)
         return idx
@@ -1892,11 +2431,35 @@ class Property(PropertyBase):
         removed_value = removed.value
         del ldat.items[key_index]
         del self.keyframes[key_index]
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         self._link_keyframes()
         if not self.keyframes:
             self._deanimate(removed_value)
+
+    def remove_all_keys(self) -> None:
+        """Remove every keyframe from this property.
+
+        Equivalent to calling `remove_key` for each keyframe: the
+        property reverts to a static value (the first keyframe's value).
+        Markers have no static value: the property is left empty. A
+        no-op when the property has no keyframes.
+        """
+        if self._parallel_kind() is not None:
+            while self.keyframes:
+                self.remove_key(len(self.keyframes) - 1)
+            return
+        if not self.keyframes:
+            return
+        # Bulk path: clearing key-by-key would re-link the remaining
+        # keyframes after every removal (quadratic) and decode values
+        # that are thrown away.
+        self._ensure_materialized()
+        lhd3, ldat = self._ensure_animated()
+        first_value = self.keyframes[0].value
+        del ldat.items[:]
+        del self.keyframes[:]
+        set_lhd3_count(lhd3, 0, LHD3_BLOCK_KEYFRAMES)
+        self._deanimate(first_value)
 
     def _static_tdb4(self) -> None:
         """Revert tdb4 metadata to AE's static (non-animated) state.
@@ -1914,7 +2477,16 @@ class Property(PropertyBase):
             t.animated = False
             t._spatial_marker = bool(t._spatial_static_flags & 0x02)
             return
+        # Mirror `_animate_tdb4`: the axis keeps its value-hint flag,
+        # cvot flags and time base across the transition too.
+        preserved = (
+            (t._value_hint_flag, t._cvot_flags, t._time_base)
+            if self._is_vf_axis
+            else None
+        )
         tdb4_apply_static_template(t, color=bool(self._color), spatial=self.is_spatial)
+        if preserved is not None:
+            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
 
     def _deanimate(self, value: _ValueType) -> None:
         """Revert an emptied animated property to a static `value`."""
@@ -2044,8 +2616,7 @@ class Property(PropertyBase):
         kf.time = time
         ldat.items.append(ldat_item)
         self.keyframes.append(kf)
-        lhd3.count = 1
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, 1, LHD3_BLOCK_KEYFRAMES)
         kf._value = template
         self._value = None
         if isinstance(value, str):
@@ -2100,8 +2671,7 @@ class Property(PropertyBase):
             # The text setter above already re-serializes the COS blob; when
             # no text was supplied, propagate the structural insert ourselves.
             td._propagate_cos()
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         self._link_inserted_key(idx)
         return idx
 
@@ -2121,8 +2691,7 @@ class Property(PropertyBase):
         if key_index < len(doc_array):
             del doc_array[key_index]
         del self.keyframes[key_index]
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         removed._propagate_cos()
         self._link_keyframes()
 
@@ -2225,8 +2794,7 @@ class Property(PropertyBase):
             container.chunks[0] = value_chunk
         else:
             container.chunks.insert(idx, value_chunk)
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         # The header item already carries the value (`build_header_item`) and
         # the container chunk is inserted above, so set the shadow directly:
         # the public `kf.value` setter would re-route complex kinds back into
@@ -2261,8 +2829,7 @@ class Property(PropertyBase):
         del self.keyframes[key_index]
         if container is not None and key_index < len(container.chunks):
             del container.chunks[key_index]
-        lhd3.count = len(self.keyframes)
-        sync_lhd3_counters(lhd3, LHD3_BLOCK_KEYFRAMES)
+        set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         self._link_keyframes()
 
     def _deanimate_parallel(self, kind: ParallelKind) -> None:
@@ -2524,3 +3091,115 @@ class Property(PropertyBase):
                 factor = dist_px / dist_norm
                 for ease in ease_list:
                     ease._speed_factor = factor
+
+
+class _EssentialOverrideProperty(Property):
+    """An Essential Properties override leaf (a child of `ADBE Layer Overrides`).
+
+    Its `value` is its own override (the leaf `cdat`), but its derived metadata
+    - `enabled`, `min_value`/`max_value` (hence `has_min`/`has_max`) and
+    `is_modified` - reflects the Essential Graphics *source* property the
+    override points at, matching After Effects: the override leaf's own `tdsb`
+    enable bit and `tdum`/`tduM` bounds are the EGP slider state, not what
+    ExtendScript reports. Leaves are re-classed to this type after the override
+    group is parsed (see `parsers/property.py::_dispatch_ovg2`); this keeps the
+    base `Property` accessors - and round-trip serialization - untouched.
+    """
+
+    def _override_source(self) -> Property | None:
+        """The resolved source `Property`, or `None` when it does not resolve
+        (e.g. a Media Replacement leaf whose source is an `AVLayer`). Cached."""
+        cached = self.__dict__.get("_ov_src", _UNSET)
+        if cached is not _UNSET:
+            return cast("Property | None", cached)
+        src = self.essential_property_source
+        resolved = src if isinstance(src, Property) else None
+        self.__dict__["_ov_src"] = resolved
+        return resolved
+
+    def _override_controller_name(self) -> str | None:
+        """The name of the override leaf's Essential Graphics controller, or
+        `None` when it does not resolve. Cached. This is the display name AE
+        shows for the override - the leaf's own `tdsn` may be empty."""
+        cached = self.__dict__.get("_ov_ctrl_name", _UNSET)
+        if cached is not _UNSET:
+            return cast("str | None", cached)
+        from ...resolvers.essential_properties import (  # noqa: PLC0415
+            resolve_essential_property_controller,
+        )
+
+        controller = resolve_essential_property_controller(self)
+        name = controller.name if controller is not None else None
+        self.__dict__["_ov_ctrl_name"] = name
+        return name
+
+    @property
+    def name(self) -> str:
+        ctrl_name = self._override_controller_name()
+        return ctrl_name if ctrl_name is not None else super().name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        PropertyBase.__dict__["name"].fset(self, value)
+
+    @property
+    def enabled(self) -> bool:
+        src = self._override_source()
+        return src.enabled if src is not None else super().enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        PropertyBase.__dict__["enabled"].__set__(self, value)
+
+    @property
+    def min_value(self) -> Any:
+        src = self._override_source()
+        return src.min_value if src is not None else super().min_value
+
+    @property
+    def max_value(self) -> Any:
+        src = self._override_source()
+        return src.max_value if src is not None else super().max_value
+
+    @property
+    def is_modified(self) -> bool:
+        src = self._override_source()
+        if src is not None:
+            return not _values_equal(self.value, src.value)
+        return super().is_modified
+
+
+def _find_or_create_wrapper_folder(project: Project) -> FolderItem:
+    """The root-level `Media Replacement Comps` folder, reused if present
+    (matching AE) or created at the project root."""
+    from ..items.folder import FolderItem  # noqa: PLC0415
+
+    root = project.root_folder
+    for item in project.items.values():
+        if (
+            isinstance(item, FolderItem)
+            and item.name == "Media Replacement Comps"
+            and item.parent_folder is root
+        ):
+            return item
+    return root.add_folder("Media Replacement Comps")
+
+
+def _unique_wrapper_suffix(footage: FootageItem, project: Project) -> str:
+    """The placed footage's basename, made unique against existing item names
+    with AE's ` N` scheme (bare if free, else the first free integer >= 2)."""
+    base = _strip_sequence_basename(footage.name)
+    names = {item.name for item in project.items.values()}
+    if base not in names:
+        return base
+    n = 2
+    while f"{base} {n}" in names:
+        n += 1
+    return f"{base} {n}"
+
+
+def _strip_sequence_basename(name: str) -> str:
+    """Footage display name -> AE wrapper basename: drop the extension and any
+    trailing image-sequence frame range (`foo_[001-003].gif` -> `foo`)."""
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return re.sub(r"[ _]?\[\d+-\d+\]$", "", stem)

@@ -18,6 +18,7 @@ from ..models.descriptors import _suppress_materialization
 from ..models.layers.av_layer import AVLayer
 from ..models.layers.camera_layer import CameraLayer
 from ..models.layers.light_layer import LightLayer
+from ..models.layers.parametric_mesh_layer import ParametricMeshLayer
 from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
 from ..models.layers.three_d_model_layer import ThreeDModelLayer
@@ -39,6 +40,7 @@ _LAYER_CLASSES: dict[int, type[Layer]] = {
     LayerType.TEXT: TextLayer,
     LayerType.SHAPE: ShapeLayer,
     LayerType.THREE_D_MODEL: ThreeDModelLayer,
+    LayerType.PARAMETRIC_MESH: ParametricMeshLayer,
 }
 
 
@@ -83,7 +85,8 @@ def parse_layer(
             fallback when layer-level parT chunks are missing.
 
     Returns:
-        An [AVLayer][] for most layers, or a [LightLayer][] for light layers.
+        An [AVLayer][] for most layers, a [LightLayer][] for light layers, or a
+        [ParametricMeshLayer][] for parametric mesh layers.
     """
     child_chunks = layer_chunk.chunks
 

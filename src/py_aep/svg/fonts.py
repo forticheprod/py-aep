@@ -154,6 +154,24 @@ def _pick(
     return next(iter(styles.values()))
 
 
+def resolve_font_exact(family: str) -> tuple[Path, int] | None:
+    """Resolve a single family name to an installed font face, with NO
+    generic fallback.
+
+    Unlike `resolve_font`, an uninstalled family returns `None` instead
+    of degrading to the sans-serif chain; used where substituting a
+    different font would be wrong (e.g. reading variable-font axes).
+    Returns `(font file path, face index)`.
+    """
+    global _index
+    if _index is None:
+        _index = _build_index()
+    styles = _index.get(family.strip().strip("'\"").lower())
+    if not styles:
+        return None
+    return _pick(styles, False, False)
+
+
 def resolve_font(
     family: str, *, bold: bool = False, italic: bool = False
 ) -> tuple[Path, int] | None:

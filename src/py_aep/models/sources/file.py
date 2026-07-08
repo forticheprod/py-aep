@@ -9,7 +9,9 @@ from ...binary.footage_chunks import (
     OptiChunk,
     PsdOptiChunk,
     SspcChunk,
+    build_ai_layer_opti_data,
     build_generic_opti_data,
+    build_psd_layer_opti_data,
     build_psd_opti_data,
     build_rhdr_opti_data,
     build_text_opti_data,
@@ -27,9 +29,15 @@ from ...binary.utils import (
     find_chunks_before,
     parse_alas_data,
 )
-from ...data.file_formats import FileFormat, get_file_format
-from ...resolvers.ai_layers import read_ai_color_profile
+from ...data.file_formats import (
+    AI_COMP_EXTENSIONS,
+    PSD_COMP_EXTENSIONS,
+    FileFormat,
+    get_file_format,
+)
+from ...resolvers.ai_layers import read_ai_color_info, read_ai_color_profile
 from ...resolvers.media_probe import probe_media
+from ...resolvers.source_layers import resolve_ai_layer, resolve_psd_layer
 from ..validators import validate_path_exists
 from .footage import FootageSource
 
@@ -74,6 +82,18 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
     if fmt.opti == "empty" and not sequence:
         return b""
     return build_generic_opti_data(fmt.source_format)
+
+
+def _join_sequence_frame(folder: str, frame_name: str) -> str:
+    """Join a footage folder with an image-sequence frame filename using the
+    folder's own separator, so the result matches AE's `fsName` (all `\\` for
+    a Windows-authored project, all `/` for a POSIX one) rather than mixing
+    the two. A backslash anywhere marks a Windows path; `PureWindowsPath` also
+    splits any embedded `/`, while `PurePosixPath` leaves a native POSIX path
+    intact (`PureWindowsPath` would rewrite its forward slashes to `\\`)."""
+    if "\\" in folder:
+        return str(PureWindowsPath(folder) / frame_name)
+    return str(PurePosixPath(folder) / frame_name)
 
 
 class FileSource(FootageSource):
@@ -178,8 +198,8 @@ class FileSource(FootageSource):
         alas_data = parse_alas_data(pin_chunks)
         self._target_is_folder: bool = alas_data.get("target_is_folder", False)
         if self._file_names:
-            self._file = str(
-                PurePosixPath(alas_data.get("fullpath", "")) / self._file_names[0]
+            self._file = _join_sequence_frame(
+                alas_data.get("fullpath", ""), self._file_names[0]
             )
         else:
             self._file = alas_data.get("fullpath", "")
@@ -220,7 +240,7 @@ class FileSource(FootageSource):
                         f"{prefix}{_sspc.start_frame:0{_sspc.frame_padding}d}"
                         f"{extension}"
                     )
-                    self._file = str(PurePosixPath(self._file) / first_frame)
+                    self._file = _join_sequence_frame(self._file, first_frame)
 
         if getattr(_opti, "asset_type", "") == "8BPS":
             psd_opti = cast("PsdOptiChunk", _opti)
@@ -262,6 +282,11 @@ class FileSource(FootageSource):
         opti_data: bytes = b"",
         embedded_profile_name: str | None = None,
         full_frame: bool = True,
+        layer_name: str = "",
+        layer_id: int | None = None,
+        layer_index: int | None = None,
+        data_size: int = 0,
+        reserved_c8: bytes | None = None,
     ) -> FileSource:
         """Create a new file footage source with backing chunks.
 
@@ -299,7 +324,20 @@ class FileSource(FootageSource):
                 sources with no embedded profile.
             full_frame: When `True` (default, every standard import), the
                 footage spans its full source frame. Set `False` for a layer
-                cropped to its content box (`COMP_CROPPED_LAYERS`).
+                cropped to its content box (`COMP_CROPPED_LAYERS`, or a
+                chosen layer imported at Layer Size).
+            layer_name: Name of the referenced layer when the source is a
+                single layer of a layered file; stored in the Pin's `Utf8`
+                slot after `sspc` (empty otherwise, matching AE).
+            layer_id: Photoshop layer id for a layer-bound source; `None`
+                keeps the `0xFFFFFFFF` unbound sentinel.
+            layer_index: 0-based document index of the referenced layer;
+                `None` keeps the `0xFFFFFFFF` unbound sentinel.
+            data_size: Cached source data size for `sspc` byte 0xD0 (see
+                `SspcChunk.data_size`); `0` lets AE re-derive it.
+            reserved_c8: Override for the `sspc` 0xC8 kind bytes. `None`
+                applies the whole-file rule (see below); layer-bound and
+                merged-PSD sources pass AE's observed per-context value.
         """
         is_sequence = sequence_prefix is not None
         path = Path(file)
@@ -311,6 +349,14 @@ class FileSource(FootageSource):
         else:
             alpha_raw = 0
 
+        if reserved_c8 is None:
+            # AE 2026 writes byte 0xC9 = 0x02 for raster/media file footage but
+            # 0x00 for TEXT (AI/EPS/PDF); solids/placeholders keep the all-zero
+            # default. Verified across the AE-resaved import fixtures. Layer-
+            # bound and merged-PSD sources override this (chosen PSD layer =
+            # 0x01, chosen AI layer = 0x02, merged PSD = 0x03; from the
+            # choose_layer_*.aep fixtures).
+            reserved_c8 = b"\x00\x00" if source_format == "TEXT" else b"\x00\x02"
         sspc = SspcChunk(
             source_format_type=source_format,
             width=width,
@@ -321,11 +367,13 @@ class FileSource(FootageSource):
             is_synthetic_b=0,
             is_synthetic_c=0,
             full_frame=full_frame,
-            # AE 2026 writes byte 0xC9 = 0x02 for raster/media file footage but
-            # 0x00 for TEXT (AI/EPS/PDF); solids/placeholders keep the all-zero
-            # default. Verified across the AE-resaved import fixtures.
-            reserved_c8=b"\x00\x00" if source_format == "TEXT" else b"\x00\x02",
+            reserved_c8=reserved_c8,
+            data_size=data_size,
         )
+        if layer_id is not None:
+            sspc.layer_id = layer_id
+        if layer_index is not None:
+            sspc.layer_index = layer_index
         sspc.native_frame_rate = frame_rate
         sspc.duration = duration
         sspc.pixel_aspect = pixel_aspect
@@ -370,6 +418,7 @@ class FileSource(FootageSource):
             opti,
             path_chunks=path_chunks,
             embedded_profile_name=embedded_profile_name,
+            layer_name=layer_name,
         )
         clrs = find_by_list_type(chunks=pin.chunks, list_type="CLRS")
         linl = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
@@ -417,6 +466,18 @@ class FileSource(FootageSource):
         opti_data = _opti_data(fmt, info, sequence=False)
         # AI/EPS/PDF carry an embedded ICC profile AE records in CLRS.
         profile_name = read_ai_color_profile(path) if fmt.opti == "text" else None
+        if fmt.opti == "psd":
+            # Merged PSD footage: AE writes kind 0x0003 and the canvas
+            # pixel-buffer size - RGBA when the composite has alpha, the
+            # actual channel count otherwise (choose_layer_merged /
+            # replace_from_merged / flattened_rgb_comp AE 2026 fixtures;
+            # the byte scale beyond 8 bpc is extrapolated).
+            channels_eff = 4 if info.has_alpha else info.channels
+            reserved_c8: bytes | None = b"\x00\x03"
+            data_size = info.width * info.height * channels_eff * (info.bit_depth // 8)
+        else:
+            reserved_c8 = None
+            data_size = 0
         return cls._new(
             path,
             source_format=fmt.source_format,
@@ -430,6 +491,120 @@ class FileSource(FootageSource):
             audio_sample_rate=info.audio_sample_rate,
             opti_data=opti_data,
             embedded_profile_name=profile_name,
+            data_size=data_size,
+            reserved_c8=reserved_c8,
+        )
+
+    @classmethod
+    def _from_layer(
+        cls,
+        file: str | os.PathLike[str],
+        layer_index: int,
+        *,
+        dimensions: str | None = None,
+    ) -> FileSource:
+        """Build a `FileSource` referencing a single layer of a layered file.
+
+        Mirrors the "Choose Layer" option of AE's import dialog for
+        `.psd`/`.psb` (layer records) and `.ai`/`.pdf` (PDF Optional Content
+        Groups). Shared by `Project.import_file` (`ImportOptions.layer_index`)
+        and `FootageItem.replace`. Byte-verified against the AE 2026
+        `choose_layer_*.aep` / `ai_choose_layer*.aep` fixtures.
+
+        Args:
+            file: Path to the layered source file.
+            layer_index: The layer to reference, as its 0-based position in
+                `resolvers.source_layers.list_layers` order (top first, leaf
+                layers only).
+            dimensions: `"document"` (default) sizes the footage to the full
+                canvas; `"layer"` to the layer's content box (PSD only:
+                computing an AI/PDF layer's artwork bounds would require
+                rendering the PDF content).
+
+        Raises:
+            ValueError: If the file is not a layered format, or `layer_index`
+                is out of range.
+            NotImplementedError: For `dimensions="layer"` on an AI/PDF file.
+        """
+        validate_path_exists(file)
+        path = Path(file)
+        suffix = path.suffix.lower()
+        if suffix in PSD_COMP_EXTENSIONS:
+            info = probe_media(path)
+            fmt = get_file_format(suffix)
+            leaf = resolve_psd_layer(path, layer_index)
+            left, top, right, bottom = leaf.bounds
+            content_w = max(right - left, 0)
+            content_h = max(bottom - top, 0)
+            if dimensions == "layer":
+                width, height = content_w, content_h
+            else:
+                width, height = info.width, info.height
+            opti_data = build_psd_layer_opti_data(
+                info.width,
+                info.height,
+                info.bit_depth,
+                info.layer_count,
+                leaf.record_index,
+                leaf.layer_id,
+                leaf.name,
+                leaf.bounds,
+            )
+            return cls._new(
+                path,
+                source_format=fmt.source_format,
+                width=width,
+                height=height,
+                duration=info.duration,
+                frame_rate=info.frame_rate,
+                pixel_aspect=info.pixel_aspect,
+                has_alpha=info.has_alpha,
+                alpha_premultiplied=fmt.alpha_premultiplied,
+                audio_sample_rate=info.audio_sample_rate,
+                opti_data=opti_data,
+                full_frame=dimensions != "layer",
+                layer_name=leaf.name,
+                layer_id=leaf.layer_id,
+                layer_index=leaf.record_index,
+                data_size=content_w * content_h * 4 * (info.bit_depth // 8),
+                reserved_c8=b"\x00\x01",
+            )
+        if suffix in AI_COMP_EXTENSIONS:
+            if dimensions == "layer":
+                raise NotImplementedError(
+                    "Layer Size dimensions for an AI/PDF layer require the "
+                    "layer's artwork bounds, which py_aep cannot compute; "
+                    "use 'document' (note: AE's own dialog defaults to "
+                    "Layer Size for AI/PDF)."
+                )
+            data = path.read_bytes()
+            info = probe_media(path, data)
+            fmt = get_file_format(suffix)
+            index, layer_name = resolve_ai_layer(path, layer_index, data)
+            color_space, profile_name = read_ai_color_info(path, data)
+            opti_data = build_ai_layer_opti_data(
+                info.width, info.height, layer_name, color_space
+            )
+            return cls._new(
+                path,
+                source_format=fmt.source_format,
+                width=info.width,
+                height=info.height,
+                duration=info.duration,
+                frame_rate=info.frame_rate,
+                pixel_aspect=info.pixel_aspect,
+                has_alpha=info.has_alpha,
+                alpha_premultiplied=fmt.alpha_premultiplied,
+                audio_sample_rate=info.audio_sample_rate,
+                opti_data=opti_data,
+                embedded_profile_name=profile_name,
+                layer_name=layer_name,
+                layer_index=index,
+                data_size=len(data),
+                reserved_c8=b"\x00\x02",
+            )
+        raise ValueError(
+            f"layer_index requires a layered .psd/.psb/.ai/.pdf file, got {suffix!r}"
         )
 
     @classmethod
@@ -500,12 +675,31 @@ class FileSource(FootageSource):
             flags |= 0x04
         return flags
 
+    @property
+    def layer_name(self) -> str:
+        """The referenced layer's name when this source is a single layer
+        of a layered file (a chosen-layer import or a member of a layered
+        comp import), or an empty string for merged/whole-file footage.
+        Read-only.
+
+        py_aep extension: ExtendScript exposes no layer-selection API.
+        """
+        psd_layer = getattr(self._opti, "psd_group_name", "")
+        if psd_layer:
+            return str(psd_layer)
+        # AI/EPS/PDF: raw TEXT opti with a per-layer-reference flag at 0x3D
+        # and the NUL-terminated layer name at 0x44.
+        data = self._opti.data
+        if len(data) > 0x44 and data[:4] == b"TEXT" and data[0x3D] == 1:
+            return data[0x44:].split(b"\x00", 1)[0].decode("utf-8", "replace")
+        return ""
+
     def _resolve_name(self, raw_name: str) -> str:
         """Resolve the display name for a file-type footage item.
 
         AE stores the full file path in the Utf8 chunk but displays only
         the filename. Builds sequence names (e.g. `render.[0001-0700].exr`)
-        when appropriate.
+        when appropriate, and `layername/filename` for layer-bound sources.
         """
         # Strip to basename so the item name matches AE's UI.
         item_name = raw_name
@@ -519,9 +713,9 @@ class FileSource(FootageSource):
                 # PureWindowsPath handles both / and \ separators,
                 # unlike PurePosixPath which only splits on /.
                 basename = PureWindowsPath(self._file).name
-                psd_group = getattr(self._opti, "psd_group_name", "")
-                if psd_group:
-                    item_name = f"{psd_group}/{basename}"
+                layer = self.layer_name
+                if layer:
+                    item_name = f"{layer}/{basename}"
                 else:
                     item_name = basename
 

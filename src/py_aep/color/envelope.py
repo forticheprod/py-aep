@@ -170,3 +170,13 @@ def parse_envelope(envelope_json: str) -> ColorProfile:
         profile_type=outer["baseProfileType"],
         data=base64.b64decode(base["colorProfileData"]),
     )
+
+
+def envelope_profile_name(envelope_json: str) -> str:
+    """The envelope's `colorProfileName`, or `"None"` when the envelope is
+    empty (`{}`, e.g. an unset `pdvc` display chunk) or carries no name.
+
+    Unlike `parse_envelope`, this does not require `colorProfileData`.
+    """
+    outer = json.loads(envelope_json)
+    return str(outer.get("baseColorProfile", {}).get("colorProfileName", "None"))

@@ -47,7 +47,7 @@ class LightLayer(Layer):
     light_type = ChunkField.enum(
         LightType,
         "_ldta",
-        "light_type",
+        "light_and_mesh_type",
     )
     """The type of light. Read / Write."""
 
@@ -76,7 +76,7 @@ class LightLayer(Layer):
             source_id=_UNDEFINED_ID,
             label=6,
             layer_type=LayerType.LIGHT,
-            light_type=light_type,
+            light_and_mesh_type=light_type,
             layer_flags_2=0x01,
             matte_layer_id=0 if ae_major >= 23 else None,
             layer_name=name[:31] if len(name) > 31 else name,

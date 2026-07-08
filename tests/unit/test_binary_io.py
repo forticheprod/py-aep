@@ -1390,9 +1390,12 @@ class TestPardChunk:
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, ScalarPardChunk)
-        assert chunk.last_value == 50
+        assert chunk.last_value_raw == 50
+        assert chunk.last_value == 50 / 65536
         assert chunk.valid_min_raw == 0
         assert chunk.valid_max_raw == 100 * 65536
+        assert chunk.valid_min == 0
+        assert chunk.valid_max == 100
         assert chunk.slider_min_raw == 0
         assert chunk.slider_max_raw == 100 * 65536
 
@@ -1428,7 +1431,8 @@ class TestPardChunk:
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, AnglePardChunk)
-        assert chunk.last_value == 180
+        assert chunk.last_value_raw == 180
+        assert chunk.last_value == 180 / 65536
 
         out = BytesIO()
         chunk.write(out)

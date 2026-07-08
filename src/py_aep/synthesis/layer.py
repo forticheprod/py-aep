@@ -38,6 +38,18 @@ class LayerSpec(NamedTuple):
     is_adjustment: bool = False
     """`True` when the comp layer should be marked as an adjustment layer."""
 
+    layer_id: int | None = None
+    """Photoshop layer id (`lyid`) for the `sspc` layer binding; `None` for
+    sources without one (AI/PDF layers, EPS, flattened documents)."""
+
+    layer_index: int | None = None
+    """0-based document index of the layer for the `sspc` layer binding;
+    `None` for single-layer documents (EPS, flattened PSD)."""
+
+    data_size: int = 0
+    """Cached source data size for `sspc` byte 0xD0 (PSD: content-box pixel
+    bytes; AI/PDF: file size). `0` lets AE re-derive it."""
+
 
 class LayerGroupSpec(NamedTuple):
     """A layer group, imported as a nested composition of its children."""

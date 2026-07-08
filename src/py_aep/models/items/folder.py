@@ -247,11 +247,23 @@ class FolderItem(Item):
         list and the backing `Sfdr` chunk blocks to match. Used only by the
         layered-import path; it does not affect `add_comp`/`add_folder`.
         """
-        container = self._children_container
+        header, blocks = self._child_chunk_blocks()
+        blocks.sort(key=lambda b: b[0].name.lower())
+        self._children_container[:] = header + [
+            c for _, chunks in blocks for c in chunks
+        ]
+        self.items.sort(key=lambda item: item.name.lower())
+
+    def _child_chunk_blocks(
+        self,
+    ) -> tuple[list[Chunk], list[tuple[Item, list[Chunk]]]]:
+        """Partition `_children_container` into a leading header and one
+        chunk block per child item (the item's chunk list plus any
+        trailing non-item chunks, e.g. view data)."""
         by_item_list = {id(item._item_list): item for item in self.items}
         header: list[Chunk] = []
         blocks: list[tuple[Item, list[Chunk]]] = []
-        for chunk in container:
+        for chunk in self._children_container:
             item = by_item_list.get(id(chunk))
             if item is not None:
                 blocks.append((item, [chunk]))
@@ -259,6 +271,27 @@ class FolderItem(Item):
                 blocks[-1][1].append(chunk)
             else:
                 header.append(chunk)
-        blocks.sort(key=lambda b: b[0].name.lower())
-        container[:] = header + [c for _, chunks in blocks for c in chunks]
-        self.items.sort(key=lambda item: item.name.lower())
+        return header, blocks
+
+    def _reposition_child_sorted(self, item: Item) -> None:
+        """Move one child to its case-insensitive alphabetical position
+        among the current siblings.
+
+        AE stores folder children in Project-panel display order and
+        inserts a precompose result comp at that position. Unlike
+        `_sort_children_by_name` this moves only `item`, leaving the
+        other children's stored order untouched.
+        """
+        header, blocks = self._child_chunk_blocks()
+        moved = next(b for b in blocks if b[0] is item)
+        blocks.remove(moved)
+        key = item.name.lower()
+        pos = next(
+            (i for i, b in enumerate(blocks) if b[0].name.lower() > key),
+            len(blocks),
+        )
+        blocks.insert(pos, moved)
+        self._children_container[:] = header + [
+            c for _, chunks in blocks for c in chunks
+        ]
+        self.items[:] = [b[0] for b in blocks]

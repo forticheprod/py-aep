@@ -57,6 +57,10 @@ _PLACEHOLDER_UNBOUNDED: frozenset[str] = frozenset(
         "ADBE Light Shadow Diffusion",
         "ADBE Light Intensity",
         "ADBE Camera Zoom",
+        # Material-assignment 2D params carry all-zero [0.0] tdum/tduM;
+        # ExtendScript reports hasMin=hasMax=False.
+        "ADBE3D Material Texturre Offset",
+        "ADBE3D Material Scale",
     }
 )
 
@@ -93,12 +97,16 @@ _PROPERTY_DEFAULTS: dict[str, int | float | list[float]] = {
 
 # ---------------------------------------------------------------------------
 
-# Effect CUSTOM_VALUE properties that ExtendScript always reports as
-# is_modified=True, even when their blob data is at default state.
-# These are data blobs (curves, meshes, LUTs, separators) in specific
-# GPU effects where AE considers the property modified on creation.
+# Properties that ExtendScript always reports as is_modified=True, even when
+# their value is at the default state. Most are effect CUSTOM_VALUE data blobs
+# (curves, meshes, LUTs, separators) in specific GPU effects where AE considers
+# the property modified on creation; the media-replacement slot
+# `ADBE Layer Source Alternate` is likewise always reported modified by AE
+# (confirmed on both its Essential-Properties override and Source-Options copies).
 _ALWAYS_MODIFIED: frozenset[str] = frozenset(
     {
+        # Media replacement source slot (Essential Properties + Source Options)
+        "ADBE Layer Source Alternate",
         # Liquify
         "ADBE LIQUIFY-0014",
         # Lumetri Color
@@ -372,6 +380,66 @@ _CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset(
         # Shadow Color (true=5 vs false=1024; accept rare mismatches)
         "ADBE Shadow Color",
         # Match-specific effect params whose broader signatures are still mixed.
+    }
+)
+
+# Match names never expressionable on parametric mesh layers (AE 2026
+# ExtendScript evidence from parametric_meshes.json): the material
+# texture-projection params, Displacement Intensity, and Light
+# Transmission (expressionable on regular 3D AV layers, not on mesh).
+_PARAMETRIC_MESH_NO_EXPRESSION: frozenset[str] = frozenset(
+    {
+        "ADBE Light Transmission",
+        "ADBE Displacement Intensity",
+        "ADBE3D Material Projection",
+        "ADBE3D Material Texturre Offset",
+        "ADBE3D Material Rotation",
+        "ADBE3D Material Scale",
+    }
+)
+
+# Mesh option / bevel group -> owning mesh type (raw ldta value).
+# ExtendScript allows expressions only on the ACTIVE mesh type's numeric
+# streams; the inactive types' streams report canSetExpression=False.
+# (Creation-side counterpart: `property._PARAMETRIC_MESH_ACTIVE_GROUPS`.)
+_PARAMETRIC_MESH_GROUP_TYPE: dict[str, int] = {
+    "ADBE CubeMeshOptionsSGrp": 0,
+    "ADBE CubeBevelOptionsSGrp": 0,
+    "ADBE SphereMeshOptionsSGrp": 1,
+    "ADBE PlaneMeshOptionsSGrp": 2,
+    "ADBE TorusMeshOptionsSGrp": 3,
+    "ADBE ConeMeshOptionsSGrp": 4,
+    "ADBE ConeBevelBevelSGrp": 4,
+    "ADBE CylinderMeshOptionsSGrp": 5,
+    "ADBE CylinderBevelOptionsSGrp": 5,
+}
+
+# Checkbox / toggle mesh streams: ExtendScript reports these as
+# expressionable even in INACTIVE mesh option groups.
+_PARAMETRIC_MESH_CHECKBOX_STREAMS: frozenset[str] = frozenset(
+    {
+        "ADBE SphereSliceCapsStrm",
+        "ADBE SphereInvertSliceStrm",
+        "ADBE TorusCapsStrm",
+        "ADBE TorusInvertSliceStrm",
+        "ADBE ConeTopCapStrm",
+        "ADBE ConeBottomCapStrm",
+        "ADBE ConeSliceCapsStrm",
+        "ADBE ConeInvertSliceStrm",
+        "ADBE CylinderTopCapStrm",
+        "ADBE CylinderBottomCapStrm",
+        "ADBE CylinderSliceCapsStrm",
+        "ADBE CylinderInvertSliceStrm",
+    }
+)
+
+# Generic always-False / 2D-only rules that DO allow expressions on
+# parametric mesh layers (AE 2026 ExtendScript evidence).
+_PARAMETRIC_MESH_EXPRESSION_OK: frozenset[str] = frozenset(
+    {
+        "ADBE Shadow Color",
+        "ADBE Plane Curvature",
+        "ADBE Plane Subdivision",
     }
 )
 
