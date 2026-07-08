@@ -415,3 +415,28 @@ class TestHasAudio:
             f for f in project.footages if f.name == "mov_23_976_no_audio.mov"
         )
         assert footage.has_audio is False
+
+
+class TestImageSequenceSource:
+    """An image-sequence source's `file` joins the folder and first frame
+    with the folder's own separator, matching AE's fsName.
+
+    Regression: the join used PurePosixPath unconditionally, so a Windows
+    folder produced a mixed-separator path (`...\\assets/sequence_001.gif`).
+    That mis-splits under `PurePosixPath.name` on a POSIX host, which broke
+    the media-replacement validation on Linux CI while passing on Windows.
+    """
+
+    EG_DIR = SAMPLES_DIR.parent / "essential_graphics"
+
+    def test_sequence_file_matches_ground_truth(self) -> None:
+        project = parse_project(self.EG_DIR / "media_replacement.aep")
+        footage = get_footage(project, "sequence_[001-003].gif")
+        expected = load_expected(self.EG_DIR, "media_replacement")
+        exp_source = get_footage_from_json_by_name(expected, "sequence_[001-003].gif")[
+            "mainSource"
+        ]
+        # Exact string match against AE's fsName, separators included.
+        assert footage.main_source.file == exp_source["filePath"]
+        # This sample is Windows-authored: no stray forward slash on any host.
+        assert "/" not in footage.main_source.file

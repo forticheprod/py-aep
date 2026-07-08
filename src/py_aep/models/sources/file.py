@@ -84,6 +84,18 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
     return build_generic_opti_data(fmt.source_format)
 
 
+def _join_sequence_frame(folder: str, frame_name: str) -> str:
+    """Join a footage folder with an image-sequence frame filename using the
+    folder's own separator, so the result matches AE's `fsName` (all `\\` for
+    a Windows-authored project, all `/` for a POSIX one) rather than mixing
+    the two. A backslash anywhere marks a Windows path; `PureWindowsPath` also
+    splits any embedded `/`, while `PurePosixPath` leaves a native POSIX path
+    intact (`PureWindowsPath` would rewrite its forward slashes to `\\`)."""
+    if "\\" in folder:
+        return str(PureWindowsPath(folder) / frame_name)
+    return str(PurePosixPath(folder) / frame_name)
+
+
 class FileSource(FootageSource):
     """
     The `FileSource` object describes footage that comes from a file.
@@ -186,8 +198,8 @@ class FileSource(FootageSource):
         alas_data = parse_alas_data(pin_chunks)
         self._target_is_folder: bool = alas_data.get("target_is_folder", False)
         if self._file_names:
-            self._file = str(
-                PurePosixPath(alas_data.get("fullpath", "")) / self._file_names[0]
+            self._file = _join_sequence_frame(
+                alas_data.get("fullpath", ""), self._file_names[0]
             )
         else:
             self._file = alas_data.get("fullpath", "")
@@ -228,7 +240,7 @@ class FileSource(FootageSource):
                         f"{prefix}{_sspc.start_frame:0{_sspc.frame_padding}d}"
                         f"{extension}"
                     )
-                    self._file = str(PurePosixPath(self._file) / first_frame)
+                    self._file = _join_sequence_frame(self._file, first_frame)
 
         if getattr(_opti, "asset_type", "") == "8BPS":
             psd_opti = cast("PsdOptiChunk", _opti)

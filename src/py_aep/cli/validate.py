@@ -19,7 +19,7 @@ import re
 import sys
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from py_aep import parse
@@ -1401,10 +1401,13 @@ def compare_footage_item(
         if "filePath" in exp_source:
             exp_file = exp_source["filePath"]
             parsed_file = parsed_source.get("file", "")
-            # Compare only the filename portion
+            # Compare only the filename portion. PureWindowsPath splits on
+            # both / and \ on every host OS (AE stores Windows-style paths,
+            # and a parsed sequence frame path mixes the two); plain Path
+            # fails to split backslashes when the validator runs on POSIX.
             if exp_file and parsed_file:
-                exp_name = Path(exp_file).name
-                parsed_name = Path(parsed_file).name
+                exp_name = PureWindowsPath(exp_file).name
+                parsed_name = PureWindowsPath(parsed_file).name
                 if exp_name != parsed_name:
                     result.add_diff(
                         f"{source_path}.fileName",
@@ -1637,8 +1640,10 @@ def compare_render_queue(
                 exp_file = exp_om["file"]
                 parsed_file = parsed_om.get("file", "")
                 if exp_file and parsed_file:
-                    exp_name = Path(exp_file).name
-                    parsed_name = Path(str(parsed_file)).name
+                    # See the footage-source note: PureWindowsPath keeps
+                    # basename extraction host-OS-independent.
+                    exp_name = PureWindowsPath(exp_file).name
+                    parsed_name = PureWindowsPath(str(parsed_file)).name
                     if exp_name != parsed_name:
                         result.add_diff(
                             f"{om_path}.fileName",
