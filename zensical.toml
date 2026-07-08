@@ -50,6 +50,9 @@ nav = [
         { "Text" = [
             { "Text Document" = "api/text/text_document.md" },
             { "Font Object" = "api/text/font_object.md" },
+            { "Character Range" = "api/text/character_range.md" },
+            { "Paragraph Range" = "api/text/paragraph_range.md" },
+            { "Composed Line Range" = "api/text/composed_line_range.md" },
         ] },
         { "Sources" = [
             { "Footage Source" = "api/sources/footage_source.md" },

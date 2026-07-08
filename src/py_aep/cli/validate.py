@@ -1036,6 +1036,11 @@ def compare_text_document(
     # the ExtendScript ground truth is host-dependent (e.g. a live Windows font
     # path) and there is nothing in the binary to decode. `font` (the stored
     # PostScript name) is compared instead.
+    if isinstance(expected_doc.get("text"), str) and "\r" in expected_doc["text"]:
+        # ExtendScript reports AE's CR line breaks; TextDocument.text
+        # normalizes them to LF by design.
+        expected_doc = dict(expected_doc)
+        expected_doc["text"] = expected_doc["text"].replace("\r", "\n")
     text_mappings = {
         "text": "text",
         "font": "font",

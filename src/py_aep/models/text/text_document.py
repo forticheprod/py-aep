@@ -28,6 +28,8 @@ from ..validators import (
     validate_box_size,
     validate_enum,
     validate_font_name,
+    validate_int,
+    validate_positive_int,
     validate_positive_nonzero_number,
     validate_positive_number,
     validate_rgb_color,
@@ -35,19 +37,24 @@ from ..validators import (
     validate_vector2,
 )
 from .font_object import FontObject
+from .ranges import (
+    CHARACTER_RANGE_OOB,
+    NOT_ASSOCIATED,
+    CharacterRange,
+    ComposedLineRange,
+    ParagraphRange,
+    _composed_line_spans,
+    _para_run_spans,
+    _parse_color,
+    _raw_text,
+    _visible_length,
+    u16_len,
+)
 
 if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.item_chunks import HeadChunk
-
-
-def _parse_color(paint: object) -> list[float] | None:
-    """Extract [R, G, B] from a COS SimplePaint structure."""
-    argb = cos_get(paint, "0", "1")
-    if isinstance(argb, list) and len(argb) >= 4:
-        return [float(argb[1]), float(argb[2]), float(argb[3])]
-    return None
 
 
 def _build_color_paint(rgb: list[float]) -> dict[str, Any]:
@@ -145,6 +152,11 @@ class TextDocument:
     # lazily by the owning Property when the document is handed out (and at
     # parse time); `None` until then. Underscore-prefixed, so to_dict skips it.
     _head: HeadChunk | None = None
+
+    # `True` for documents parsed from a layer's btdk data. The range API
+    # (AE 24.3+) refuses documents never associated with a layer, exactly
+    # as ExtendScript does for an unapplied `new TextDocument()`.
+    _associated: bool = False
 
     # -- Character-style CosField descriptors (_char_style dict) -----------
 
@@ -376,6 +388,7 @@ class TextDocument:
         obj._fonts = _fonts
         obj._cos_data = _cos_data
         obj._btdk_body = _btdk_body
+        obj._associated = True
         # Instance overrides for non-descriptor fields, plus any
         # CosField-backed kwargs
         overrides = {
@@ -415,7 +428,12 @@ class TextDocument:
         val = cos_get(self._doc, "0", "0")
         if val is not None:
             # AE stores line breaks as CR; present them as LF to callers.
-            return str(val).rstrip("\r\n").replace("\r", "\n")
+            # Strip exactly the one terminator CR - further trailing CRs
+            # are real line breaks (trailing empty paragraphs).
+            raw = str(val)
+            if raw.endswith("\r"):
+                raw = raw[:-1]
+            return raw.replace("\r", "\n")
         return ""
 
     @text.setter
@@ -426,8 +444,43 @@ class TextDocument:
         # AE stores every line break and the run terminator as CR (\r);
         # without a trailing CR terminator AE fails to read the layer.
         normalized = value.replace("\r\n", "\r").replace("\n", "\r")
-        inner["0"] = normalized.rstrip("\r") + "\r"
+        raw = normalized + "\r"
+        self._rebuild_runs_for_text(raw)
+        inner["0"] = raw
         self._propagate_cos()
+
+    def _rebuild_runs_for_text(self, raw: str) -> None:
+        """Collapse the style runs for newly assigned text.
+
+        AE resets styling on text assignment (probed via the
+        `RangesTextReset` fixture): the character runs collapse to a
+        single run carrying the first run's style over the whole text,
+        the paragraph runs become one clone of the first paragraph's
+        run per new paragraph, and manual-kerning runs are dropped.
+
+        Args:
+            raw: The new stored text, including the terminator `\\r`.
+        """
+        inner = self._doc.get("0", {})
+        char_runs = cos_get(inner, "6", "0")
+        if isinstance(char_runs, list) and char_runs:
+            char_runs[0]["1"] = u16_len(raw)
+            del char_runs[1:]
+        para_runs = cos_get(inner, "5", "0")
+        if isinstance(para_runs, list) and para_runs:
+            # One paragraph per CR; the final CR is the terminator, which
+            # belongs to the last paragraph rather than opening a new one.
+            parts = raw.split("\r")
+            if parts and parts[-1] == "":
+                parts = parts[:-1]
+            # Keep the first run object itself: `_para_style` (and the
+            # parser's back-references) alias its style dict.
+            template = para_runs[0]
+            rebuilt = [template] + [copy.deepcopy(template) for _ in parts[1:]]
+            for run, part in zip(rebuilt, parts):
+                run["1"] = u16_len(part) + 1
+            para_runs[:] = rebuilt
+        inner.pop("8", None)
 
     # `fontFamily`, `fontStyle`, and `fontLocation` (deprecated ExtendScript
     # TextDocument fields) are deliberately not exposed: AE does not store them
@@ -639,13 +692,12 @@ class TextDocument:
     def kerning(self) -> int:
         """The Text layer's kerning value. Read-only.
 
-        AE stores a uniform manual-kerning value at the document level;
-        per-pair kerning is not exposed. Returns `0` when unset (the
-        default for metric / optical auto-kerning).
+        ExtendScript reads `0` on every TextDocument value object, even
+        when manual per-character kerning is present (probed on AE 26.3:
+        the manually kerned layer in `samples/models/text/text_ranges.aep`
+        also exports 0). The actual kerning values live in per-character
+        runs; read them through `character_range(...).kerning`.
         """
-        val = cos_get(self._doc, "0", "7")
-        if isinstance(val, int):
-            return val
         return 0
 
     @property
@@ -839,12 +891,179 @@ class TextDocument:
         self._propagate_cos()
 
     @property
-    def composed_line_count(self) -> int | None:
-        """The number of composed lines in the Text layer. Read-only."""
-        txt = self.text
-        if not txt:
+    def box_overflow(self) -> bool | None:
+        """`True` if the text overflows the box. Read-only.
+
+        Derived from the persisted layout cache: AE composes only the
+        lines that fit the box, so a cache covering fewer characters
+        than the stored text means overflow (probed via
+        `samples/models/text/box_overflow.aep`). `None` for point text
+        (ExtendScript reads undefined there) and for documents without
+        a cache. Like the composed-line APIs, the value reflects the
+        last AE composition.
+        """
+        if not self._associated or not self.box_text:
             return None
-        return txt.count("\n") + 1
+        spans = _composed_line_spans(self)
+        if spans is None:
+            return None
+        return spans[-1][1] < u16_len(_raw_text(self))
+
+    @property
+    def composed_line_count(self) -> int | None:
+        """The number of composed lines in the Text layer. Read-only.
+
+        Comes from the layout cache AE persisted at save time. Matching
+        ExtendScript's un-reapplied TextDocument values, the count stays
+        cached even when the text was modified since (py_aep cannot
+        recompose). `None` for documents never parsed from a layer.
+        """
+        if not self._associated:
+            return None
+        spans = _composed_line_spans(self)
+        if spans is None:
+            return None
+        return len(spans)
+
+    # -- Text ranges (AE 24.3+ ExtendScript API) -----------------------------
+
+    def _require_association(self) -> None:
+        """Raise unless this document was parsed from a layer's data.
+
+        AE refuses every range API on a `new TextDocument()` never
+        fetched from a layer ("Unable to set value as it is not
+        associated with a layer."); template-constructed documents
+        behave identically here.
+        """
+        if not self._associated:
+            raise ValueError(NOT_ASSOCIATED)
+
+    def character_range(
+        self, character_start: int, signed_character_end: int | None = None
+    ) -> CharacterRange:
+        """A [CharacterRange][] over part of this document.
+
+        Args:
+            character_start: First character index (UTF-16 units,
+                `0 <= character_start <= text length`).
+            signed_character_end: Index past the last character. `-1`
+                resolves dynamically to the text length; when omitted,
+                defaults to `character_start + 1`.
+
+        Raises:
+            ValueError: When the indices are outside the document
+                bounds (AE raises at creation time).
+        """
+        self._require_association()
+        validate_positive_int(character_start, self)
+        if signed_character_end is None:
+            signed_character_end = character_start + 1
+        else:
+            validate_int(signed_character_end, self)
+        return CharacterRange(self, character_start, signed_character_end)
+
+    def paragraph_range(
+        self, paragraph_index_start: int, signed_paragraph_index_end: int | None = None
+    ) -> ParagraphRange:
+        """A [ParagraphRange][] over part of this document.
+
+        Args:
+            paragraph_index_start: First paragraph index
+                (`0 <= paragraph_index_start < paragraph count`).
+            signed_paragraph_index_end: Index past the last paragraph.
+                `-1` resolves dynamically to the paragraph count; when
+                omitted, defaults to `paragraph_index_start + 1`.
+
+        Raises:
+            ValueError: When the indices are outside the document
+                bounds (AE raises at creation time).
+        """
+        self._require_association()
+        validate_positive_int(paragraph_index_start, self)
+        if signed_paragraph_index_end is None:
+            signed_paragraph_index_end = paragraph_index_start + 1
+        else:
+            validate_int(signed_paragraph_index_end, self)
+        return ParagraphRange(self, paragraph_index_start, signed_paragraph_index_end)
+
+    def composed_line_range(
+        self,
+        composed_line_index_start: int,
+        signed_composed_line_index_end: int | None = None,
+    ) -> ComposedLineRange:
+        """A [ComposedLineRange][] over part of this document.
+
+        Composed lines come from the layout cache AE persisted at save
+        time; see [ComposedLineRange][] for the staleness semantics
+        after py-side edits.
+
+        Args:
+            composed_line_index_start: First composed-line index
+                (`0 <= composed_line_index_start < composed line count`).
+            signed_composed_line_index_end: Index past the last line.
+                `-1` resolves dynamically to the line count; when
+                omitted, defaults to `composed_line_index_start + 1`.
+
+        Raises:
+            ValueError: When the indices are outside the cached
+                composed lines (AE raises at creation time).
+        """
+        self._require_association()
+        validate_positive_int(composed_line_index_start, self)
+        if signed_composed_line_index_end is None:
+            signed_composed_line_index_end = composed_line_index_start + 1
+        else:
+            validate_int(signed_composed_line_index_end, self)
+        return ComposedLineRange(
+            self, composed_line_index_start, signed_composed_line_index_end
+        )
+
+    def paragraph_character_indexes_at(self, character_index: int) -> dict[str, int]:
+        """The character bounds of the paragraph containing an index.
+
+        Args:
+            character_index: A character index (UTF-16 units) within
+                the text.
+
+        Returns:
+            `{"start": int, "end": int}` for the containing paragraph.
+
+        Raises:
+            ValueError: When `character_index` is outside the text.
+        """
+        self._require_association()
+        validate_positive_int(character_index, self)
+        visible = _visible_length(self)
+        for start, end, _payload in _para_run_spans(self):
+            if start <= character_index < end:
+                return {"start": start, "end": min(end, visible)}
+        raise ValueError(CHARACTER_RANGE_OOB)
+
+    def composed_line_character_indexes_at(
+        self, character_index: int
+    ) -> dict[str, int]:
+        """The character bounds of the composed line containing an index.
+
+        Args:
+            character_index: A character index (UTF-16 units) within
+                the text.
+
+        Returns:
+            `{"start": int, "end": int}` for the containing composed line.
+
+        Raises:
+            ValueError: When `character_index` is outside the text or
+                the document has no composed-line cache.
+        """
+        self._require_association()
+        validate_positive_int(character_index, self)
+        visible = _visible_length(self)
+        spans = _composed_line_spans(self)
+        if spans is not None:
+            for start, end in spans:
+                if start <= character_index < end:
+                    return {"start": start, "end": min(end, visible)}
+        raise ValueError(CHARACTER_RANGE_OOB)
 
     # -- COS write-back ----------------------------------------------------
 
