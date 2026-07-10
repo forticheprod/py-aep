@@ -178,7 +178,14 @@ class CosField(Generic[T]):
         key: str,
         **kwargs: Any,
     ) -> CosField[float | None]:
-        """Create a CosField that coerces to float."""
+        """Create a CosField that coerces to float in both directions.
+
+        The write-side coercion matters for byte fidelity: AE stores
+        these keys as floats, and an `int` passed by a caller would
+        serialize without the decimal marker.
+        """
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = float
         return cast(
             "CosField[float | None]", cls(dict_attr, key, transform=float, **kwargs)
         )

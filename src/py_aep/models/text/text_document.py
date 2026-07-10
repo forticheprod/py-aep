@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from ...ae_version import requires_version
 from ...binary.chunk import ListChunk
-from ...cos import CosField, CosName, cos_get, get_cos_template, serialize
+from ...cos import cos_get, get_cos_template, serialize
 from ...enums import (
     AutoKernType,
     BaselineDirection,
@@ -29,6 +29,7 @@ from ..validators import (
     validate_enum,
     validate_font_name,
     validate_int,
+    validate_normalized_float,
     validate_positive_int,
     validate_positive_nonzero_number,
     validate_positive_number,
@@ -42,11 +43,16 @@ from .ranges import (
     NOT_ASSOCIATED,
     CharacterRange,
     ComposedLineRange,
+    DocumentWideCosField,
     ParagraphRange,
+    _apply_char_key,
+    _build_color_paint,
     _composed_line_spans,
     _para_run_spans,
     _parse_color,
     _raw_text,
+    _rebuild_kern_runs,
+    _register_font_prepended,
     _visible_length,
     u16_len,
 )
@@ -55,23 +61,6 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.item_chunks import HeadChunk
-
-
-def _build_color_paint(rgb: list[float]) -> dict[str, Any]:
-    """Build a COS SimplePaint dict from [R, G, B].
-
-    The 4-float array is `[alpha, R, G, B]`; AE stores a fully opaque
-    alpha of `1.0`.
-    """
-    return {
-        "99": CosName("SimplePaint"),
-        "0": {"0": 1, "1": [1.0, rgb[0], rgb[1], rgb[2]]},
-    }
-
-
-def _build_font_entry(post_script_name: str) -> dict[str, Any]:
-    """Build a COS CoolTypeFont entry for a font PostScript name."""
-    return {"0": {"99": CosName("CoolTypeFont"), "0": {"0": post_script_name, "2": 1}}}
 
 
 def _box_coords(left: float, top: float, width: float, height: float) -> list[float]:
@@ -160,38 +149,62 @@ class TextDocument:
 
     # -- Character-style CosField descriptors (_char_style dict) -----------
 
-    font_size = CosField.float(
+    font_size = DocumentWideCosField.float(
         "_char_style", "1", default=None, validate=validate_positive_nonzero_number
     )
     """The Text layer's font size in pixels. Read / Write."""
 
-    faux_bold = CosField.bool("_char_style", "2", default=None)
+    faux_bold = DocumentWideCosField.bool("_char_style", "2", default=None)
     """`True` if a Text layer has faux bold enabled. Read / Write."""
 
-    faux_italic = CosField.bool("_char_style", "3", default=None)
+    faux_italic = DocumentWideCosField.bool("_char_style", "3", default=None)
     """`True` if a Text layer has faux italic enabled. Read / Write."""
 
-    tracking = CosField.float("_char_style", "8", default=None)
+    tracking = DocumentWideCosField.float("_char_style", "8", default=None)
     """The Text layer's spacing between characters. Read / Write."""
 
-    auto_kern_type = CosField.enum(
-        AutoKernType,
-        "_char_style",
-        "11",
-        default=AutoKernType.NO_AUTO_KERN,
-    )
-    """The Text layer's auto kern type option. Read / Write."""
+    @property
+    def auto_kern_type(self) -> AutoKernType | None:
+        """The Text layer's auto kern type option. Read / Write.
 
-    horizontal_scale = CosField.float("_char_style", "6", default=None)
+        Setting a non-manual kern type also clears the manual kerning
+        values document-wide, dropping the kern-run array and the
+        leading-edge value like the range setter (probed `X_AKT_SET`).
+        """
+        override: AutoKernType | None = self._override("auto_kern_type")
+        if override is not None:
+            return override
+        if self._char_style is None:
+            return AutoKernType.NO_AUTO_KERN
+        raw = self._char_style.get("11")
+        if raw is None:
+            return AutoKernType.NO_AUTO_KERN
+        return AutoKernType.from_binary(raw)
+
+    @auto_kern_type.setter
+    def auto_kern_type(self, value: AutoKernType) -> None:
+        validate_enum(AutoKernType)(value)
+        self.__dict__.pop("auto_kern_type", None)
+        if self._char_style is None:
+            self._set_override("auto_kern_type", AutoKernType(value))
+            return
+        total = u16_len(_raw_text(self))
+        _apply_char_key(self, 0, total, "11", AutoKernType(value).to_binary())
+        if value != AutoKernType.NO_AUTO_KERN:
+            # Drops the kern-run array and leading-edge value with it.
+            _rebuild_kern_runs(self, [None] * total)
+        self._propagate_cos()
+
+    horizontal_scale = DocumentWideCosField.float("_char_style", "6", default=None)
     """This Text layer's horizontal scale in pixels. Read / Write."""
 
-    vertical_scale = CosField.float("_char_style", "7", default=None)
+    vertical_scale = DocumentWideCosField.float("_char_style", "7", default=None)
     """This Text layer's vertical scale in pixels. Read / Write."""
 
-    baseline_shift = CosField.float("_char_style", "9", default=None)
+    baseline_shift = DocumentWideCosField.float("_char_style", "9", default=None)
     """This Text layer's baseline shift in pixels. Read / Write."""
 
-    font_caps_option = CosField.enum(
+    font_caps_option = DocumentWideCosField.enum(
         FontCapsOption,
         "_char_style",
         "12",
@@ -199,7 +212,7 @@ class TextDocument:
     )
     """The Text layer's font caps option. Read / Write."""
 
-    font_baseline_option = CosField.enum(
+    font_baseline_option = DocumentWideCosField.enum(
         FontBaselineOption,
         "_char_style",
         "13",
@@ -207,26 +220,28 @@ class TextDocument:
     )
     """The Text layer's font baseline option. Read / Write."""
 
-    tsume = CosField.float("_char_style", "36", default=0.0)
+    tsume = DocumentWideCosField.float(
+        "_char_style", "36", default=0.0, validate=validate_normalized_float
+    )
     """This Text layer's tsume value (0.0 to 1.0). Read / Write."""
 
-    apply_fill = CosField.bool("_char_style", "56", default=None)
+    apply_fill = DocumentWideCosField.bool("_char_style", "56", default=None)
     """When `True`, the Text layer shows a fill. Read / Write."""
 
-    apply_stroke = CosField.bool("_char_style", "57", default=False)
+    apply_stroke = DocumentWideCosField.bool("_char_style", "57", default=False)
     """When `True`, the Text layer shows a stroke. Read / Write."""
 
-    stroke_over_fill = CosField.bool("_char_style", "58", default=True)
+    stroke_over_fill = DocumentWideCosField.bool("_char_style", "58", default=True)
     """When `True`, the stroke appears over the fill. Read / Write."""
 
-    stroke_width = CosField.float(
+    stroke_width = DocumentWideCosField.float(
         "_char_style", "63", default=1.0, validate=validate_positive_nonzero_number
     )
     """The Text layer's stroke thickness in pixels. Read / Write."""
 
     # -- Paragraph-style CosField descriptors (_para_style dict) -----------
 
-    justification = CosField.enum(
+    justification = DocumentWideCosField.enum(
         ParagraphJustification,
         "_para_style",
         "0",
@@ -234,25 +249,48 @@ class TextDocument:
     )
     """The paragraph justification for the Text layer. Read / Write."""
 
-    first_line_indent = CosField.float("_para_style", "1", default=0.0)
+    first_line_indent = DocumentWideCosField.float("_para_style", "1", default=0.0)
     """The Text layer's paragraph first line indent. Read / Write."""
 
-    start_indent = CosField.float("_para_style", "2", default=0.0)
+    start_indent = DocumentWideCosField.float("_para_style", "2", default=0.0)
     """The Text layer's paragraph start indent. Read / Write."""
 
-    end_indent = CosField.float("_para_style", "3", default=0.0)
+    end_indent = DocumentWideCosField.float("_para_style", "3", default=0.0)
     """The Text layer's paragraph end indent. Read / Write."""
 
-    space_before = CosField.float("_para_style", "4", default=0.0)
+    space_before = DocumentWideCosField.float("_para_style", "4", default=0.0)
     """The Text layer's paragraph space before. Read / Write."""
 
-    space_after = CosField.float("_para_style", "5", default=0.0)
+    space_after = DocumentWideCosField.float("_para_style", "5", default=0.0)
     """The Text layer's paragraph space after. Read / Write."""
 
-    auto_leading = CosField.bool("_char_style", "4", default=True)
-    """The Text layer's auto leading option. Read / Write."""
+    @property
+    def auto_leading(self) -> bool | None:
+        """The Text layer's auto leading option. Read / Write.
 
-    leading_type = CosField.enum(
+        Enabling auto-leading also resets the explicit leading key to
+        AE's sentinel across the document (probed `X_AL_SET`).
+        """
+        override: bool | None = self._override("auto_leading")
+        if override is not None:
+            return override
+        if self._char_style is None:
+            return True
+        return bool(self._char_style.get("4", True))
+
+    @auto_leading.setter
+    def auto_leading(self, value: bool) -> None:
+        self.__dict__.pop("auto_leading", None)
+        if self._char_style is None:
+            self._set_override("auto_leading", bool(value))
+            return
+        total = u16_len(_raw_text(self))
+        _apply_char_key(self, 0, total, "4", bool(value))
+        if value:
+            _apply_char_key(self, 0, total, "5", 0.01)
+        self._propagate_cos()
+
+    leading_type = DocumentWideCosField.enum(
         LeadingType,
         "_para_style",
         "8",
@@ -260,19 +298,19 @@ class TextDocument:
     )
     """The Text layer's paragraph leading type. Read / Write."""
 
-    auto_hyphenate = CosField.bool("_para_style", "9", default=None)
+    auto_hyphenate = DocumentWideCosField.bool("_para_style", "9", default=None)
     """The Text layer's auto hyphenate option. Read / Write."""
 
-    hanging_roman = CosField.bool("_para_style", "21", default=False)
+    hanging_roman = DocumentWideCosField.bool("_para_style", "21", default=False)
     """The Text layer's Roman Hanging Punctuation. Read / Write."""
 
-    every_line_composer = CosField.bool("_para_style", "29", default=False)
+    every_line_composer = DocumentWideCosField.bool("_para_style", "29", default=False)
     """The Text layer's Every-Line Composer option. Read / Write.
 
     `True` when Every-Line Composer is used, `False` for Single-Line.
     """
 
-    baseline_direction = CosField.enum(
+    baseline_direction = DocumentWideCosField.enum(
         BaselineDirection,
         "_char_style",
         "35",
@@ -280,13 +318,13 @@ class TextDocument:
     )
     """The Text layer's baseline direction. Read / Write."""
 
-    ligature = CosField.bool("_char_style", "18", default=False)
+    ligature = DocumentWideCosField.bool("_char_style", "18", default=False)
     """When `True`, ligature is used. Read / Write."""
 
-    no_break = CosField.bool("_char_style", "52", default=False)
+    no_break = DocumentWideCosField.bool("_char_style", "52", default=False)
     """When `True`, the no-break attribute is applied. Read / Write."""
 
-    digit_set = CosField.enum(
+    digit_set = DocumentWideCosField.enum(
         DigitSet,
         "_char_style",
         "70",
@@ -294,7 +332,7 @@ class TextDocument:
     )
     """The Text layer's digit set option. Read / Write."""
 
-    line_join_type = CosField.enum(
+    line_join_type = DocumentWideCosField.enum(
         LineJoinType,
         "_char_style",
         "62",
@@ -302,7 +340,7 @@ class TextDocument:
     )
     """The Text layer's line join type for strokes. Read / Write."""
 
-    direction = CosField.enum(
+    direction = DocumentWideCosField.enum(
         ParagraphDirection,
         "_para_style",
         "33",
@@ -471,7 +509,7 @@ class TextDocument:
             # One paragraph per CR; the final CR is the terminator, which
             # belongs to the last paragraph rather than opening a new one.
             parts = raw.split("\r")
-            if parts and parts[-1] == "":
+            if parts[-1] == "":
                 parts = parts[:-1]
             # Keep the first run object itself: `_para_style` (and the
             # parser's back-references) alias its style dict.
@@ -480,7 +518,43 @@ class TextDocument:
             for run, part in zip(rebuilt, parts):
                 run["1"] = u16_len(part) + 1
             para_runs[:] = rebuilt
+            self._rebuild_line_count_runs(parts)
         inner.pop("8", None)
+        inner.pop("7", None)
+
+    def _rebuild_line_count_runs(self, parts: list[str]) -> None:
+        """Keep `doc["1"]["1"]` (per-paragraph composed-line counts)
+        structurally consistent with the paragraphs.
+
+        AE stores this cache-family array exactly when a document has
+        more than one paragraph (probed across all text fixtures) and
+        omits it otherwise. Counts of 1 are correct for point text
+        (paragraphs never wrap); for box text AE recomputes the real
+        counts when it next opens the file, like the `/PC` cache.
+        """
+        state = self._doc.get("1")
+        if not isinstance(state, dict):
+            return
+        if len(parts) <= 1:
+            state.pop("1", None)
+            return
+        runs = [{"0": {"1": 1}, "1": u16_len(part) + 1} for part in parts]
+        if "1" in state:
+            state["1"] = {"0": runs}
+            return
+        # Fresh key: AE orders it between "0" and the /PC cache "2";
+        # rebuild the dict to splice it in place (insertion order is
+        # what the serializer emits).
+        items = list(state.items())
+        state.clear()
+        inserted = False
+        for key, value in items:
+            if key == "2" and not inserted:
+                state["1"] = {"0": runs}
+                inserted = True
+            state[key] = value
+        if not inserted:
+            state["1"] = {"0": runs}
 
     # `fontFamily`, `fontStyle`, and `fontLocation` (deprecated ExtendScript
     # TextDocument fields) are deliberately not exposed: AE does not store them
@@ -509,7 +583,7 @@ class TextDocument:
         idx = self._font_index(value)
         if idx is None:
             idx = self._register_font(value)
-        self._char_style["0"] = idx
+        _apply_char_key(self, 0, u16_len(_raw_text(self)), "0", idx)
         self.__dict__.pop("font", None)
         self.__dict__.pop("font_object", None)
         self._propagate_cos()
@@ -522,21 +596,13 @@ class TextDocument:
         return None
 
     def _register_font(self, post_script_name: str) -> int:
-        """Append a new font to the COS font array and `_fonts`.
+        """Prepend a new font to the COS font array and `_fonts`.
 
-        AE prepends the active font, but appending avoids re-indexing the
-        font references held by existing character/paragraph styles while
-        still producing a valid file. Returns the new font's index.
+        AE inserts new fonts at index 0 and reindexes every existing
+        font reference (probed via the `W_FONT` / `W_PASTE_XDOC` write
+        fixtures). Returns the new font's index (always 0).
         """
-        font_array = (
-            self._cos_data.setdefault("0", {}).setdefault("1", {}).setdefault("0", [])
-        )
-        entry = _build_font_entry(post_script_name)
-        font_array.append(entry)
-        self._fonts.append(
-            FontObject(_font_data=entry["0"]["0"], _font_entry=entry["0"])
-        )
-        return len(self._fonts) - 1
+        return _register_font_prepended(self, post_script_name)
 
     @property
     def font_object(self) -> FontObject | None:
@@ -566,10 +632,8 @@ class TextDocument:
             validate_rgb_color(value)
         self.__dict__.pop("fill_color", None)
         if self._char_style is not None:
-            if value is None:
-                self._char_style.pop("53", None)
-            else:
-                self._char_style["53"] = _build_color_paint(value)
+            payload = _build_color_paint(value) if value is not None else None
+            _apply_char_key(self, 0, u16_len(_raw_text(self)), "53", payload)
             self._propagate_cos()
         else:
             self._set_override("fill_color", value)
@@ -590,10 +654,8 @@ class TextDocument:
             validate_rgb_color(value)
         self.__dict__.pop("stroke_color", None)
         if self._char_style is not None:
-            if value is None:
-                self._char_style.pop("54", None)
-            else:
-                self._char_style["54"] = _build_color_paint(value)
+            payload = _build_color_paint(value) if value is not None else None
+            _apply_char_key(self, 0, u16_len(_raw_text(self)), "54", payload)
             self._propagate_cos()
         else:
             self._set_override("stroke_color", value)
@@ -627,8 +689,9 @@ class TextDocument:
         self.__dict__.pop("leading", None)
         if self._char_style is not None and value is not None:
             # Setting an explicit leading turns auto-leading off, matching AE.
-            self._char_style["5"] = value
-            self._char_style["4"] = False
+            total = u16_len(_raw_text(self))
+            _apply_char_key(self, 0, total, "5", float(value))
+            _apply_char_key(self, 0, total, "4", False)
             self._propagate_cos()
         else:
             self._set_override("leading", value)
@@ -692,12 +755,16 @@ class TextDocument:
     def kerning(self) -> int:
         """The Text layer's kerning value. Read-only.
 
-        ExtendScript reads `0` on every TextDocument value object, even
-        when manual per-character kerning is present (probed on AE 26.3:
-        the manually kerned layer in `samples/models/text/text_ranges.aep`
-        also exports 0). The actual kerning values live in per-character
-        runs; read them through `character_range(...).kerning`.
+        Reads the leading-edge manual kern value AE stores at
+        `doc["0"]["7"]` - written only when a kerning set includes pair
+        position 0 (probed `W_KERN_START`). Documents without one read
+        `0`, which is also what ExtendScript exports for every probed
+        document-level read; per-character values live in the kerning
+        runs via `character_range(...).kerning`.
         """
+        val = cos_get(self._doc, "0", "7")
+        if isinstance(val, int):
+            return val
         return 0
 
     @property

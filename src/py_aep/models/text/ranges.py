@@ -28,9 +28,11 @@ Index semantics (probed against AE 26.3, see
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
 
-from ...cos import cos_get
+from ...ae_version import get_ae_version_major
+from ...cos import CosField, CosName, cos_get
 from ...enums import (
     AutoKernType,
     BaselineDirection,
@@ -42,12 +44,23 @@ from ...enums import (
     ParagraphDirection,
     ParagraphJustification,
 )
+from ...svg.fonts import font_version_string
+from ..validators import (
+    validate_enum,
+    validate_font_name,
+    validate_int,
+    validate_normalized_float,
+    validate_positive_nonzero_number,
+    validate_positive_number,
+    validate_rgb_color,
+    validate_text,
+)
+from .font_object import FontObject
 
 if TYPE_CHECKING:
     from typing import Any, Callable
 
     from ...enums import ComposerEngine
-    from .font_object import FontObject
     from .text_document import TextDocument
 
 T = TypeVar("T")
@@ -209,6 +222,406 @@ def _parse_color(paint: object) -> list[float] | None:
     return None
 
 
+def _build_color_paint(rgb: list[float]) -> dict[str, Any]:
+    """Build a COS SimplePaint dict from `[R, G, B]`.
+
+    The 4-float array is `[alpha, R, G, B]`; AE stores a fully opaque
+    alpha of `1.0`.
+    """
+    return {
+        "99": CosName("SimplePaint"),
+        "0": {"0": 1, "1": [1.0, float(rgb[0]), float(rgb[1]), float(rgb[2])]},
+    }
+
+
+def _build_font_entry(post_script_name: str) -> dict[str, Any]:
+    """Build a COS CoolTypeFont entry for a font PostScript name."""
+    return {"0": {"99": CosName("CoolTypeFont"), "0": {"0": post_script_name, "2": 1}}}
+
+
+def _register_font_prepended(doc: TextDocument, post_script_name: str) -> int:
+    """Prepend a font entry and reindex every existing reference.
+
+    AE inserts new fonts at index 0 and bumps all existing references by
+    one (probed: `W_FONT`, `W_PASTE_XDOC`). Font indices live in the
+    char-run styles of every keyframe document sharing this `_cos_data`,
+    the document-default character style at `cos["1"]["2"]`, the
+    typography settings at `cos["1"]["0"]`, the used-font records at
+    `cos["1"]["5"][*]["4"]` (which also gain a record for the new font)
+    and the header style presets at `cos["0"]["5"]["0"]`; the layout
+    cache holds none. The host font's version string (name ID 5) is
+    stamped on the entry and the used-font record like AE does, when
+    the font is installed. Returns the new font's index (always 0).
+    """
+    cos = doc._cos_data
+    font_array = cos.setdefault("0", {}).setdefault("1", {}).setdefault("0", [])
+    entry = _build_font_entry(post_script_name)
+    version = font_version_string(post_script_name)
+    if version is not None:
+        entry["0"]["0"]["5"] = version
+    font_array.insert(0, entry)
+    for entry_doc in cos.get("1", {}).get("1", []) or []:
+        runs = cos_get(entry_doc, "0", "6", "0")
+        if not isinstance(runs, list):
+            continue
+        for run in runs:
+            style = cos_get(run, "0", "0", "6")
+            if isinstance(style, dict) and isinstance(style.get("0"), int):
+                style["0"] += 1
+    default_char = cos_get(cos, "1", "2")
+    if isinstance(default_char, dict) and isinstance(default_char.get("0"), int):
+        default_char["0"] += 1
+    typography = cos_get(cos, "1", "0", "0")
+    if isinstance(typography, dict) and isinstance(typography.get("0"), int):
+        typography["0"] += 1
+    presets = cos_get(cos, "0", "5", "0")
+    if isinstance(presets, list):
+        for preset in presets:
+            style = cos_get(preset, "0", "6")
+            if isinstance(style, dict) and isinstance(style.get("0"), int):
+                style["0"] += 1
+    sessions = cos_get(cos, "1", "5")
+    new_record: dict[str, Any] = {"0": 0}
+    if version is not None:
+        new_record["1"] = version
+    if isinstance(sessions, list):
+        appended = False
+        for session in sessions:
+            records = session.get("4") if isinstance(session, dict) else None
+            if not isinstance(records, list):
+                continue
+            for record in records:
+                if isinstance(record, dict) and isinstance(record.get("0"), int):
+                    record["0"] += 1
+            if not appended:
+                records.append(new_record)
+                appended = True
+    doc._fonts.insert(0, FontObject(_font_data=entry["0"]["0"], _font_entry=entry["0"]))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Write engine (run splitting / merging)
+#
+# All rules below are AE-probed via samples/models/text/text_writes.aep;
+# see .claude/plans/text-range-writes.md for the fixture-to-rule mapping.
+# ---------------------------------------------------------------------------
+
+
+def _refresh_style_aliases(doc: TextDocument) -> None:
+    """Re-point `_char_style` / `_para_style` at the current first runs.
+
+    TextDocument's document-level accessors alias the first run's style
+    dict by object identity; merges can replace that object, so every
+    structural op must end here.
+    """
+    char = cos_get(doc._doc, "0", "6", "0", 0, "0", "0", "6")
+    if isinstance(char, dict):
+        doc._char_style = char
+    para = cos_get(doc._doc, "0", "5", "0", 0, "0", "0", "5")
+    if isinstance(para, dict):
+        doc._para_style = para
+
+
+def _snap_to_pairs(raw: str, start: int, end: int) -> tuple[int, int]:
+    """Expand u16 boundaries outward so they never split a surrogate pair.
+
+    AE expands a mid-pair style write to cover the whole pair
+    (`W_SURROGATE_STYLE`). A zero-span caret cannot expand - it moves
+    past the pair instead, so caret writes stay zero-span no-ops
+    (`W_ZERO_STYLE`) rather than covering (or deleting) the glyph.
+    """
+
+    def mid_pair(index: int) -> bool:
+        if index <= 0 or index >= u16_len(raw):
+            return False
+        before = u16_slice(raw, index - 1, index)
+        after = u16_slice(raw, index, index + 1)
+        return 0xD800 <= ord(before) <= 0xDBFF and 0xDC00 <= ord(after) <= 0xDFFF
+
+    if start == end:
+        if mid_pair(start):
+            return start + 1, end + 1
+        return start, end
+    if mid_pair(start):
+        start -= 1
+    if mid_pair(end):
+        end += 1
+    return start, end
+
+
+def _split_run_array(runs: list[dict[str, Any]], offsets: set[int]) -> None:
+    """Split `{"0": payload, "1": count}` entries in place at u16 offsets.
+
+    The original entry keeps its identity as the LEFT fragment, so run
+    0's payload object only ever narrows (never detaches) and the
+    `_char_style` alias stays inside the serialized tree.
+    """
+    cuts = sorted(offsets)
+    pos = 0
+    i = 0
+    while i < len(runs):
+        length = runs[i].get("1", 0)
+        run_end = pos + length
+        cut = None
+        for offset in cuts:
+            if pos < offset < run_end:
+                cut = offset
+                break
+        if cut is None:
+            pos = run_end
+            i += 1
+            continue
+        clone = copy.deepcopy(runs[i])
+        runs[i]["1"] = cut - pos
+        clone["1"] = run_end - cut
+        runs.insert(i + 1, clone)
+        pos = cut
+        i += 1
+
+
+def _merge_adjacent_runs(runs: list[dict[str, Any]]) -> None:
+    """Coalesce adjacent runs whose full payloads compare equal.
+
+    AE merges after every write (`W_MERGE_SAME`, `W_PARTIAL_EQ`) and a
+    no-op set leaves a uniform document at one run (`W_NOOP`). The first
+    run of each merged group keeps its object (aliasing, key order).
+    """
+    i = 0
+    while i + 1 < len(runs):
+        if runs[i].get("0") == runs[i + 1].get("0"):
+            runs[i]["1"] = runs[i].get("1", 0) + runs[i + 1].get("1", 0)
+            del runs[i + 1]
+        else:
+            i += 1
+
+
+def _apply_char_key(
+    doc: TextDocument, start: int, end: int, key: str, value: Any
+) -> None:
+    """Write one char-style key over `[start, end)` with AE's rules.
+
+    Zero-span writes are silent no-ops (`W_ZERO_STYLE`); a write ending
+    at the visible length extends through the raw terminator
+    (`W_MERGE_SAME`); `value=None` clears the key.
+    """
+    raw = _raw_text(doc)
+    start, end = _snap_to_pairs(raw, start, end)
+    if start == end:
+        return
+    if end == _visible_length(doc):
+        end = u16_len(raw)
+    runs = cos_get(doc._doc, "0", "6", "0")
+    if not isinstance(runs, list) or not runs:
+        return
+    _split_run_array(runs, {start, end})
+    pos = 0
+    for run in runs:
+        run_end = pos + run.get("1", 0)
+        if pos >= start and run_end <= end:
+            style = cos_get(run, "0", "0", "6")
+            if isinstance(style, dict):
+                if value is None:
+                    style.pop(key, None)
+                else:
+                    style[key] = value
+        pos = run_end
+    _merge_adjacent_runs(runs)
+    _refresh_style_aliases(doc)
+
+
+def _kern_values(doc: TextDocument) -> list[Any]:
+    """Per-character manual-kern values decoded from the kern runs."""
+    total = u16_len(_raw_text(doc))
+    values: list[Any] = [None] * total
+    for start, end, payload in _kern_run_spans(doc):
+        value = payload.get("0")
+        if value is not None:
+            for i in range(start, min(end, total)):
+                values[i] = value
+    return values
+
+
+def _rebuild_kern_runs(doc: TextDocument, values: list[Any]) -> None:
+    """Re-emit the kern-run array from a per-character value map.
+
+    AE stores kerned characters as individual length-1 runs and merges
+    only the empty gaps (probed `W_KERN_MID` / `W_KERN_START`); the
+    array covers the raw text contiguously. The `doc["0"]["8"]` holder
+    dict is kept in place when it exists so `doc["0"]`'s key order is
+    preserved; a fresh key is appended, like AE's creation order.
+    """
+    inner = doc._doc.setdefault("0", {})
+    has_value = any(v is not None for v in values)
+    if not has_value:
+        # AE drops the array entirely once no manual values remain
+        # (probed `X_AKT_SET`); the leading-edge value at "7" only
+        # exists alongside the array, so it goes too.
+        inner.pop("8", None)
+        inner.pop("7", None)
+        return
+    runs: list[dict[str, Any]] = []
+    i = 0
+    total = len(values)
+    while i < total:
+        if values[i] is None:
+            j = i
+            while j < total and values[j] is None:
+                j += 1
+            runs.append({"0": {}, "1": j - i})
+            i = j
+        else:
+            runs.append({"0": {"0": values[i]}, "1": 1})
+            i += 1
+    holder = inner.get("8")
+    if isinstance(holder, dict):
+        holder["0"] = runs
+    else:
+        inner["8"] = {"0": runs}
+
+
+def _splice_text(
+    doc: TextDocument,
+    start: int,
+    end: int,
+    new_text: str,
+    insert_runs: list[dict[str, Any]] | None = None,
+    insert_kern: list[Any] | None = None,
+) -> None:
+    """Replace `[start, end)` of the raw text, splicing every run array.
+
+    AE's probed rules: the replacement takes the style of the first
+    replaced character (the caret's containing run for zero-span
+    inserts), a `\\r` in the replacement splits paragraphs (the donor
+    paragraph's run is cloned), kern values survive for untouched
+    characters only, and the trailing terminator is preserved
+    (`W_TEXT_*`, `X_TEXT_KERN`, `X_TEXT_END`). `insert_runs` /
+    `insert_kern` override the donor styling for paste transplants.
+    """
+    raw = _raw_text(doc)
+    total = u16_len(raw)
+    insert_len = u16_len(new_text)
+    if start == end and insert_len == 0 and insert_runs is None:
+        return
+    kern_values = _kern_values(doc)
+    new_raw = u16_slice(raw, 0, start) + new_text + u16_slice(raw, end, total)
+    parts = new_raw.split("\r")
+    if parts[-1] == "":
+        parts = parts[:-1]
+    inner = doc._doc.setdefault("0", {})
+
+    runs = cos_get(inner, "6", "0")
+    if isinstance(runs, list) and runs:
+        if insert_runs is None:
+            donor = None
+            pos = 0
+            for run in runs:
+                run_end = pos + run.get("1", 0)
+                if pos <= start < run_end:
+                    donor = copy.deepcopy(run)
+                    break
+                pos = run_end
+            if donor is None:
+                donor = copy.deepcopy(runs[-1])
+            donor["1"] = insert_len
+            insert_entries = [donor] if insert_len else []
+        else:
+            insert_entries = insert_runs
+        _split_run_array(runs, {start, end})
+        rebuilt: list[dict[str, Any]] = []
+        pos = 0
+        inserted = False
+        for run in runs:
+            run_end = pos + run.get("1", 0)
+            if run_end <= start:
+                rebuilt.append(run)
+            elif pos >= end:
+                if not inserted:
+                    rebuilt.extend(insert_entries)
+                    inserted = True
+                rebuilt.append(run)
+            pos = run_end
+        if not inserted:
+            rebuilt.extend(insert_entries)
+        runs[:] = rebuilt
+        _merge_adjacent_runs(runs)
+
+    para_runs = cos_get(inner, "5", "0")
+    if isinstance(para_runs, list) and para_runs:
+        old_spans: list[tuple[int, int, dict[str, Any]]] = []
+        pos = 0
+        for entry in para_runs:
+            length = entry.get("1", 0)
+            old_spans.append((pos, pos + length, entry))
+            pos += length
+
+        def donor_entry(new_pos: int) -> dict[str, Any]:
+            if new_pos < start:
+                old_pos = new_pos
+            elif new_pos >= start + insert_len:
+                old_pos = new_pos - insert_len + (end - start)
+            else:
+                old_pos = start
+            old_pos = min(old_pos, total - 1) if total else 0
+            for span_start, span_end, entry in old_spans:
+                if span_start <= old_pos < span_end:
+                    return entry
+            return old_spans[-1][2]
+
+        new_para_runs: list[dict[str, Any]] = []
+        pos = 0
+        for i, part in enumerate(parts):
+            entry = donor_entry(pos)
+            # Keep the first run's object identity when it stays first
+            # (aliased by `_para_style`); clone everything else.
+            clone = (
+                entry if (i == 0 and entry is para_runs[0]) else copy.deepcopy(entry)
+            )
+            clone["1"] = u16_len(part) + 1
+            new_para_runs.append(clone)
+            pos += u16_len(part) + 1
+        para_runs[:] = new_para_runs
+
+    if insert_kern is None:
+        insert_kern = [None] * insert_len
+    _rebuild_kern_runs(doc, kern_values[:start] + insert_kern + kern_values[end:])
+    if start == 0:
+        # Replacing the leading edge invalidates the pair-0 kern value
+        # (AE-unprobed; dropping it mirrors the auto_kern_type setter).
+        inner.pop("7", None)
+
+    inner["0"] = new_raw
+    rebuild_lines = getattr(doc, "_rebuild_line_count_runs", None)
+    if rebuild_lines is not None:
+        rebuild_lines(parts)
+    _refresh_style_aliases(doc)
+
+
+def _apply_para_key(
+    doc: TextDocument, start: int, end: int, key: str, value: Any
+) -> None:
+    """Write one paragraph-style key to every paragraph overlapping the
+    range (paragraph runs are structural: never split, never merged -
+    `W_PARA_PARTIAL` styles the whole containing paragraph).
+    """
+    if start == end:
+        return
+    runs = cos_get(doc._doc, "0", "5", "0")
+    if not isinstance(runs, list):
+        return
+    pos = 0
+    for run in runs:
+        run_end = pos + run.get("1", 0)
+        if pos < end and run_end > start:
+            style = cos_get(run, "0", "0", "5")
+            if isinstance(style, dict):
+                if value is None:
+                    style.pop(key, None)
+                else:
+                    style[key] = value
+        pos = run_end
+
+
 # ---------------------------------------------------------------------------
 # RangeField descriptor
 # ---------------------------------------------------------------------------
@@ -225,9 +638,11 @@ class RangeField(Generic[T]):
     `applyStroke` and `fillColor` on `applyFill`); when no overlapping
     run passes the gate the field reads `None`.
 
-    Unlike [CosField][py_aep.cos.CosField] this descriptor never writes:
-    range writes require style-run splitting, which py_aep does not
-    support yet.
+    Writable fields split the style runs at the range boundaries, write
+    the key into the covered runs and re-merge adjacent identical runs,
+    mirroring AE's probed behavior (see plans/text-range-writes.md).
+    Fields whose writes need coupled side effects (kerning runs,
+    leading/auto-leading) stay `read_only` until their phase lands.
 
     Args:
         kind: `"char"` or `"para"` - which run array to resolve over.
@@ -235,6 +650,11 @@ class RangeField(Generic[T]):
         transform: Optional callable applied to each stored value.
         default: Per-run value when the key is absent from a run.
         gate: Optional boolean style key gating run participation.
+        reverse: 1-arg callable applied when setting (user-facing ->
+            COS value), mirroring `CosField.reverse`.
+        validate: Optional callable `(value, instance)` run before any
+            `reverse`, mirroring the TextDocument CosField validators.
+        read_only: When `True`, the field cannot be set.
     """
 
     def __init__(
@@ -245,12 +665,18 @@ class RangeField(Generic[T]):
         transform: Callable[..., Any] | None = None,
         default: Any = None,
         gate: str | None = None,
+        reverse: Callable[..., Any] | None = None,
+        validate: Callable[..., None] | None = None,
+        read_only: bool = False,
     ) -> None:
         self.kind = kind
         self.key = key
         self.transform = transform
         self.default = default
         self.gate = gate
+        self.reverse = reverse
+        self.validate = validate
+        self.read_only = read_only
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.public_name = name
@@ -274,19 +700,34 @@ class RangeField(Generic[T]):
         )
 
     def __set__(self, obj: Any, value: Any) -> None:
-        raise AttributeError(
-            f"{self.public_name!r} is read-only; text range writes are not supported."
-        )
+        if self.read_only:
+            raise AttributeError(f"{self.public_name!r} is read-only.")
+        if value is not None:
+            if self.validate is not None:
+                self.validate(value, obj._doc_ref)
+            if self.reverse is not None:
+                value = self.reverse(value)
+        start, end = obj._bounds()
+        if self.kind == "char":
+            _apply_char_key(obj._doc_ref, start, end, self.key, value)
+        else:
+            _apply_para_key(obj._doc_ref, start, end, self.key, value)
+        obj._propagate()
 
     @classmethod
     def bool(cls, kind: str, key: str, **kwargs: Any) -> RangeField[bool]:
         """Create a RangeField for boolean style flags."""
-        return cast("RangeField[bool]", cls(kind, key, transform=bool, **kwargs))
+        return cast(
+            "RangeField[bool]", cls(kind, key, transform=bool, reverse=bool, **kwargs)
+        )
 
     @classmethod
     def float(cls, kind: str, key: str, **kwargs: Any) -> RangeField[float]:
         """Create a RangeField that coerces to float."""
-        return cast("RangeField[float]", cls(kind, key, transform=float, **kwargs))
+        return cast(
+            "RangeField[float]",
+            cls(kind, key, transform=float, reverse=float, **kwargs),
+        )
 
     @classmethod
     def enum(
@@ -295,7 +736,55 @@ class RangeField(Generic[T]):
         """Create a RangeField for IntEnum-backed style keys."""
         if "transform" not in kwargs:
             kwargs["transform"] = getattr(enum_cls, "from_binary", enum_cls)
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = getattr(enum_cls, "to_binary", int)
         return cls(kind, key, **kwargs)
+
+
+class DocumentWideCosField(CosField[T]):
+    """A [CosField][py_aep.cos.CosField] whose writes style the whole
+    document.
+
+    AE document-level setters apply to every character or paragraph and
+    re-merge the style runs (probed `W_DOCLEVEL`, `X_DOC_FILL`,
+    `X_DOC_JUST`); a plain CosField write only touches the first run's
+    style dict, which is correct only for single-run documents. Reads
+    keep the first-run semantics of the base descriptor. Documents
+    without run backing (parser fallbacks) fall back to the base
+    override behavior.
+    """
+
+    def __set__(self, obj: Any, value: T) -> None:
+        backing = getattr(obj, self.dict_attr, None)
+        kind = "char" if self.dict_attr == "_char_style" else "para"
+        runs = None
+        if backing is not None:
+            runs = cos_get(obj._doc, "0", "6" if kind == "char" else "5", "0")
+        if not isinstance(runs, list) or not runs:
+            super().__set__(obj, value)
+            return
+        if self.read_only:
+            raise AttributeError(f"{self.public_name!r} is read-only.")
+        if self.min_version is not None:
+            if get_ae_version_major(obj) < self.min_version:
+                raise AttributeError(
+                    f"{self.public_name!r} requires AE {self.min_version}+ file format."
+                )
+        obj.__dict__.pop(self.public_name, None)
+        raw_value: Any = value
+        if value is not None:
+            if self.validate is not None:
+                self.validate(value, obj)
+            if self.reverse is not None:
+                raw_value = self.reverse(value)
+        total = u16_len(_raw_text(obj))
+        if kind == "char":
+            _apply_char_key(obj, 0, total, self.key, raw_value)
+        else:
+            _apply_para_key(obj, 0, total, self.key, raw_value)
+        propagate = getattr(obj, "_propagate_cos", None)
+        if propagate is not None:
+            propagate()
 
 
 # ---------------------------------------------------------------------------
@@ -445,119 +934,246 @@ class CharacterRange:
 
     @property
     def text(self) -> str:
-        """The text within the range. Read-only.
+        """The text within the range. Read / Write.
 
         Line breaks are normalized to `\\n` like `TextDocument.text`
         (ExtendScript returns raw `\\r`). A range splitting a surrogate
-        pair yields a lone surrogate, as in AE.
+        pair yields a lone surrogate, as in AE. Writing replaces the
+        ranged characters: the replacement takes the first replaced
+        character's style, and this range keeps its creation indices
+        (re-resolving against the new text, exactly like AE).
         """
         start, end = self._bounds()
         return u16_slice(_raw_text(self._doc_ref), start, end).replace("\r", "\n")
 
+    @text.setter
+    def text(self, value: str) -> None:
+        validate_text(value)
+        doc = self._doc_ref
+        raw = _raw_text(doc)
+        start, end = self._bounds()
+        start, end = _snap_to_pairs(raw, start, end)
+        normalized = value.replace("\r\n", "\r").replace("\n", "\r")
+        _splice_text(doc, start, end, normalized)
+        self._propagate()
+
+    def paste_from(self, source_range: CharacterRange) -> None:
+        """Paste the source range's text and character styling here.
+
+        Mirrors ExtendScript's `pasteFrom()` (AE 25.1+, probed via the
+        `W_PASTE_*` / `X_PASTE_KERN` fixtures): the ranged characters
+        are replaced by the source span's text with its character style
+        runs and manual-kern values transplanted. Cross-document pastes
+        remap font references into this document's font array,
+        prepending missing fonts like AE. This range keeps its creation
+        indices and may become invalid when the pasted text is shorter.
+
+        Args:
+            source_range: The [CharacterRange][] to copy from (may
+                belong to another document or project).
+        """
+        if not isinstance(source_range, CharacterRange):
+            raise TypeError("paste_from expects a CharacterRange")
+        doc = self._doc_ref
+        src_doc = source_range._doc_ref
+        src_raw = _raw_text(src_doc)
+        src_start, src_end = source_range._bounds()
+        src_start, src_end = _snap_to_pairs(src_raw, src_start, src_end)
+        text_slice = u16_slice(src_raw, src_start, src_end)
+
+        entries: list[dict[str, Any]] = []
+        pos = 0
+        for run in cos_get(src_doc._doc, "0", "6", "0") or []:
+            run_end = pos + run.get("1", 0)
+            overlap_start = max(pos, src_start)
+            overlap_end = min(run_end, src_end)
+            if overlap_end > overlap_start:
+                clone = copy.deepcopy(run)
+                clone["1"] = overlap_end - overlap_start
+                entries.append(clone)
+            pos = run_end
+
+        if src_doc is not doc:
+            needed: dict[int, str] = {}
+            for clone in entries:
+                style = cos_get(clone, "0", "0", "6")
+                if isinstance(style, dict):
+                    index = style.get("0")
+                    if isinstance(index, int) and 0 <= index < len(src_doc._fonts):
+                        needed[index] = src_doc._fonts[index].post_script_name
+            existing = {f.post_script_name for f in doc._fonts}
+            for name in needed.values():
+                if name not in existing:
+                    _register_font_prepended(doc, name)
+                    existing.add(name)
+            target_index = {f.post_script_name: i for i, f in enumerate(doc._fonts)}
+            for clone in entries:
+                style = cos_get(clone, "0", "0", "6")
+                if isinstance(style, dict):
+                    index = style.get("0")
+                    if isinstance(index, int) and index in needed:
+                        style["0"] = target_index[needed[index]]
+
+        kern_slice = _kern_values(src_doc)[src_start:src_end]
+        raw = _raw_text(doc)
+        start, end = self._bounds()
+        start, end = _snap_to_pairs(raw, start, end)
+        _splice_text(
+            doc, start, end, text_slice, insert_runs=entries, insert_kern=kern_slice
+        )
+        self._propagate()
+
     # -- Character style fields --------------------------------------------------
 
-    font_size = RangeField.float("char", "1")
-    """The range's font size in pixels; `None` when mixed. Read-only."""
+    font_size = RangeField.float("char", "1", validate=validate_positive_nonzero_number)
+    """The range's font size in pixels; `None` when mixed. Read / Write."""
 
     faux_bold = RangeField.bool("char", "2")
-    """`True` if faux bold is enabled across the range. Read-only."""
+    """`True` if faux bold is enabled across the range. Read / Write."""
 
     faux_italic = RangeField.bool("char", "3")
-    """`True` if faux italic is enabled across the range. Read-only."""
+    """`True` if faux italic is enabled across the range. Read / Write."""
 
-    auto_leading = RangeField.bool("char", "4", default=True)
-    """The range's auto-leading option; `None` when mixed. Read-only."""
+    @property
+    def auto_leading(self) -> bool | None:
+        """The range's auto-leading option; `None` when mixed. Read / Write.
+
+        Enabling auto-leading also resets the explicit leading key to
+        AE's sentinel (probed `X_AL_SET`).
+        """
+        return cast("bool | None", self._resolve_mixed("char", "4", bool, True, None))
+
+    @auto_leading.setter
+    def auto_leading(self, value: bool) -> None:
+        start, end = self._bounds()
+        _apply_char_key(self._doc_ref, start, end, "4", bool(value))
+        if value:
+            _apply_char_key(self._doc_ref, start, end, "5", 0.01)
+        self._propagate()
 
     horizontal_scale = RangeField.float("char", "6")
-    """The range's horizontal scale; `None` when mixed. Read-only."""
+    """The range's horizontal scale; `None` when mixed. Read / Write."""
 
     vertical_scale = RangeField.float("char", "7")
-    """The range's vertical scale; `None` when mixed. Read-only."""
+    """The range's vertical scale; `None` when mixed. Read / Write."""
 
     tracking = RangeField.float("char", "8")
-    """The range's spacing between characters; `None` when mixed. Read-only."""
+    """The range's spacing between characters; `None` when mixed. Read / Write."""
 
     baseline_shift = RangeField.float("char", "9")
-    """The range's baseline shift in pixels; `None` when mixed. Read-only."""
+    """The range's baseline shift in pixels; `None` when mixed. Read / Write."""
 
-    auto_kern_type = RangeField.enum(
-        AutoKernType, "char", "11", default=AutoKernType.NO_AUTO_KERN
-    )
-    """The range's auto kern type option; `None` when mixed. Read-only."""
+    @property
+    def auto_kern_type(self) -> AutoKernType | None:
+        """The range's auto kern type option; `None` when mixed. Read / Write.
+
+        Setting a non-manual kern type clears the manual kerning values
+        over the range; AE drops the kern-run array entirely when no
+        values remain (probed `X_AKT_SET`).
+        """
+        return cast(
+            "AutoKernType | None",
+            self._resolve_mixed(
+                "char", "11", AutoKernType.from_binary, AutoKernType.NO_AUTO_KERN, None
+            ),
+        )
+
+    @auto_kern_type.setter
+    def auto_kern_type(self, value: AutoKernType) -> None:
+        validate_enum(AutoKernType)(value)
+        doc = self._doc_ref
+        start, end = _snap_to_pairs(_raw_text(doc), *self._bounds())
+        if start == end:
+            # Zero-span writes are no-ops (W_ZERO_STYLE); guard before
+            # the kern-clearing side effects below.
+            return
+        _apply_char_key(doc, start, end, "11", AutoKernType(value).to_binary())
+        if value != AutoKernType.NO_AUTO_KERN:
+            values = _kern_values(doc)
+            for i in range(start, min(end, len(values))):
+                values[i] = None
+            _rebuild_kern_runs(doc, values)
+            if start == 0:
+                doc._doc.get("0", {}).pop("7", None)
+        self._propagate()
 
     font_caps_option = RangeField.enum(FontCapsOption, "char", "12")
-    """The range's font caps option; `None` when mixed. Read-only."""
+    """The range's font caps option; `None` when mixed. Read / Write."""
 
     font_baseline_option = RangeField.enum(FontBaselineOption, "char", "13")
-    """The range's font baseline option; `None` when mixed. Read-only."""
+    """The range's font baseline option; `None` when mixed. Read / Write."""
 
     ligature = RangeField.bool("char", "18", default=False)
-    """`True` when ligature is used across the range. Read-only."""
+    """`True` when ligature is used across the range. Read / Write."""
 
     baseline_direction = RangeField.enum(
         BaselineDirection, "char", "35", default=BaselineDirection.BASELINE_WITH_STREAM
     )
-    """The range's baseline direction; `None` when mixed. Read-only."""
+    """The range's baseline direction; `None` when mixed. Read / Write."""
 
-    tsume = RangeField.float("char", "36", default=0.0)
-    """The range's tsume value (0.0 to 1.0); `None` when mixed. Read-only."""
+    tsume = RangeField.float(
+        "char", "36", default=0.0, validate=validate_normalized_float
+    )
+    """The range's tsume value (0.0 to 1.0); `None` when mixed. Read / Write."""
 
     no_break = RangeField.bool("char", "52", default=False)
-    """`True` when no-break is applied across the range. Read-only."""
+    """`True` when no-break is applied across the range. Read / Write."""
 
     apply_fill = RangeField.bool("char", "56")
-    """When `True`, the range shows a fill; `None` when mixed. Read-only."""
+    """When `True`, the range shows a fill; `None` when mixed. Read / Write."""
 
     apply_stroke = RangeField.bool("char", "57", default=False)
-    """When `True`, the range shows a stroke; `None` when mixed. Read-only."""
+    """When `True`, the range shows a stroke; `None` when mixed. Read / Write."""
 
     stroke_over_fill = RangeField.bool("char", "58", default=True)
-    """When `True`, the stroke appears over the fill; `None` when mixed. Read-only."""
+    """When `True`, the stroke appears over the fill; `None` when mixed. Read / Write."""
 
     line_join_type = RangeField.enum(
         LineJoinType, "char", "62", default=LineJoinType.LINE_JOIN_MITER
     )
-    """The range's line join type for strokes; `None` when mixed. Read-only."""
+    """The range's line join type for strokes; `None` when mixed. Read / Write."""
 
-    stroke_width = RangeField.float("char", "63", default=1.0)
-    """The range's stroke thickness; `None` when mixed. Read-only."""
+    stroke_width = RangeField.float(
+        "char", "63", default=1.0, validate=validate_positive_nonzero_number
+    )
+    """The range's stroke thickness; `None` when mixed. Read / Write."""
 
     digit_set = RangeField.enum(DigitSet, "char", "70", default=DigitSet.DEFAULT_DIGITS)
-    """The range's digit set option; `None` when mixed. Read-only."""
+    """The range's digit set option; `None` when mixed. Read / Write."""
 
     # -- Paragraph style fields (resolved over paragraph runs) -------------------
 
     justification = RangeField.enum(ParagraphJustification, "para", "0")
-    """The justification of paragraphs in the range; `None` when mixed. Read-only."""
+    """The justification of paragraphs in the range; `None` when mixed. Read / Write."""
 
     first_line_indent = RangeField.float("para", "1", default=0.0)
-    """The paragraphs' first line indent; `None` when mixed. Read-only."""
+    """The paragraphs' first line indent; `None` when mixed. Read / Write."""
 
     start_indent = RangeField.float("para", "2", default=0.0)
-    """The paragraphs' start indent; `None` when mixed. Read-only."""
+    """The paragraphs' start indent; `None` when mixed. Read / Write."""
 
     end_indent = RangeField.float("para", "3", default=0.0)
-    """The paragraphs' end indent; `None` when mixed. Read-only."""
+    """The paragraphs' end indent; `None` when mixed. Read / Write."""
 
     space_before = RangeField.float("para", "4", default=0.0)
-    """The paragraphs' space before; `None` when mixed. Read-only."""
+    """The paragraphs' space before; `None` when mixed. Read / Write."""
 
     space_after = RangeField.float("para", "5", default=0.0)
-    """The paragraphs' space after; `None` when mixed. Read-only."""
+    """The paragraphs' space after; `None` when mixed. Read / Write."""
 
     leading_type = RangeField.enum(
         LeadingType, "para", "8", default=LeadingType.ROMAN_LEADING_TYPE
     )
-    """The paragraphs' leading type; `None` when mixed. Read-only."""
+    """The paragraphs' leading type; `None` when mixed. Read / Write."""
 
     auto_hyphenate = RangeField.bool("para", "9")
-    """The paragraphs' auto-hyphenate option; `None` when mixed. Read-only."""
+    """The paragraphs' auto-hyphenate option; `None` when mixed. Read / Write."""
 
     hanging_roman = RangeField.bool("para", "21", default=False)
-    """The paragraphs' Roman Hanging Punctuation; `None` when mixed. Read-only."""
+    """The paragraphs' Roman Hanging Punctuation; `None` when mixed. Read / Write."""
 
     every_line_composer = RangeField.bool("para", "29", default=False)
-    """The paragraphs' Every-Line Composer option; `None` when mixed. Read-only."""
+    """The paragraphs' Every-Line Composer option; `None` when mixed. Read / Write."""
 
     direction = RangeField.enum(
         ParagraphDirection,
@@ -565,39 +1181,83 @@ class CharacterRange:
         "33",
         default=ParagraphDirection.DIRECTION_LEFT_TO_RIGHT,
     )
-    """The paragraphs' direction; `None` when mixed. Read-only."""
+    """The paragraphs' direction; `None` when mixed. Read / Write."""
 
     # -- Computed style properties ------------------------------------------------
 
-    @property
-    def fill_color(self) -> list[float] | None:
-        """The range's fill color as `[r, g, b]`. Read-only.
+    def _propagate(self) -> None:
+        """Serialize the document's COS tree after a write."""
+        propagate = getattr(self._doc_ref, "_propagate_cos", None)
+        if propagate is not None:
+            propagate()
 
-        Only characters with `apply_fill` participate; `None` when no
-        character in the range has a fill or the colors are mixed.
-        """
-        return cast(
-            "list[float] | None",
-            self._resolve_mixed("char", "53", _parse_color, None, "56"),
-        )
+    fill_color = cast(
+        "RangeField[list[float]]",
+        RangeField(
+            "char",
+            "53",
+            transform=_parse_color,
+            gate="56",
+            reverse=_build_color_paint,
+            validate=validate_rgb_color,
+        ),
+    )
+    """The range's fill color as `[r, g, b]`. Read / Write.
 
-    @property
-    def stroke_color(self) -> list[float] | None:
-        """The range's stroke color as `[r, g, b]`. Read-only.
+    Only characters with `apply_fill` participate in the read; `None`
+    when no character in the range has a fill or the colors are mixed.
+    Setting writes the paint only - like the stroke, it does not enable
+    `apply_fill`.
+    """
 
-        Only characters with `apply_stroke` participate; `None` when no
-        character in the range has a stroke or the colors are mixed.
-        """
-        return cast(
-            "list[float] | None",
-            self._resolve_mixed("char", "54", _parse_color, None, "57"),
-        )
+    stroke_color = cast(
+        "RangeField[list[float]]",
+        RangeField(
+            "char",
+            "54",
+            transform=_parse_color,
+            gate="57",
+            reverse=_build_color_paint,
+            validate=validate_rgb_color,
+        ),
+    )
+    """The range's stroke color as `[r, g, b]`. Read / Write.
+
+    Only characters with `apply_stroke` participate in the read; `None`
+    when no character in the range has a stroke or the colors are
+    mixed. Setting writes the paint only - AE does NOT enable
+    `apply_stroke` (probed `W_STROKE_GATE`; the Scripting Guide claims
+    otherwise).
+    """
 
     @property
     def font(self) -> str | None:
-        """The range's font PostScript name; `None` when mixed. Read-only."""
+        """The range's font PostScript name; `None` when mixed. Read / Write.
+
+        Setting a font absent from the document's font array prepends
+        it and reindexes existing references, matching AE.
+        """
         font_obj = self.font_object
         return font_obj.post_script_name if font_obj is not None else None
+
+    @font.setter
+    def font(self, value: str) -> None:
+        validate_font_name(value)
+        doc = self._doc_ref
+        start, end = _snap_to_pairs(_raw_text(doc), *self._bounds())
+        if start == end:
+            # Zero-span writes are no-ops (W_ZERO_STYLE); guard before
+            # registering the font, which mutates the whole document.
+            return
+        index = None
+        for i, font_obj in enumerate(doc._fonts):
+            if font_obj.post_script_name == value:
+                index = i
+                break
+        if index is None:
+            index = _register_font_prepended(doc, value)
+        _apply_char_key(doc, start, end, "0", index)
+        self._propagate()
 
     @property
     def font_object(self) -> FontObject | None:
@@ -610,29 +1270,78 @@ class CharacterRange:
 
     @property
     def leading(self) -> float | None:
-        """The range's spacing between lines. Read-only.
+        """The range's spacing between lines. Read / Write.
 
         AE reads `undefined` while auto-leading is active (or mixed)
         anywhere in the range; the explicit value only surfaces when
-        auto-leading is uniformly disabled.
+        auto-leading is uniformly disabled. Setting an explicit value
+        also disables auto-leading over the range (probed `W_LEAD`);
+        setting `None` clears the explicit value without touching
+        auto-leading.
         """
         auto = self.auto_leading
         if auto is None or auto:
             return None
         return cast("float | None", self._resolve_mixed("char", "5", float, None, None))
 
+    @leading.setter
+    def leading(self, value: float | None) -> None:
+        if value is not None:
+            validate_positive_number(value)
+        start, end = self._bounds()
+        if value is None:
+            _apply_char_key(self._doc_ref, start, end, "5", None)
+        else:
+            _apply_char_key(self._doc_ref, start, end, "5", float(value))
+            _apply_char_key(self._doc_ref, start, end, "4", False)
+        self._propagate()
+
     @property
     def kerning(self) -> int | None:
-        """The range's manual kerning value. Read-only.
+        """The range's manual kerning value. Read / Write.
 
         AE reads `undefined` unless auto-kerning is uniformly disabled
-        over the range; the values themselves live in dedicated kerning
-        runs (`doc["0"]["8"]`) and read `None` when mixed.
+        AND a manual value is stored for every character in the range
+        (probed `X_TEXT_KERN`: spliced-in characters under NO_AUTO_KERN
+        without values read undefined). Values live in dedicated kerning
+        runs (`doc["0"]["8"]`) and read `None` when mixed. Setting a
+        value affects characters `[max(0, start - 1), end)` - AE's pair
+        shift - disables auto-kerning for them, and stores the
+        leading-edge value at `doc["0"]["7"]` when the range starts at 0.
         """
         if self.auto_kern_type != AutoKernType.NO_AUTO_KERN:
             return None
-        value = self._resolve_mixed("kern", "0", None, 0, None)
+        value = self._resolve_mixed("kern", "0", None, None, None)
         return value if isinstance(value, int) else None
+
+    @kerning.setter
+    def kerning(self, value: int) -> None:
+        validate_int(value, self._doc_ref)
+        # Normalize bools (a subclass of int) so the serializer emits an
+        # integer, not a `true`/`false` token.
+        value = int(value)
+        doc = self._doc_ref
+        raw = _raw_text(doc)
+        start, end = self._bounds()
+        start, end = _snap_to_pairs(raw, start, end)
+        if start == end:
+            return
+        # No visible-end extension here: AE never kerns the raw `\r`
+        # terminator (every probed kern fixture leaves it in an empty
+        # run); `_apply_char_key` below re-extends the style write.
+        kern_start = max(0, start - 1)
+        values = _kern_values(doc)
+        for i in range(kern_start, min(end, len(values))):
+            values[i] = value
+        _rebuild_kern_runs(doc, values)
+        if start == 0:
+            # Pair position 0 (before the first character): AE stores the
+            # leading-edge value at doc["0"]["7"], created after key "8".
+            doc._doc.setdefault("0", {})["7"] = value
+        _apply_char_key(
+            doc, kern_start, end, "11", AutoKernType.NO_AUTO_KERN.to_binary()
+        )
+        self._propagate()
 
     @property
     def all_caps(self) -> bool | None:

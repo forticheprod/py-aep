@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from fontTools.ttLib import TTCollection, TTFont
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, Iterator
 
 _FONT_SUFFIXES = (".ttf", ".otf", ".ttc")
 
@@ -100,31 +100,105 @@ def _name(font: Any, *ids: int) -> str | None:
     return None
 
 
-def _index_file(path: Path, idx: dict[str, dict[str, tuple[Path, int]]]) -> None:
+def _adobe_font_dirs() -> list[Path]:
+    """Adobe CoreSync (Creative Cloud) font caches, when present.
+
+    Activated Adobe fonts live here as suffix-less OpenType files; AE
+    resolves text-layer fonts against them.
+    """
+    dirs: list[Path] = []
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            dirs.append(
+                Path(appdata) / "Adobe" / "CoreSync" / "plugins" / "livetype" / "r"
+            )
+    elif sys.platform == "darwin":
+        dirs.append(
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Adobe"
+            / "CoreSync"
+            / "plugins"
+            / "livetype"
+            / ".r"
+        )
+    return [d for d in dirs if d.is_dir()]
+
+
+#: PostScript name (name ID 6, lowercased) -> version string (name ID 5).
+_ps_versions: dict[str, str] | None = None
+
+
+def _iter_faces(path: Path) -> Iterator[tuple[int, TTFont]]:
+    """Yield `(face index, opened font)` for each face in a font file,
+    closing every face afterwards.
+
+    Corrupt/unsupported files yield nothing rather than fail discovery.
+    """
     try:
         if path.suffix.lower() == ".ttc":
             fonts = list(TTCollection(str(path), lazy=True).fonts)
         else:
             fonts = [TTFont(str(path), fontNumber=0, lazy=True)]
     except Exception:
-        # Corrupt/unsupported font file - skip it rather than fail discovery.
         return
     try:
-        # A .ttc bundles several faces (e.g. cambria.ttc -> Cambria + Cambria
-        # Math); index each by its own face number so a family that ships only
-        # as a secondary face is still resolvable and loads the right face.
-        for face, font in enumerate(fonts):
-            # Typographic family (16) preferred over the legacy family (1); same
-            # for the subfamily (17 over 2).
-            family = _name(font, 16, 1)
-            subfamily = _name(font, 17, 2) or "Regular"
-            if family:
-                idx.setdefault(family.lower(), {}).setdefault(
-                    subfamily.lower(), (path, face)
-                )
+        yield from enumerate(fonts)
     finally:
         for font in fonts:
             font.close()
+
+
+def _index_versions(path: Path, idx: dict[str, str]) -> None:
+    for _face, font in _iter_faces(path):
+        ps_name = _name(font, 6)
+        if ps_name and ps_name.lower() not in idx:
+            version = _name(font, 5)
+            if version:
+                idx[ps_name.lower()] = version
+
+
+def font_version_string(post_script_name: str) -> str | None:
+    """The installed font's version string (name ID 5) for a PostScript
+    name, or `None` when no matching font is installed.
+
+    AE stamps this host-resolved string on font entries it registers in
+    a text document and on the used-font records (probed via the
+    `W_FONT` write fixture); matching it keeps py-written files
+    byte-identical to AE's output on the same machine. The index is
+    built lazily on first use (one walk over the OS and Adobe CoreSync
+    font directories) and cached.
+    """
+    global _ps_versions
+    if _ps_versions is None:
+        idx: dict[str, str] = {}
+        for directory in _font_dirs():
+            for path in directory.rglob("*"):
+                if path.suffix.lower() in _FONT_SUFFIXES:
+                    _index_versions(path, idx)
+        for directory in _adobe_font_dirs():
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    _index_versions(path, idx)
+        _ps_versions = idx
+    return _ps_versions.get(post_script_name.strip().lower())
+
+
+def _index_file(path: Path, idx: dict[str, dict[str, tuple[Path, int]]]) -> None:
+    # A .ttc bundles several faces (e.g. cambria.ttc -> Cambria + Cambria
+    # Math); index each by its own face number so a family that ships only
+    # as a secondary face is still resolvable and loads the right face.
+    for face, font in _iter_faces(path):
+        # Typographic family (16) preferred over the legacy family (1); same
+        # for the subfamily (17 over 2).
+        family = _name(font, 16, 1)
+        subfamily = _name(font, 17, 2) or "Regular"
+        if family:
+            idx.setdefault(family.lower(), {}).setdefault(
+                subfamily.lower(), (path, face)
+            )
 
 
 def _build_index() -> dict[str, dict[str, tuple[Path, int]]]:

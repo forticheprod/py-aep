@@ -52,9 +52,9 @@ class TestTextSetterRunRebuild:
         _app, doc = _fresh_doc("RangesKernLead")
         assert doc.character_range(1, 4).kerning == 200
         doc.text = "AVAWAY"
-        # Manual kerning values are dropped; the collapsed first-run style
-        # keeps auto-kern disabled, so the range reads a uniform 0.
-        assert doc.character_range(0, -1).kerning == 0
+        # Manual kerning values are dropped. Without stored values the
+        # read is undefined even under NO_AUTO_KERN (probed X_TEXT_KERN).
+        assert doc.character_range(0, -1).kerning is None
 
     def test_trailing_line_breaks_preserved(self, tmp_path: Path) -> None:
         app, doc = _fresh_doc("RangesPoint")
