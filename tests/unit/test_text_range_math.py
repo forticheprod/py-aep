@@ -7,23 +7,95 @@ the UTF-16 helpers and the RangeField/CosField spec consistency guard.
 
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
 import pytest
 
 from py_aep.cos import CosField, CosName
+from py_aep.cos.cos import CosString
 from py_aep.models.text.ranges import (
     CHARACTER_RANGE_OOB,
     CharacterRange,
     ComposedLineRange,
     RangeField,
     _composed_line_spans,
+    _merge_adjacent_runs,
+    _snap_to_pairs,
+    _split_run_array,
     u16_len,
     u16_slice,
 )
 from py_aep.models.text.text_document import TextDocument
 
 EMOJI = "\U0001f600"
+
+
+class TestWriteEnginePrimitives:
+    def test_split_keeps_original_as_left_fragment(self) -> None:
+        style = {"1": 36.0}
+        runs = [{"0": {"0": {"6": style}}, "1": 10}]
+        original = runs[0]
+        _split_run_array(runs, {3, 7})
+        assert [r["1"] for r in runs] == [3, 4, 3]
+        # Run 0 keeps its object (and its style dict) as the left piece.
+        assert runs[0] is original
+        assert runs[0]["0"]["0"]["6"] is style
+        # Fragments are independent copies.
+        runs[1]["0"]["0"]["6"]["1"] = 72.0
+        assert runs[0]["0"]["0"]["6"]["1"] == 36.0
+
+    def test_merge_keeps_first_object(self) -> None:
+        a = {"0": {"0": {"6": {"1": 72.0}}}, "1": 3}
+        b = {"0": {"0": {"6": {"1": 72.0}}}, "1": 4}
+        c = {"0": {"0": {"6": {"1": 36.0}}}, "1": 4}
+        runs = [a, b, c]
+        _merge_adjacent_runs(runs)
+        assert runs == [a, c]
+        assert runs[0] is a
+        assert runs[0]["1"] == 7
+
+    def test_snap_to_pairs(self) -> None:
+        raw = f"ab{EMOJI}cd\r"
+        assert _snap_to_pairs(raw, 3, 5) == (2, 5)
+        assert _snap_to_pairs(raw, 2, 3) == (2, 4)
+        assert _snap_to_pairs(raw, 0, 2) == (0, 2)
+        # A mid-pair caret moves past the pair but stays zero-span, so
+        # caret writes remain no-ops instead of covering the glyph.
+        assert _snap_to_pairs(raw, 3, 3) == (4, 4)
+        assert _snap_to_pairs(raw, 1, 1) == (1, 1)
+
+    def test_deepcopy_preserves_cos_scalars(self) -> None:
+        # The split engine deepcopies full style dicts; the serializer's
+        # byte output depends on these flags surviving the copy.
+        nested = {"99": CosName("X"), "0": [CosString("s", utf16=False)]}
+        clone = copy.deepcopy(nested)
+        assert clone["0"][0].cos_utf16 is False
+        assert str(clone["99"]) == "X"
+
+    def test_range_write_on_synthetic_doc(self) -> None:
+        doc = make_doc("abcdefghij\r")
+        CharacterRange(doc, 3, 7).font_size = 72
+        lengths = [r["1"] for r in doc._doc["0"]["6"]["0"]]
+        assert lengths == [3, 4, 4]
+        assert CharacterRange(doc, 3, 7).font_size == 72.0
+        assert CharacterRange(doc, 0, 3).font_size is None  # key absent -> default
+
+    def test_range_write_validation(self) -> None:
+        doc = make_doc("abcdefghij\r")
+        with pytest.raises(ValueError):
+            CharacterRange(doc, 0, 5).font_size = 0
+        with pytest.raises((TypeError, ValueError)):
+            CharacterRange(doc, 0, 5).auto_kern_type = 5
+
+    def test_kerning_write_skips_terminator(self) -> None:
+        # AE never kerns the raw \r terminator: a range ending at the
+        # visible length must leave the final unit in an empty run.
+        doc = make_doc("AVAW\r")
+        CharacterRange(doc, 2, 4).kerning = 100
+        runs = doc._doc["0"]["8"]["0"]
+        assert runs[-1] == {"0": {}, "1": 1}
+        assert sum(r["1"] for r in runs) == 5
 
 
 def make_doc(
@@ -214,5 +286,10 @@ class TestSpecConsistency:
                 mismatches.append(
                     f"{name}: RangeField kind {field.kind!r} vs CosField dict "
                     f"{cos_field.dict_attr!r}"
+                )
+            if not field.read_only and field.validate is not cos_field.validate:
+                mismatches.append(
+                    f"{name}: RangeField validate {field.validate!r} != "
+                    f"CosField validate {cos_field.validate!r}"
                 )
         assert not mismatches, "\n".join(mismatches)
