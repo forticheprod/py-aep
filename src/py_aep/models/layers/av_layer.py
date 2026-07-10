@@ -180,6 +180,7 @@ class AVLayer(Layer):
         source_id: int = 0,
         null_layer: bool = False,
         three_d_layer: bool = False,
+        label: int = 1,
         root_tdgp_extra: list[Any] | None = None,
         effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> AVLayer:
@@ -188,7 +189,7 @@ class AVLayer(Layer):
             layer_id=layer_id,
             quality=2,
             source_id=source_id,
-            label=1,
+            label=label,
             blending_mode=2,
             layer_type=LayerType.AV,
             matte_layer_id=0 if ae_major >= 23 else None,

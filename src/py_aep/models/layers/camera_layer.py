@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ...binary.layer_chunks import LdtaChunk
 from ...enums import LayerType
+from ..preferences import label_index
 from .layer import Layer
 
 if TYPE_CHECKING:
@@ -51,7 +52,9 @@ class CameraLayer(Layer):
         ae_major = containing_comp._project._head.ae_version_major
         ldta = LdtaChunk(
             layer_id=layer_id,
-            label=4,
+            label=label_index(
+                containing_comp._project._preferences, "Camera Label Index 2", 4
+            ),
             layer_type=LayerType.CAMERA,
             layer_flags_2=0x01,
             matte_layer_id=0 if ae_major >= 23 else None,

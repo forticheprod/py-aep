@@ -17,6 +17,7 @@ from .layers.parametric_mesh_layer import ParametricMeshLayer
 from .layers.shape_layer import ShapeLayer
 from .layers.text_layer import TextLayer
 from .layers.three_d_model_layer import ThreeDModelLayer
+from .preferences import Preferences
 from .project import Project
 from .properties.keyframe import Keyframe
 from .properties.keyframe_ease import KeyframeEase
@@ -79,6 +80,7 @@ __all__ = [
     "ParametricMeshLayer",
     "PlaceholderSource",
     "PngFormatOptions",
+    "Preferences",
     "Project",
     "Property",
     "PropertyBase",

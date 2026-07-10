@@ -13,7 +13,7 @@ from attrs import define
 
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import bool_field, bytes_field, u1_field, u2_field, u4_field
+from .fmt_field import FmtItem, bool_field, bytes_field, u1_field, u2_field, u4_field
 from .registry import register
 
 # ---------------------------------------------------------------------------
@@ -329,6 +329,34 @@ class NnhdChunk(Chunk):
     @display_start_frame.setter
     def display_start_frame(self, value: int) -> None:
         self.frames_count_type = value
+
+
+# ---------------------------------------------------------------------------
+# Project time-display preference blob (preferences only, not in .aep files)
+# ---------------------------------------------------------------------------
+
+
+@define
+class TimeDisplayPrefItem(FmtItem):
+    """The "Project Settings Time Display Format" preferences value (16 bytes).
+
+    Mirrors the `nnhd` time-display settings cluster (AE stamps the
+    last-used Project Settings into this machine-specific preference and
+    new projects inherit it). Field defaults reproduce a factory AE 2026
+    preferences file.
+    """
+
+    display_byte: int = u1_field()
+    """Bit 7 = feet_frames_film_type, bits 6-0 = time_display_type."""
+
+    footage_timecode_display_start_type: int = u1_field(default=1)
+    _reserved_02: int = u1_field(default=1, repr=False)
+    feet_byte: int = u1_field()
+    """Bit 0 = frames_use_feet_frames."""
+
+    timecode_default_base: int = u4_field(default=30, endian="<")
+    _reserved_08: int = u4_field(default=16, endian="<", repr=False)
+    frames_count_type: int = u4_field(default=2, endian="<")
 
 
 # ---------------------------------------------------------------------------

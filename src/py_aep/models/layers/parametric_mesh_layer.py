@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast
 from ...enums import LayerType, ParametricMeshType
 from ...synthesis.property import _PARAMETRIC_MESH_ACTIVE_GROUPS
 from ..descriptors import ChunkField
+from ..preferences import label_index
 from .av_layer import AVLayer
 
 if TYPE_CHECKING:
@@ -84,7 +85,9 @@ class ParametricMeshLayer(AVLayer):
             ),
         )
         layer._ldta.layer_type = LayerType.PARAMETRIC_MESH
-        layer._ldta.label = 9
+        layer._ldta.label = label_index(
+            containing_comp._project._preferences, "Parametrics Label Index", 9
+        )
         layer._ldta.three_d_layer = True
         layer._ldta.collapse_transformation = True
         # AE writes flags2=0x83 for mesh layers: effects are not applicable.

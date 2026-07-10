@@ -432,6 +432,7 @@ class FileSource(FootageSource):
         *,
         sequence: bool = False,
         force_alphabetical: bool = False,
+        default_sequence_fps: float = 30.0,
     ) -> FileSource:
         """Build a `FileSource` by probing a media file's header.
 
@@ -444,6 +445,9 @@ class FileSource(FootageSource):
             sequence: When `True`, import as a numbered image sequence.
             force_alphabetical: For a sequence, order frames alphabetically
                 rather than numerically.
+            default_sequence_fps: Frame rate for formats with no native
+                rate (AE's "Import Options Default Sequence FPS"
+                preference; AE's factory value is 30).
 
         Raises:
             ValueError: If the extension is not a supported footage format.
@@ -461,7 +465,9 @@ class FileSource(FootageSource):
                 "been reverse-engineered yet."
             )
         if sequence:
-            return cls._build_sequence(path, fmt, force_alphabetical)
+            return cls._build_sequence(
+                path, fmt, force_alphabetical, default_sequence_fps
+            )
         info = probe_media(path)
         opti_data = _opti_data(fmt, info, sequence=False)
         # AI/EPS/PDF carry an embedded ICC profile AE records in CLRS.
@@ -613,6 +619,7 @@ class FileSource(FootageSource):
         file: Path,
         fmt: FileFormat,
         force_alphabetical: bool,
+        default_frame_rate: float,
     ) -> FileSource:
         """Build a sequence `FileSource` by scanning sibling frames."""
         stem = file.stem
@@ -639,7 +646,7 @@ class FileSource(FootageSource):
         frames.sort(key=lambda fr: fr[1] if force_alphabetical else fr[0])
 
         info = probe_media(file)
-        frame_rate = info.frame_rate or 30.0
+        frame_rate = info.frame_rate or default_frame_rate
         duration = len(frames) / frame_rate
 
         return cls._new(

@@ -14,7 +14,7 @@ from attrs import define
 from .bin_utils import to_dividend_divisor
 from .bitfield import BitField
 from .chunk import Chunk
-from .fmt_field import bytes_field, s4_field, u1_field, u2_field, u4_field
+from .fmt_field import FmtItem, bytes_field, s4_field, u1_field, u2_field, u4_field
 from .registry import register
 
 # Standard NTSC multipliers: N*1000/1001 gives the NTSC frame rate.
@@ -340,3 +340,37 @@ class CsctChunk(Chunk):
 
     chunk_type: str = "CsCt"
     value: int = u4_field(default=0x01000000)
+
+
+# ---------------------------------------------------------------------------
+# Composition preset entry (preferences only, not stored in .aep files)
+# ---------------------------------------------------------------------------
+
+
+@define
+class CompPresetItem(FmtItem):
+    """One "Composition Presets Section v11" preferences entry (16 bytes).
+
+    Format/frame-rate/pixel-aspect of a New Composition preset; the
+    display name lives in the adjacent preset-names section. Frame rate
+    and pixel aspect use the same encodings as `CdtaChunk`.
+    """
+
+    width: int = u2_field()
+    height: int = u2_field()
+    frame_rate_integer: int = u2_field()
+    frame_rate_fractional: int = u2_field()
+    """Fractional part (1/65536th units)."""
+
+    pixel_aspect_dividend: int = u4_field(default=1)
+    pixel_aspect_divisor: int = u4_field(default=1)
+
+    @property
+    def frame_rate(self) -> float:
+        """Frame rate assembled from integer + fractional/65536."""
+        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
+
+    @property
+    def pixel_aspect(self) -> float:
+        """Pixel aspect ratio assembled from dividend/divisor."""
+        return self.pixel_aspect_dividend / self.pixel_aspect_divisor

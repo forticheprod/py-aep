@@ -12,6 +12,7 @@ from ...data.file_formats import AI_COMP_EXTENSIONS, PSD_COMP_EXTENSIONS
 from ...resolvers.source_layers import layer_index_for_stored
 from ..import_options import CURRENT_VALUE, _CurrentValue
 from ..naming import auto_name
+from ..preferences import default_sequence_fps, label_index
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
@@ -222,12 +223,21 @@ class FootageItem(AVItem):
         """
         item_id = project._allocate_item_id()
 
+        # AE labels solid items with the "Solid Label Index 2" preference
+        # (factory 1, probed in AE 2026) and file/placeholder footage with
+        # "Video Label Index 2" (factory 3). Stills/audio keys are not
+        # wired yet and fall under the video index.
+        if isinstance(source, SolidSource):
+            label = label_index(project._preferences, "Solid Label Index 2", 1)
+        else:
+            label = label_index(project._preferences, "Video Label Index 2", 3)
+
         iide = IideChunk(value=item_id)
         idpc = IdpcChunk()
         idta = IdtaChunk(
             item_type=7,
             item_id=item_id,
-            label=3,
+            label=label,
         )
         idta.is_footage = True
         idta.is_solid = isinstance(source, SolidSource)
@@ -460,7 +470,10 @@ class FootageItem(AVItem):
         """
         self._replace_main_source(
             FileSource._from_file(
-                file, sequence=True, force_alphabetical=force_alphabetical
+                file,
+                sequence=True,
+                force_alphabetical=force_alphabetical,
+                default_sequence_fps=default_sequence_fps(self._project._preferences),
             )
         )
 

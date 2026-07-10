@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from ...enums import LayerType
+from ..preferences import label_index
 from .av_layer import AVLayer
 
 if TYPE_CHECKING:
@@ -53,6 +54,8 @@ class ShapeLayer(AVLayer):
             ),
         )
         layer._ldta.layer_type = LayerType.SHAPE
-        layer._ldta.label = 8
+        layer._ldta.label = label_index(
+            containing_comp._project._preferences, "Shape Label Index 2", 8
+        )
         layer._ldta.collapse_transformation = True
         return layer

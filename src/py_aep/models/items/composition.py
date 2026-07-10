@@ -47,7 +47,7 @@ from ...binary.utils import (
     find_by_type,
     index_by_identity,
 )
-from ...enums import Label, LayerType, LineOrientation, ParametricMeshType
+from ...enums import Label, LayerType, LineOrientation, ParametricMeshType, PREFType
 from ...parsers.essential_graphics import parse_essential_graphics
 from ...resolvers.motion_graphics import (
     CONTROLLER_CHECKBOX,
@@ -69,6 +69,7 @@ from ..layers.shape_layer import ShapeLayer
 from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
 from ..naming import auto_name
+from ..preferences import label_index
 from ..properties.property import Property
 from ..properties.property_group import PropertyGroup
 from ..sources.file import FileSource
@@ -525,6 +526,7 @@ class CompItem(AVItem):
             duration=duration,
             frame_rate=frame_rate,
             allocate_layer_id=project._allocate_layer_id,
+            label=label_index(project._preferences, "Comp Label Index 2", 15),
         )
 
         # View data chunks that AE expects after every comp's LIST:Item
@@ -1295,6 +1297,20 @@ class CompItem(AVItem):
         Handles view block creation, chunk insertion, materialization,
         and layer list bookkeeping.
         """
+        # AE anchors new layers at the comp's current time when the
+        # "Create New Layers At Time Zero" preference is off: start = in
+        # = time, out shifted by the same amount (probed in AE 2026 for
+        # every scripted layer add). duplicate() bypasses this path and
+        # keeps the source timing, matching AE.
+        at_time_zero = self._project._preferences.get_pref_as_bool(
+            "General Section",
+            "Create New Layers At Time Zero",
+            PREFType.PREF_Type_MACHINE_INDEPENDENT,
+            default=True,
+        )
+        if not at_time_zero and self.time:
+            layer.start_time = self.time
+
         view_block = build_layer_view_block()
 
         if self.layers:
@@ -1353,6 +1369,7 @@ class CompItem(AVItem):
             duration=duration if duration is not None else self.duration,
             containing_comp=self,
             null_layer=True,
+            label=label_index(self._project._preferences, "Null Label Index", 1),
             effect_param_defs=self._project._effect_param_defs,
         )
         self._insert_layer(layer)
@@ -1856,6 +1873,7 @@ class CompItem(AVItem):
             source_id=footage.id,
             duration=duration if duration is not None else self.duration,
             containing_comp=self,
+            label=label_index(self._project._preferences, "Solid Label Index 2", 1),
             effect_param_defs=self._project._effect_param_defs,
         )
         self._insert_layer(layer)

@@ -131,6 +131,7 @@ from .models import (
     ParametricMeshLayer,
     PlaceholderSource,
     PngFormatOptions,
+    Preferences,
     Project,
     Property,
     PropertyBase,
@@ -151,6 +152,7 @@ from .models import (
     ViewOptions,
     XmlFormatOptions,
 )
+from .parsers.comp_presets import CompPreset
 from .resolvers.source_layers import list_layers
 
 try:
@@ -181,6 +183,7 @@ __all__ = [
     "CloseOptions",
     "ColorDepthSetting",
     "ColorManagementSystem",
+    "CompPreset",
     "CompItem",
     "ComposerEngine",
     "CTFontTechnology",
@@ -261,6 +264,7 @@ __all__ = [
     "PlayMode",
     "PngFormatOptions",
     "PostRenderAction",
+    "Preferences",
     "PREFType",
     "Project",
     "ProjectThread",

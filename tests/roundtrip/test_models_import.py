@@ -266,6 +266,23 @@ class TestImportFileSequence:
         assert item.name == "sequence_[001-003].gif"
         assert item.main_source.is_still is False
 
+    def test_import_sequence_fps_pref(self, tmp_path: Path) -> None:
+        # "Import Options Default Sequence FPS" drives the rate of
+        # sequences with no native frame rate (30 fps without prefs).
+        prefs_dir = tmp_path / "prefs"
+        prefs_dir.mkdir()
+        (prefs_dir / "Adobe After Effects 26.0 Prefs-indep-general.txt").write_text(
+            '["Import Options Preference Section"]\n'
+            '\t"Import Options Default Sequence FPS" = "25.000000"\n',
+            encoding="utf-8",
+        )
+        project = parse_aep(BASE, ae_preferences_dir=prefs_dir).project
+        opts = ImportOptions(ASSETS / "new_exr.0002.exr")
+        opts.sequence = True
+        item = project.import_file(opts)
+        assert item.frame_rate == pytest.approx(25.0)
+        assert item.duration == pytest.approx(2 / 25, abs=1e-4)
+
     def test_sequence_roundtrip(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
         opts = ImportOptions(ASSETS / "new_exr.0002.exr")

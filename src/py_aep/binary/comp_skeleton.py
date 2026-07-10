@@ -223,15 +223,17 @@ def build_new_comp_item(
     duration: float,
     frame_rate: float,
     allocate_layer_id: Callable[[], int],
+    label: int = 15,
 ) -> tuple[ListChunk, IdtaChunk, Utf8Chunk, ListChunk]:
     """Build the complete `LIST:Item` chunk tree AE 2026 writes for
     `app.project.items.addComp()`.
 
-    Returns `(item_list, idta, name_utf8, gide)`.
+    `label` is the "Comp Label Index 2" label preference (AE factory
+    value 15). Returns `(item_list, idta, name_utf8, gide)`.
     """
     iide = IideChunk(value=item_id)
     idpc = IdpcChunk()
-    idta = IdtaChunk(item_type=4, item_id=item_id, label=15, flags_17=0x20)
+    idta = IdtaChunk(item_type=4, item_id=item_id, label=label, flags_17=0x20)
     name_utf8 = Utf8Chunk(value=name)
     cdta = _build_cdta(width, height, pixel_aspect, duration, frame_rate)
     prin = ListChunk(list_type="PRin", chunks=[PrinChunk(), PrdaChunk()])
