@@ -7,6 +7,7 @@ from py_aep.enums import LayerType, LightType
 
 from ...binary.layer_chunks import LdtaChunk
 from ..descriptors import ChunkField
+from ..preferences import label_index
 from .av_layer import AVLayer
 from .layer import Layer
 
@@ -74,7 +75,9 @@ class LightLayer(Layer):
         ldta = LdtaChunk(
             layer_id=layer_id,
             source_id=_UNDEFINED_ID,
-            label=6,
+            label=label_index(
+                containing_comp._project._preferences, "Light Label Index 2", 6
+            ),
             layer_type=LayerType.LIGHT,
             light_and_mesh_type=light_type,
             layer_flags_2=0x01,

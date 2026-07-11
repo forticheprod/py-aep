@@ -234,7 +234,7 @@ class TextDocument:
     faux_italic = DocumentWideCosField.bool("_char_style", "3", default=None)
     """`True` if a Text layer has faux italic enabled. Read / Write."""
 
-    tracking = DocumentWideCosField.float("_char_style", "8", default=None)
+    tracking = DocumentWideCosField.int("_char_style", "8", default=None)
     """The Text layer's spacing between characters. Read / Write."""
 
     @property

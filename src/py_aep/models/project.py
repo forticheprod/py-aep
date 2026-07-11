@@ -15,7 +15,12 @@ from ..binary.footage_chunks import (
     build_psd_layer_opti_data,
     build_text_opti_data,
 )
-from ..binary.item_chunks import HeadChunk, NhedChunk, NnhdChunk
+from ..binary.item_chunks import (
+    HeadChunk,
+    NhedChunk,
+    NnhdChunk,
+    TimeDisplayPrefItem,
+)
 from ..binary.misc_chunks import DwgaChunk
 from ..binary.project_chunks import (
     CpidChunk,
@@ -26,8 +31,10 @@ from ..binary.project_chunks import (
 )
 from ..binary.scalar_chunks import F8Chunk, U1Chunk, U2Chunk, U4Chunk, Utf8Chunk
 from ..binary.utils import (
+    ChunkNotFoundError,
     filter_by_type,
     find_by_list_type,
+    find_by_type,
     index_by_identity,
     recursive_find,
     toggle_flag_chunk,
@@ -54,6 +61,7 @@ from ..enums import (
     GpuAccelType,
     ImportAsType,
     LutInterpolationMethod,
+    PREFType,
     TimeDisplayType,
 )
 from ..enums.mappings import adobe_color_profile_names
@@ -70,6 +78,7 @@ from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
 from .items.item import Item
+from .preferences import Preferences, default_sequence_fps
 from .renderqueue.render_queue import RenderQueue
 from .sources.file import FileSource
 from .validators import (
@@ -99,9 +108,10 @@ if TYPE_CHECKING:
 _validate_expression_engine = validate_one_of(("extendscript", "javascript-1.0"))
 
 # AE's default new-composition import timing for a layered file: a 30-second
-# duration rounded to whole frames at the default frame rate. These come from
-# After Effects preferences (not the file), so they reproduce AE's factory
-# default and may differ from a given install (the probe machine used 29.97).
+# duration rounded to whole frames at 29.97 fps. This is AE's built-in
+# factory default, not a preference: verified by deleting every AE pref
+# file and cold-starting AE (regenerated factory prefs, "Composition
+# Settings7" empty) - a layered PSD still imported at 29.97 fps / 30 s.
 _LAYERED_COMP_FRAME_RATE = 29.97
 _LAYERED_COMP_DURATION_SECONDS = 30.0
 
@@ -315,6 +325,7 @@ class Project:
 
         self._max_layer_id = -1  # lazily computed on first allocation
         self._ae_preferences_dir = ae_preferences_dir
+        self._preferences = Preferences(ae_preferences_dir)
         # ICC profile discovery for Adobe-CMS working-space writes. `None`
         # dirs = auto-discover the standard Adobe Color directories.
         self._icc_profile_dirs: list[Path] | None = None
@@ -344,6 +355,46 @@ class Project:
         return self._effect_definitions_cache
 
     @classmethod
+    def _apply_project_settings_prefs(
+        cls,
+        preferences: Preferences,
+        nhed: NhedChunk,
+        nnhd: NnhdChunk,
+    ) -> None:
+        """Apply the last-used Project Settings preferences to a new project.
+
+        AE persists the Project Settings dialog into the machine-specific
+        "Project Pref Section" (color depth plus a 16-byte time-display
+        blob mirroring the `nnhd` settings cluster) and File > New
+        inherits them. Missing or malformed values leave the AE-factory
+        chunk defaults untouched.
+        """
+        depth = preferences.get_pref_as_number(
+            "Project Pref Section", "Project Settings Depth", default=0
+        )
+        if depth in (1, 2):  # 0 = 8 bpc = the chunk default
+            nhed.bits_per_channel = int(depth)
+            nnhd.bits_per_channel = int(depth)
+        blob = preferences._get_bytes(
+            "Project Pref Section",
+            "Project Settings Time Display Format",
+            PREFType.PREF_Type_MACHINE_SPECIFIC,
+        )
+        if blob is None or len(blob) != 16:
+            return
+        item = TimeDisplayPrefItem.frombytes(blob)
+        assert isinstance(item, TimeDisplayPrefItem)
+        for chunk in (nhed, nnhd):
+            chunk.time_display_type = item.display_byte & 0x7F
+            chunk.feet_frames_film_type = bool(item.display_byte & 0x80)
+            chunk.footage_timecode_display_start_type = (
+                item.footage_timecode_display_start_type
+            )
+            chunk.frames_use_feet_frames = bool(item.feet_byte & 0x01)
+            chunk.timecode_default_base = item.timecode_default_base
+            chunk.frames_count_type = item.frames_count_type
+
+    @classmethod
     def _new(cls, version: str, ae_preferences_dir: Path | None = None) -> Project:
         """Build a new, empty project (mirrors AE's File > New Project).
 
@@ -354,6 +405,7 @@ class Project:
         stored for render-queue template lookup. See [Application][] and
         `py_aep.new`.
         """
+        preferences = Preferences(ae_preferences_dir)
         head = HeadChunk()
         # HeadChunk defaults the OS / release / reserved bits AE always writes
         # for a saved Windows release build (see _version_word); the .version
@@ -367,11 +419,21 @@ class Project:
         svap = SvapChunk(build_number=head.ae_build_number)
         nhed = NhedChunk()
         nnhd = NnhdChunk()
+        cls._apply_project_settings_prefs(preferences, nhed, nnhd)
         acer = U1Chunk(chunk_type="acer", value=1)
         adfr = F8Chunk(chunk_type="adfr", value=48000.0)
         dwga = DwgaChunk(working_gamma_selector=1)
         gpug_utf8 = Utf8Chunk(value=str(uuid.uuid4()))
         fold = ListChunk(list_type="Fold", chunks=[FdtaChunk()])
+        # AE stamps the "New Project Solids Folder" preference into the
+        # root sfnm chunk at File > New; the stored name is used from
+        # then on (see _solids_folder_name).
+        solids_name = preferences.get_pref_as_string(
+            "Template Project",
+            "New Project Solids Folder",
+            PREFType.PREF_Type_MACHINE_INDEPENDENT,
+            default="Solids",
+        )
 
         # Root chunks in AE's order. Several are version-gated: AE adds them
         # in later releases, and a fresh project from an older AE omits them
@@ -390,7 +452,10 @@ class Project:
             ListChunk(list_type="gpuG", chunks=[gpug_utf8]),
             ListChunk(
                 list_type="sfnm",
-                chunks=[Utf8Chunk(value="Solids"), U4Chunk(chunk_type="sfid")],
+                chunks=[
+                    Utf8Chunk(value=solids_name or "Solids"),
+                    U4Chunk(chunk_type="sfid"),
+                ],
             ),
         ]
         if major >= 22:
@@ -955,6 +1020,7 @@ class Project:
                 options.file,
                 sequence=options.sequence,
                 force_alphabetical=options.force_alphabetical,
+                default_sequence_fps=default_sequence_fps(self._preferences),
             )
 
         item = FootageItem._new(source, project=self, parent_folder=self.root_folder)
@@ -1498,12 +1564,27 @@ class Project:
         return self._max_layer_id
 
     @property
+    def _solids_folder_name(self) -> str:
+        """The solids folder name stored in the project's root `sfnm` chunk.
+
+        AE stamps the "New Project Solids Folder" preference into `sfnm`
+        when the project is created and uses the stored name from then on.
+        """
+        try:
+            sfnm = find_by_list_type(chunks=self._rifx.chunks, list_type="sfnm")
+            name = find_by_type(chunks=sfnm.chunks, chunk_type="Utf8").value  # type: ignore[attr-defined]
+        except ChunkNotFoundError:
+            return "Solids"
+        return name or "Solids"
+
+    @property
     def _solids_folder(self) -> FolderItem:
         """Return the Solids folder, creating one if it doesn't exist."""
+        name = self._solids_folder_name
         for folder in self.root_folder.folders:
-            if folder.name == "Solids":
+            if folder.name == name:
                 return folder
-        return self.root_folder.add_folder("Solids")
+        return self.root_folder.add_folder(name)
 
     _CMS_DEFAULTS: ClassVar[dict[str, int | str]] = {
         "colorManagementSystem": 0,

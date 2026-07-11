@@ -779,9 +779,27 @@ class RangeField(Generic[T]):
     @classmethod
     def float(cls, kind: str, key: str, **kwargs: Any) -> RangeField[float]:
         """Create a RangeField that coerces to float."""
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = float
         return cast(
             "RangeField[float]",
-            cls(kind, key, transform=float, reverse=float, **kwargs),
+            cls(kind, key, transform=float, **kwargs),
+        )
+
+    @classmethod
+    def int(cls, kind: str, key: str, **kwargs: Any) -> RangeField[int]:
+        """Create a RangeField for integer-stored style keys.
+
+        Coerces to `int` on read and rounds to the nearest integer on
+        write. AE stores these keys as integers; a real-typed value is
+        misread at 16.16 scale (stored `50.0` read back as `3276800`,
+        probed AE 2026).
+        """
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = round
+        return cast(
+            "RangeField[int]",
+            cls(kind, key, transform=int, **kwargs),
         )
 
     @classmethod
@@ -852,6 +870,13 @@ class _TextRange:
     _start: int
     _signed_end: int
 
+    def __init__(self, doc: TextDocument, start: int, signed_end: int) -> None:
+        self._doc_ref = doc
+        self._start = start
+        self._signed_end = signed_end
+        # AE validates at creation time and raises immediately.
+        self._bounds()
+
     def _bounds(self) -> tuple[int, int]:
         raise NotImplementedError
 
@@ -889,13 +914,6 @@ class _IndexRange(_TextRange):
     `_bounds()` (the per-kind span lookup and clamping) differs.
     """
 
-    def __init__(self, doc: TextDocument, start: int, signed_end: int) -> None:
-        self._doc_ref = doc
-        self._start = start
-        self._signed_end = signed_end
-        # AE validates at creation time and raises immediately.
-        self._bounds()
-
     def character_range(self) -> CharacterRange:
         """A [CharacterRange][] fixed to the current character bounds.
 
@@ -926,15 +944,6 @@ class CharacterRange(_TextRange):
 
     See: https://ae-scripting.docsforadobe.dev/text/characterrange/
     """
-
-    def __init__(
-        self, doc: TextDocument, character_start: int, signed_character_end: int
-    ) -> None:
-        self._doc_ref = doc
-        self._start = character_start
-        self._signed_end = signed_character_end
-        # AE validates at creation time and raises immediately.
-        self._bounds()
 
     # -- Bounds --------------------------------------------------------------
 
@@ -1153,7 +1162,7 @@ class CharacterRange(_TextRange):
     vertical_scale = RangeField.float("char", "7")
     """The range's vertical scale; `None` when mixed. Read / Write."""
 
-    tracking = RangeField.float("char", "8")
+    tracking = RangeField.int("char", "8")
     """The range's spacing between characters; `None` when mixed. Read / Write."""
 
     baseline_shift = RangeField.float("char", "9")

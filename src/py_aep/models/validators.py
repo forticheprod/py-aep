@@ -219,6 +219,12 @@ def _validate_path(
     return _validator
 
 
+def validate_bool(value: object, instance: object | None = None) -> None:
+    """Validate that a value is a `bool` (rejects 0/1 integers)."""
+    if not isinstance(value, bool):
+        raise TypeError(f"expected a bool, got {type(value).__name__}")
+
+
 # ---- Shared domain validators ----
 # Re-use these across models instead of defining per-module duplicates.
 

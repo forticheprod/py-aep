@@ -63,6 +63,7 @@ from .format_options import (
 )
 from .settings import (
     SettingsView,
+    build_resize_to_strings,
     settings_to_number,
     settings_to_string,
 )
@@ -853,7 +854,9 @@ class OutputModule:
                 `GetSettingsFormat.STRING` returns all values as strings
         """
         if format == GetSettingsFormat.STRING:
-            return settings_to_string(self.settings)
+            return settings_to_string(
+                self.settings, build_resize_to_strings(self._project._preferences)
+            )
         if format == GetSettingsFormat.NUMBER:
             return settings_to_number(self.settings)
         raise ValueError(f"Unsupported format: {format!r}")

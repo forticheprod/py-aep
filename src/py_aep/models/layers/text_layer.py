@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ...binary.chunk import ListChunk
 from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...enums import LayerType
+from ..preferences import label_index
 from .av_layer import AVLayer
 
 if TYPE_CHECKING:
@@ -74,5 +75,9 @@ class TextLayer(AVLayer):
             ),
         )
         layer._ldta.layer_type = LayerType.TEXT
-        layer._ldta.label = 5
+        # AE labels scripted text layers with the "Text Label Index"
+        # preference (factory value 1, probed in AE 2026).
+        layer._ldta.label = label_index(
+            containing_comp._project._preferences, "Text Label Index", 1
+        )
         return layer

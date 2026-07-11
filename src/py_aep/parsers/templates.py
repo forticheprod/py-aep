@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..binary.render_chunks import OutputModuleSettingsItem, RenderSettingsItem
+from .prefs import collapse_continuation_lines, parse_hex_value
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,43 +56,6 @@ class OutputModuleTemplate:
     format_options_xml: str | None = None
 
 
-def _collapse_continuation_lines(text: str) -> list[str]:
-    """Collapse AE preference continuation lines (no backslash, tab-indented)."""
-    lines = text.split("\n")
-    result: list[str] = []
-    for line in lines:
-        stripped = line.rstrip()
-        if not stripped:
-            continue
-        # Continuation lines start with tab and contain hex data
-        if result and stripped.startswith("\t") and not stripped.startswith('\t"'):
-            result[-1] += stripped.strip()
-        else:
-            result.append(stripped)
-    return result
-
-
-def _parse_hex_value(value: str) -> bytes:
-    """Parse a mixed hex/ASCII value from AE preferences.
-
-    The value contains hex digits and quoted ASCII strings like:
-    `00D00BEE..."Best Settings"0000...`
-    """
-    raw = bytearray()
-    i = 0
-    while i < len(value):
-        if value[i] == '"':
-            end = value.index('"', i + 1)
-            raw.extend(value[i + 1 : end].encode("ascii"))
-            i = end + 1
-        elif value[i] in "0123456789ABCDEFabcdef":
-            raw.append(int(value[i : i + 2], 16))
-            i += 2
-        else:
-            i += 1
-    return bytes(raw)
-
-
 def _extract_section_value(lines: list[str], key: str) -> bytes | None:
     """Extract a hex/ASCII value from a preference section."""
     for i, line in enumerate(lines):
@@ -108,7 +72,7 @@ def _extract_section_value(lines: list[str], key: str) -> bytes | None:
             if next_line.startswith('"'):
                 break
             value_parts.append(next_line)
-        return _parse_hex_value("".join(value_parts))
+        return parse_hex_value("".join(value_parts))
     return None
 
 
@@ -133,7 +97,7 @@ def parse_render_templates(
         return [], None
 
     text = render_files[0].read_text(encoding="utf-8", errors="replace")
-    lines = _collapse_continuation_lines(text)
+    lines = collapse_continuation_lines(text)
 
     raw = _extract_section_value(lines, "Render Settings List")
     if raw is None:
@@ -194,7 +158,7 @@ def parse_output_templates(
         return [], None
 
     text = output_files[0].read_text(encoding="utf-8", errors="replace")
-    lines = _collapse_continuation_lines(text)
+    lines = collapse_continuation_lines(text)
 
     raw = _extract_section_value(lines, "Output Module List v28")
     if raw is None:
@@ -247,7 +211,7 @@ def _parse_id_hex_section(text: str, section: str, id_prefix: str) -> dict[int, 
     Used for both "Output File Info" (the `Rouu` header) and "Output File
     Options" (the `Ropt` format options). Values span continuation lines
     (double-tab indented, trailing backslash) and use AE's mixed hex/ASCII
-    encoding decoded by `_parse_hex_value`. Parsing is bounded to the named
+    encoding decoded by `parse_hex_value`. Parsing is bounded to the named
     section so continuation lines never leak across section boundaries.
 
     Args:
@@ -268,7 +232,7 @@ def _parse_id_hex_section(text: str, section: str, id_prefix: str) -> dict[int, 
     def _flush() -> None:
         nonlocal current_idx
         if current_idx is not None:
-            entries[current_idx] = _parse_hex_value(current_value)
+            entries[current_idx] = parse_hex_value(current_value)
             current_idx = None
 
     for line in text.split("\n"):

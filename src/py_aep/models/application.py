@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..binary.item_chunks import HeadChunk
+    from .preferences import Preferences
     from .project import Project
     from .viewer.viewer import Viewer
 
@@ -126,6 +127,13 @@ class Application:
         (Composition, Layer, or Footage) panel. Returns `None` if no viewers
         are open. Read-only."""
         return self._active_viewer
+
+    @property
+    def preferences(self) -> Preferences:
+        """The [Preferences][] object, providing access to the After Effects
+        preference files (requires `ae_preferences_dir` to read values from
+        disk; overrides work without it). Read-only."""
+        return self._project._preferences
 
     @property
     def build_name(self) -> str:

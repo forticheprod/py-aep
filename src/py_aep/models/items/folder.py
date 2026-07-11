@@ -7,7 +7,8 @@ from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from ...binary.misc_chunks import SfdtChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ..naming import auto_name
-from ..validators import validate_string
+from ..preferences import label_index
+from ..validators import validate_name, validate_string
 from .composition import CompItem
 from .footage import FootageItem
 from .item import Item
@@ -120,7 +121,13 @@ class FolderItem(Item):
 
         iide = IideChunk(value=new_id)
         idpc = IdpcChunk()
-        idta = IdtaChunk(item_type=1, item_id=new_id)
+        # AE labels new folders with the "Folder Label Index 2" preference
+        # (factory 2, probed in AE 2026).
+        idta = IdtaChunk(
+            item_type=1,
+            item_id=new_id,
+            label=label_index(project._preferences, "Folder Label Index 2", 2),
+        )
         name_utf8 = Utf8Chunk(value=name)
         sfdt = SfdtChunk()
         sfdr = ListChunk(list_type="Sfdr")
@@ -235,6 +242,63 @@ class FolderItem(Item):
         self._project.items[comp.id] = comp
         self.items.insert(0, comp)
         return comp
+
+    def add_comp_from_preset(
+        self,
+        name: str | None,
+        preset: str,
+        duration: float,
+    ) -> CompItem:
+        """Create a new composition from a New Composition preset
+        (py_aep extension, not in ExtendScript).
+
+        Width, height, pixel aspect and frame rate resolve from the named
+        preset in the AE preferences (see
+        [composition_presets][py_aep.models.preferences.Preferences.composition_presets]);
+        presets carry no duration, so it must be given.
+
+        Args:
+            name: The name of the new composition. Pass `None` to
+                auto-generate a name (`Comp 1`, `Comp 2`, ...).
+            preset: Preset name; matched exactly first, then as a unique
+                case-insensitive substring (full names contain bullet
+                separators, e.g. `HD . 1920x1080 . 25 fps`, so a
+                fragment like `"1920x1080 . 25"` works).
+            duration: The duration in seconds.
+
+        Returns:
+            The newly created [CompItem][].
+
+        Raises:
+            ValueError: If no preferences directory was provided, or the
+                preset name does not resolve to exactly one preset.
+        """
+        validate_name(preset)
+        presets = self._project._preferences.composition_presets()
+        if not presets:
+            raise ValueError(
+                "no composition presets available; pass 'ae_preferences_dir' "
+                "to parse()/new() to read them from the AE preferences"
+            )
+        matches = [p for p in presets if p.name == preset]
+        if not matches:
+            needle = preset.lower()
+            matches = [p for p in presets if needle in p.name.lower()]
+        if len(matches) != 1:
+            available = ", ".join(repr(p.name) for p in presets)
+            raise ValueError(
+                f"preset {preset!r} matched {len(matches)} presets; "
+                f"available: {available}"
+            )
+        found = matches[0]
+        return self.add_comp(
+            name,
+            found.width,
+            found.height,
+            found.pixel_aspect,
+            duration,
+            found.frame_rate,
+        )
 
     def _sort_children_by_name(self) -> None:
         """Reorder this folder's items case-insensitive alphabetically by name.

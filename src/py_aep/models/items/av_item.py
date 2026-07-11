@@ -8,6 +8,7 @@ from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import index_by_identity
 from ..descriptors import ChunkField
 from ..naming import auto_name
+from ..preferences import default_sequence_fps
 from .item import Item
 
 if TYPE_CHECKING:
@@ -319,7 +320,10 @@ class AVItem(Item):
 
         self._set_proxy(
             FileSource._from_file(
-                file, sequence=True, force_alphabetical=force_alphabetical
+                file,
+                sequence=True,
+                force_alphabetical=force_alphabetical,
+                default_sequence_fps=default_sequence_fps(self._project._preferences),
             )
         )
 
