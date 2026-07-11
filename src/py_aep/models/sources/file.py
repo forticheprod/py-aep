@@ -150,7 +150,7 @@ class FileSource(FootageSource):
         For PSD (Photoshop) sources, the following keys are available:
 
         - `psd_layer_index` (`int`): Zero-based index of this layer within
-          the PSD file. `0xFFFF` means merged/flattened.
+          the PSD file. `0xFFFFFFFF` means merged/flattened.
         - `psd_group_name` (`str`): PSD group/folder that contains this
           layer (e.g. `"PAINT 02"`).
         - `psd_layer_count` (`int`): Total number of layers in the source

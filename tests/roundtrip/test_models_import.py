@@ -50,10 +50,8 @@ def _ae_layer_opti(project: object, layer_name: str) -> bytes | None:
     for item in project.items.values():  # type: ignore[attr-defined]
         source = getattr(item, "main_source", None)
         if isinstance(source, FileSource):
-            data = bytes(source._opti.data)
-            name = data[0x44:].split(b"\x00", 1)[0].decode("utf-8")
-            if data[:4] == b"TEXT" and name == layer_name:
-                return data
+            if getattr(source._opti, "text_layer_name", None) == layer_name:
+                return source._opti.tobytes()
     return None
 
 
@@ -203,7 +201,7 @@ class TestImportFileSingle:
         assert item.main_source.alpha_mode == AlphaMode.STRAIGHT
         # The merged-layer opti is exposed via file_attributes.
         attrs = item.main_source.file_attributes
-        assert attrs["psd_layer_index"] == 0xFFFF
+        assert attrs["psd_layer_index"] == 0xFFFFFFFF
         assert attrs["psd_bit_depth"] == 8
         assert attrs["psd_channels"] == 4
         assert attrs["psd_layer_count"] == 2
@@ -406,7 +404,7 @@ class TestReplaceAndProxy:
         assert isinstance(item.main_source, FileSource)
         assert item.name == "8bits.psd"
         assert (item.width, item.height) == (25, 26)
-        assert item.main_source.file_attributes["psd_layer_index"] == 0xFFFF
+        assert item.main_source.file_attributes["psd_layer_index"] == 0xFFFFFFFF
 
 
 class TestImportGapFormats:
@@ -539,7 +537,7 @@ class TestImportAiComp:
         for layer in comp.layers:
             source = layer.source.main_source
             assert isinstance(source, FileSource)
-            mine = bytes(source._opti.data)
+            mine = source._opti.tobytes()
             # ai.ai is CMYK (Coated FOGRA39), so the opti color-space flag = 0x02.
             assert mine == build_ai_layer_opti_data(612, 792, layer.name, "CMYK")
             assert mine == _ae_layer_opti(fixture, layer.name)
@@ -634,19 +632,17 @@ class TestImportAiComp:
         # (exercises the color-space flag 0x33 = 0x08 for RGB).
         fixture = parse_aep(IMPORT_DIR / "complex_comp.aep").project
         ae = {
-            bytes(s._opti.data)[0x44:].split(b"\x00", 1)[0].decode(): bytes(
-                s._opti.data
-            )
+            s._opti.text_layer_name: s._opti.tobytes()
             for s in (
                 it.main_source
                 for it in fixture.items.values()
                 if isinstance(getattr(it, "main_source", None), FileSource)
             )
-            if bytes(s._opti.data)[:4] == b"TEXT"
+            if getattr(s._opti, "asset_type", "") == "TEXT"
         }
         comp = parse_aep(BASE).project.import_file(_comp_opts(ASSETS / "complex.ai"))
         for layer in comp.layers:
-            mine = bytes(layer.source.main_source._opti.data)
+            mine = layer.source.main_source._opti.tobytes()
             assert mine == ae[layer.name]
 
 
@@ -686,7 +682,7 @@ class TestImportEpsComp:
         source = comp.layers[0].source.main_source
         assert isinstance(source, FileSource)
         assert source._sspc.source_format_type == "TEXT"
-        assert bytes(source._opti.data) == build_text_opti_data(1921, 2881)
+        assert source._opti.tobytes() == build_text_opti_data(1921, 2881)
 
     def test_layer_name_not_set(self) -> None:
         # The single layer is named after the source item, so AE leaves the

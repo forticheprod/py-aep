@@ -787,6 +787,22 @@ class RangeField(Generic[T]):
         )
 
     @classmethod
+    def int(cls, kind: str, key: str, **kwargs: Any) -> RangeField[int]:
+        """Create a RangeField for integer-stored style keys.
+
+        Coerces to `int` on read and rounds to the nearest integer on
+        write. AE stores these keys as integers; a real-typed value is
+        misread at 16.16 scale (stored `50.0` read back as `3276800`,
+        probed AE 2026).
+        """
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = round
+        return cast(
+            "RangeField[int]",
+            cls(kind, key, transform=int, **kwargs),
+        )
+
+    @classmethod
     def enum(
         cls, enum_cls: type[T], kind: str, key: str, **kwargs: Any
     ) -> RangeField[T]:
@@ -1146,10 +1162,7 @@ class CharacterRange(_TextRange):
     vertical_scale = RangeField.float("char", "7")
     """The range's vertical scale; `None` when mixed. Read / Write."""
 
-    # AE stores tracking (key "8") as an integer; a real-typed value in
-    # this slot is misread by AE at 16.16 scale (stored 50.0 read back as
-    # 3276800 via ExtendScript, probed AE 2026).
-    tracking = RangeField.float("char", "8", reverse=round)
+    tracking = RangeField.int("char", "8")
     """The range's spacing between characters; `None` when mixed. Read / Write."""
 
     baseline_shift = RangeField.float("char", "9")

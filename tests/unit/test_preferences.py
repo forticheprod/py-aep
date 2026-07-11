@@ -585,20 +585,20 @@ class TestDefaultOutPoints:
         assert comp.add_camera("c", [50.0, 50.0]).out_point == pytest.approx(2.0)
         assert comp.add_light("l", [50.0, 50.0]).out_point == pytest.approx(2.0)
 
-    def test_solid_duration_arg_ignored(self, outpoint_prefs_dir: Path) -> None:
-        # AE 2026 probed: addSolid's duration argument has no effect on
-        # the layer span even with a custom synthetic out point.
+    def test_solid_duration_arg_honored(self, outpoint_prefs_dir: Path) -> None:
+        # py_aep honors an explicit duration argument, overriding the
+        # synthetic out-point preference (AE's addSolid ignores it).
         app = py_aep.new(ae_preferences_dir=outpoint_prefs_dir)
         comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
         solid = comp.add_solid([1.0, 0.0, 0.0], duration=8.0)
-        assert solid.out_point == pytest.approx(2.0)
+        assert solid.out_point == pytest.approx(8.0)
 
     def test_factory_defaults_span_comp_duration(self) -> None:
         app = py_aep.new()
         comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
-        assert comp.add_solid([1.0, 0.0, 0.0], duration=3.0).out_point == (
-            pytest.approx(5.0)
-        )
+        # No preferences and no explicit duration: the default span is the
+        # composition duration.
+        assert comp.add_solid([1.0, 0.0, 0.0]).out_point == pytest.approx(5.0)
         assert comp.add_text("x").out_point == pytest.approx(5.0)
 
 

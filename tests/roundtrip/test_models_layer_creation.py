@@ -69,13 +69,13 @@ class TestAddNull:
         layer = comp.add_null()
         assert layer.out_point == pytest.approx(comp.duration)
 
-    def test_custom_duration_ignored(self) -> None:
-        # AE 2026 probed: addNull/addSolid ignore the duration argument;
-        # the layer spans the synthetic-layer default (comp duration).
+    def test_custom_duration_honored(self) -> None:
+        # py_aep honors an explicit duration (unlike AE's addNull, which
+        # ignores it); the layer out-point is the requested span.
         app = parse_aep(EMPTY_COMP_AEP)
         comp = app.project.compositions[0]
         layer = comp.add_null(duration=0.5)
-        assert layer.out_point == pytest.approx(comp.duration)
+        assert layer.out_point == pytest.approx(0.5)
 
     def test_has_source(self) -> None:
         app = parse_aep(EMPTY_COMP_AEP)

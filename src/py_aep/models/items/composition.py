@@ -1355,11 +1355,12 @@ class CompItem(AVItem):
         automatically.
 
         Args:
-            duration: Accepted for ExtendScript signature parity but
-                ignored - AE gives new null layers the synthetic-layer
-                default span (the "Pref_DEFAULT_SYNTHETIC_OUT_POINT"
-                preference; composition duration by default), probed in
-                AE 2026.
+            duration: Layer duration in seconds. Defaults to the
+                synthetic-layer default span (the
+                "Pref_DEFAULT_SYNTHETIC_OUT_POINT" preference; composition
+                duration by default). AE's `addNull` ignores this argument
+                (probed in AE 2026); py_aep honors it, since it sets the
+                layer out-point directly and the result is a valid AE file.
 
         Returns:
             The newly created [AVLayer][].
@@ -1388,7 +1389,9 @@ class CompItem(AVItem):
             name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=footage.id,
-            duration=self._synthetic_layer_duration(),
+            duration=(
+                duration if duration is not None else self._synthetic_layer_duration()
+            ),
             containing_comp=self,
             null_layer=True,
             label=label_index(self._project._preferences, "Null Label Index", 1),
@@ -1861,11 +1864,12 @@ class CompItem(AVItem):
             width: Solid width in pixels. Defaults to comp width.
             height: Solid height in pixels. Defaults to comp height.
             pixel_aspect: Pixel aspect ratio (default 1.0).
-            duration: Accepted for ExtendScript signature parity but
-                ignored - AE gives new solid layers the synthetic-layer
-                default span (the "Pref_DEFAULT_SYNTHETIC_OUT_POINT"
-                preference; composition duration by default), probed in
-                AE 2026.
+            duration: Layer duration in seconds. Defaults to the
+                synthetic-layer default span (the
+                "Pref_DEFAULT_SYNTHETIC_OUT_POINT" preference; composition
+                duration by default). AE's `addSolid` ignores this argument
+                (probed in AE 2026); py_aep honors it, since it sets the
+                layer out-point directly and the result is a valid AE file.
 
         Returns:
             The newly created [AVLayer][].
@@ -1908,7 +1912,9 @@ class CompItem(AVItem):
             name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=footage.id,
-            duration=self._synthetic_layer_duration(),
+            duration=(
+                duration if duration is not None else self._synthetic_layer_duration()
+            ),
             containing_comp=self,
             label=label_index(self._project._preferences, "Solid Label Index 2", 1),
             effect_param_defs=self._project._effect_param_defs,

@@ -213,3 +213,23 @@ class CosField(Generic[T]):
         return cast(
             "CosField[float | None]", cls(dict_attr, key, transform=float, **kwargs)
         )
+
+    @classmethod
+    def int(
+        cls,
+        dict_attr: str,
+        key: str,
+        **kwargs: Any,
+    ) -> CosField[int | None]:
+        """Create a CosField for integer-stored keys.
+
+        Coerces to `int` on read and rounds to the nearest integer on
+        write. AE stores these keys as integers; a real-typed value is
+        misread at 16.16 scale (stored `50.0` read back as `3276800`,
+        probed AE 2026), so the write-side coercion matters for fidelity.
+        """
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = round
+        return cast(
+            "CosField[int | None]", cls(dict_attr, key, transform=int, **kwargs)
+        )
