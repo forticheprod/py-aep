@@ -779,9 +779,11 @@ class RangeField(Generic[T]):
     @classmethod
     def float(cls, kind: str, key: str, **kwargs: Any) -> RangeField[float]:
         """Create a RangeField that coerces to float."""
+        if "reverse" not in kwargs:
+            kwargs["reverse"] = float
         return cast(
             "RangeField[float]",
-            cls(kind, key, transform=float, reverse=float, **kwargs),
+            cls(kind, key, transform=float, **kwargs),
         )
 
     @classmethod
@@ -1153,7 +1155,10 @@ class CharacterRange(_TextRange):
     vertical_scale = RangeField.float("char", "7")
     """The range's vertical scale; `None` when mixed. Read / Write."""
 
-    tracking = RangeField.float("char", "8")
+    # AE stores tracking (key "8") as an integer; a real-typed value in
+    # this slot is misread by AE at 16.16 scale (stored 50.0 read back as
+    # 3276800 via ExtendScript, probed AE 2026).
+    tracking = RangeField.float("char", "8", reverse=round)
     """The range's spacing between characters; `None` when mixed. Read / Write."""
 
     baseline_shift = RangeField.float("char", "9")

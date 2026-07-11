@@ -70,6 +70,7 @@ from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
 from ..naming import auto_name
 from ..preferences import (
+    apply_text_style_prefs,
     default_still_out_point,
     default_synthetic_out_point,
     label_index,
@@ -1938,6 +1939,10 @@ class CompItem(AVItem):
             A `(LIST:btds, btgu, tdmn)` tuple to inject into the root tdgp.
         """
         td = TextDocument(text, box_size=box_size, line_orientation=line_orientation)
+        # AE applies the character-level "Text Style Sheet" preferences to
+        # every new text layer (probed in AE 2026; the paragraph sheet is
+        # not applied).
+        apply_text_style_prefs(td, self._project._preferences)
         btdk = td._btdk_body
 
         # Text-document tdbs carries an empty cdat with 4 trailing zero

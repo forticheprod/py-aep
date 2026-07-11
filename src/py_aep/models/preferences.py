@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     import os
     from typing import Any
 
+    from .text.text_document import TextDocument
+
 _validate_pref_type = validate_enum(PREFType)
 
 # Tombstone marking a key removed by delete_pref (masks the file value).
@@ -96,6 +98,98 @@ def _default_out_point(preferences: Preferences, key: str) -> float | None:
     if scale == 0 or value <= 0:
         return None
     return value / scale
+
+
+_TEXT_STYLE_SECTION = "Text Style Sheet"
+_TXT = PREFType.PREF_Type_MACHINE_SPECIFIC_TEXT
+
+
+def apply_text_style_prefs(document: TextDocument, preferences: Preferences) -> None:
+    """Apply the AE "Text Style Sheet" preferences to a new text document.
+
+    AE reads the machine-specific text style sheet once at startup and
+    applies its character-level fields to every scripted `addText` layer;
+    the paragraph sheet is NOT applied (scripted text is always
+    left-justified). Probed in AE 2026 via disk-edited preferences.
+
+    Only values that differ from the document's current state are
+    written, so a factory style sheet leaves the baked template bytes
+    untouched. The font is taken from "Font PostScript Name" as written
+    by AE (AE itself validates the family/style/technology tuple and
+    falls back to Myriad Pro when it is incoherent; a sheet written by
+    AE is coherent by construction).
+    """
+
+    def number(key: str) -> int | float | None:
+        if not preferences.have_pref(_TEXT_STYLE_SECTION, key, _TXT):
+            return None
+        return preferences.get_pref_as_number(_TEXT_STYLE_SECTION, key, _TXT)
+
+    def differs(current: float | None, new: float) -> bool:
+        # Absent COS keys read as None and mean the field's zero default.
+        # AE writes the sheet with 6 decimals, so sub-1e-6 deltas are
+        # representation rounding (e.g. 235/255 vs "0.921569"), not edits.
+        return abs((current if current is not None else 0.0) - new) > 1e-6
+
+    font = (
+        preferences.get_pref_as_string(
+            _TEXT_STYLE_SECTION, "Font PostScript Name", _TXT
+        )
+        if preferences.have_pref(_TEXT_STYLE_SECTION, "Font PostScript Name", _TXT)
+        else None
+    )
+    if font and document.font != font:
+        document.font = font
+
+    size = number("Size")
+    if size is not None and size > 0 and differs(document.font_size, size):
+        document.font_size = size
+
+    fill = [number("Fill Red"), number("Fill Green"), number("Fill Blue")]
+    if None not in fill:
+        current_fill = document.fill_color or [0.0, 0.0, 0.0]
+        if any(differs(c, float(n)) for c, n in zip(current_fill, fill)):  # type: ignore[arg-type]
+            document.fill_color = [float(n) for n in fill]  # type: ignore[arg-type]
+
+    tracking = number("Tracking")
+    if tracking is not None and differs(document.tracking, tracking):
+        document.tracking = tracking
+
+    baseline_shift = number("Baseline Shift")
+    if baseline_shift is not None and differs(document.baseline_shift, baseline_shift):
+        document.baseline_shift = baseline_shift
+
+    if preferences.have_pref(_TEXT_STYLE_SECTION, "Render Fill", _TXT):
+        apply_fill = preferences.get_pref_as_bool(
+            _TEXT_STYLE_SECTION, "Render Fill", _TXT
+        )
+        if bool(document.apply_fill) != apply_fill:
+            document.apply_fill = apply_fill
+
+    if preferences.have_pref(_TEXT_STYLE_SECTION, "Render Stroke", _TXT):
+        apply_stroke = preferences.get_pref_as_bool(
+            _TEXT_STYLE_SECTION, "Render Stroke", _TXT
+        )
+        if bool(document.apply_stroke) != apply_stroke:
+            document.apply_stroke = apply_stroke
+        # Stroke width/color were probed only with the stroke rendered;
+        # leave them untouched when the sheet keeps the stroke off so the
+        # factory sheet stays byte-identical to the baked template.
+        if apply_stroke:
+            stroke_width = number("Stroke Width")
+            if stroke_width is not None and differs(
+                document.stroke_width, stroke_width
+            ):
+                document.stroke_width = stroke_width
+            stroke = [
+                number("Stroke Red"),
+                number("Stroke Green"),
+                number("Stroke Blue"),
+            ]
+            if None not in stroke:
+                current = document.stroke_color or [0.0, 0.0, 0.0]
+                if any(differs(c, float(n)) for c, n in zip(current, stroke)):  # type: ignore[arg-type]
+                    document.stroke_color = [float(n) for n in stroke]  # type: ignore[arg-type]
 
 
 def default_still_out_point(preferences: Preferences) -> float | None:

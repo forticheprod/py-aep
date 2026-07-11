@@ -234,7 +234,12 @@ class TextDocument:
     faux_italic = DocumentWideCosField.bool("_char_style", "3", default=None)
     """`True` if a Text layer has faux italic enabled. Read / Write."""
 
-    tracking = DocumentWideCosField.float("_char_style", "8", default=None)
+    # AE stores tracking (key "8") as an integer; a real-typed value in
+    # this slot is misread by AE at 16.16 scale (stored 50.0 read back as
+    # 3276800 via ExtendScript, probed AE 2026).
+    tracking = DocumentWideCosField.float(
+        "_char_style", "8", default=None, reverse=round
+    )
     """The Text layer's spacing between characters. Read / Write."""
 
     @property

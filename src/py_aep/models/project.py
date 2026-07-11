@@ -108,9 +108,10 @@ if TYPE_CHECKING:
 _validate_expression_engine = validate_one_of(("extendscript", "javascript-1.0"))
 
 # AE's default new-composition import timing for a layered file: a 30-second
-# duration rounded to whole frames at the default frame rate. These come from
-# After Effects preferences (not the file), so they reproduce AE's factory
-# default and may differ from a given install (the probe machine used 29.97).
+# duration rounded to whole frames at 29.97 fps. This is AE's built-in
+# factory default, not a preference: verified by deleting every AE pref
+# file and cold-starting AE (regenerated factory prefs, "Composition
+# Settings7" empty) - a layered PSD still imported at 29.97 fps / 30 s.
 _LAYERED_COMP_FRAME_RATE = 29.97
 _LAYERED_COMP_DURATION_SECONDS = 30.0
 

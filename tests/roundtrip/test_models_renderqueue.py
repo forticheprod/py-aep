@@ -20,6 +20,7 @@ from py_aep.binary.utils import find_by_list_type
 from py_aep.enums import (
     FieldRender,
     FrameRateSetting,
+    GetSettingsFormat,
     LogType,
     MotionBlurSetting,
     PostRenderAction,
@@ -749,6 +750,23 @@ class TestRoundtripOutputModuleResize:
         om2._project.save(out2)
         om3 = parse_aep(out2).project.render_queue.items[0].output_modules[0]
         assert om3.settings["Resize to"] == [640, 480]
+
+    def test_resize_string_form_fallback(self) -> None:
+        # With no ae_preferences_dir, get_settings(STRING) labels "Resize
+        # to" from the AE-verified factory fallback table; a non-preset
+        # resolution reads "Custom".
+        project = parse_aep(OM_SAMPLES_DIR / "resize_custom_960x540.aep").project
+        om = project.render_queue.items[0].output_modules[0]
+
+        om.settings["Resize to"] = [1920, 1080]
+        assert (
+            om.get_settings(GetSettingsFormat.STRING)["Resize to"]
+            == "HD  •  1920x1080 • 24 fps"
+        )
+        assert om.get_setting("Resize to") == "HD  •  1920x1080 • 24 fps"
+
+        om.settings["Resize to"] = [960, 540]
+        assert om.get_settings(GetSettingsFormat.STRING)["Resize to"] == "Custom"
 
 
 class TestRoundtripOutputModuleCrop:

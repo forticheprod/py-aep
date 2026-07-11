@@ -422,6 +422,64 @@ class TestCompositionPresets:
             app.project.root_folder.add_comp_from_preset("C", "HD", 5.0)
 
 
+# Two presets tie at 1440x1080 @ 25 fps ("First" then "Second"), plus a
+# 60 fps entry; the resize label must pick the lowest fps, later on tie.
+_TIE_COMP_PREFS = """\
+# Text File Version 1.1
+# After Effects Preferences
+
+["Composition Preset Names Section v11"]
+\t"000" = "First  "E280A2"  1440x1080 "E280A2" 25 fps"
+\t"001" = "Second  "E280A2"  1440x1080 "E280A2" 25 fps"
+\t"002" = "Fast  "E280A2"  1440x1080 "E280A2" 60 fps"
+
+["Composition Presets Section v11"]
+\t"000" = 05A004"8"001900000000000400000003
+\t"001" = 05A004"8"001900000000000400000003
+\t"002" = 05A004"8"003C00000000000400000003
+"""
+
+
+class TestResizeToStrings:
+    """The "Resize to" label map derives from comp presets (lowest fps
+    per resolution, later preset on tie), probed in AE 2026; the hardcoded
+    table is the factory fallback when no preferences dir is provided."""
+
+    def test_derives_lowest_fps_per_resolution(self, prefs_dir: Path) -> None:
+        from py_aep.models.renderqueue.settings import build_resize_to_strings
+
+        # Fixture presets: HD 1920x1080 @ 24 and @ 29.97 - lowest wins.
+        resize = build_resize_to_strings(py_aep.Preferences(prefs_dir))
+        assert resize[(1920, 1080)] == "HD  •  1920x1080 • 24 fps"
+        assert resize[(1440, 1080)] == "HDV  •  1440x1080 (1.33) • 25 fps"
+
+    def test_tie_break_prefers_later_preset(self, tmp_path: Path) -> None:
+        from py_aep.models.renderqueue.settings import build_resize_to_strings
+
+        prefs = tmp_path / "prefs"
+        prefs.mkdir()
+        (prefs / "Adobe After Effects 26.0 Prefs-indep-composition.txt").write_text(
+            _TIE_COMP_PREFS, encoding="utf-8"
+        )
+        resize = build_resize_to_strings(py_aep.Preferences(prefs))
+        assert resize[(1440, 1080)] == "Second  •  1440x1080 • 25 fps"
+
+    def test_fallback_without_prefs(self) -> None:
+        from py_aep.models.renderqueue.settings import (
+            _RESIZE_TO_STRINGS,
+            build_resize_to_strings,
+        )
+
+        assert build_resize_to_strings(py_aep.Preferences()) is _RESIZE_TO_STRINGS
+
+    def test_fallback_holds_ae_verified_collision_labels(self) -> None:
+        # AE 2026 getSetting("Resize to") ground truth for factory presets.
+        from py_aep.models.renderqueue.settings import _RESIZE_TO_STRINGS
+
+        assert _RESIZE_TO_STRINGS[(1920, 1080)] == "HD  •  1920x1080 • 24 fps"
+        assert _RESIZE_TO_STRINGS[(3840, 2160)] == "UHD (4K)  •  3840x2160 • 23.976 fps"
+
+
 class TestOutputNameTemplatePresets:
     def test_parse(self, prefs_dir: Path) -> None:
         presets = py_aep.Preferences(prefs_dir).output_name_template_presets()
@@ -542,3 +600,145 @@ class TestDefaultOutPoints:
             pytest.approx(5.0)
         )
         assert comp.add_text("x").out_point == pytest.approx(5.0)
+
+
+_CUSTOM_TEXT_STYLE = """\
+# Text File Version 1.1
+# After Effects Preferences
+
+["Text Style Sheet"]
+\t"Baseline Shift" = "5.000000"
+\t"Fill Blue" = "0.750000"
+\t"Fill Green" = "0.500000"
+\t"Fill Red" = "0.250000"
+\t"Font Family Name" = "Arial"
+\t"Font PostScript Name" = "ArialMT"
+\t"Font Style Name" = "Regular"
+\t"Render Fill" = 01
+\t"Render Stroke" = 01
+\t"Size" = "48.000000"
+\t"Stroke Blue" = "0.000000"
+\t"Stroke Green" = "0.200000"
+\t"Stroke Red" = "0.100000"
+\t"Stroke Width" = "5.000000"
+\t"Tracking" = "50"
+"""
+
+# A factory AE 2026 style sheet (matches the baked COS template).
+_FACTORY_TEXT_STYLE = """\
+# Text File Version 1.1
+# After Effects Preferences
+
+["Text Style Sheet"]
+\t"Baseline Shift" = "0.000000"
+\t"Fill Blue" = "0.921569"
+\t"Fill Green" = "0.921569"
+\t"Fill Red" = "0.921569"
+\t"Font Family Name" = "Myriad Pro"
+\t"Font PostScript Name" = "MyriadPro-Regular"
+\t"Font Style Name" = "Regular"
+\t"Render Fill" = 01
+\t"Render Stroke" = 00
+\t"Size" = "36.000000"
+\t"Stroke Blue" = "0.000000"
+\t"Stroke Green" = "0.000000"
+\t"Stroke Red" = "0.000000"
+\t"Stroke Width" = "1.000000"
+\t"Tracking" = "0"
+"""
+
+
+def _text_style_dir(tmp_path: Path, sheet: str) -> Path:
+    prefs = tmp_path / "prefs"
+    prefs.mkdir(exist_ok=True)
+    (prefs / "Adobe After Effects 26.0 Prefs-text.txt").write_text(
+        sheet, encoding="utf-8"
+    )
+    return prefs
+
+
+def _btdk_bytes(layer: object) -> bytes:
+    import io
+
+    from py_aep.binary.utils import recursive_find
+
+    matches = recursive_find(layer._layer_list.chunks, list_type="btdk")  # type: ignore[attr-defined]
+    assert len(matches) == 1
+    buf = io.BytesIO()
+    matches[0].write(buf)
+    return buf.getvalue()
+
+
+class TestTextStyleSheet:
+    """Scripted addText honors the character-level Text Style Sheet
+    (probed in AE 2026; read at AE startup, paragraph sheet not applied)."""
+
+    def test_add_text_honors_style_sheet(self, tmp_path: Path) -> None:
+        prefs = _text_style_dir(tmp_path, _CUSTOM_TEXT_STYLE)
+        app = py_aep.new(ae_preferences_dir=prefs)
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        td = comp.add_text("probe").text.source_text.value
+        assert td.font == "ArialMT"
+        assert td.font_size == pytest.approx(48.0)
+        assert td.fill_color == pytest.approx([0.25, 0.5, 0.75])
+        assert td.tracking == pytest.approx(50.0)
+        assert td.baseline_shift == pytest.approx(5.0)
+        assert td.apply_stroke is True
+        assert td.stroke_width == pytest.approx(5.0)
+        assert td.stroke_color == pytest.approx([0.1, 0.2, 0.0])
+
+    def test_no_prefs_is_byte_identical_to_template(self) -> None:
+        # Without a prefs dir, add_text must not change a single byte of
+        # the baked COS template (btdk is byte-format-sensitive).
+        import io
+
+        app = py_aep.new()
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        layer_bytes = _btdk_bytes(comp.add_text("probe"))
+        buf = io.BytesIO()
+        py_aep.TextDocument("probe")._btdk_body.write(buf)
+        assert layer_bytes == buf.getvalue()
+
+    def test_identity_fields_are_not_rewritten(self, tmp_path: Path) -> None:
+        # Sheet values matching the template (size/tracking/baseline/
+        # stroke flags) must not be rewritten. Font/Fill are excluded here
+        # only to keep the assertion clear of the fill's sub-1e-6
+        # serialization boundary; they are exercised elsewhere.
+        sheet = "\n".join(
+            line
+            for line in _FACTORY_TEXT_STYLE.splitlines()
+            if "Font" not in line and "Fill" not in line
+        )
+        prefs = _text_style_dir(tmp_path, sheet)
+        app_prefs = py_aep.new(ae_preferences_dir=prefs)
+        comp_prefs = app_prefs.project.root_folder.add_comp(
+            "C", 100, 100, 1.0, 5.0, 25.0
+        )
+        app_plain = py_aep.new()
+        comp_plain = app_plain.project.root_folder.add_comp(
+            "C", 100, 100, 1.0, 5.0, 25.0
+        )
+        assert _btdk_bytes(comp_prefs.add_text("probe")) == _btdk_bytes(
+            comp_plain.add_text("probe")
+        )
+
+    def test_factory_sheet_matches_ae_addtext(self, tmp_path: Path) -> None:
+        # The template now matches AE 2026's own factory addText output
+        # (MyriadPro-Regular, size 36, fill 0.921569, no stroke), so
+        # applying the factory sheet is a no-op that stays on AE's values.
+        prefs = _text_style_dir(tmp_path, _FACTORY_TEXT_STYLE)
+        app = py_aep.new(ae_preferences_dir=prefs)
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        td = comp.add_text("probe").text.source_text.value
+        assert td.font == "MyriadPro-Regular"
+        assert td.font_size == pytest.approx(36.0)
+        assert td.fill_color == pytest.approx([0.921569] * 3, abs=1e-5)
+        assert not td.apply_stroke
+
+    def test_box_text_honors_style_sheet(self, tmp_path: Path) -> None:
+        prefs = _text_style_dir(tmp_path, _CUSTOM_TEXT_STYLE)
+        app = py_aep.new(ae_preferences_dir=prefs)
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        td = comp.add_box_text([80.0, 40.0], "boxed").text.source_text.value
+        assert td.font == "ArialMT"
+        assert td.font_size == pytest.approx(48.0)
