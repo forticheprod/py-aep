@@ -21,6 +21,7 @@ from helpers import parse_app_fresh
 from py_aep.cos import serialize
 from py_aep.cos.cos import CosParser  # noqa: F401  (documents the data source)
 from py_aep.enums import AutoKernType, ParagraphJustification
+from py_aep.models.text.ranges import _kern_values
 from py_aep.svg.fonts import font_version_string
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "text"
@@ -28,6 +29,8 @@ FIXTURE = SAMPLES_DIR / "text_writes.aep"
 PROBE = SAMPLES_DIR / "text_writes_probe.json"
 FIXTURE2 = SAMPLES_DIR / "text_writes2.aep"
 PROBE2 = SAMPLES_DIR / "text_writes2_probe.json"
+FIXTURE3 = SAMPLES_DIR / "text_writes3.aep"
+PROBE3 = SAMPLES_DIR / "text_writes3_probe.json"
 
 
 def _doc_for(app, layer_name: str):
@@ -80,6 +83,18 @@ def probe2() -> dict:
 def fixture2_app():
     """Read-only view of the phase-2 AE fixture."""
     return parse_app_fresh(FIXTURE2)
+
+
+@pytest.fixture(scope="module")
+def probe3() -> dict:
+    with open(PROBE3, encoding="utf-8") as fp:
+        return json.load(fp)
+
+
+@pytest.fixture(scope="module")
+def fixture3_app():
+    """Read-only view of the phase-3 AE fixture."""
+    return parse_app_fresh(FIXTURE3)
 
 
 def _assert_alias_integrity(doc) -> None:
@@ -388,6 +403,87 @@ class TestPasteFrom:
             if pasted_style.get(k) != source_style.get(k)
         }
         assert diff_keys <= {"0"}
+
+
+class TestPasteLeadingEdgeKern:
+    def _edge_source(self, app):
+        src_doc = _doc_for(app, "W_SPLIT")
+        src_doc.text = "AVAV"
+        src_doc.character_range(0, 2).kerning = 140
+        return src_doc
+
+    def test_paste_at_zero_keeps_leading_edge(self, fixture3_app, probe3) -> None:
+        app, doc = _base_doc("abcdef")
+        doc.character_range(0, 3).paste_from(
+            self._edge_source(app).character_range(0, 3)
+        )
+        assert doc._doc["0"]["7"] == 140
+        assert doc.kerning == 140
+        _assert_byte_parity(doc, fixture3_app, "Y_PASTE_EDGE0")
+        expected = [e["value"] for e in probe3["ops"]["Y_PASTE_EDGE0"]["kernPerChar"]]
+        actual = [
+            [
+                doc.character_range(i, i + 1).kerning,
+                doc.character_range(i, i + 1).auto_kern_type,
+            ]
+            for i in range(len(expected))
+        ]
+        for got, exp in zip(actual, expected):
+            assert (got[0] if got[0] is not None else "<<undefined>>") == exp[0]
+            assert got[1] == exp[1]
+
+    def test_paste_mid_maps_edge_to_preceding_pair(self, fixture3_app, probe3) -> None:
+        app, doc = _base_doc("abcdef")
+        doc.character_range(2, 5).paste_from(
+            self._edge_source(app).character_range(0, 3)
+        )
+        assert "7" not in doc._doc["0"]
+        # The edge value lands on the pair before the paste (char 1) with
+        # NO auto-kern flag change - ES reads it as undefined through the
+        # flag, but the binary carries it (probed Y_PASTE_EDGE_MID). AE
+        # merges that value run with its equal neighbor; py emits length-1
+        # runs - value-identical, so compare decoded values, not bytes.
+
+        assert _kern_values(doc)[:5] == [None, 140, 140, 140, None]
+        expected = [
+            e["value"] for e in probe3["ops"]["Y_PASTE_EDGE_MID"]["kernPerChar"]
+        ]
+        actual = [
+            [
+                doc.character_range(i, i + 1).kerning,
+                doc.character_range(i, i + 1).auto_kern_type,
+            ]
+            for i in range(len(expected))
+        ]
+        for got, exp in zip(actual, expected):
+            assert (got[0] if got[0] is not None else "<<undefined>>") == exp[0]
+            assert got[1] == exp[1]
+
+
+class TestDocumentLevelReads:
+    """ES TextDocument getters read the FIRST CHARACTER's style on mixed
+    documents (probed Y_DOCREADS) - py's first-run getters match."""
+
+    def test_mixed_document_reads_first_character(self, fixture3_app, probe3) -> None:
+        doc = _doc_for(fixture3_app, "Y_DOCREADS")
+        expected = probe3["ops"]["Y_DOCREADS"]["docLevel"]
+        assert doc.font_size == expected["fontSize"]
+        assert doc.fill_color == pytest.approx(expected["fillColor"], abs=1e-5)
+        assert doc.font == expected["font"]
+        assert doc.faux_bold == expected["fauxBold"]
+        assert doc.apply_stroke == expected["applyStroke"]
+        assert doc.tracking == expected["tracking"]
+        assert doc.kerning == expected["kerning"]
+        assert doc.auto_leading == expected["autoLeading"]
+        assert doc.leading == pytest.approx(expected["leading"], abs=1e-4)
+
+    def test_leading_reads_first_character_auto_value(
+        self, fixture3_app, probe3
+    ) -> None:
+        doc = _doc_for(fixture3_app, "Y_DOCREAD_LEAD")
+        expected = probe3["ops"]["Y_DOCREAD_LEAD"]
+        assert doc.leading == pytest.approx(expected["leading"]["value"], abs=1e-4)
+        assert doc.auto_leading == expected["autoLeading"]["value"]
 
 
 class TestSurrogateWrites:

@@ -31,8 +31,8 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
 
-from ...ae_version import get_ae_version_major
-from ...cos import CosField, CosName, cos_get
+from ...cos import CosField, CosName, cos_get, run_spans
+from ...cos.descriptors import _extract
 from ...enums import (
     AutoKernType,
     BaselineDirection,
@@ -44,6 +44,7 @@ from ...enums import (
     ParagraphDirection,
     ParagraphJustification,
 )
+from ...resolvers.text_composition import CompositionUnsupported, compose_lines
 from ...svg.fonts import font_version_string
 from ..validators import (
     validate_enum,
@@ -65,8 +66,6 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
-_SENTINEL = object()
-
 # AE's exact error strings (AE 26.3, English locale); py_aep raises these
 # from ValueError so behavior parity does not depend on hosting AE.
 CHARACTER_RANGE_OOB = "Character index range is outside of TextDocument bounds."
@@ -84,11 +83,12 @@ NOT_ASSOCIATED = "Unable to set value as it is not associated with a layer."
 
 def u16_len(s: str) -> int:
     """Length of `s` in UTF-16 code units (AE / ExtendScript indexing)."""
-    extra = 0
-    for c in s:
-        if ord(c) > 0xFFFF:
-            extra += 1
-    return len(s) + extra
+    # ASCII (the common case) has no astral characters; skip the per-char
+    # scan with a single C-level check. This primitive underlies almost
+    # every range read and style write.
+    if s.isascii():
+        return len(s)
+    return len(s) + sum(ord(c) > 0xFFFF for c in s)
 
 
 def u16_slice(s: str, start: int, end: int) -> str:
@@ -128,61 +128,37 @@ def _visible_length(doc: TextDocument) -> int:
     return n
 
 
-def _run_spans(
-    doc: TextDocument, doc_key: str, style_key: str | None
-) -> list[tuple[int, int, dict[str, Any]]]:
-    """Decode a COS run array into `(start, end, payload)` spans.
-
-    Run arrays (`doc["0"]["5"/"6"/"8"]["0"]`) store `{"0": payload,
-    "1": count}` entries whose counts are UTF-16 units over the raw
-    text. `style_key` picks the style sub-dict for paragraph ("5") and
-    character ("6") runs; kerning runs ("8") use their payload directly.
-    """
-    runs = cos_get(doc._doc, "0", doc_key, "0")
-    spans: list[tuple[int, int, dict[str, Any]]] = []
-    if not isinstance(runs, list):
-        return spans
-    pos = 0
-    for run in runs:
-        length = run.get("1") if isinstance(run, dict) else None
-        if not isinstance(length, int) or length < 0:
-            continue
-        if style_key is None:
-            payload = cos_get(run, "0")
-        else:
-            payload = cos_get(run, "0", "0", style_key)
-        spans.append((pos, pos + length, payload if isinstance(payload, dict) else {}))
-        pos += length
-    return spans
-
-
 def _char_run_spans(doc: TextDocument) -> list[tuple[int, int, dict[str, Any]]]:
     """Character style-run spans."""
-    return _run_spans(doc, "6", "6")
+    return run_spans(doc._doc, "6", "6")
 
 
 def _para_run_spans(doc: TextDocument) -> list[tuple[int, int, dict[str, Any]]]:
     """Paragraph style-run spans (one run per paragraph)."""
-    return _run_spans(doc, "5", "5")
+    return run_spans(doc._doc, "5", "5")
 
 
 def _kern_run_spans(doc: TextDocument) -> list[tuple[int, int, dict[str, Any]]]:
     """Manual-kerning run spans; payload key `"0"` holds the value."""
-    return _run_spans(doc, "8", None)
+    return run_spans(doc._doc, "8", None)
 
 
-def _composed_line_spans(doc: TextDocument) -> list[tuple[int, int]] | None:
-    """Composed-line `(start, end)` spans from the persisted layout cache.
+def _cached_line_data(
+    doc: TextDocument,
+) -> tuple[list[tuple[int, int]], list[float | None]] | None:
+    """Line `(start, end)` spans + baselines from the persisted cache.
 
     The cache lives at `doc["1"]["2"]` as a `/PC` node; `/L` records are
-    collected depth-first through the nested `"6"` arrays and each line's
-    length is the sum of its `/S` segment counts (`seg["15"]["0"]`).
-    Returns `None` when the document has no cache.
+    collected depth-first through the nested `"6"` arrays, each line's
+    length is the sum of its `/S` segment counts (`seg["15"]["0"]`) and
+    its baseline is the `/L` `"10"` value. Returns `None` when the
+    document has no cache.
     """
     entries = cos_get(doc._doc, "1", "2")
     if not isinstance(entries, list):
         return None
     lengths: list[int] = []
+    baselines: list[float | None] = []
 
     def collect(node: Any) -> None:
         if not isinstance(node, dict):
@@ -196,6 +172,10 @@ def _composed_line_spans(doc: TextDocument) -> list[tuple[int, int]] | None:
                     if isinstance(count, int):
                         total += count
             lengths.append(total)
+            baseline = node.get("10")
+            baselines.append(
+                float(baseline) if isinstance(baseline, (int, float)) else None
+            )
             return
         children = node.get("6")
         if isinstance(children, list):
@@ -211,7 +191,53 @@ def _composed_line_spans(doc: TextDocument) -> list[tuple[int, int]] | None:
     for length in lengths:
         spans.append((pos, pos + length))
         pos += length
+    return spans, baselines
+
+
+def _fresh_composed_spans(doc: TextDocument) -> list[tuple[int, int]] | None:
+    """Recompose the document when its calibration proved the composer.
+
+    Returns `None` when the composer never calibrated against this
+    document's own AE cache or now refuses it (envelope change) - the
+    caller falls back to the stale-clamp semantics. The result (spans
+    or the refusal) is cached on the document; every layout-affecting
+    write invalidates it via `TextDocument._mark_layout_dirty`.
+    """
+    if getattr(doc, "_composition_calibrated", None) is not True:
+        return None
+    if "_composed_cache" in doc.__dict__:
+        memo: list[tuple[int, int]] | None = doc.__dict__["_composed_cache"]
+        return memo
+    try:
+        spans: list[tuple[int, int]] | None = compose_lines(doc).spans
+    except CompositionUnsupported:
+        spans = None
+    doc.__dict__["_composed_cache"] = spans
     return spans
+
+
+def _composed_line_spans(doc: TextDocument) -> list[tuple[int, int]] | None:
+    """Composed-line `(start, end)` spans for the document's CURRENT state.
+
+    Point text never wraps, so its composed lines ARE the paragraphs
+    (fixture-proven) - always fresh, no cache involved. Box text reads
+    the persisted AE cache while the document is untouched; after a
+    layout-affecting py-side write it recomposes via
+    `resolvers.text_composition` when the per-document calibration
+    succeeded, otherwise the stale cache (with
+    the AE-parity clamp semantics) remains.
+    """
+    if not getattr(doc, "box_text", False):
+        para = _para_run_spans(doc)
+        if not para:
+            return None
+        return [(start, end) for start, end, _style in para]
+    if getattr(doc, "_layout_dirty", False):
+        fresh = _fresh_composed_spans(doc)
+        if fresh is not None:
+            return fresh
+    cached = _cached_line_data(doc)
+    return cached[0] if cached is not None else None
 
 
 def _parse_color(paint: object) -> list[float] | None:
@@ -308,6 +334,25 @@ def _register_font_prepended(doc: TextDocument, post_script_name: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: Char-style keys that cannot change line composition (paints, their
+#: gates, stroke geometry); every other style write marks the layout
+#: dirty so the composed-line APIs know the cache no longer applies.
+_NON_LAYOUT_CHAR_KEYS = frozenset({"53", "54", "56", "57", "58", "62", "63"})
+
+
+def _mark_layout_dirty(doc: TextDocument) -> None:
+    """Flag a layout-affecting write on documents that track it.
+
+    Must run BEFORE the mutation lands: the first call calibrates the
+    composer against the still-clean cache (see
+    `TextDocument._mark_layout_dirty`). Duck-typed test documents
+    without the hook are skipped.
+    """
+    mark = getattr(doc, "_mark_layout_dirty", None)
+    if mark is not None:
+        mark()
+
+
 def _refresh_style_aliases(doc: TextDocument) -> None:
     """Re-point `_char_style` / `_para_style` at the current first runs.
 
@@ -331,6 +376,11 @@ def _snap_to_pairs(raw: str, start: int, end: int) -> tuple[int, int]:
     past the pair instead, so caret writes stay zero-span no-ops
     (`W_ZERO_STYLE`) rather than covering (or deleting) the glyph.
     """
+    # No astral characters -> no surrogate pairs to split, so snapping is a
+    # no-op. Skips the repeated full-text scans below on the common (BMP)
+    # path; matches the fast-path guard in `u16_slice`.
+    if u16_len(raw) == len(raw):
+        return start, end
 
     def mid_pair(index: int) -> bool:
         if index <= 0 or index >= u16_len(raw):
@@ -409,6 +459,8 @@ def _apply_char_key(
     start, end = _snap_to_pairs(raw, start, end)
     if start == end:
         return
+    if key not in _NON_LAYOUT_CHAR_KEYS:
+        _mark_layout_dirty(doc)
     if end == _visible_length(doc):
         end = u16_len(raw)
     runs = cos_get(doc._doc, "0", "6", "0")
@@ -503,6 +555,7 @@ def _splice_text(
     insert_len = u16_len(new_text)
     if start == end and insert_len == 0 and insert_runs is None:
         return
+    _mark_layout_dirty(doc)
     kern_values = _kern_values(doc)
     new_raw = u16_slice(raw, 0, start) + new_text + u16_slice(raw, end, total)
     parts = new_raw.split("\r")
@@ -577,9 +630,10 @@ def _splice_text(
             clone = (
                 entry if (i == 0 and entry is para_runs[0]) else copy.deepcopy(entry)
             )
-            clone["1"] = u16_len(part) + 1
+            part_len = u16_len(part) + 1
+            clone["1"] = part_len
             new_para_runs.append(clone)
-            pos += u16_len(part) + 1
+            pos += part_len
         para_runs[:] = new_para_runs
 
     if insert_kern is None:
@@ -606,6 +660,7 @@ def _apply_para_key(
     """
     if start == end:
         return
+    _mark_layout_dirty(doc)
     runs = cos_get(doc._doc, "0", "5", "0")
     if not isinstance(runs, list):
         return
@@ -755,30 +810,21 @@ class DocumentWideCosField(CosField[T]):
     """
 
     def __set__(self, obj: Any, value: T) -> None:
+        is_char = self.dict_attr == "_char_style"
         backing = getattr(obj, self.dict_attr, None)
-        kind = "char" if self.dict_attr == "_char_style" else "para"
         runs = None
         if backing is not None:
-            runs = cos_get(obj._doc, "0", "6" if kind == "char" else "5", "0")
+            runs = cos_get(obj._doc, "0", "6" if is_char else "5", "0")
         if not isinstance(runs, list) or not runs:
+            # Single style dict (or a parser fallback with no runs): the
+            # base descriptor's first-run write is already document-wide.
             super().__set__(obj, value)
             return
-        if self.read_only:
-            raise AttributeError(f"{self.public_name!r} is read-only.")
-        if self.min_version is not None:
-            if get_ae_version_major(obj) < self.min_version:
-                raise AttributeError(
-                    f"{self.public_name!r} requires AE {self.min_version}+ file format."
-                )
+        self._check_writable(obj)
         obj.__dict__.pop(self.public_name, None)
-        raw_value: Any = value
-        if value is not None:
-            if self.validate is not None:
-                self.validate(value, obj)
-            if self.reverse is not None:
-                raw_value = self.reverse(value)
+        raw_value = None if value is None else self._coerce(obj, value)
         total = u16_len(_raw_text(obj))
-        if kind == "char":
+        if is_char:
             _apply_char_key(obj, 0, total, self.key, raw_value)
         else:
             _apply_para_key(obj, 0, total, self.key, raw_value)
@@ -788,11 +834,84 @@ class DocumentWideCosField(CosField[T]):
 
 
 # ---------------------------------------------------------------------------
+# Range base classes
+# ---------------------------------------------------------------------------
+
+
+class _TextRange:
+    """Shared boundary/validity/repr behavior for the text range views.
+
+    Subclasses store `_doc_ref`, `_start` and `_signed_end`, and
+    implement `_bounds()` (returning the current
+    `(character_start, character_end)` and raising `ValueError` when the
+    range is out of bounds). The public accessors and string forms below
+    are shared across all three range types.
+    """
+
+    _doc_ref: TextDocument
+    _start: int
+    _signed_end: int
+
+    def _bounds(self) -> tuple[int, int]:
+        raise NotImplementedError
+
+    @property
+    def character_start(self) -> int:
+        """The range's first character index. Read-only."""
+        return self._bounds()[0]
+
+    @property
+    def character_end(self) -> int:
+        """The range's last character index + 1. Read-only."""
+        return self._bounds()[1]
+
+    @property
+    def is_range_valid(self) -> bool:
+        """`True` while the range lies within the document bounds. Read-only."""
+        try:
+            self._bounds()
+        except ValueError:
+            return False
+        return True
+
+    def __str__(self) -> str:
+        return f"{type(self).__name__}({self._start},{self._signed_end})"
+
+    def __repr__(self) -> str:
+        return f"<py_aep.{type(self).__name__}({self._start},{self._signed_end})>"
+
+
+class _IndexRange(_TextRange):
+    """A range addressed by an index into a span list (paragraphs or
+    composed lines) and resolved to character bounds.
+
+    Shares the index storage and the `character_range()` snapshot; only
+    `_bounds()` (the per-kind span lookup and clamping) differs.
+    """
+
+    def __init__(self, doc: TextDocument, start: int, signed_end: int) -> None:
+        self._doc_ref = doc
+        self._start = start
+        self._signed_end = signed_end
+        # AE validates at creation time and raises immediately.
+        self._bounds()
+
+    def character_range(self) -> CharacterRange:
+        """A [CharacterRange][] fixed to the current character bounds.
+
+        The returned range holds resolved indices and does not follow
+        later changes to this range's paragraphs or lines.
+        """
+        start, end = self._bounds()
+        return CharacterRange(self._doc_ref, start, end)
+
+
+# ---------------------------------------------------------------------------
 # CharacterRange
 # ---------------------------------------------------------------------------
 
 
-class CharacterRange:
+class CharacterRange(_TextRange):
     """A contiguous character span of a [TextDocument][].
 
     Created via `TextDocument.character_range(character_start,
@@ -835,31 +954,6 @@ class CharacterRange:
         ):
             raise ValueError(CHARACTER_RANGE_OOB)
         return self._start, end
-
-    @property
-    def character_start(self) -> int:
-        """The range's first character index. Read-only."""
-        return self._bounds()[0]
-
-    @property
-    def character_end(self) -> int:
-        """The range's last character index + 1. Read-only."""
-        return self._bounds()[1]
-
-    @property
-    def is_range_valid(self) -> bool:
-        """`True` while the range lies within the document bounds. Read-only."""
-        try:
-            self._bounds()
-        except ValueError:
-            return False
-        return True
-
-    def __str__(self) -> str:
-        return f"CharacterRange({self._start},{self._signed_end})"
-
-    def __repr__(self) -> str:
-        return f"<py_aep.CharacterRange({self._start},{self._signed_end})>"
 
     # -- Mixed-value resolution ----------------------------------------------
 
@@ -911,24 +1005,9 @@ class CharacterRange:
                 return None
         if not payloads:
             return default
-        values = []
-        for payload in payloads:
-            raw = payload.get(key, _SENTINEL)
-            if raw is _SENTINEL:
-                value = default
-            elif transform is not None:
-                try:
-                    value = transform(raw)
-                except (TypeError, ValueError, KeyError, IndexError):
-                    value = default
-            else:
-                value = raw
-            values.append(value)
+        values = [_extract(payload, key, transform, default) for payload in payloads]
         first = values[0]
-        for value in values[1:]:
-            if value != first:
-                return None
-        return first
+        return first if all(value == first for value in values[1:]) else None
 
     # -- Content ---------------------------------------------------------------
 
@@ -1015,12 +1094,29 @@ class CharacterRange:
                         style["0"] = target_index[needed[index]]
 
         kern_slice = _kern_values(src_doc)[src_start:src_end]
+        src_edge = None
+        if src_start == 0:
+            edge = cos_get(src_doc._doc, "0", "7")
+            if isinstance(edge, int):
+                src_edge = edge
         raw = _raw_text(doc)
         start, end = self._bounds()
         start, end = _snap_to_pairs(raw, start, end)
         _splice_text(
             doc, start, end, text_slice, insert_runs=entries, insert_kern=kern_slice
         )
+        if src_edge is not None:
+            # The source's leading-edge kern value (pair before char 0)
+            # follows the paste: it stays the leading edge when pasting at
+            # 0, otherwise it becomes the pair value between the preceding
+            # character and the pasted text (probed Y_PASTE_EDGE0/_MID).
+            if start == 0:
+                doc._doc.setdefault("0", {})["7"] = src_edge
+            else:
+                values = _kern_values(doc)
+                if start - 1 < len(values):
+                    values[start - 1] = src_edge
+                    _rebuild_kern_runs(doc, values)
         self._propagate()
 
     # -- Character style fields --------------------------------------------------
@@ -1326,6 +1422,9 @@ class CharacterRange:
         start, end = _snap_to_pairs(raw, start, end)
         if start == end:
             return
+        # Kern runs mutate before the auto-kern flag write reaches
+        # _apply_char_key, so mark (and calibrate) here first.
+        _mark_layout_dirty(doc)
         # No visible-end extension here: AE never kerns the raw `\r`
         # terminator (every probed kern fixture leaves it in an empty
         # run); `_apply_char_key` below re-extends the style write.
@@ -1386,7 +1485,7 @@ class CharacterRange:
 # ---------------------------------------------------------------------------
 
 
-class ParagraphRange:
+class ParagraphRange(_IndexRange):
     """A paragraph span of a [TextDocument][].
 
     Created via `TextDocument.paragraph_range(paragraph_index_start,
@@ -1398,15 +1497,7 @@ class ParagraphRange:
     See: https://ae-scripting.docsforadobe.dev/text/paragraphrange/
     """
 
-    def __init__(
-        self, doc: TextDocument, paragraph_start: int, signed_paragraph_end: int
-    ) -> None:
-        self._doc_ref = doc
-        self._start = paragraph_start
-        self._signed_end = signed_paragraph_end
-        self._char_bounds()
-
-    def _char_bounds(self) -> tuple[int, int]:
+    def _bounds(self) -> tuple[int, int]:
         """Resolve the paragraph indices to character bounds.
 
         Raises:
@@ -1420,64 +1511,25 @@ class ParagraphRange:
         visible = _visible_length(self._doc_ref)
         return min(spans[self._start][0], visible), min(spans[end - 1][1], visible)
 
-    @property
-    def character_start(self) -> int:
-        """The range's calculated first character index. Read-only."""
-        return self._char_bounds()[0]
 
-    @property
-    def character_end(self) -> int:
-        """The range's calculated last character index + 1. Read-only."""
-        return self._char_bounds()[1]
-
-    @property
-    def is_range_valid(self) -> bool:
-        """`True` while the range lies within the document bounds. Read-only."""
-        try:
-            self._char_bounds()
-        except ValueError:
-            return False
-        return True
-
-    def character_range(self) -> CharacterRange:
-        """A [CharacterRange][] fixed to the current character bounds.
-
-        The returned range holds resolved indices and does not follow
-        later changes to this `ParagraphRange`'s paragraphs.
-        """
-        start, end = self._char_bounds()
-        return CharacterRange(self._doc_ref, start, end)
-
-    def __str__(self) -> str:
-        return f"ParagraphRange({self._start},{self._signed_end})"
-
-    def __repr__(self) -> str:
-        return f"<py_aep.ParagraphRange({self._start},{self._signed_end})>"
-
-
-class ComposedLineRange:
+class ComposedLineRange(_IndexRange):
     """A composed-line span of a [TextDocument][].
 
     Created via `TextDocument.composed_line_range(
     composed_line_index_start, signed_composed_line_index_end)`.
-    Composed lines come from the layout cache AE persisted at save
-    time; py_aep cannot recompose text, so after py-side edits the
-    ranges behave like AE's own un-reapplied TextDocument values: line
-    boundaries clamp to the current text and lines falling wholly
-    outside it raise `ValueError`.
+    Point text derives its lines from the paragraphs (always fresh).
+    Box text reads the layout cache AE persisted at save time; after a
+    layout-affecting py-side write the calibrated composed-line
+    resolver recomposes it (see `TextDocument.composition_stale`).
+    When no calibrated composer is available the stale cache behaves
+    like AE's own un-reapplied TextDocument values: line boundaries
+    clamp to the current text and lines falling wholly outside it
+    raise `ValueError`.
 
     See: https://ae-scripting.docsforadobe.dev/text/composedlinerange/
     """
 
-    def __init__(
-        self, doc: TextDocument, composed_line_start: int, signed_composed_line_end: int
-    ) -> None:
-        self._doc_ref = doc
-        self._start = composed_line_start
-        self._signed_end = signed_composed_line_end
-        self._char_bounds()
-
-    def _char_bounds(self) -> tuple[int, int]:
+    def _bounds(self) -> tuple[int, int]:
         """Resolve the line indices to character bounds.
 
         Raises:
@@ -1499,37 +1551,3 @@ class ComposedLineRange:
         if start_char > visible:
             raise ValueError(COMPOSED_LINE_OOB)
         return start_char, min(spans[end - 1][1], visible)
-
-    @property
-    def character_start(self) -> int:
-        """The range's calculated first character index. Read-only."""
-        return self._char_bounds()[0]
-
-    @property
-    def character_end(self) -> int:
-        """The range's calculated last character index + 1. Read-only."""
-        return self._char_bounds()[1]
-
-    @property
-    def is_range_valid(self) -> bool:
-        """`True` while the range lies within the document bounds. Read-only."""
-        try:
-            self._char_bounds()
-        except ValueError:
-            return False
-        return True
-
-    def character_range(self) -> CharacterRange:
-        """A [CharacterRange][] fixed to the current character bounds.
-
-        The returned range holds resolved indices and does not follow
-        later changes to this `ComposedLineRange`'s lines.
-        """
-        start, end = self._char_bounds()
-        return CharacterRange(self._doc_ref, start, end)
-
-    def __str__(self) -> str:
-        return f"ComposedLineRange({self._start},{self._signed_end})"
-
-    def __repr__(self) -> str:
-        return f"<py_aep.ComposedLineRange({self._start},{self._signed_end})>"

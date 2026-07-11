@@ -29,6 +29,10 @@ dependencies = [
     "PyYAML>=5.1",
     "fonttools>=4.38; python_version >= '3.8'",
     "fonttools>=4.38,<4.39; python_version < '3.8'",
+    # Composed-line recomposition (resolvers/text_composition.py) needs real
+    # OpenType shaping; without it (e.g. Python 3.7, which has no wheels)
+    # the resolver reports unsupported.
+    "uharfbuzz>=0.39; python_version >= '3.8'",
     "importlib_metadata; python_version < '3.8'",
     "typing_extensions>=3.7; python_version < '3.8'",
 ]
@@ -103,6 +107,10 @@ ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = "fontTools.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "uharfbuzz"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

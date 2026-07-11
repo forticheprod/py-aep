@@ -127,8 +127,9 @@ def _adobe_font_dirs() -> list[Path]:
     return [d for d in dirs if d.is_dir()]
 
 
-#: PostScript name (name ID 6, lowercased) -> version string (name ID 5).
-_ps_versions: dict[str, str] | None = None
+#: PostScript name (name ID 6, lowercased) ->
+#: (font file path, face index, version string from name ID 5 or None).
+_ps_index: dict[str, tuple[Path, int, str | None]] | None = None
 
 
 def _iter_faces(path: Path) -> Iterator[tuple[int, TTFont]]:
@@ -151,13 +152,61 @@ def _iter_faces(path: Path) -> Iterator[tuple[int, TTFont]]:
             font.close()
 
 
-def _index_versions(path: Path, idx: dict[str, str]) -> None:
-    for _face, font in _iter_faces(path):
+def _index_postscript(path: Path, idx: dict[str, tuple[Path, int, str | None]]) -> None:
+    for face, font in _iter_faces(path):
         ps_name = _name(font, 6)
-        if ps_name and ps_name.lower() not in idx:
+        if not ps_name:
+            continue
+        key = ps_name.lower()
+        existing = idx.get(key)
+        if existing is None:
+            idx[key] = (path, face, _name(font, 5))
+        elif existing[2] is None:
+            # The first-seen face resolves the name, but a later
+            # duplicate can still supply the version string it lacked
+            # (the pre-index code only ever stored truthy versions).
             version = _name(font, 5)
             if version:
-                idx[ps_name.lower()] = version
+                idx[key] = (existing[0], existing[1], version)
+
+
+def _walk_font_files() -> Iterator[Path]:
+    """Yield every font file under the OS font directories. Both index
+    builders (`_build_index`, `_postscript_index`) walk the same tree."""
+    for directory in _font_dirs():
+        for path in directory.rglob("*"):
+            if path.suffix.lower() in _FONT_SUFFIXES:
+                yield path
+
+
+def _postscript_index() -> dict[str, tuple[Path, int, str | None]]:
+    """The lazily built, cached PostScript-name index (one walk over the
+    OS and Adobe CoreSync font directories)."""
+    global _ps_index
+    if _ps_index is None:
+        idx: dict[str, tuple[Path, int, str | None]] = {}
+        for path in _walk_font_files():
+            _index_postscript(path, idx)
+        for directory in _adobe_font_dirs():
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    _index_postscript(path, idx)
+        _ps_index = idx
+    return _ps_index
+
+
+def resolve_postscript(post_script_name: str) -> tuple[Path, int] | None:
+    """Resolve a PostScript name (name ID 6) to an installed font face.
+
+    Returns `(font file path, face index)` - the index selects a face
+    within a `.ttc` collection - or `None` when no matching font is
+    installed. This mirrors how AE's text engine identifies fonts, so
+    the composed-line resolver uses it for measurement.
+    """
+    entry = _postscript_index().get(post_script_name.strip().lower())
+    if entry is None:
+        return None
+    return entry[0], entry[1]
 
 
 def font_version_string(post_script_name: str) -> str | None:
@@ -167,23 +216,12 @@ def font_version_string(post_script_name: str) -> str | None:
     AE stamps this host-resolved string on font entries it registers in
     a text document and on the used-font records (probed via the
     `W_FONT` write fixture); matching it keeps py-written files
-    byte-identical to AE's output on the same machine. The index is
-    built lazily on first use (one walk over the OS and Adobe CoreSync
-    font directories) and cached.
+    byte-identical to AE's output on the same machine.
     """
-    global _ps_versions
-    if _ps_versions is None:
-        idx: dict[str, str] = {}
-        for directory in _font_dirs():
-            for path in directory.rglob("*"):
-                if path.suffix.lower() in _FONT_SUFFIXES:
-                    _index_versions(path, idx)
-        for directory in _adobe_font_dirs():
-            for path in directory.rglob("*"):
-                if path.is_file():
-                    _index_versions(path, idx)
-        _ps_versions = idx
-    return _ps_versions.get(post_script_name.strip().lower())
+    entry = _postscript_index().get(post_script_name.strip().lower())
+    if entry is None:
+        return None
+    return entry[2]
 
 
 def _index_file(path: Path, idx: dict[str, dict[str, tuple[Path, int]]]) -> None:
@@ -203,10 +241,8 @@ def _index_file(path: Path, idx: dict[str, dict[str, tuple[Path, int]]]) -> None
 
 def _build_index() -> dict[str, dict[str, tuple[Path, int]]]:
     idx: dict[str, dict[str, tuple[Path, int]]] = {}
-    for directory in _font_dirs():
-        for path in directory.rglob("*"):
-            if path.suffix.lower() in _FONT_SUFFIXES:
-                _index_file(path, idx)
+    for path in _walk_font_files():
+        _index_file(path, idx)
     return idx
 
 

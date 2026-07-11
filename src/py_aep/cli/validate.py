@@ -1098,6 +1098,8 @@ def compare_text_document(
         "boxOverflow": "box_overflow",
         "lineOrientation": "line_orientation",
         "composedLineCount": "composed_line_count",
+        "paragraphRanges": "paragraph_ranges",
+        "composedLineRanges": "composed_line_ranges",
     }
 
     _compare_fields(

@@ -119,7 +119,9 @@ def make_doc(
     doc["0"]["5"] = run_array(para_runs or [(total, {})], "5")
     if line_cache is not None:
         doc["1"] = {"2": line_cache}
-    return SimpleNamespace(_doc=doc, _fonts=[])
+    # Docs carrying a line cache act as box text (point text derives its
+    # composed lines from the paragraphs and never reads the cache).
+    return SimpleNamespace(_doc=doc, _fonts=[], box_text=line_cache is not None)
 
 
 def line(*segment_counts: int) -> dict:
@@ -177,9 +179,16 @@ class TestComposedLineSpans:
         doc = make_doc("abcdefgh\r", line_cache=cache)
         assert _composed_line_spans(doc) == [(0, 4), (4, 9)]
 
-    def test_no_cache(self) -> None:
+    def test_box_without_cache(self) -> None:
         doc = make_doc("abcd\r")
+        doc.box_text = True
         assert _composed_line_spans(doc) is None
+
+    def test_point_text_lines_are_the_paragraphs(self) -> None:
+        # Point text never wraps; its composed lines derive from the
+        # paragraph runs and stay fresh without any cache.
+        doc = make_doc("ab\rcd\r", para_runs=[(3, {}), (3, {})])
+        assert _composed_line_spans(doc) == [(0, 3), (3, 6)]
 
     def test_stale_cache_clamps_and_raises(self) -> None:
         # Cache describes 9 chars, text shrank to "ab\r" (visible 2).

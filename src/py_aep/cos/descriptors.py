@@ -25,6 +25,28 @@ T = TypeVar("T")
 _SENTINEL = object()
 
 
+def _extract(
+    d: dict[str, Any],
+    key: str,
+    transform: Callable[..., Any] | None,
+    default: Any,
+) -> Any:
+    """Read `key` from a COS dict with the descriptors' fault-tolerant
+    fallback: a missing key, or a `transform` that raises, yields
+    `default`. Shared by `CosField.__get__` and the range models'
+    mixed-value resolution.
+    """
+    raw = d.get(key, _SENTINEL)
+    if raw is _SENTINEL:
+        return default
+    if transform is not None:
+        try:
+            return transform(raw)
+        except (TypeError, ValueError, KeyError, IndexError):
+            return default
+    return raw
+
+
 class CosField(Generic[T]):
     """Descriptor that proxies a single key on a COS dict.
 
@@ -93,17 +115,11 @@ class CosField(Generic[T]):
         d: dict[str, Any] | None = getattr(obj, self.dict_attr)
         if d is None:
             return cast(T, self.default)
-        raw = d.get(self.key, _SENTINEL)
-        if raw is _SENTINEL:
-            return cast(T, self.default)
-        if self.transform is not None:
-            try:
-                return cast(T, self.transform(raw))
-            except (TypeError, ValueError, KeyError, IndexError):
-                return cast(T, self.default)
-        return cast(T, raw)
+        return cast(T, _extract(d, self.key, self.transform, self.default))
 
-    def __set__(self, obj: Any, value: T) -> None:
+    def _check_writable(self, obj: Any) -> None:
+        """Raise if this field cannot be written to `obj` - read-only, or
+        the file predates the field's `min_version`."""
         if self.read_only:
             raise AttributeError(f"{self.public_name!r} is read-only.")
         if self.min_version is not None:
@@ -111,6 +127,18 @@ class CosField(Generic[T]):
                 raise AttributeError(
                     f"{self.public_name!r} requires AE {self.min_version}+ file format."
                 )
+
+    def _coerce(self, obj: Any, value: Any) -> Any:
+        """Validate a non-`None` user value and reverse-transform it to
+        the form stored in the COS dict."""
+        if self.validate is not None:
+            self.validate(value, obj)
+        if self.reverse is not None:
+            return self.reverse(value)
+        return value
+
+    def __set__(self, obj: Any, value: T) -> None:
+        self._check_writable(obj)
         # Clear any instance-dict override
         obj.__dict__.pop(self.public_name, None)
         d: dict[str, Any] | None = getattr(obj, self.dict_attr)
@@ -120,14 +148,10 @@ class CosField(Generic[T]):
             return
         # `None` clears the key (an optional field is being unset); there is
         # no value to validate in that case.
-        if value is not None and self.validate is not None:
-            self.validate(value, obj)
         if value is None:
             d.pop(self.key, None)
-        elif self.reverse is not None:
-            d[self.key] = self.reverse(value)
         else:
-            d[self.key] = value
+            d[self.key] = self._coerce(obj, value)
         propagate = getattr(obj, "_propagate_cos", None)
         if propagate is not None:
             propagate()
