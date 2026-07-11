@@ -101,6 +101,15 @@ def parse_hex_value(value: str) -> bytes:
     return bytes(raw)
 
 
+def parse_number_text(text: str) -> int | float:
+    """Parse decimal text into an int when integral, else a float."""
+    stripped = text.strip()
+    try:
+        return int(stripped)
+    except ValueError:
+        return float(stripped)
+
+
 def decode_pref_string(raw: str) -> str:
     """Decode a preference value as text (hex escapes become UTF-8)."""
     return parse_hex_value(raw).decode("utf-8", errors="replace")
@@ -117,11 +126,7 @@ def decode_pref_number(raw: str) -> int | float:
         ValueError: If a quoted value is not numeric text.
     """
     if '"' in raw:
-        text = decode_pref_string(raw).strip()
-        try:
-            return int(text)
-        except ValueError:
-            return float(text)
+        return parse_number_text(decode_pref_string(raw))
     data = parse_hex_value(raw)
     return int.from_bytes(data, "big")
 

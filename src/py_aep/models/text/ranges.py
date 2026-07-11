@@ -854,6 +854,13 @@ class _TextRange:
     _start: int
     _signed_end: int
 
+    def __init__(self, doc: TextDocument, start: int, signed_end: int) -> None:
+        self._doc_ref = doc
+        self._start = start
+        self._signed_end = signed_end
+        # AE validates at creation time and raises immediately.
+        self._bounds()
+
     def _bounds(self) -> tuple[int, int]:
         raise NotImplementedError
 
@@ -891,13 +898,6 @@ class _IndexRange(_TextRange):
     `_bounds()` (the per-kind span lookup and clamping) differs.
     """
 
-    def __init__(self, doc: TextDocument, start: int, signed_end: int) -> None:
-        self._doc_ref = doc
-        self._start = start
-        self._signed_end = signed_end
-        # AE validates at creation time and raises immediately.
-        self._bounds()
-
     def character_range(self) -> CharacterRange:
         """A [CharacterRange][] fixed to the current character bounds.
 
@@ -928,15 +928,6 @@ class CharacterRange(_TextRange):
 
     See: https://ae-scripting.docsforadobe.dev/text/characterrange/
     """
-
-    def __init__(
-        self, doc: TextDocument, character_start: int, signed_character_end: int
-    ) -> None:
-        self._doc_ref = doc
-        self._start = character_start
-        self._signed_end = signed_character_end
-        # AE validates at creation time and raises immediately.
-        self._bounds()
 
     # -- Bounds --------------------------------------------------------------
 

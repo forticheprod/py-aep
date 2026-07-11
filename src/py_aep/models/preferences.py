@@ -14,6 +14,7 @@ from ..parsers.prefs import (
     decode_pref_string,
     find_prefs_file,
     parse_hex_value,
+    parse_number_text,
 )
 from .validators import validate_bool, validate_enum, validate_name, validate_number
 
@@ -27,16 +28,6 @@ _validate_pref_type = validate_enum(PREFType)
 
 # Tombstone marking a key removed by delete_pref (masks the file value).
 _DELETED = object()
-
-
-def _text_to_number(text: str) -> int | float:
-    """Parse decimal text into an int when integral, else a float."""
-    stripped = text.strip()
-    try:
-        return int(stripped)
-    except ValueError:
-        return float(stripped)
-
 
 _LABEL_INDICES_SECTION = "Label Preference Indices Section 5"
 
@@ -330,7 +321,7 @@ class Preferences:
             return int(value)
         if isinstance(value, (int, float)):
             return value
-        return _text_to_number(value)
+        return parse_number_text(value)
 
     def get_pref_as_bool(
         self,
@@ -360,7 +351,7 @@ class Preferences:
             return value
         if isinstance(value, (int, float)):
             return value != 0
-        return _text_to_number(value) != 0
+        return parse_number_text(value) != 0
 
     def get_pref_as_string(
         self,
