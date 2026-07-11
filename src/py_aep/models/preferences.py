@@ -144,7 +144,8 @@ def apply_text_style_prefs(document: TextDocument, preferences: Preferences) -> 
 
     tracking = number("Tracking")
     if tracking is not None and differs(document.tracking, tracking):
-        document.tracking = tracking
+        # tracking is an integer field, unlike the float Size/Baseline Shift.
+        document.tracking = round(tracking)
 
     baseline_shift = number("Baseline Shift")
     if baseline_shift is not None and differs(document.baseline_shift, baseline_shift):
