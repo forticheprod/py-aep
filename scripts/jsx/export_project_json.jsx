@@ -265,6 +265,24 @@ var AepExport = AepExport || {};
         // Color & stroke
         try { result.strokeColor = textDoc.strokeColor; } catch (e) {}
 
+        // Text ranges (AE 24.3+): paragraph / composed-line boundaries
+        try {
+            var paraRanges = [];
+            for (var pri = 0; pri < textDoc.paragraphCount; pri++) {
+                var pRange = textDoc.paragraphRange(pri);
+                paraRanges.push({ start: pRange.characterStart, end: pRange.characterEnd });
+            }
+            result.paragraphRanges = paraRanges;
+        } catch (ePr) {}
+        try {
+            var lineRanges = [];
+            for (var cli = 0; cli < textDoc.composedLineCount; cli++) {
+                var cRange = textDoc.composedLineRange(cli);
+                lineRanges.push({ start: cRange.characterStart, end: cRange.characterEnd });
+            }
+            result.composedLineRanges = lineRanges;
+        } catch (eCl) {}
+
         // Text box
         try { result.boxTextSize = textDoc.boxTextSize; } catch (e) {}
         try { result.boxTextPos = textDoc.boxTextPos; } catch (e) {}

@@ -40,6 +40,37 @@ def cos_get(data: Any, *keys: str | int) -> Any:
     return cur
 
 
+def run_spans(
+    doc: dict[str, Any], doc_key: str, style_key: str | None
+) -> list[tuple[int, int, dict[str, Any]]]:
+    """Decode a text document's COS run array into `(start, end, payload)`.
+
+    Run arrays (`doc["0"]["5"/"6"/"8"]["0"]`) store `{"0": payload,
+    "1": count}` entries whose counts are UTF-16 units over the raw
+    text. `style_key` picks the style sub-dict for paragraph ("5") and
+    character ("6") runs; kerning runs ("8") use their payload directly.
+    Runs with a missing or negative count are skipped. Shared by the
+    range models (models/text/ranges.py) and the composed-line resolver
+    (resolvers/text_composition.py).
+    """
+    runs = cos_get(doc, "0", doc_key, "0")
+    spans: list[tuple[int, int, dict[str, Any]]] = []
+    if not isinstance(runs, list):
+        return spans
+    pos = 0
+    for run in runs:
+        length = run.get("1") if isinstance(run, dict) else None
+        if not isinstance(length, int) or length < 0:
+            continue
+        if style_key is None:
+            payload = cos_get(run, "0")
+        else:
+            payload = cos_get(run, "0", "0", style_key)
+        spans.append((pos, pos + length, payload if isinstance(payload, dict) else {}))
+        pos += length
+    return spans
+
+
 class TokenType(Enum):
     Identifier = auto()  # /foo
     Number = auto()  # 123

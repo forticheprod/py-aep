@@ -153,6 +153,12 @@ def parse_text_documents(
             )
         )
 
+    # Frame-level writes (box meta, orientation) live in the shared
+    # cos_data and change composition for every keyframe's document,
+    # so each wrapper knows its siblings to dirty-mark them together.
+    for document in documents:
+        document._siblings = documents
+
     return documents
 
 

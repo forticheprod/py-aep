@@ -24,6 +24,9 @@ from ...enums import (
     ParagraphDirection,
     ParagraphJustification,
 )
+from ...resolvers.text_composition import (
+    calibrate as calibrate_composition,
+)
 from ..validators import (
     validate_box_size,
     validate_enum,
@@ -47,7 +50,9 @@ from .ranges import (
     ParagraphRange,
     _apply_char_key,
     _build_color_paint,
+    _cached_line_data,
     _composed_line_spans,
+    _fresh_composed_spans,
     _para_run_spans,
     _parse_color,
     _raw_text,
@@ -146,6 +151,75 @@ class TextDocument:
     # (AE 24.3+) refuses documents never associated with a layer, exactly
     # as ExtendScript does for an unapplied `new TextDocument()`.
     _associated: bool = False
+
+    # Set by the first layout-affecting py-side write; while `False` the
+    # persisted composed-line cache is authoritative. Underscore-prefixed,
+    # so to_dict skips both.
+    _layout_dirty: bool = False
+
+    # Verdict of calibrating the composed-line resolver against this
+    # document's own AE cache: `None` = never attempted, `True` = the
+    # composer reproduces AE for this document (post-mutation
+    # recomposition is trusted), `False` = refused or mismatched.
+    _composition_calibrated: bool | None = None
+
+    # Wrappers sharing this layer's btdk COS data (one per keyframe,
+    # including self); `None` for template-constructed documents. Frame
+    # writes live in the shared layer data, so they must dirty-mark
+    # every sibling, not just the document written through.
+    _siblings: list[TextDocument] | None = None
+
+    def _mark_frame_layout_dirty(self) -> None:
+        """Mark a frame-level write (box meta, orientation) on ALL
+        documents sharing this layer's frame.
+
+        Runs before the mutation lands so each sibling still calibrates
+        against its own clean cache + text.
+        """
+        for doc in self._siblings or (self,):
+            doc._mark_layout_dirty()
+
+    def _mark_layout_dirty(self) -> None:
+        """Record a layout-affecting write, calibrating the composer first.
+
+        The write engine calls this BEFORE serializing any mutation that
+        can change line composition, so the first call still sees the
+        clean cache + text: composing them and comparing spans AND
+        baselines against what AE persisted proves (or refutes) the
+        composer + installed fonts for this document.
+        """
+        # Every layout write invalidates the memoized composition.
+        self.__dict__.pop("_composed_cache", None)
+        if self._layout_dirty:
+            return
+        if self.box_text and self._composition_calibrated is None:
+            cached = _cached_line_data(self)
+            if cached is not None:
+                self._composition_calibrated = calibrate_composition(
+                    self, cached[0], cached[1]
+                )
+        self._layout_dirty = True
+
+    @property
+    def composition_stale(self) -> bool:
+        """`True` when the composed-line APIs may not reflect this
+        document's current content. Read-only.
+
+        Point text is never stale (its composed lines are the
+        paragraphs). Box text goes stale after a layout-affecting
+        py-side write unless the composed-line resolver calibrated
+        against this document's own persisted cache and can recompose
+        its current state (see the `resolvers.text_composition`
+        module).
+
+        The flag tracks writes made through THIS document object: a
+        document re-parsed from a py-written file, or minted by
+        `Layer.duplicate`, starts clean even when its persisted cache
+        no longer matches its text.
+        """
+        if not self.box_text or not self._layout_dirty:
+            return False
+        return _fresh_composed_spans(self) is None
 
     # -- Character-style CosField descriptors (_char_style dict) -----------
 
@@ -478,6 +552,7 @@ class TextDocument:
     def text(self, value: str) -> None:
         validate_text(value)
         self.__dict__.pop("text", None)
+        self._mark_layout_dirty()
         inner = self._doc.setdefault("0", {})
         # AE stores every line break and the run terminator as CR (\r);
         # without a trailing CR terminator AE fails to read the layer.
@@ -780,6 +855,7 @@ class TextDocument:
         frame_meta = cos_get(self._cos_data, "0", "8", "0", 0, "0", "2")
         if not isinstance(frame_meta, dict):
             raise ValueError("text layer has no orientation frame to set")
+        self._mark_frame_layout_dirty()
         frame_meta["1"] = value.to_binary()
         self._propagate_cos()
 
@@ -789,7 +865,14 @@ class TextDocument:
         return frame if isinstance(frame, dict) else None
 
     def _ensure_frame(self) -> dict[str, Any]:
-        """Return the box-frame dict, creating the COS path if needed."""
+        """Return the box-frame dict, creating the COS path if needed.
+
+        Marks the layout dirty first (on every sibling document - the
+        frame is layer-shared): every caller is a frame-meta setter
+        whose write can change line composition, and the mark (with
+        its calibration) must run before the mutation lands.
+        """
+        self._mark_frame_layout_dirty()
         eight = self._cos_data.setdefault("0", {}).setdefault("8", {})
         slot = eight.setdefault("0", [{}])
         if not slot:
@@ -961,29 +1044,37 @@ class TextDocument:
     def box_overflow(self) -> bool | None:
         """`True` if the text overflows the box. Read-only.
 
-        Derived from the persisted layout cache: AE composes only the
-        lines that fit the box, so a cache covering fewer characters
-        than the stored text means overflow (probed via
-        `samples/models/text/box_overflow.aep`). `None` for point text
-        (ExtendScript reads undefined there) and for documents without
-        a cache. Like the composed-line APIs, the value reflects the
-        last AE composition.
+        A composition covers fewer characters than the stored text
+        exactly when the text overflows (probed via
+        `samples/models/text/box_overflow.aep`). Reads the persisted AE
+        cache while the document is untouched and the calibrated
+        composer after layout-affecting py-side writes (see
+        `composition_stale`). `None` for point text (ExtendScript reads
+        undefined there) and for documents without a cache.
         """
         if not self._associated or not self.box_text:
             return None
         spans = _composed_line_spans(self)
         if spans is None:
             return None
+        if not spans:
+            # The calibrated composer clipped every line (box shorter
+            # than the first baseline): all stored text overflows. The
+            # cached path never yields an empty list.
+            return True
         return spans[-1][1] < u16_len(_raw_text(self))
 
     @property
     def composed_line_count(self) -> int | None:
         """The number of composed lines in the Text layer. Read-only.
 
-        Comes from the layout cache AE persisted at save time. Matching
-        ExtendScript's un-reapplied TextDocument values, the count stays
-        cached even when the text was modified since (py_aep cannot
-        recompose). `None` for documents never parsed from a layer.
+        Point text derives its lines from the paragraphs (always
+        fresh). Box text reads the layout cache AE persisted at save
+        time; after a layout-affecting py-side write the calibrated
+        composed-line resolver recomposes it, otherwise the cached
+        count stays (matching ExtendScript's un-reapplied values - see
+        `composition_stale`). `None` for documents never parsed from a
+        layer.
         """
         if not self._associated:
             return None
@@ -991,6 +1082,51 @@ class TextDocument:
         if spans is None:
             return None
         return len(spans)
+
+    @property
+    def paragraph_ranges(self) -> list[dict[str, int]]:
+        """Character bounds of every paragraph as `{"start", "end"}`
+        records. Read-only.
+
+        Matches [paragraph_range][TextDocument.paragraph_range] bounds
+        (paragraph spans clamped to the visible text) from one pass
+        over the paragraph runs; empty for documents never parsed from
+        a layer. Ground-truth validation compares this against
+        ExtendScript's per-paragraph dump.
+        """
+        if not self._associated:
+            return []
+        visible = _visible_length(self)
+        return [
+            {"start": min(start, visible), "end": min(end, visible)}
+            for start, end, _style in _para_run_spans(self)
+        ]
+
+    @property
+    def composed_line_ranges(self) -> list[dict[str, int]]:
+        """Character bounds of every composed line as `{"start", "end"}`
+        records. Read-only.
+
+        Matches [composed_line_range][TextDocument.composed_line_range]
+        bounds (ends clamped to the visible text, stale cached lines
+        beyond it dropped) from one span derivation; empty for
+        documents never parsed from a layer or without a layout cache.
+        Like the other composed-line APIs, recomposes freshly when the
+        calibrated composer covers the document, otherwise reflects the
+        composition AE last persisted.
+        """
+        if not self._associated:
+            return []
+        spans = _composed_line_spans(self)
+        if spans is None:
+            return []
+        visible = _visible_length(self)
+        out = []
+        for start, end in spans:
+            if start > visible:
+                break  # stale cache: lines wholly beyond the current text
+            out.append({"start": start, "end": min(end, visible)})
+        return out
 
     # -- Text ranges (AE 24.3+ ExtendScript API) -----------------------------
 
@@ -1061,8 +1197,8 @@ class TextDocument:
         """A [ComposedLineRange][] over part of this document.
 
         Composed lines come from the layout cache AE persisted at save
-        time; see [ComposedLineRange][] for the staleness semantics
-        after py-side edits.
+        time, or from the calibrated composed-line resolver after
+        py-side edits; see [ComposedLineRange][] for the semantics.
 
         Args:
             composed_line_index_start: First composed-line index

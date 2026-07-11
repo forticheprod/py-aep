@@ -39,21 +39,38 @@ be derived from the `.aep` file alone:
 | `RenderQueue.rendering` | Runtime state |
 | `Viewer.maximized` | Non-persisting window state |
 
-## Composed Lines Are a Layout Cache
+## Composed Lines After py-side Edits
 
-`TextDocument.composed_line_count`, `composed_line_range()` and
-`composed_line_character_indexes_at()` read the line-layout cache After
-Effects persisted into the `.aep` at save time. py_aep has no text engine
-and cannot recompose text, so after py-side edits the cache goes stale.
+Point text never goes stale: its composed lines are derived from the
+paragraphs. For box text, py_aep ships a composed-line resolver
+(`resolvers/text_composition.py`, which needs `uharfbuzz` on Python 3.8+) that
+recomposes lines exactly like AE's single-line Latin composer -
+verified against AE's own persisted layouts across a 45-layer fixture
+matrix. Before trusting it, py_aep calibrates the resolver against each
+document's own cache (line spans and baselines); a calibrated document
+recomposes freshly after every layout-affecting edit.
 
-This matches ExtendScript's own behavior for a TextDocument value that has
-not been reapplied to a layer: the composed-line count stays cached, line
-boundaries clamp to the current text, and lines falling wholly outside it
-raise. The difference is that AE recomposes when the document is applied
-back to a layer (`setValue`), while a file written by py_aep keeps the
-stale cache until After Effects itself opens and resaves it. Character
-and paragraph ranges are unaffected - they derive from the style runs,
-which py_aep keeps consistent.
+The limitations that remain:
+
+- Out-of-envelope features are refused, never guessed: the every-line
+  composer, optical or disabled auto kerning, enabled ligatures, tabs,
+  no-break spaces, right-to-left scripts, vertical orientation, tsume,
+  baseline shift, manual kerning, paragraph space before/after,
+  non-default box vertical alignment / auto-fit / first-baseline
+  alignment, case maps that change the text length, and fonts not
+  installed on this machine.
+- When the resolver is unavailable, refuses a document, or calibration
+  fails, the stale cache remains with ExtendScript's un-reapplied-value
+  semantics: counts stay cached, boundaries clamp to the current text,
+  and lines falling wholly outside it raise. Check
+  `TextDocument.composition_stale` to detect this - within the editing
+  session only: the flag lives on the in-memory document object, so a
+  py-written file that is re-parsed (or a layer duplicated after an
+  edit) starts clean even though its persisted cache is still AE's old
+  layout.
+- The `.aep` file always keeps AE's own cache bytes untouched (AE
+  requires them and recomposes on open); recomposition only feeds
+  py-side reads.
 
 ## Expressions
 

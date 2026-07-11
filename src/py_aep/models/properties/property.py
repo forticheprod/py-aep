@@ -2589,6 +2589,13 @@ class Property(PropertyBase):
             _cos_data=template._cos_data,
             _btdk_body=template._btdk_body,
         )
+        if template._siblings is not None:
+            template._siblings.append(view)
+            view._siblings = template._siblings
+        # The clone copies the template's text AND its (possibly stale)
+        # layout cache, so it inherits the template's staleness verdict.
+        view._layout_dirty = template._layout_dirty
+        view._composition_calibrated = template._composition_calibrated
         return cast("TextDocument", self._wire_text_version(view))
 
     def _animate_static_text(self, time: float, value: Any = _USE_VALUE) -> int:
