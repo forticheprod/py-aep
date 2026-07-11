@@ -73,6 +73,48 @@ def default_sequence_fps(preferences: Preferences) -> float:
     return float(value)
 
 
+def _default_out_point(preferences: Preferences, key: str) -> float | None:
+    """Parse a `"value/scale"` default-out-point preference into seconds.
+
+    Returns None for the `0/0` factory sentinel (or a missing/malformed
+    value), meaning "composition duration". Semantics probed in AE 2026:
+    `75/25` gives new layers a 3-second span.
+    """
+    raw = preferences.get_pref_as_string(
+        "Main Pref Section v2",
+        key,
+        PREFType.PREF_Type_MACHINE_INDEPENDENT,
+        default="0/0",
+    )
+    parts = raw.split("/")
+    if len(parts) != 2:
+        return None
+    try:
+        value, scale = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    if scale == 0 or value <= 0:
+        return None
+    return value / scale
+
+
+def default_still_out_point(preferences: Preferences) -> float | None:
+    """Default span of new still-footage layers, in seconds.
+
+    None means "composition duration" (the factory `0/0` sentinel).
+    """
+    return _default_out_point(preferences, "Pref_DEFAULT_STILL_OUT_POINT v2")
+
+
+def default_synthetic_out_point(preferences: Preferences) -> float | None:
+    """Default span of new sourceless layers (solid, null, text, shape,
+    camera, light), in seconds.
+
+    None means "composition duration" (the factory `0/0` sentinel).
+    """
+    return _default_out_point(preferences, "Pref_DEFAULT_SYNTHETIC_OUT_POINT v2")
+
+
 class Preferences:
     """The Preferences object provides an easy way to manage internal AE
     preferences, such as you find in After Effects' Preferences menu. It

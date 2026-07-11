@@ -69,7 +69,11 @@ from ..layers.shape_layer import ShapeLayer
 from ..layers.text_layer import TextLayer
 from ..layers.three_d_model_layer import ThreeDModelLayer
 from ..naming import auto_name
-from ..preferences import label_index
+from ..preferences import (
+    default_still_out_point,
+    default_synthetic_out_point,
+    label_index,
+)
 from ..properties.property import Property
 from ..properties.property_group import PropertyGroup
 from ..sources.file import FileSource
@@ -1291,6 +1295,20 @@ class CompItem(AVItem):
 
     # -- Layer creation --------------------------------------------------------
 
+    def _synthetic_layer_duration(self) -> float:
+        """Default span of a new sourceless layer (solid, null, text,
+        shape, camera, light), from the "Pref_DEFAULT_SYNTHETIC_OUT_POINT"
+        preference; comp duration for the factory `0/0` value."""
+        pref = default_synthetic_out_point(self._project._preferences)
+        return pref if pref is not None else self.duration
+
+    def _still_layer_duration(self) -> float:
+        """Default span of a new still-footage layer, from the
+        "Pref_DEFAULT_STILL_OUT_POINT" preference; comp duration for the
+        factory `0/0` value."""
+        pref = default_still_out_point(self._project._preferences)
+        return pref if pref is not None else self.duration
+
     def _insert_layer(self, layer: Layer) -> None:
         """Insert a fully-constructed layer at the top of the layer stack.
 
@@ -1336,8 +1354,11 @@ class CompItem(AVItem):
         automatically.
 
         Args:
-            duration: Layer duration in seconds. Defaults to the composition
-                duration.
+            duration: Accepted for ExtendScript signature parity but
+                ignored - AE gives new null layers the synthetic-layer
+                default span (the "Pref_DEFAULT_SYNTHETIC_OUT_POINT"
+                preference; composition duration by default), probed in
+                AE 2026.
 
         Returns:
             The newly created [AVLayer][].
@@ -1366,7 +1387,7 @@ class CompItem(AVItem):
             name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=footage.id,
-            duration=duration if duration is not None else self.duration,
+            duration=self._synthetic_layer_duration(),
             containing_comp=self,
             null_layer=True,
             label=label_index(self._project._preferences, "Null Label Index", 1),
@@ -1387,7 +1408,7 @@ class CompItem(AVItem):
         layer = ShapeLayer._new(
             name=name,
             layer_id=self._project._allocate_layer_id(),
-            duration=self.duration,
+            duration=self._synthetic_layer_duration(),
             containing_comp=self,
             effect_param_defs=self._project._effect_param_defs,
         )
@@ -1421,7 +1442,7 @@ class CompItem(AVItem):
         layer = CameraLayer._new(
             name=name,
             layer_id=self._project._allocate_layer_id(),
-            duration=self.duration,
+            duration=self._synthetic_layer_duration(),
             containing_comp=self,
             effect_param_defs=self._project._effect_param_defs,
         )
@@ -1478,7 +1499,7 @@ class CompItem(AVItem):
         layer = LightLayer._new(
             name=name,
             layer_id=self._project._allocate_layer_id(),
-            duration=self.duration,
+            duration=self._synthetic_layer_duration(),
             containing_comp=self,
             light_type=1,
             effect_param_defs=self._project._effect_param_defs,
@@ -1526,7 +1547,7 @@ class CompItem(AVItem):
         layer = ParametricMeshLayer._new(
             name=name,
             layer_id=self._project._allocate_layer_id(),
-            duration=self.duration,
+            duration=self._synthetic_layer_duration(),
             containing_comp=self,
             mesh_type=mesh_type,
             effect_param_defs=self._project._effect_param_defs,
@@ -1547,8 +1568,11 @@ class CompItem(AVItem):
 
         Args:
             item: The [AVItem][] (footage or composition) to add.
-            duration: Layer duration in seconds. Defaults to the composition
-                duration.
+            duration: Layer duration in seconds, for still footage.
+                By default (probed in AE 2026) timed footage and nested
+                comps span their source duration, and stills span the
+                still-layer default (the "Pref_DEFAULT_STILL_OUT_POINT"
+                preference; composition duration by default).
 
         Returns:
             The newly created [AVLayer][].
@@ -1558,14 +1582,22 @@ class CompItem(AVItem):
 
         if duration is not None:
             validate_duration(duration)
+            layer_duration = duration
+        elif item.duration:
+            layer_duration = item.duration
+        else:
+            layer_duration = self._still_layer_duration()
 
-        # AE leaves the layer name empty for source-named layers.
+        # AE leaves the layer name empty for source-named layers, and the
+        # new layer's label mirrors the item's label at add time (probed
+        # in AE 2026, including user-recolored items).
         layer = AVLayer._new(
             name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=item.id,
-            duration=duration if duration is not None else self.duration,
+            duration=layer_duration,
             containing_comp=self,
+            label=int(item.label),
             effect_param_defs=self._project._effect_param_defs,
         )
         self._insert_layer(layer)
@@ -1828,7 +1860,11 @@ class CompItem(AVItem):
             width: Solid width in pixels. Defaults to comp width.
             height: Solid height in pixels. Defaults to comp height.
             pixel_aspect: Pixel aspect ratio (default 1.0).
-            duration: Layer duration in seconds. Defaults to comp duration.
+            duration: Accepted for ExtendScript signature parity but
+                ignored - AE gives new solid layers the synthetic-layer
+                default span (the "Pref_DEFAULT_SYNTHETIC_OUT_POINT"
+                preference; composition duration by default), probed in
+                AE 2026.
 
         Returns:
             The newly created [AVLayer][].
@@ -1871,7 +1907,7 @@ class CompItem(AVItem):
             name="",
             layer_id=self._project._allocate_layer_id(),
             source_id=footage.id,
-            duration=duration if duration is not None else self.duration,
+            duration=self._synthetic_layer_duration(),
             containing_comp=self,
             label=label_index(self._project._preferences, "Solid Label Index 2", 1),
             effect_param_defs=self._project._effect_param_defs,
@@ -1956,7 +1992,7 @@ class CompItem(AVItem):
         layer = TextLayer._new(
             name=text,
             layer_id=self._project._allocate_layer_id(),
-            duration=self.duration,
+            duration=self._synthetic_layer_duration(),
             containing_comp=self,
             btds=btds,
             btgu=btgu,

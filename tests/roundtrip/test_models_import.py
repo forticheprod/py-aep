@@ -266,6 +266,54 @@ class TestImportFileSequence:
         assert item.name == "sequence_[001-003].gif"
         assert item.main_source.is_still is False
 
+    def test_item_labels_by_kind(self, tmp_path: Path) -> None:
+        # AE 2026 probed: still=5, audio=7, video=3 (Label Preference
+        # Indices Section 5 factory values).
+        project = parse_aep(BASE).project
+        png = project.import_file(ImportOptions(ASSETS / "image_with_alpha.png"))
+        assert png._idta.label == 5
+        wav = project.import_file(ImportOptions(ASSETS / "wav.wav"))
+        assert wav._idta.label == 7
+        mov = project.import_file(ImportOptions(ASSETS / "mov_480.mov"))
+        assert mov._idta.label == 3
+
+    def test_add_layer_spans_and_labels(self, tmp_path: Path) -> None:
+        # AE 2026 probed: layers.add() spans the source duration for timed
+        # footage, the still default (comp duration) for stills with the
+        # explicit duration honored, and the layer label mirrors the
+        # item's label at add time.
+        project = parse_aep(BASE).project
+        comp = project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        png = project.import_file(ImportOptions(ASSETS / "image_with_alpha.png"))
+        mov = project.import_file(ImportOptions(ASSETS / "mov_480.mov"))
+        wav = project.import_file(ImportOptions(ASSETS / "wav.wav"))
+
+        still_layer = comp.add(png)
+        assert still_layer.out_point == pytest.approx(comp.duration)
+        assert still_layer._ldta.label == 5
+        mov_layer = comp.add(mov)
+        assert mov_layer.out_point == pytest.approx(mov.duration)
+        assert mov.duration > comp.duration  # source, not comp, duration
+        assert mov_layer._ldta.label == 3
+        wav_layer = comp.add(wav)
+        assert wav_layer.out_point == pytest.approx(wav.duration)
+        assert wav_layer._ldta.label == 7
+
+        still_3s = comp.add(png, 3.0)
+        assert still_3s.out_point == pytest.approx(3.0)
+
+        from py_aep.enums import Label
+
+        png.label = Label.BROWN  # 12: the layer mirrors the item label
+        assert comp.add(png)._ldta.label == 12
+
+    def test_add_nested_comp_spans_its_duration(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        outer = project.root_folder.add_comp("Outer", 100, 100, 1.0, 5.0, 25.0)
+        inner = project.root_folder.add_comp("Inner", 100, 100, 1.0, 2.0, 25.0)
+        layer = outer.add(inner)
+        assert layer.out_point == pytest.approx(2.0)
+
     def test_import_sequence_fps_pref(self, tmp_path: Path) -> None:
         # "Import Options Default Sequence FPS" drives the rate of
         # sequences with no native frame rate (30 fps without prefs).

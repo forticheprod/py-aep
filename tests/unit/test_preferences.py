@@ -500,3 +500,45 @@ class TestCreateLayersAtCurrentTime:
         comp.time = 4.0
         dup = solid.duplicate()
         assert dup.start_time == pytest.approx(2.0)
+
+
+class TestDefaultOutPoints:
+    """The still/synthetic default out-point preferences (probed in AE
+    2026: value/scale seconds; solids, nulls, text, shape, camera and
+    light follow the synthetic preference)."""
+
+    @pytest.fixture()
+    def outpoint_prefs_dir(self, tmp_path: Path) -> Path:
+        (tmp_path / "Adobe After Effects 26.0 Prefs-indep-general.txt").write_text(
+            '["Main Pref Section v2"]\n'
+            '\t"Pref_DEFAULT_STILL_OUT_POINT v2" = "75/25"\n'
+            '\t"Pref_DEFAULT_SYNTHETIC_OUT_POINT v2" = "50/25"\n',
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_synthetic_layers_follow_pref(self, outpoint_prefs_dir: Path) -> None:
+        app = py_aep.new(ae_preferences_dir=outpoint_prefs_dir)
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        assert comp.add_solid([1.0, 0.0, 0.0]).out_point == pytest.approx(2.0)
+        assert comp.add_null().out_point == pytest.approx(2.0)
+        assert comp.add_text("x").out_point == pytest.approx(2.0)
+        assert comp.add_shape().out_point == pytest.approx(2.0)
+        assert comp.add_camera("c", [50.0, 50.0]).out_point == pytest.approx(2.0)
+        assert comp.add_light("l", [50.0, 50.0]).out_point == pytest.approx(2.0)
+
+    def test_solid_duration_arg_ignored(self, outpoint_prefs_dir: Path) -> None:
+        # AE 2026 probed: addSolid's duration argument has no effect on
+        # the layer span even with a custom synthetic out point.
+        app = py_aep.new(ae_preferences_dir=outpoint_prefs_dir)
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        solid = comp.add_solid([1.0, 0.0, 0.0], duration=8.0)
+        assert solid.out_point == pytest.approx(2.0)
+
+    def test_factory_defaults_span_comp_duration(self) -> None:
+        app = py_aep.new()
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 5.0, 25.0)
+        assert comp.add_solid([1.0, 0.0, 0.0], duration=3.0).out_point == (
+            pytest.approx(5.0)
+        )
+        assert comp.add_text("x").out_point == pytest.approx(5.0)

@@ -223,12 +223,18 @@ class FootageItem(AVItem):
         """
         item_id = project._allocate_item_id()
 
-        # AE labels solid items with the "Solid Label Index 2" preference
-        # (factory 1, probed in AE 2026) and file/placeholder footage with
-        # "Video Label Index 2" (factory 3). Stills/audio keys are not
-        # wired yet and fall under the video index.
+        # AE labels footage items by kind (probed in AE 2026): solids use
+        # "Solid Label Index 2" (factory 1), audio-only files "Audio Label
+        # Index 2" (7), stills "Still Label Index 2" (5), and video files,
+        # sequences, and placeholders "Video Label Index 2" (3).
         if isinstance(source, SolidSource):
             label = label_index(project._preferences, "Solid Label Index 2", 1)
+        elif (
+            isinstance(source, FileSource) and source._has_audio and source._width == 0
+        ):
+            label = label_index(project._preferences, "Audio Label Index 2", 7)
+        elif isinstance(source, FileSource) and source.is_still:
+            label = label_index(project._preferences, "Still Label Index 2", 5)
         else:
             label = label_index(project._preferences, "Video Label Index 2", 3)
 
