@@ -471,6 +471,10 @@ _CAMERA_NO_EXPRESSION: frozenset[str] = frozenset(
     {
         "ADBE Scale",
         "ADBE Opacity",
+        # AE 2026 camera-options additions: ExtendScript reports
+        # canSetExpression False for both (probed camera_defaults AE26).
+        "ADBE Camera Focus Area Width",
+        "ADBE Camera Split Blur Level",
     }
 )
 

@@ -136,6 +136,40 @@ class TestSetAlternateSource:
         with pytest.raises(ValueError, match="media replacement"):
             pos.alternate_source = master
 
+    def test_incompatible_source_raises(self) -> None:
+        # AE gates both sides: "The Property object and the input parameters
+        # for the AVItem that is being called needs to be Media Replacement
+        # compatible for the action to go through." A solid is in the project
+        # but is_media_replacement_compatible is False.
+        app = parse_aep(self.EG)
+        _, alt = self._override_leaf(app)
+        host = next(
+            c for c in app.project.compositions if c.name == "image_with_alpha 2"
+        )
+        solid = host.add_solid([1.0, 0.0, 0.0], "Guard Solid").source
+        assert solid.id in app.project.items
+        assert solid.is_media_replacement_compatible is False
+        with pytest.raises(ValueError, match="is_media_replacement_compatible"):
+            alt.alternate_source = solid
+
+    def test_incompatible_source_leaves_slot_untouched(self) -> None:
+        # The check must precede _build_replacement_wrapper, or a rejected
+        # assignment would still leak a wrapper comp into the project.
+        app = parse_aep(self.EG)
+        _, alt = self._override_leaf(app)
+        host = next(
+            c for c in app.project.compositions if c.name == "image_with_alpha 2"
+        )
+        solid = host.add_solid([0.0, 1.0, 0.0], "Guard Solid 2").source
+        # Snapshot after add_solid (which legitimately adds the solid and
+        # AE's `Solids` folder) so this measures only the failed assignment.
+        before_blsi = alt._blsi.value
+        before_items = set(app.project.items)
+        with pytest.raises(ValueError):
+            alt.alternate_source = solid
+        assert alt._blsi.value == before_blsi
+        assert set(app.project.items) == before_items  # no wrapper leaked
+
 
 class TestParentValidation:
     def _two_layers(self):
@@ -298,6 +332,120 @@ class TestLongKeyframeTimes:
         prop = next(p for lyr in comp.layers for p in lyr.transform if p.keyframes)
         prop.set_value_at_time(2.0, prop.keyframes[0].value)
         app.project.save(tmp_path / "ok.aep")
+
+
+class TestTextRangeNumericValidation:
+    """v3 fuzz campaign (text-range writes). A non-finite value written to a
+    text style float serialized a bare `nan`/`inf` COS token, which is not
+    valid COS syntax: on re-parse the TextDocument came back `None` - py_aep
+    could not read its own output. Out-of-enum ints wrote a value that read
+    back as undefined. Both are now rejected at the API boundary, at the
+    range level and document-wide. See scripts/dev/apifuzz/FINDINGS.md."""
+
+    SAMPLE = SAMPLES_DIR / "text" / "text_ranges.aep"
+
+    def _doc(self, app, name: str = "RangesPoint"):
+        comp = app.project.compositions[0]
+        layer = next(ly for ly in comp.text_layers if ly.name == name)
+        return layer.text.source_text.value
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    @pytest.mark.parametrize(
+        "field", ["baseline_shift", "horizontal_scale", "vertical_scale"]
+    )
+    def test_char_float_rejects_nonfinite(self, field: str, bad: float) -> None:
+        rng = self._doc(parse_aep(self.SAMPLE)).character_range(0, 5)
+        with pytest.raises(ValueError, match="finite"):
+            setattr(rng, field, bad)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "first_line_indent",
+            "start_indent",
+            "end_indent",
+            "space_before",
+            "space_after",
+        ],
+    )
+    def test_para_float_rejects_nonfinite(self, field: str, bad: float) -> None:
+        rng = (
+            self._doc(parse_aep(self.SAMPLE), "RangesJust")
+            .paragraph_range(0)
+            .character_range()
+        )
+        with pytest.raises(ValueError, match="finite"):
+            setattr(rng, field, bad)
+
+    @pytest.mark.parametrize(
+        "field", ["baseline_shift", "horizontal_scale", "first_line_indent"]
+    )
+    def test_document_wide_float_rejects_nonfinite(self, field: str) -> None:
+        # Multi-run document: the DocumentWideCosField write path must
+        # validate before touching any run.
+        doc = self._doc(parse_aep(self.SAMPLE), "RangesTextReset")
+        with pytest.raises(ValueError, match="finite"):
+            setattr(doc, field, float("nan"))
+
+    def test_valid_negative_value_roundtrips(self, tmp_path: Path) -> None:
+        # A finite (negative) value is still accepted and survives a disk
+        # round-trip intact - the pre-fix NaN made source_text.value None.
+        app = parse_aep(self.SAMPLE)
+        self._doc(app).character_range(0, 5).baseline_shift = -3.5
+        out = tmp_path / "bs.aep"
+        app.project.save(out)
+        doc2 = self._doc(parse_aep(out))
+        assert doc2 is not None
+        assert doc2.character_range(0, 5).baseline_shift == pytest.approx(-3.5)
+
+    def test_range_enum_rejects_out_of_range_int(self) -> None:
+        cr = (
+            self._doc(parse_aep(self.SAMPLE), "RangesJust")
+            .paragraph_range(0)
+            .character_range()
+        )
+        with pytest.raises(ValueError, match="not a valid"):
+            cr.justification = 999
+
+    def test_document_wide_enum_rejects_out_of_range_int(self) -> None:
+        doc = self._doc(parse_aep(self.SAMPLE), "RangesJust")
+        with pytest.raises(ValueError, match="not a valid"):
+            doc.justification = 999
+
+    @pytest.mark.parametrize("value", [10**10, 10**12, -(10**10)])
+    def test_kerning_rejects_out_of_s4_range(self, value: int) -> None:
+        # AE 2026 rejects the whole text layer for kerning/tracking beyond
+        # the signed-32-bit range ("Error reading the text layer"; probed
+        # 2**31 OK / 10**10 fails). See scripts/dev/apifuzz/FINDINGS.md.
+        rng = self._doc(parse_aep(self.SAMPLE), "RangesKernLead").character_range(1, 4)
+        with pytest.raises(ValueError, match="must be"):
+            rng.kerning = value
+
+    @pytest.mark.parametrize("value", [10**10, 10**12])
+    def test_tracking_rejects_out_of_s4_range(self, value: int) -> None:
+        rng = self._doc(parse_aep(self.SAMPLE)).character_range(0, 5)
+        with pytest.raises(ValueError, match="must be"):
+            rng.tracking = value
+
+    def test_document_wide_tracking_rejects_out_of_s4_range(self) -> None:
+        doc = self._doc(parse_aep(self.SAMPLE), "RangesTextReset")
+        with pytest.raises(ValueError, match="must be"):
+            doc.tracking = 10**10
+
+    def test_kerning_tracking_accept_int32_extremes(self, tmp_path: Path) -> None:
+        # The bound stays inside AE's tolerance: int32max and a negative
+        # value are accepted and survive a disk round-trip.
+        app = parse_aep(self.SAMPLE)
+        self._doc(app, "RangesKernLead").character_range(1, 4).kerning = 2**31 - 1
+        self._doc(app).character_range(0, 5).tracking = -5000
+        out = tmp_path / "kt.aep"
+        app.project.save(out)
+        app2 = parse_aep(out)
+        assert (
+            self._doc(app2, "RangesKernLead").character_range(1, 4).kerning == 2**31 - 1
+        )
+        assert self._doc(app2).character_range(0, 5).tracking == -5000
 
 
 class TestAtomicSave:

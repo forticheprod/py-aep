@@ -544,9 +544,10 @@ For read-only fields, set `read_only=True`:
 | Pattern | When to use |
 |---------|-------------|
 | `ChunkField("_body", "field")` | Direct 1:1 mapping to a fmt_field |
-| `ChunkField[bool]("_body", "field")` | Boolean field (BitField, coerce=bool, or @property) |
-| `ChunkField[bool]("_body", "field", transform=bool, reverse=int)` | Generic integer field exposed as `bool` |
+| `ChunkField.bool("_body", "field")` | Boolean field (BitField, coerce=bool, or @property); bakes in `validate_bool` |
+| `ChunkField.bool("_body", "field", transform=bool, reverse=int)` | Generic integer field exposed as `bool` |
 | `ChunkField.enum(MyEnum, "_body", "field")` | IntEnum field (auto-detects `from_binary`/`to_binary`) |
+| `ChunkField.enum(MyEnum, "_body", "field", allow_out_of_enum_values=True)` | As above, but an out-of-enum stored value reads back raw (writes stay strict) |
 | `ChunkField("_body", "computed_prop")` | Multi-field derived value via chunk-level computed `@property` with setter |
 | `@property` (with optional setter) | Computed from multiple fields or non-chunk data |
 
@@ -666,10 +667,11 @@ class CdtaChunk(Chunk):
 
 #### 3. Wire to Model
 
-Use `ChunkField[bool]`:
+Use `ChunkField.bool` (it bakes in `validate=validate_bool`, so a
+writable bool field cannot silently take a non-bool):
 
 ```python
-motion_blur = ChunkField[bool]("_cdta", "motion_blur")
+motion_blur = ChunkField.bool("_cdta", "motion_blur")
 """When `True`, motion blur is enabled for the composition. Read / Write."""
 ```
 
@@ -748,7 +750,6 @@ Test samples should be minimal and focused:
 - **Docstrings**: Google-style (Args, Returns, Raises sections) for functions; inline docstrings after each field for model classes
 - **Cross-references**: Use mkdocstrings syntax `[ClassName][]` or `[text][fully.qualified.path]` to link to other classes in docstrings. Do **not** use Sphinx-style `:class:` / `:func:` notation.
 - **No `struct` module in model code**: All binary decoding is in `binary/` chunk classes
-- **No em dashes or en dashes**: Use regular dashes (`-`)
 
 ### Avoiding Code Slop
 

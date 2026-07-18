@@ -248,7 +248,12 @@ class _ShapeKind(ParallelKind):
 
         comp = prop._containing_layer.containing_comp
         is_mask = prop.match_name == "ADBE Mask Shape"
-        return _parse_shape_shap(cast("ListChunk", value_chunk), comp, is_mask)
+        shape = _parse_shape_shap(cast("ListChunk", value_chunk), comp, is_mask)
+        if is_mask:
+            # Mask space is LAYER space: denormalize by the layer source
+            # size, not the comp (psd_vector_mask_cropped fixture).
+            shape._layer = prop._containing_layer
+        return shape
 
 
 class _GradientKind(ParallelKind):

@@ -5,7 +5,7 @@ parsing a binary file format rather than querying a running After Effects
 instance.
 
 
-## Property.value_at_time Accuracy on spatial Properties (~0.015 Maximum Error)
+## Property.value_at_time accuracy on spatial Properties (~0.015 Maximum Error)
 
 `Property.value_at_time()` for spatial properties (position, 2D/3D) has a
 systematic ±0.015 deviation from After Effects' `valueAtTime()`. This is
@@ -44,13 +44,10 @@ be derived from the `.aep` file alone:
 Point text never goes stale: its composed lines are derived from the
 paragraphs. For box text, py_aep ships a composed-line resolver
 (`resolvers/text_composition.py`, which needs `uharfbuzz` on Python 3.8+) that
-recomposes lines exactly like AE's single-line Latin composer -
-verified against AE's own persisted layouts across a 45-layer fixture
-matrix. Before trusting it, py_aep calibrates the resolver against each
-document's own cache (line spans and baselines); a calibrated document
-recomposes freshly after every layout-affecting edit.
-
-The limitations that remain:
+recomposes lines like AE's single-line Latin composer, calibrated against each
+document's own cache (line spans and baselines) so a calibrated document
+recomposes freshly after every layout-affecting edit. The limitations are in
+what it refuses or cannot cover:
 
 - Out-of-envelope features are refused, never guessed: the every-line
   composer, optical or disabled auto kerning, enabled ligatures, tabs,
@@ -110,42 +107,18 @@ even though After Effects displays a unit string in the UI.
 
 ### Property.canSetExpression
 
-`Property.can_set_expression` combines binary signals with a pure-logic
-resolver. For effect parameters, an expressions-disabled flag in the
-`pard` definition header is authoritative; the remaining logic covers
-what After Effects determines at runtime from context: the layer type
-(camera, light, etc.), whether the layer is 3D, whether position
-dimensions are separated, and the light type. Small match-name tables
-cover non-effect quirks (extrusion materials, text path options). The
-result matches ExtendScript ground truth on 99.9% of 51,000+ validated
-properties; the residual mismatches are instance-state cases (e.g.
-plugin-supervised parameters whose enablement depends on other
-parameter values).
-
-### Property.canVaryOverTime
-
-For effect parameters, `Property.can_vary_over_time` is derived from the
-parameter definition (`pard`) flags byte, which matches the After Effects
-SDK's `PF_ParamFlag_CANNOT_TIME_VARY`. For other properties it combines
-the `tdb4` `can_vary_over_time` flag with the `no_value` flag (NO_VALUE
-properties always report `canVaryOverTime = true` in ExtendScript). A
-six-entry override table covers the residue (one light option that has no
-pard, and the Puppet pin internals). Validated against ExtendScript ground
-truth across 51,000+ properties covering every bundled and several
-third-party effects, with zero mismatches.
+`Property.can_set_expression` is resolved from binary signals plus a pure-logic
+model of what After Effects decides at runtime (layer type, 3D, separated
+position dimensions, light type). The residual mismatches against ExtendScript
+are instance-state cases the file cannot capture - e.g. plugin-supervised
+parameters whose enablement depends on the live values of other parameters.
 
 ### Property.min_value / Property.max_value
 
-For effect parameters, the valid range is read from the parameter
-definition (`pard`): plain integers for Integer controls, 16.16 fixed
-point for Scalar controls, and 32-bit floats for Slider controls (a
-non-finite float means that side is unbounded). A small override table
-covers non-effect properties (transform, material, mask).
-
-Known mismatch: about a dozen non-effect properties report bounds where
-ExtendScript reports none - `ADBE Position_0`/`_1` and `ADBE Scale` carry
-placeholder `[0.0]` bound chunks in the binary, and a few layer-style and
-light properties carry synthesized bounds. Values are unaffected.
+About a dozen non-effect properties report bounds where ExtendScript reports
+none - `ADBE Position_0`/`_1` and `ADBE Scale` carry placeholder `[0.0]` bound
+chunks in the binary, and a few layer-style and light properties carry
+synthesized bounds. Values are unaffected.
 
 ## Templates
 
@@ -168,88 +141,41 @@ The settings of items already in the queue remain available through
 
 ## Color Space Profiles
 
-`Project.working_space`, `Project.display_color_space` and
-`FootageSource.media_color_space` are read/write, with the constraints below.
-The binary chunks store the profile name plus either a small OCIO descriptor
-JSON or the full ICC profile data (base64-encoded, up to ~50 KB).
-
-**OCIO mode** (`color_management_system == OCIO`) needs no external files: the
-color space is identified by name in a small JSON, so working space, display
-space (a `(display, view)` pair) and footage media color space are all writable
-directly.
-
-**Adobe CMS mode** embeds the full ICC profile, which py_aep discovers at write
-time from the installed Adobe Color directories, the per-user Adobe Color cache,
-and the operating system's color-profile store (override the search path with
-`Project.icc_profile_dirs`). The target profile must therefore be installed -
-`ColorProfileNotFoundError` is raised otherwise. This covers `working_space`
-and footage `media_color_space`. Notes:
+Most color management settings are read/write, but embedding ICC profiles for
+**Adobe CMS mode** has constraints. py_aep discovers the profile at write time
+from the installed Adobe Color directories, the per-user Adobe Color cache, and
+the OS color-profile store (override with `Project.icc_profile_dirs`), so the
+target profile must be installed or `ColorProfileNotFoundError` is raised.
 
 - A handful of profiles (Apple RGB, Adobe RGB (1998), ColorMatch RGB, ROMM-RGB)
   are stored by After Effects as a private variant that differs by a few bytes
   from the distributed `.icc` file; py_aep embeds the installed copy, which AE
   still recognizes and re-saves, but the bytes are not identical to an AE save.
-- The Windows Color System profiles `* wsRGB` and `* wscRGB` are generated by
-  the Adobe Color Engine at runtime, but After Effects caches them as `.icc`
-  files in the per-user Adobe Color directory
-  (`%LOCALAPPDATA%\Adobe\Color\Profiles` on Windows), which py_aep scans, so
-  they embed once After Effects has created them. `e-sRGB` has no `.icc` file on
-  disk and cannot be embedded.
+- `e-sRGB` has no `.icc` file on disk and cannot be embedded. (`* wsRGB` /
+  `* wscRGB` embed only after After Effects has cached them as `.icc` in
+  `%LOCALAPPDATA%\Adobe\Color\Profiles`.)
 
 **Not writable:**
 
 - `display_color_space` in Adobe CMS mode: Adobe uses the operating system's
   monitor profile, which is not stored in the project (`NotImplementedError`).
-- The render-queue output color space in OCIO mode: After Effects identifies it
-  by a 16-byte hash of a runtime-generated ICC wrapper that cannot be
-  reproduced without AE's color engine.
 
-Other color management settings (`color_management_system`,
-`lut_interpolation_method`, `ocio_configuration_file`, `working_gamma`,
-`linearize_working_space`, `linear_blending`,
-`compensate_for_scene_referred_profiles`) are read/write and depend on no
-embedded ICC data.
+The render-queue output color space is writable in **both** modes: an Adobe ICC
+profile name in Adobe CMS mode, or any color space / role / alias / display-view
+pair in OCIO mode (the 16-byte id is computed from the `.ocio` configuration -
+it is the color space's `Guid`, a two-stage MurmurHash3-128).
 
 ## Essential Properties
 
-The UUID linkage between a precomp layer's Essential Property overrides and
-their source-composition controller definitions is resolved:
+Essential Property overrides on a precomp layer are parsed and linked to their
+source-composition controllers by shared UUID
+(`AVLayer.essential_property_controllers`). One residue remains:
 
-- `Layer.essential_property_uuids` contains the override UUIDs from the
-  layer's `LIST:OvG2`.
-- `EssentialGraphicsController.uuid` contains the controller's identity UUID
-  from the `LIST:CCtl` definition.
-- `AVLayer.essential_property_controllers` resolves the link automatically,
-  returning the source comp's controllers matched to the layer's overrides by
-  shared UUID, in override order.
-
-One caveat: After Effects synthesizes an
-extra runtime-only "drop zone" controller (named e.g. `GropDropZone`) that is
-**not stored in the file**, so it is absent from `motion_graphics_controllers`
-and `motion_graphics_template_controller_count` is one lower than
-ExtendScript's `motionGraphicsTemplateControllerCount` (by one per group). The media-replacement controller itself, by contrast, matches ExtendScript
-exactly (no synthesized drop zone).
-
-Media-replacement overrides on a precomp layer are parsed: the layer's
-`"ADBE Layer Overrides"` group exposes its `ADBE Layer Source Alternate`
-child, and these `Property` attributes are available:
-
-- `Property.can_set_alternate_source` - `True` for a media-replacement slot
-  (decoded from the slot's `blsi` item-id).
-- `Property.alternate_source` - the replacement `AVItem`. After Effects wraps
-  the replacement footage in a composition, so this is that wrapper comp.
-  Set it with `Property.alternate_source = <value>`, which requires an existing
-  slot; unlike the After Effects UI it does **not** auto-wrap a footage item
-  in a composition, so pass the wrapper `CompItem` for an AE-faithful result.
-- `Property.essential_property_source` - the source `AVLayer` a
-  media-replacement override points at (matched via the controller's source
-  comp/layer ids). `None` for Property-source essential properties, which are
-  not yet resolved.
-
-Other (non-media-replacement) override *values* are still not exposed: for
-those overrides the `"ADBE Layer Overrides"` group parses with no children,
-so ExtendScript's `numProperties`/`isModified` on the group (and its nested
-`ADBE Layer Overrides Group` for a grouped override) are not reflected.
+- After Effects synthesizes an extra runtime-only "drop zone" controller
+  (named e.g. `GropDropZone`) that is **not stored in the file**, so it is
+  absent from `motion_graphics_controllers` and
+  `motion_graphics_template_controller_count` is one lower than ExtendScript's
+  `motionGraphicsTemplateControllerCount` (by one per group).
 
 ## Missing Classes
 
@@ -259,13 +185,9 @@ The following ExtendScript classes do not exist in py_aep:
 |-------|--------|
 | `System` | OS/machine info - not stored in `.aep` |
 | `FontsObject` | Runtime collection of installed fonts |
-| `CharacterRange` | Text engine range object (AE 24.6+) |
-| `ComposedLineRange` | Text engine range object (AE 24.6+) |
-| `ParagraphRange` | Text engine range object (AE 24.6+) |
 | `ItemCollection` | Use `project.items` (Python dict[int, Item]) instead |
 | `LayerCollection` | Use `comp.layers` (Python list) instead |
 | `Settings` | Application settings - methods only, not stored in `.aep` |
-| `Preferences` | Application preferences - methods only, not stored in `.aep` |
 
 ## File Paths
 
@@ -277,66 +199,68 @@ provides the path that After Effects would display for missing footage.
 
 ## Importing Footage (Project.import_file)
 
-`Project.import_file()` creates footage from a file by reading the media
-header (see [media_probe][py_aep.resolvers.media_probe]). After Effects caches
-footage metadata (dimensions, duration, frame rate, alpha, audio) in the
-project and does not re-read the media when the project is opened, so these
-values are extracted from the source file at import time.
+`Project.import_file()` reads footage metadata (dimensions, duration, frame
+rate, alpha, audio) from the source file at import time, since After Effects
+caches those values in the project rather than re-reading the media on open
+(see [media_probe][py_aep.resolvers.media_probe]). The limitations of importing
+from a static file rather than through AE's live media engine:
 
-- **Supported import types**: `FOOTAGE` for still images, video, audio, and
-  merged PSD/PSB; `COMP` for a layered Illustrator/PDF (`.ai`/`.pdf`) or
-  Photoshop (`.psd`/`.psb`) file (one footage layer per source layer); and
-  `COMP_CROPPED_LAYERS` for an SVG or a layered `.psd`/`.psb`. `PROJECT` import
-  (importing an `.aep`/`.aet`) is not supported. An extension that the requested
-  type does not cover raises `ValueError`.
-- **Supported footage formats** (verified to open in After Effects): the
-  still images PNG, JPEG, BMP, GIF, TGA, TIFF, OpenEXR, PSD/PSB and Radiance
-  HDR; QuickTime MOV, M4V, WMV and MPEG video; WAV, AIFF, MP3, M4A and AAC
-  audio; FBX scenes; SWF; and TXT/CSV/JSON/mgjson data footage.
-  Image sequences are supported for the still-image formats. The same source
-  builder backs `FootageItem.replace()`/`replace_with_sequence()` and
-  `AVItem.set_proxy()`/`set_proxy_with_sequence()`.
-- **SVG**: importable only as `COMP_CROPPED_LAYERS`, which converts the artwork
-  into a composition of native vector shape layers (`ADBE Vector Layer`) - there
-  is no file-referencing footage source. Importing an SVG as `FOOTAGE` raises.
-  `<text>` / `<tspan>` are rendered as **outlined glyph shapes** (going beyond
-  After Effects, whose own SVG import silently drops them); this requires the
-  text's `font-family` to be installed - an unresolved font is skipped. Raster
+- **`PROJECT` import is not supported** - importing an `.aep`/`.aet` raises. An
+  extension a requested import type does not cover also raises `ValueError`.
+- **SVG** imports only as `COMP_CROPPED_LAYERS` (native vector shape layers);
+  importing an SVG as `FOOTAGE` raises. `<text>`/`<tspan>` require the
+  `font-family` to be installed - an unresolved font is skipped - and raster
   `<image>` and `<textPath>` are not yet rendered.
-- **PSD/PSB**: as `FOOTAGE` it is imported as a single merged still (the `8BPS`
-  merged-layer `opti` header is written so AE resolves it without stalling on a
-  layer-interpretation modal). As `COMP`/`COMP_CROPPED_LAYERS` it becomes a
-  composition with one footage layer per Photoshop layer (layer groups become
-  nested compositions); a flattened (layerless) file becomes a one-layer
-  composition of the merged still. Other unrecognized extensions raise.
-- **Single-layer import** (py_aep extension - ExtendScript has no API for the
-  "Choose Layer" option of AE's import dialog): setting
-  `ImportOptions.layer_index` on a `FOOTAGE` import of a layered
-  `.psd`/`.psb`/`.ai`/`.pdf` references that single layer, and
-  `ImportOptions.layer_dimensions` selects Document vs Layer Size
-  (`.psd`/`.psb` only - an AI/PDF layer's artwork bounds would require
-  rendering the PDF content, so `"layer"` raises `NotImplementedError`
-  there). The index is the layer's 0-based position in the list returned
-  by [list_layers][py_aep.resolvers.source_layers.list_layers] (top layer
-  first, the dropdown order); an index - not a name - selects the layer
-  because layer names need not be unique, and AE's own dialog
-  disambiguates duplicates by dropdown position. `FootageItem.replace()`
-  takes the same optional `layer_index` argument; `layer_index=None`
-  always replaces with the merged/whole document, consistent with
-  `import_file`, and `py_aep.CURRENT_VALUE` rebinds the new file at the
-  current source's stored layer index (PSD record index / AI document
-  index).
-- **`has_alpha` is a per-format heuristic**, not a full media decode. After
-  Effects allocates an alpha channel for PNG/TIFF/BMP/GIF regardless of the
-  file's actual channel count, treats JPEG as opaque, and derives alpha from
-  the channel list (EXR), bit depth (TGA: 32-bit only), codec depth (MOV), or
-  layer transparency and channel count (PSD/PSB: layered or >= 4 channels).
-  These match AE's import for the tested samples.
-- **Image-sequence dimensions**: image sequences - and PSD/TIFF stills - get a
-  full format-specific `opti` asset-info header with the dimensions embedded
-  (HDR carries them in `sspc` instead). An empty `opti` is written only for a
-  single PNG/EXR/FBX still, where After Effects re-reads the located file on
-  open.
+- **Layer-size dimensions for AI/PDF single-layer import**: an AI/PDF layer's
+  artwork bounds would require rendering the PDF content, so
+  `ImportOptions.layer_dimensions = "layer"` raises `NotImplementedError` for
+  `.ai`/`.pdf` (`.psd`/`.psb` are supported).
+- **`has_alpha` is a per-format heuristic**, not a full media decode. Alpha is
+  inferred from the format and header - allocated for PNG/TIFF/BMP/GIF, opaque
+  for JPEG, and derived from the channel list (EXR), bit depth (TGA), codec
+  depth (MOV), or layer transparency/channel count (PSD/PSB). These match AE's
+  import for the tested samples but are not a guaranteed media-accurate decode.
+
+### PSD layer styles (ImportOptions.layer_styles)
+
+Editable-layer-styles imports translate each layer's effects descriptor
+(`lmfx`/`lfx2`) into the comp layer's `ADBE Layer Styles` tree, byte-matched
+against AE 2026 for the sample documents. The differences from AE:
+
+- **Merging styles into footage stores approximate bounds.** After Effects
+  rasterizes the styled layer at import and stores the style-expanded content
+  box in the footage `opti` (plus the matching `data_size` cache); py_aep
+  cannot run AE's style renderer, so it writes the raw layer bounds. AE
+  restores the expanded box itself when it next opens the project (verified
+  by resave), and tolerates the stale `data_size`. Because a
+  `COMP_CROPPED_LAYERS` import (or `layer_dimensions="layer"`) derives the
+  footage size and layer transforms from that expanded box - state AE does
+  not recompute - those combinations raise `NotImplementedError` for layers
+  that have styles.
+- **Multi-instance styles are dropped whole** (imported as a disabled style),
+  matching After Effects exactly - AE does not keep even a representable
+  instance of e.g. a double stroke. py_aep emits a `UserWarning` where AE is
+  silent.
+- **Constructs AE cannot represent are dropped like AE drops them**: contours,
+  anti-alias flags, a stroke's gradient fill (the stroke itself imports with
+  its color), the Pattern Overlay pattern reference, a **noise-type gradient**
+  (the owning style imports with every other parameter, only the gradient
+  colors are omitted - matching AE), and Photoshop's master Scale Effects
+  factor (values import unscaled, matching AE).
+- **Styles on a layer GROUP are dropped** (the group's nested-comp layer
+  keeps the plain disabled skeleton), matching After Effects exactly -
+  probed with a drop shadow on a group (`lfxs` block), AE 2026 discards it
+  silently. py_aep emits a `UserWarning` where AE is silent.
+- **Legacy 4-character blend-mode spellings resolve exactly like AE.** Old
+  writers store descriptor enums as zero-length 4-char typeIDs. A spliced
+  27-mode probe pinned AE 2026's behavior: the 16 true-legacy typeIDs
+  (`Nrml`, `Mltp`, `SftL`, ...) resolve, while the post-CS modes' typeIDs
+  (`lbrn`, `vLit`, `fsub`, ...) do not - AE silently keeps the default
+  blend mode. py_aep maps the same 16 and imports the rest as the default,
+  emitting a `UserWarning` where AE is silent.
+- **Only `lmfx`/`lfx2` descriptors are read** (plus `lfxs` for group
+  headers). A pre-Photoshop-6 document carrying styles solely in the legacy
+  `lrFX` block imports with the plain disabled skeleton.
 
 ## guessAlphaMode / guessPulldown
 

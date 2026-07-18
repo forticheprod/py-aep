@@ -9,6 +9,7 @@ from ...binary.utils import index_by_identity
 from ..descriptors import ChunkField
 from ..naming import auto_name
 from ..preferences import default_sequence_fps
+from ..validators import validate_bool
 from .item import Item
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 
 
 def _validate_use_proxy(value: bool, obj: AVItem) -> None:
+    validate_bool(value)
     if obj.proxy_source is None and value:
         raise AttributeError(
             "Cannot set use_proxy to True when there is no proxy source."
@@ -72,7 +74,7 @@ class AVItem(Item):
     width: int
     """The width of the item in pixels. Read-only."""
 
-    use_proxy = ChunkField[bool](
+    use_proxy = ChunkField.bool(
         "_idta",
         "use_proxy",
         validate=_validate_use_proxy,
@@ -161,6 +163,30 @@ class AVItem(Item):
         return `False`).
         """
         return self.width > 0 and self.height > 0
+
+    @property
+    def footage_missing(self) -> bool:
+        """When `True`, the AVItem is a placeholder, or represents footage
+        with a source file that could not be found when the project was last
+        saved. Read-only.
+
+        Always `False` for a [CompItem][]; a
+        [FootageItem][py_aep.models.items.footage.FootageItem] reports the
+        state of its `main_source` (see the `FootageItem` override).
+        """
+        return False
+
+    @property
+    def is_media_replacement_compatible(self) -> bool:
+        """`True` if the item can be used as an alternate source when setting
+        [Property.alternate_source][py_aep.models.properties.property.Property.alternate_source].
+        Read-only.
+
+        A [CompItem][] or a [FootageItem][py_aep.models.items.footage.FootageItem]
+        with a video component can be used as an alternate source; see the
+        `FootageItem` override for footage restrictions.
+        """
+        return self.has_video
 
     @property
     def time(self) -> float:

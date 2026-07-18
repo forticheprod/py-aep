@@ -1215,6 +1215,7 @@ def compare_comp_item(
         "resolutionFactor": "resolution_factor",
         "draft3d": "draft3d",
         "hasVideo": "has_video",
+        "isMediaReplacementCompatible": "is_media_replacement_compatible",
         "renderer": "renderer",
         "motionGraphicsTemplateName": "motion_graphics_template_name",
         "motionGraphicsTemplateControllerCount": "motion_graphics_template_controller_count",
@@ -1332,6 +1333,7 @@ def compare_footage_item(
         "pixelAspect": "pixel_aspect",
         "footageMissing": "footage_missing",
         "hasVideo": "has_video",
+        "isMediaReplacementCompatible": "is_media_replacement_compatible",
     }
 
     _compare_fields(

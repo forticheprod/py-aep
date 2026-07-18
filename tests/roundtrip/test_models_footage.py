@@ -20,7 +20,6 @@ from py_aep import (
     PulldownPhase,
 )
 from py_aep import parse as parse_aep
-from py_aep.color.envelope import build_ocio_colorspace_envelope
 from py_aep.color.icc import default_icc_directories
 from py_aep.enums.mappings import profile_id_for_name
 
@@ -407,19 +406,33 @@ class TestRoundtripMediaColorSpace:
         return item.main_source
 
     def test_set_ocio_colorspace(self, tmp_path: Path) -> None:
+        # The project's config is the built-in ACES 1.2, where the color space
+        # is named "ACES - ACEScg" (family "ACES"). AE stores a direct pick's
+        # colorProfileName as "<family>/<name>", so that is what reads back.
         project = parse_aep(
             SAMPLES_DIR / "override_media_colorspace_embedded.aep"
         ).project
-        self._first_source(project).media_color_space = "ACEScg"
+        self._first_source(project).media_color_space = "ACES - ACEScg"
 
         out = tmp_path / "modified.aep"
         project.save(out)
         source2 = self._first_source(parse_aep(out).project)
-        assert source2.media_color_space == "ACEScg"
-        # ocsp envelope is byte-exact AE output.
+        assert source2.media_color_space == "ACES/ACES - ACEScg"
+        # Byte-exact against AE's own direct-pick sample.
         ocsp = source2._ocsp_utf8()
-        assert ocsp is not None
-        assert ocsp.value == build_ocio_colorspace_envelope("ACEScg")
+        ae = parse_aep(SAMPLES_DIR / "cms_acescg_colorspace.aep").project
+        ae_ocsp = self._first_source(ae)._ocsp_utf8()
+        assert ocsp is not None and ae_ocsp is not None
+        assert ocsp.value == ae_ocsp.value
+
+    def test_set_ocio_name_absent_from_config_raises(self) -> None:
+        # "ACEScg" is not in ACES 1.2 (it is "ACES - ACEScg"). py used to
+        # fabricate an envelope for it; the config is authoritative.
+        project = parse_aep(
+            SAMPLES_DIR / "override_media_colorspace_embedded.aep"
+        ).project
+        with pytest.raises(ValueError, match="not a color space"):
+            self._first_source(project).media_color_space = "ACEScg"
 
     def test_set_working_color_space(self, tmp_path: Path) -> None:
         project = parse_aep(
@@ -454,8 +467,8 @@ class TestRoundtripMediaColorSpace:
             SAMPLES_DIR / "override_media_colorspace_embedded.aep"
         ).project
         source = self._first_source(project)
-        source.media_color_space = "ACEScg"
-        assert source.media_color_space == "ACEScg"
+        source.media_color_space = "ACES - ACEScg"
+        assert source.media_color_space == "ACES/ACES - ACEScg"
         source.media_color_space = "Embedded"
 
         out = tmp_path / "modified.aep"
@@ -463,6 +476,43 @@ class TestRoundtripMediaColorSpace:
         assert (
             self._first_source(parse_aep(out).project).media_color_space == "Embedded"
         )
+
+    def test_set_ocio_role(self, tmp_path: Path) -> None:
+        # A role pick stores the role's TARGET with ocioColorSpaceType 2 - a
+        # different envelope from a direct pick of that same color space.
+        project = parse_aep(
+            SAMPLES_DIR / "override_media_colorspace_embedded.aep"
+        ).project
+        self._first_source(project).media_color_space = "matte_paint"
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        source2 = self._first_source(parse_aep(out).project)
+        assert source2.media_color_space == "Utility - sRGB - Texture"
+        ocsp = source2._ocsp_utf8()
+        ae = parse_aep(SAMPLES_DIR / "cms_matte_paint_role.aep").project
+        ae_ocsp = self._first_source(ae)._ocsp_utf8()
+        assert ocsp is not None and ae_ocsp is not None
+        assert ocsp.value == ae_ocsp.value
+
+    def test_qualified_name_round_trips(self, tmp_path: Path) -> None:
+        # The getter returns "<family>/<name>" for a direct pick; assigning
+        # that straight back must reproduce the same envelope.
+        project = parse_aep(SAMPLES_DIR / "cms_acescg_colorspace.aep").project
+        source = self._first_source(project)
+        before = source._ocsp_utf8()
+        assert before is not None
+        original = before.value
+        assert source.media_color_space == "ACES/ACES - ACEScg"
+        source.media_color_space = source.media_color_space
+        after = source._ocsp_utf8()
+        assert after is not None and after.value == original
+
+    def test_unresolvable_config_raises(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "cms_acescg_colorspace.aep").project
+        project.ocio_configuration_file = r"\\nope\missing\nowhere.ocio"
+        with pytest.raises(ValueError, match="Cannot resolve"):
+            self._first_source(project).media_color_space = "ACES - ACEScg"
 
     @pytest.mark.skipif(not _ICC_AVAILABLE, reason="Adobe ICC profiles not installed")
     def test_set_adobe_profile(self, tmp_path: Path) -> None:

@@ -684,10 +684,83 @@ class TestListColorProfilesOcio:
         assert "ACEScg" in profiles
 
     def test_listed_names_are_assignable_as_working_space(self) -> None:
-        # Read/write self-consistency: every listed OCIO name is a valid
-        # working_space (no exception, round-trips by value).
+        # Every listed OCIO name is a valid working_space, and what it reads
+        # back as can be assigned again (read -> write -> read is stable).
+        #
+        # It does NOT read back as the name assigned: AE stores a direct
+        # colorspace pick's `colorProfileName` as "<family>/<name>", and the
+        # getter is AE-faithful (ExtendScript's workingSpace echoes the same
+        # qualified string). That asymmetry is AE's, not py_aep's.
         project = parse_aep(SAMPLES_DIR / "colorManagementSystem_ocio.aep").project
         project.ocio_configuration_file = str(self.CONFIG)
         for name in project.list_color_profiles():
             project.working_space = name
-            assert project.working_space == name
+            stored = project.working_space
+            assert stored.rsplit("/", 1)[-1] == name
+            project.working_space = stored
+            assert project.working_space == stored
+
+
+class TestColorProfileSlotBinding:
+    """The `PwCs` (working) and `pdvc` (display) color-profile slots must not
+    be confused for one another.
+
+    Both slots hold a `Utf8` whose unset value is the literal `{}`, so binding
+    them by the ORDER the envelopes appear in reads a display space as the
+    working space whenever the working space is unset. They are bound by their
+    marker chunk instead, on both the read and the write side.
+
+    AE 2026 authenticates the shape: it opens a py_aep file written this way
+    and re-saves it keeping the envelope under `pdvc` with `PwCs` still `{}`.
+    """
+
+    # An AE-authored OCIO project whose working space is unset (`PwCs` == {}).
+    UNSET_WS = LAYER_SAMPLES_DIR / "geometry_probe.aep"
+
+    def test_display_space_roundtrips_with_working_space_unset(
+        self, tmp_path: Path
+    ) -> None:
+        project = parse_aep(self.UNSET_WS).project
+        assert project.working_space == "None"
+        assert project.display_color_space == "None"
+
+        project.display_color_space = ("ACES", "sRGB")
+
+        out = tmp_path / "display.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+
+        assert project2.display_color_space == "ACES/sRGB"
+
+    def test_display_space_write_does_not_leak_into_working_space(
+        self, tmp_path: Path
+    ) -> None:
+        project = parse_aep(self.UNSET_WS).project
+        project.display_color_space = ("ACES", "sRGB")
+
+        out = tmp_path / "display.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+
+        # Writing only the DISPLAY space must not give the project a working
+        # space it never had.
+        assert project2.working_space == "None"
+
+    def test_both_slots_roundtrip_together(self, tmp_path: Path) -> None:
+        config = (
+            Path(__file__).parent.parent.parent / "samples" / "assets" / "config.ocio"
+        )
+        project = parse_aep(self.UNSET_WS).project
+        project.ocio_configuration_file = str(config)
+        project.working_space = "ACEScg"
+        project.display_color_space = ("ACES", "sRGB")
+
+        out = tmp_path / "both.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+
+        # A direct colorspace pick reads back qualified as "<family>/<name>"
+        # (AE's stored colorProfileName) - see
+        # TestListColorProfilesOcio::test_listed_names_are_assignable_as_working_space.
+        assert project2.working_space == "ACES/ACEScg"
+        assert project2.display_color_space == "ACES/sRGB"

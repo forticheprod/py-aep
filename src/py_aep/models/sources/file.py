@@ -17,6 +17,7 @@ from ...binary.footage_chunks import (
     build_text_opti_data,
     build_tiff_opti_data,
 )
+from ...binary.misc_chunks import EmpdChunk
 from ...binary.mutations import build_pin_list
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import (
@@ -27,18 +28,21 @@ from ...binary.utils import (
     find_by_list_type,
     find_by_type,
     find_chunks_before,
+    index_by_identity,
     parse_alas_data,
 )
 from ...data.file_formats import (
     AI_COMP_EXTENSIONS,
+    FORMAT_3D_MODEL_SCENE,
     PSD_COMP_EXTENSIONS,
     FileFormat,
     get_file_format,
 )
 from ...resolvers.ai_layers import read_ai_color_info, read_ai_color_profile
 from ...resolvers.media_probe import probe_media
+from ...resolvers.psd_styles import has_enabled_styles
 from ...resolvers.source_layers import resolve_ai_layer, resolve_psd_layer
-from ..validators import validate_path_exists
+from ..validators import validate_file_exists
 from .footage import FootageSource
 
 if TYPE_CHECKING:
@@ -47,6 +51,24 @@ if TYPE_CHECKING:
     from ...binary.chunk import Chunk, ListChunk
     from ...binary.scalar_chunks import U1Chunk
     from ...resolvers.media_probe import MediaInfo
+    from ...resolvers.psd_layers import PsdLayer
+
+
+def _reject_styled_layer_size(path: Path, leaf: PsdLayer) -> None:
+    """Refuse merge-mode Layer Size dimensions for a layer with styles.
+
+    Merging styles expands the rasterized content box (shadow/glow extents),
+    and the expanded box - which AE derives with its style renderer - sets
+    the footage dimensions here. py_aep cannot compute it; see
+    `docs/limitations.md`.
+    """
+    if has_enabled_styles(leaf):
+        raise NotImplementedError(
+            f"layer {leaf.name!r} of {path.name} has layer styles: merging "
+            'them expands the rasterized bounds, so layer_dimensions="layer" '
+            'is not representable; import at "document" size or pass '
+            'layer_styles="ignore"'
+        )
 
 
 def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
@@ -82,6 +104,27 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
     if fmt.opti == "empty" and not sequence:
         return b""
     return build_generic_opti_data(fmt.source_format)
+
+
+def _alpha_mode_raw(has_alpha: bool, premultiplied: bool) -> int:
+    """The `sspc` alpha byte AE stores: 3 = no alpha, 1 = premultiplied,
+    0 = straight."""
+    if not has_alpha:
+        return 3
+    return 1 if premultiplied else 0
+
+
+# `sspc` kind bytes (0xC8-0xC9) for a PSD single-layer binding: byte 0xC9
+# records the import dialog's Layer Options choice (psd_layer_styles.aep
+# fixtures). "editable" is never a user-passable value on the footage
+# paths - it only flows through `FootageItem.replace(CURRENT_VALUE)`
+# preserving an editable-comp per-layer binding verbatim.
+PSD_LAYER_STYLES_C8 = {
+    "ignore": b"\x00\x00",
+    "merge": b"\x00\x01",
+    "editable": b"\x00\x02",
+}
+_C9_TO_LAYER_STYLES = {v[1]: k for k, v in PSD_LAYER_STYLES_C8.items()}
 
 
 def _join_sequence_frame(folder: str, frame_name: str) -> str:
@@ -131,6 +174,11 @@ class FileSource(FootageSource):
     def target_is_folder(self) -> bool:
         """`True` if the file is a folder, else `False`. Read-only."""
         return self._target_is_folder
+
+    @property
+    def _is_3d_model_scene(self) -> bool:
+        """`True` for an imported 3D model scene (e.g. an `.fbx`)."""
+        return self._sspc.source_format_type == FORMAT_3D_MODEL_SCENE
 
     @property
     def missing_footage_path(self) -> str:
@@ -342,13 +390,6 @@ class FileSource(FootageSource):
         is_sequence = sequence_prefix is not None
         path = Path(file)
 
-        if not has_alpha:
-            alpha_raw = 3
-        elif alpha_premultiplied:
-            alpha_raw = 1
-        else:
-            alpha_raw = 0
-
         if reserved_c8 is None:
             # AE 2026 writes byte 0xC9 = 0x02 for raster/media file footage but
             # 0x00 for TEXT (AI/EPS/PDF); solids/placeholders keep the all-zero
@@ -361,7 +402,7 @@ class FileSource(FootageSource):
             source_format_type=source_format,
             width=width,
             height=height,
-            alpha_mode_raw=alpha_raw,
+            alpha_mode_raw=_alpha_mode_raw(has_alpha, alpha_premultiplied),
             footage_missing_at_save=False,
             is_synthetic_a=0,
             is_synthetic_b=0,
@@ -378,7 +419,7 @@ class FileSource(FootageSource):
         sspc.duration = duration
         sspc.pixel_aspect = pixel_aspect
         sspc.audio_sample_rate = audio_sample_rate
-        if source_format == "LDOM":
+        if source_format == FORMAT_3D_MODEL_SCENE:
             # AE 2026 sets the premultiplied-alpha flag for an imported FBX
             # scene even though `alpha_mode_raw` stays 0 (the 3D scene renders
             # against a premultiplied black background). Measured against an
@@ -392,8 +433,21 @@ class FileSource(FootageSource):
             # treats the folder reference as missing footage on open.
             # (Values reverse-engineered from AE 2026 sequence imports.)
             sspc._reserved_a8 = b"\x00\x00\x00\x02"
-            sspc._reserved_b8 = b"\x01\x00\x01\x01"
+            sspc._reserved_b8 = b"\x01"
+            sspc._reserved_ba = b"\x01\x01"
             sspc._reserved_6f = b"\x00\x00\x00\x00\x08"
+            # Sequence-specific sspc fields AE writes and does NOT recompute
+            # on open (proven necessary by an AE open+resave diff: AE
+            # preserves py's value rather than normalizing it). full_frame is
+            # False for a sequence, the 0xC8 kind bytes are 0x0000 (not the
+            # 0x0002 raster-media default), and byte 5 of the field-separation
+            # block is 0x01. The other sequence-import diffs (duration
+            # divisor reduction, _reserved_3e, the _reserved_74 filesystem
+            # fingerprint, and the cached data_size) are cosmetic: AE
+            # recomputes them on open, so py leaves them at their defaults.
+            sspc.full_frame = False
+            sspc._reserved_c8 = b"\x00\x00"
+            sspc._reserved_4a = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00"
 
         # Route through variant dispatch so a recognized asset type (e.g.
         # 8BPS -> PsdOptiChunk) is stored as its typed subclass and exposes
@@ -433,6 +487,8 @@ class FileSource(FootageSource):
         sequence: bool = False,
         force_alphabetical: bool = False,
         default_sequence_fps: float = 30.0,
+        range_start: int = 0,
+        range_end: int = 0,
     ) -> FileSource:
         """Build a `FileSource` by probing a media file's header.
 
@@ -448,14 +504,19 @@ class FileSource(FootageSource):
             default_sequence_fps: Frame rate for formats with no native
                 rate (AE's "Import Options Default Sequence FPS"
                 preference; AE's factory value is 30).
+            range_start: First frame number of the sequence clipping range
+                (see `ImportOptions.range_start`). 0 with `range_end` 0
+                imports every frame.
+            range_end: Last frame number of the clipping range, inclusive.
 
         Raises:
-            ValueError: If the extension is not a supported footage format.
+            ValueError: If the extension is not a supported footage format,
+                or the frame range is invalid.
             NotImplementedError: If After Effects requires a format-specific
                 `opti` header that is not implemented yet, or header probing
                 is unavailable for the format.
         """
-        validate_path_exists(file)
+        validate_file_exists(file)
         path = Path(file)
         fmt = get_file_format(path.suffix)
         if fmt.opti == "unsupported":
@@ -466,7 +527,12 @@ class FileSource(FootageSource):
             )
         if sequence:
             return cls._build_sequence(
-                path, fmt, force_alphabetical, default_sequence_fps
+                path,
+                fmt,
+                force_alphabetical,
+                default_sequence_fps,
+                range_start=range_start,
+                range_end=range_end,
             )
         info = probe_media(path)
         opti_data = _opti_data(fmt, info, sequence=False)
@@ -508,6 +574,7 @@ class FileSource(FootageSource):
         layer_index: int,
         *,
         dimensions: str | None = None,
+        layer_styles: str | None = None,
     ) -> FileSource:
         """Build a `FileSource` referencing a single layer of a layered file.
 
@@ -526,13 +593,20 @@ class FileSource(FootageSource):
                 canvas; `"layer"` to the layer's content box (PSD only:
                 computing an AI/PDF layer's artwork bounds would require
                 rendering the PDF content).
+            layer_styles: PSD only - the Layer Options choice recorded in
+                the `sspc` kind byte: `"merge"` (default), `"ignore"`, or
+                `"editable"` (reachable only via replace's CURRENT_VALUE
+                pass-through). Callers validate; ignored for AI/PDF.
 
         Raises:
             ValueError: If the file is not a layered format, or `layer_index`
                 is out of range.
-            NotImplementedError: For `dimensions="layer"` on an AI/PDF file.
+            NotImplementedError: For `dimensions="layer"` on an AI/PDF file,
+                or for merge-mode dimensions="layer" on a styled PSD layer
+                (the style-expanded content box is not derivable; see
+                `docs/limitations.md`).
         """
-        validate_path_exists(file)
+        validate_file_exists(file)
         path = Path(file)
         suffix = path.suffix.lower()
         if suffix in PSD_COMP_EXTENSIONS:
@@ -542,6 +616,9 @@ class FileSource(FootageSource):
             left, top, right, bottom = leaf.bounds
             content_w = max(right - left, 0)
             content_h = max(bottom - top, 0)
+            styles = "merge" if layer_styles is None else layer_styles
+            if dimensions == "layer" and styles == "merge":
+                _reject_styled_layer_size(path, leaf)
             if dimensions == "layer":
                 width, height = content_w, content_h
             else:
@@ -555,6 +632,7 @@ class FileSource(FootageSource):
                 leaf.layer_id,
                 leaf.name,
                 leaf.bounds,
+                leaf.is_adjustment,
             )
             return cls._new(
                 path,
@@ -573,7 +651,7 @@ class FileSource(FootageSource):
                 layer_id=leaf.layer_id,
                 layer_index=leaf.record_index,
                 data_size=content_w * content_h * 4 * (info.bit_depth // 8),
-                reserved_c8=b"\x00\x01",
+                reserved_c8=PSD_LAYER_STYLES_C8[styles],
             )
         if suffix in AI_COMP_EXTENSIONS:
             if dimensions == "layer":
@@ -620,8 +698,19 @@ class FileSource(FootageSource):
         fmt: FileFormat,
         force_alphabetical: bool,
         default_frame_rate: float,
+        *,
+        range_start: int = 0,
+        range_end: int = 0,
     ) -> FileSource:
-        """Build a sequence `FileSource` by scanning sibling frames."""
+        """Build a sequence `FileSource` by scanning sibling frames.
+
+        With a frame range set, frames are filtered to numbers in
+        `[range_start, range_end]` (inclusive) and the stored
+        `start_frame`/`end_frame` bounds are the RANGE bounds even when
+        files are missing inside or beyond it - AE treats absent frames as
+        implied placeholders and encodes nothing else (verified against
+        AE 2026 range-import fixtures, including interior gaps).
+        """
         stem = file.stem
         m = re.search(r"(\d+)$", stem)
         if m is None:
@@ -631,6 +720,14 @@ class FileSource(FootageSource):
         prefix = stem[: m.start()]
         ext = file.suffix
         padding = len(m.group(1))
+
+        has_range = range_start > 0 or range_end > 0
+        if has_range and range_end == 0:
+            # AE errors at import time ("Found no matches for the selected
+            # file name") when a start is set without an end.
+            raise ValueError("a sequence range start requires a range end")
+        if has_range and range_end < range_start:
+            raise ValueError("Range end cannot be less than range start")
 
         frame_re = re.compile(re.escape(prefix) + r"(\d+)$")
         frames: list[tuple[int, str]] = []
@@ -643,13 +740,32 @@ class FileSource(FootageSource):
         if not frames:
             frames = [(int(m.group(1)), file.name)]
 
+        if has_range:
+            frames = [fr for fr in frames if range_start <= fr[0] <= range_end]
+            if not frames:
+                raise ValueError(
+                    f"no sequence frames numbered within [{range_start}, {range_end}]"
+                )
+
         frames.sort(key=lambda fr: fr[1] if force_alphabetical else fr[0])
 
-        info = probe_media(file)
+        info = probe_media(file.parent / frames[0][1])
         frame_rate = info.frame_rate or default_frame_rate
-        duration = len(frames) / frame_rate
+        if has_range:
+            start_frame = range_start
+            end_frame = range_end
+        else:
+            start_frame = frames[0][0]
+            end_frame = frames[-1][0]
+        if force_alphabetical:
+            duration = len(frames) / frame_rate
+        else:
+            # Frame-number span, not file count: AE counts absent interior
+            # frames as implied placeholders (probed: a 1-12 sequence with
+            # frames 6-7 missing imports with a 12-frame duration).
+            duration = (end_frame - start_frame + 1) / frame_rate
 
-        return cls._new(
+        source = cls._new(
             file,
             source_format=fmt.source_format,
             width=info.width,
@@ -662,11 +778,151 @@ class FileSource(FootageSource):
             audio_sample_rate=0.0,
             sequence_prefix=prefix,
             sequence_ext=ext,
-            start_frame=frames[0][0],
-            end_frame=frames[-1][0],
+            start_frame=start_frame,
+            end_frame=end_frame,
             frame_padding=padding,
             opti_data=_opti_data(fmt, info, sequence=True),
         )
+        if has_range:
+            source._sspc.frame_range_set = True
+        return source
+
+    def reload(self) -> None:
+        """Reloads the asset from the file.
+
+        Re-reads the media at the stored path and updates the cached
+        source metadata in place - dimensions, alpha, frame rate,
+        duration, pixel aspect, audio, cached data size, the format
+        `opti` header and (for AI/EPS/PDF) the embedded color-profile
+        record - like After Effects' File > Reload Footage (byte-validated
+        against an AE 2026 reload of a still image whose file changed on
+        disk). Image sequences re-scan their sibling frames; the item name
+        is never changed.
+
+        Note:
+            ExtendScript restricts `reload()` to a `mainSource`; py_aep
+            also allows it on a `proxySource`. Every chunk it refreshes
+            (`sspc`, `opti`, `CLRS`) lives in the source's own `Pin`, so a
+            proxy reload is self-contained. The owning item's `idta`
+            footage-kind flags are only refreshed for a `mainSource` -
+            they describe the main source's kind, and AE keeps them
+            pointing at it while a proxy is attached.
+
+        Raises:
+            ValueError: If the stored path no longer exists or is no longer
+                a file, or if its extension is not a supported footage
+                format.
+            NotImplementedError: If the format needs a format-specific
+                `opti` header that is not implemented.
+        """
+        owner = None
+        if self._project is not None:
+            for item in self._project.items.values():
+                if getattr(item, "_main_source", None) is self:
+                    owner = item
+                    break
+
+        validate_file_exists(self._file)
+        path = Path(self._file)
+        fmt = get_file_format(path.suffix)
+        if fmt.opti == "unsupported":
+            raise NotImplementedError(
+                f"footage reload does not support {path.suffix}: After "
+                "Effects requires a format-specific opti header that has "
+                "not been reverse-engineered yet."
+            )
+
+        sspc = self._sspc
+        if self._target_is_folder:
+            # Sequence: re-scan sibling frames. The stored native rate is
+            # kept as the fallback for rate-less formats (reload does not
+            # consult the import preferences).
+            #
+            # A user-set frame range must survive the re-scan: without it
+            # the rebuild would widen the sequence to every sibling frame
+            # while the marker still claimed a range. The range bounds are
+            # the stored start/end frames.
+            if sspc.frame_range_set:
+                range_start, range_end = sspc.start_frame, sspc.end_frame
+            else:
+                range_start, range_end = 0, 0
+            fresh = FileSource._build_sequence(
+                path,
+                fmt,
+                False,
+                sspc.native_frame_rate or 30.0,
+                range_start=range_start,
+                range_end=range_end,
+            )
+            fresh_sspc = fresh._sspc
+            sspc.width = fresh_sspc.width
+            sspc.height = fresh_sspc.height
+            sspc.alpha_mode_raw = fresh_sspc.alpha_mode_raw
+            sspc.start_frame = fresh_sspc.start_frame
+            sspc.end_frame = fresh_sspc.end_frame
+            sspc.frame_padding = fresh_sspc.frame_padding
+            sspc.native_frame_rate = fresh_sspc.native_frame_rate
+            sspc.duration = fresh_sspc.duration
+            self._swap_opti(fresh._opti)
+        else:
+            info = probe_media(path)
+            sspc.width = info.width
+            sspc.height = info.height
+            sspc.alpha_mode_raw = _alpha_mode_raw(
+                info.has_alpha, fmt.alpha_premultiplied
+            )
+            sspc.native_frame_rate = info.frame_rate
+            sspc.duration = info.duration
+            sspc.pixel_aspect = info.pixel_aspect
+            sspc.audio_sample_rate = info.audio_sample_rate
+            # AE refreshes the cached source size to the file's byte size
+            # (probed: 3614 -> 223874 across the reload fixture pair).
+            sspc.data_size = path.stat().st_size
+            opti_data = _opti_data(fmt, info, sequence=False)
+            if opti_data:
+                new_opti = OptiChunk.read(
+                    io.BytesIO(opti_data), len(opti_data), chunk_type="opti"
+                )
+            else:
+                new_opti = OptiChunk(chunk_type="opti")
+            self._swap_opti(new_opti)
+            # Only AI/EPS/PDF carry a re-readable embedded profile. Other
+            # formats keep the record they already have: AE writes `empd`
+            # for PNG/MOV/MPEG too, and a reload that only re-reads the
+            # same pixels must not erase it.
+            if fmt.opti == "text":
+                self._update_embedded_profile(read_ai_color_profile(path))
+
+        idta = getattr(owner, "_idta", None)
+        if idta is not None:
+            idta._flags_17 = self._idta_flags17()
+
+    def _swap_opti(self, new_opti: OptiChunk) -> None:
+        """Replace the pin's `opti` chunk (and this source's reference)."""
+        index = index_by_identity(self._pin.chunks, self._opti)
+        self._pin.chunks[index] = new_opti
+        self._opti = new_opti
+
+    def _update_embedded_profile(self, name: str | None) -> None:
+        """Set, update or remove the CLRS embedded-profile record (`empd`
+        flag + `Utf8` profile name, in AE's slot right after `apid`)."""
+        if self._clrs is None:
+            return
+        chunks = self._clrs.chunks
+        for index, chunk in enumerate(chunks):
+            if chunk.chunk_type == "empd":
+                if name is None:
+                    del chunks[index : index + 2]
+                else:
+                    cast("Utf8Chunk", chunks[index + 1]).value = name
+                return
+        if name is not None:
+            insert_at = next(
+                (i + 1 for i, ch in enumerate(chunks) if ch.chunk_type == "apid"),
+                0,
+            )
+            chunks.insert(insert_at, Utf8Chunk(value=name))
+            chunks.insert(insert_at, EmpdChunk())
 
     def _idta_flags17(self) -> int:
         """Footage-kind flags for `IdtaChunk._flags_17`: bit 5 = has video,
@@ -700,6 +956,25 @@ class FileSource(FootageSource):
         if len(data) > 0x44 and data[:4] == b"TEXT" and data[0x3D] == 1:
             return data[0x44:].split(b"\x00", 1)[0].decode("utf-8", "replace")
         return ""
+
+    @property
+    def layer_styles(self) -> str | None:
+        """The layer-styles choice recorded for a Photoshop single-layer
+        binding: `"editable"`, `"merge"` or `"ignore"` (see
+        `ImportOptions.layer_styles`), or `None` when this source is not a
+        PSD single-layer binding (merged/whole-document footage, other
+        formats). Read-only.
+
+        py_aep extension. `"editable"` appears on the per-layer footage of
+        an Editable-Layer-Styles comp import; `FootageItem.replace` rejects
+        it as an explicit argument (AE's footage dialog offers merge/ignore
+        only) - `CURRENT_VALUE` is the way to preserve it. The byte encoding
+        was pinned on AE 2026 output; on much older projects the reported
+        value is whatever the byte says.
+        """
+        if self._sspc.source_format_type != "8BPS" or not self.layer_name:
+            return None
+        return _C9_TO_LAYER_STYLES.get(self._sspc._reserved_c8[1])
 
     def _resolve_name(self, raw_name: str) -> str:
         """Resolve the display name for a file-type footage item.

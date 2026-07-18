@@ -13,10 +13,12 @@ from __future__ import annotations
 import io
 import json
 import lzma
+import math
 import re
 import struct
 import zlib
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NamedTuple
 
@@ -349,18 +351,48 @@ def _probe_gif(fp: IO[bytes]) -> MediaInfo:
 # ---------------------------------------------------------------------------
 
 
+# Additional-layer-info keys whose length field is 8 bytes (not 4) in PSB.
+# `luni`/`lyid`/`lsct` and the adjustment keys are not among them.
+PSB_8BYTE_KEYS = frozenset(
+    {
+        b"LMsk",
+        b"Lr16",
+        b"Lr32",
+        b"Layr",
+        b"Mt16",
+        b"Mt32",
+        b"Mtrn",
+        b"Alph",
+        b"FMsk",
+        b"lnk2",
+        b"FEid",
+        b"FXid",
+        b"PxSD",
+        b"cinf",
+    }
+)
+
+# Global additional-info blocks that hold the layer records when the classic
+# Layer Info block is empty: 16/32-bit documents use Lr16/Lr32, and some
+# writers use Layr.
+_LAYER_RECORD_KEYS = (b"Lr16", b"Lr32", b"Layr")
+
+
 def psd_layer_record_count(fp: IO[bytes], is_psb: bool) -> tuple[int, int]:
     """Walk a PSD/PSB stream to its layer records.
 
     `fp` must be positioned right after the 26-byte header. Skips the Color
     Mode Data and Image Resources sections and steps into the Layer and Mask
-    Information section's nested Layer Info block.
+    Information section's nested Layer Info block. 16/32-bit documents keep
+    that block empty and store the records inside a global `Lr16`/`Lr32`
+    additional-info block instead; the walk continues there.
 
     Returns:
         `(record_count, remaining)` - the layer record count (`0` for a
         flattened document: an empty or truncated Layer-and-Mask or Layer
-        Info section) and the Layer Info bytes left after the count. On a
-        non-zero count, `fp` is positioned at the first layer record.
+        Info section, and no `Lr16`/`Lr32`/`Layr` block) and the record
+        bytes left after the count. On a non-zero count, `fp` is positioned
+        at the first layer record.
 
     Shared by `_probe_psd` and `resolvers.psd_layers.read_psd_layers` so the
     two agree on which files count as flattened.
@@ -376,10 +408,32 @@ def psd_layer_record_count(fp: IO[bytes], is_psb: bool) -> tuple[int, int]:
     raw = fp.read(len_size)
     if len(raw) < len_size or struct.unpack(len_fmt, raw)[0] == 0:
         return 0, 0
+    section_end = fp.tell() + struct.unpack(len_fmt, raw)[0]
     layer_info_len = struct.unpack(len_fmt, fp.read(len_size))[0]
-    if layer_info_len == 0:
+    if layer_info_len:
+        return abs(struct.unpack(">h", fp.read(2))[0]), layer_info_len - 2
+    # Empty Layer Info: walk the global additional-info blocks that follow
+    # the Global Layer Mask Info for the record container block.
+    glm_raw = fp.read(4)
+    if len(glm_raw) < 4:
         return 0, 0
-    return abs(struct.unpack(">h", fp.read(2))[0]), layer_info_len - 2
+    fp.seek(struct.unpack(">I", glm_raw)[0], 1)
+    while fp.tell() + 12 <= section_end:
+        if fp.read(4) not in (b"8BIM", b"8B64"):
+            break
+        key = fp.read(4)
+        if is_psb and key in PSB_8BYTE_KEYS:
+            block_len = struct.unpack(">Q", fp.read(8))[0]
+        else:
+            block_len = struct.unpack(">I", fp.read(4))[0]
+        if key in _LAYER_RECORD_KEYS:
+            count_raw = fp.read(2)
+            if len(count_raw) < 2:
+                return 0, 0
+            return abs(struct.unpack(">h", count_raw)[0]), block_len - 2
+        # Global blocks are padded to a multiple of 4.
+        fp.seek(block_len + (-block_len % 4), 1)
+    return 0, 0
 
 
 # Color-channel count per PSD color mode. A channel beyond the mode's
@@ -387,6 +441,56 @@ def psd_layer_record_count(fp: IO[bytes], is_psb: bool) -> tuple[int, int]:
 # color for CMYK.
 # Modes: 0 Bitmap, 1 Grayscale, 2 Indexed, 3 RGB, 4 CMYK, 8 Duotone, 9 Lab.
 _PSD_BASE_CHANNELS = {0: 1, 1: 1, 2: 1, 3: 3, 4: 4, 8: 1, 9: 3}
+
+
+def iter_image_resources(fp: IO[bytes]) -> Iterator[tuple[int, bytes]]:
+    """Yield `(resource_id, body)` for each PSD image resource, in file order.
+
+    `fp` must be positioned right after the 26-byte header (the walker skips
+    the color-mode-data section itself); the position is NOT restored. A
+    truncated or malformed section ends the iteration silently - callers keep
+    their defaults for resources that never arrive.
+    """
+    try:
+        fp.seek(struct.unpack(">I", fp.read(4))[0], 1)  # color mode data
+        section = fp.read(struct.unpack(">I", fp.read(4))[0])
+    except struct.error:
+        return
+    pos = 0
+    while pos + 10 <= len(section):
+        if section[pos : pos + 4] != b"8BIM":
+            break
+        resource_id = struct.unpack(">H", section[pos + 4 : pos + 6])[0]
+        name_len = section[pos + 6]
+        pos += 6 + ((name_len + 2) & ~1)
+        if pos + 4 > len(section):
+            break
+        size = struct.unpack(">I", section[pos : pos + 4])[0]
+        yield resource_id, section[pos + 4 : pos + 4 + size]
+        pos += 4 + size + (size & 1)
+
+
+def _psd_pixel_aspect(fp: IO[bytes]) -> float:
+    """The document pixel aspect from image resource 1064 (1.0 when absent).
+
+    `fp` must be positioned right after the 26-byte header; the position is
+    restored before returning. Photoshop stores the ratio as a truncated
+    decimal (a user-typed 4/3 becomes 1.333); AE snaps it to the simple
+    fraction when it imports (sspc 4/3, psd_layer_styles_single fixture),
+    so the ratio is re-rationalized the same way here.
+    """
+    start = fp.tell()
+    ratio = 1.0
+    for resource_id, body in iter_image_resources(fp):
+        if resource_id == 1064 and len(body) >= 12:
+            # u4 version + f8 ratio (x/y of a pixel).
+            ratio = struct.unpack(">d", body[4:12])[0]
+            break
+    fp.seek(start)
+    # A corrupt resource can decode to NaN/inf, which Fraction() rejects.
+    if ratio <= 0 or not math.isfinite(ratio):
+        return 1.0
+    return float(Fraction(ratio).limit_denominator(100))
 
 
 def _probe_psd(fp: IO[bytes]) -> MediaInfo:
@@ -398,6 +502,7 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
     height, width = struct.unpack(">II", fp.read(8))
     bit_depth = struct.unpack(">H", fp.read(2))[0]
     color_mode = struct.unpack(">H", fp.read(2))[0]
+    pixel_aspect = _psd_pixel_aspect(fp)
     layer_count, _ = psd_layer_record_count(fp, version == 2)
     # AE composites a layered PSD to RGBA (alpha from layer transparency),
     # but treats a flattened document as opaque unless it carries an alpha
@@ -410,6 +515,7 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
         bit_depth=bit_depth,
         layer_count=layer_count,
         channels=channels,
+        pixel_aspect=pixel_aspect,
     )
 
 

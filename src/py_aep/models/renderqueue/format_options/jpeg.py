@@ -5,12 +5,13 @@ from typing import TYPE_CHECKING
 from ....enums import JpegFormatType
 from ...descriptors import ChunkField
 from ...validators import _validate_number, validate_one_of
+from .base import FormatOptionsBase
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import RoptChunk
 
 
-class JpegFormatOptions:
+class JpegFormatOptions(FormatOptionsBase):
     """JPEG format-specific render options.
 
     These settings correspond to the JPEG Options dialog in After Effects,
@@ -43,10 +44,12 @@ class JpegFormatOptions:
         JpegFormatType,
         "_body",
         "format_type",
+        allow_out_of_enum_values=True,
     )
     """
     JPEG format option type: Baseline (Standard), Baseline Optimized,
-    or Progressive. Read / Write.
+    or Progressive. An out-of-enum stored value reads back as a raw
+    `int` (the binary is trusted). Read / Write.
     """
 
     scans = ChunkField[int](

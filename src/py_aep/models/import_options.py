@@ -13,10 +13,12 @@ from ..data.file_formats import (
 )
 from ..enums import ImportAsType
 from .validators import (
+    validate_bool,
     validate_enum,
     validate_one_of,
     validate_path,
     validate_positive_int,
+    validate_u4,
 )
 
 # Pattern to match trailing digits in a filename stem (e.g. "frame001").
@@ -72,6 +74,9 @@ class ImportOptions:
         self._force_alphabetical = False
         self._layer_index: int | None = None
         self._layer_dimensions: str | None = None
+        self._layer_styles: str | None = None
+        self._range_start = 0
+        self._range_end = 0
 
     @property
     def layer_index(self) -> int | None:
@@ -109,7 +114,10 @@ class ImportOptions:
         """Footage dimensions for a `layer_index` import: `"document"` (the
         full canvas) or `"layer"` (the layer's content box), matching the
         "Footage Dimensions" option of AE's import dialog. `None` (the
-        default) imports at document size. Read / Write.
+        default) follows the machine's sticky "Footage Dimensions" preference
+        for a `.psd`/`.psb` import when the project was parsed with an
+        `ae_preferences_dir`, and imports at document size otherwise (always,
+        for `.ai`/`.pdf`). Read / Write.
 
         py_aep extension: ExtendScript exposes no layer-selection API.
 
@@ -126,6 +134,51 @@ class ImportOptions:
         if value is not None:
             validate_one_of(("document", "layer"))(value)
         self._layer_dimensions = value
+
+    @property
+    def layer_styles(self) -> str | None:
+        """How a Photoshop (`.psd`/`.psb`) import treats the source layer
+        styles, matching the "Layer Options" of AE's import dialog:
+        `"editable"` (Editable Layer Styles), `"merge"` (Merge Layer Styles
+        into Footage) or `"ignore"` (Ignore Layer Styles). `None` (the
+        default) follows the machine's sticky "Layer Options" preference when
+        the project was parsed with an `ae_preferences_dir`, falling back to
+        AE's dialog default for the context: `"editable"` for a COMP /
+        COMP_CROPPED_LAYERS import, `"merge"` for a FOOTAGE import of a single
+        layer. Read / Write.
+
+        py_aep extension: ExtendScript exposes no layer-styles API. AE's own
+        `importFile` silently follows the sticky preference; py_aep mirrors
+        that when a preferences directory is available. Pass an explicit value
+        for behavior that does not depend on the machine.
+
+        Valid combinations (checked at import time): a FOOTAGE import
+        accepts `"merge"`/`"ignore"` and requires
+        [layer_index][ImportOptions.layer_index] (AE's "Merged Layers"
+        whole-document import - `layer_index=None` - always flattens the
+        styles into the composite and offers no choice); a COMP import
+        accepts `"editable"`/`"merge"`. Note the naming collision in AE's
+        dialog: "Merged Layers" (flatten the whole document, expressed as
+        `layer_index=None`) is unrelated to `"merge"` (bake the styles into
+        one layer's raster).
+
+        Raises:
+            ValueError: On import, if the value is not offered for the
+                import context (see above), or if the file is not
+                `.psd`/`.psb`.
+        """
+        return self._layer_styles
+
+    @layer_styles.setter
+    def layer_styles(self, value: str | None) -> None:
+        if isinstance(value, _CurrentValue):
+            raise ValueError(
+                "CURRENT_VALUE is only valid for FootageItem.replace; an "
+                "import has no current binding to keep"
+            )
+        if value is not None:
+            validate_one_of(("editable", "merge", "ignore"))(value)
+        self._layer_styles = value
 
     @property
     def file(self) -> Path:
@@ -156,17 +209,84 @@ class ImportOptions:
 
     @sequence.setter
     def sequence(self, value: bool) -> None:
-        self._sequence = bool(value)
+        validate_bool(value)
+        self._sequence = value
 
     @property
     def force_alphabetical(self) -> bool:
         """When `True` and `sequence` is also `True`, use alphabetical
-        order for sequence frame numbering. Read / Write."""
+        order for sequence frame numbering. Read / Write.
+
+        Setting `True` resets [range_start][ImportOptions.range_start] and
+        [range_end][ImportOptions.range_end] to 0 (matching After Effects:
+        an alphabetical sequence cannot carry a frame range)."""
         return self._force_alphabetical
 
     @force_alphabetical.setter
     def force_alphabetical(self, value: bool) -> None:
-        self._force_alphabetical = bool(value)
+        validate_bool(value)
+        self._force_alphabetical = value
+        if value:
+            self._range_start = 0
+            self._range_end = 0
+
+    @property
+    def range_start(self) -> int:
+        """The first frame number of the clipping range for a numbered
+        image sequence import, inclusive. 0 (with `range_end` 0) imports
+        every frame. Read / Write.
+
+        Frame numbers refer to the digits in the filenames, not ordinal
+        positions. Has no effect unless [sequence][ImportOptions.sequence]
+        is `True`. A `range_end` of 0 with a non-zero `range_start` is
+        rejected at import time, as is `range_end < range_start` (both
+        matching After Effects).
+
+        Raises:
+            ValueError: If set while `force_alphabetical` is `True`
+                (After Effects: "You cannot set sequence range start for
+                an alphabetical sequence"), or if the value does not fit
+                the `sspc` `start_frame` field (a `u4`: 0..4294967295).
+        """
+        return self._range_start
+
+    @range_start.setter
+    def range_start(self, value: int) -> None:
+        validate_u4(value)
+        if self._force_alphabetical:
+            raise ValueError(
+                "cannot set a sequence range start for an alphabetical sequence"
+            )
+        self._range_start = value
+
+    @property
+    def range_end(self) -> int:
+        """The last frame number of the clipping range for a numbered
+        image sequence import, inclusive. 0 (with `range_start` 0) imports
+        every frame. Read / Write.
+
+        A `range_end` beyond the last existing frame keeps the range:
+        After Effects treats the missing tail frames as implied (rendered
+        as placeholder bars), and py_aep writes the same
+        `start_frame`/`end_frame` bounds. The resulting footage duration is
+        not clamped to After Effects' 3-hour ceiling - AE 2026 opens a
+        longer ranged sequence without complaint.
+
+        Raises:
+            ValueError: If set while `force_alphabetical` is `True`, or if
+                the value does not fit the `sspc` `end_frame` field (a
+                `u4`: 0..4294967295).
+        """
+        return self._range_end
+
+    @range_end.setter
+    def range_end(self, value: int) -> None:
+        validate_u4(value)
+        if self._force_alphabetical:
+            raise ValueError(
+                "cannot set a sequence range end for an alphabetical sequence"
+            )
+        self._range_end = value
 
     def can_import_as(self, type: int | ImportAsType) -> bool:
         """Check whether the file can be imported as the given type.

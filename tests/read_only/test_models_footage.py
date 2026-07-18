@@ -108,6 +108,47 @@ class TestPlaceholders:
         )
 
 
+class TestIsMediaReplacementCompatible:
+    """Ground truth: isMediaReplacementCompatible from ExtendScript exports."""
+
+    LAYER_SAMPLES_DIR = SAMPLES_DIR.parent / "layer"
+
+    def test_comp_is_compatible(self) -> None:
+        project = parse_project(SAMPLES_DIR / "solid_sizes.aep")
+        comp = get_comp(project, "solid_size_1920x1080")
+        assert comp.is_media_replacement_compatible is True
+
+    def test_solid_is_not_compatible(self) -> None:
+        project = parse_project(SAMPLES_DIR / "solid_sizes.aep")
+        solid = get_comp(project, "solid_size_1920x1080").layers[0].source
+        assert solid.is_media_replacement_compatible is False
+
+    def test_placeholder_is_compatible(self) -> None:
+        project = parse_project(SAMPLES_DIR / "placeholder.aep")
+        assert (
+            get_footage(project, "placeholder_still").is_media_replacement_compatible
+            is True
+        )
+        assert (
+            get_footage(project, "placeholder_movie").is_media_replacement_compatible
+            is True
+        )
+
+    def test_audio_only_footage_is_not_compatible(self) -> None:
+        project = parse_project(self.LAYER_SAMPLES_DIR / "audioEnabled.aep")
+        wav = get_footage(project, "wav.wav")
+        assert wav.has_video is False
+        assert wav.is_media_replacement_compatible is False
+
+    def test_3d_model_is_not_compatible_but_movie_is(self) -> None:
+        project = parse_project(self.LAYER_SAMPLES_DIR / "light_source_default.aep")
+        fbx = get_footage(project, "crystal.fbx")
+        assert fbx.has_video is True
+        assert fbx.is_media_replacement_compatible is False
+        mov = get_footage(project, "mov_23_976.mov")
+        assert mov.is_media_replacement_compatible is True
+
+
 class TestSolidColors:
     """Tests for solid footage colors."""
 

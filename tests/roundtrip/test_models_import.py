@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import io
 import struct
+import warnings
 from pathlib import Path
 
 import pytest
+from helpers import parse_project_fresh
 
 from py_aep import AlphaMode, ImportAsType
 from py_aep import parse as parse_aep
@@ -343,6 +345,21 @@ class TestImportFileSequence:
             if isinstance(getattr(it, "main_source", None), FileSource)
         ]
         assert "new_exr.[0002-0003].exr" in names
+
+    def test_sequence_sspc_necessary_fields(self, tmp_path: Path) -> None:
+        # AE writes these three sspc fields for image sequences and does NOT
+        # recompute them on open (proven necessary by an AE open+resave
+        # diff, 2026-07-14): full_frame False, 0xC8 kind bytes 0x0000, and
+        # byte 5 of the field-separation block 0x01. Verified byte-identical
+        # to AE-native PNG/EXR/GIF sequence imports.
+        project = parse_aep(BASE).project
+        opts = ImportOptions(ASSETS / "new_exr.0002.exr")
+        opts.sequence = True
+        item = project.import_file(opts)
+        sspc = item.main_source._sspc
+        assert sspc.full_frame is False
+        assert sspc._reserved_c8 == b"\x00\x00"
+        assert sspc._reserved_4a == b"\x00\x00\x00\x00\x00\x01\x00\x00\x00"
 
 
 class TestReplaceAndProxy:
@@ -1081,6 +1098,33 @@ class TestImportPsdGroups:
         my_group = next(layer for layer in comp.layers if layer.name == "MyGroup")
         assert isinstance(my_group.source, CompItem)
 
+    def test_grouped_cropped_matches_ae(self) -> None:
+        # Every per-layer footage of a grouped cropped import matches AE
+        # byte-for-byte (opti + sspc modulo noise). This pins the empty
+        # ADJUSTMENT layer "hue/sat adj": full-canvas (80x60, not 1x1) with
+        # opti channels 0 (no pixels), distinct from an empty raster.
+        ae_project = parse_aep(IMPORT_DIR / "grouped_layers_cropped.aep").project
+        project = parse_aep(BASE).project
+        project.import_file(_cropped_opts(ASSETS / "grouped_layers.psd"))
+        ae_foot = {
+            i.name: i.main_source
+            for i in ae_project.items.values()
+            if isinstance(i, FootageItem) and isinstance(i.main_source, FileSource)
+        }
+        py_foot = {
+            i.name: i.main_source
+            for i in project.items.values()
+            if isinstance(i, FootageItem) and isinstance(i.main_source, FileSource)
+        }
+        assert set(ae_foot) == set(py_foot)
+        for name, ae_src in ae_foot.items():
+            py_src = py_foot[name]
+            assert py_src._opti.tobytes() == ae_src._opti.tobytes(), name
+            _assert_sspc_matches(_sspc_bytes(ae_src), _sspc_bytes(py_src))
+        adj = py_foot["hue/sat adj/grouped_layers.psd"]
+        assert (adj._width, adj._height) == (80, 60)
+        assert adj._opti.psd_layer_channels == 0
+
 
 class TestLayeredImportFolderOrder:
     """The `<stem> Layers` folder is stored case-insensitive alphabetically by
@@ -1211,7 +1255,7 @@ class TestChooseLayerImport:
     def test_matches_ae_fixture(
         self, fixture: str, asset: str, layer: int | None, dims: str | None
     ) -> None:
-        # Name-matched byte parity of the load-bearing chunks: opti and the
+        # Name-matched byte parity of the necessary chunks: opti and the
         # post-sspc Utf8 exactly, sspc outside the known still-import noise.
         ae_name, ae_sspc, ae_opti, ae_utf8 = _footage_parts(
             parse_aep(IMPORT_DIR / fixture).project
@@ -1549,3 +1593,941 @@ class TestCompImportLayerBinding:
             sspc, utf8 = mine[name]
             assert utf8 == ae_utf8, name
             _assert_sspc_matches(ae_sspc, sspc)
+
+
+class TestImportFileSequenceRange:
+    """ImportOptions.range_start/range_end sequence imports.
+
+    Semantics probed against AE 2026 (2026-07-14): the range is
+    frame-NUMBER based and inclusive on both ends; the stored
+    `start_frame`/`end_frame` are the range bounds even when files are
+    missing inside or beyond the range (absent frames are implied
+    placeholders); duration spans the bounds.
+    """
+
+    def _make_seq(
+        self, tmp_path: Path, numbers: list[int], prefix: str = "range_"
+    ) -> Path:
+        data = (ASSETS / "8bits_compressed.png").read_bytes()
+        for n in numbers:
+            (tmp_path / f"{prefix}{n:04d}.png").write_bytes(data)
+        return tmp_path / f"{prefix}{numbers[0]:04d}.png"
+
+    def _import(self, first: Path, start: int = 0, end: int = 0) -> FootageItem:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(first)
+        opts.sequence = True
+        opts.range_start = start
+        opts.range_end = end
+        item = project.import_file(opts)
+        assert isinstance(item, FootageItem)
+        return item
+
+    def test_clip_range(self, tmp_path: Path) -> None:
+        first = self._make_seq(tmp_path, list(range(1, 13)))
+        item = self._import(first, 3, 8)
+        sspc = item.main_source._sspc
+        assert (sspc.start_frame, sspc.end_frame) == (3, 8)
+        # AE probed duration: 0.2 s (6 frames at 30 fps).
+        assert item.duration == pytest.approx(0.2, abs=1e-4)
+        assert item.name == "range_[0003-0008].png"
+
+    def test_over_range_keeps_bounds(self, tmp_path: Path) -> None:
+        first = self._make_seq(tmp_path, list(range(1, 13)))
+        item = self._import(first, 10, 20)
+        sspc = item.main_source._sspc
+        assert (sspc.start_frame, sspc.end_frame) == (10, 20)
+        # AE probed duration: 11 frames at 30 fps even though only
+        # frames 10-12 exist on disk.
+        assert item.duration == pytest.approx(11 / 30, abs=1e-4)
+
+    def test_interior_gap(self, tmp_path: Path) -> None:
+        first = self._make_seq(tmp_path, [1, 2, 3, 4, 5, 8, 9, 10, 11, 12])
+        item = self._import(first, 3, 8)
+        sspc = item.main_source._sspc
+        assert (sspc.start_frame, sspc.end_frame) == (3, 8)
+        assert item.duration == pytest.approx(0.2, abs=1e-4)
+
+    def test_gapped_full_import_spans_bounds(self, tmp_path: Path) -> None:
+        # No range: AE's duration is the frame-number span, not the file
+        # count (probed: 1-12 with 6-7 missing -> 0.4 s at 30 fps).
+        first = self._make_seq(tmp_path, [1, 2, 3, 4, 5, 8, 9, 10, 11, 12])
+        item = self._import(first)
+        assert item.duration == pytest.approx(0.4, abs=1e-4)
+
+    def test_start_without_end_raises(self, tmp_path: Path) -> None:
+        first = self._make_seq(tmp_path, list(range(1, 13)))
+        with pytest.raises(ValueError, match="range end"):
+            self._import(first, 5, 0)
+
+    def test_end_before_start_raises(self, tmp_path: Path) -> None:
+        first = self._make_seq(tmp_path, list(range(1, 13)))
+        with pytest.raises(ValueError, match="less than"):
+            self._import(first, 9, 4)
+
+    def test_range_outside_files_raises(self, tmp_path: Path) -> None:
+        first = self._make_seq(tmp_path, list(range(1, 13)))
+        with pytest.raises(ValueError, match="no sequence frames"):
+            self._import(first, 20, 30)
+
+    def test_range_ignored_for_non_sequence(self, tmp_path: Path) -> None:
+        # AE parity: a range on a non-sequence import is silently ignored.
+        project = parse_aep(BASE).project
+        opts = ImportOptions(ASSETS / "image_with_alpha.png")
+        opts.range_start = 2
+        opts.range_end = 5
+        item = project.import_file(opts)
+        assert isinstance(item, FootageItem)
+        assert item.name == "image_with_alpha.png"
+
+    def test_range_roundtrip(self, tmp_path: Path) -> None:
+        first = self._make_seq(tmp_path, list(range(1, 13)))
+        project = parse_aep(BASE).project
+        opts = ImportOptions(first)
+        opts.sequence = True
+        opts.range_start = 3
+        opts.range_end = 8
+        project.import_file(opts)
+        out = tmp_path / "ranged.aep"
+        project.save(out)
+        reparsed = parse_aep(out).project
+        item = next(
+            it for it in reparsed.items.values() if it.name == "range_[0003-0008].png"
+        )
+        sspc = item.main_source._sspc
+        assert (sspc.start_frame, sspc.end_frame) == (3, 8)
+        assert item.duration == pytest.approx(0.2, abs=1e-4)
+
+
+class TestFileSourceReload:
+    """FileSource.reload() - AE 2026 semantics: re-probe the file at the
+    stored path and update the cached sspc metadata in place (byte-validated
+    against an AE reload fixture pair: width/height/data_size refresh, item
+    identity and name unchanged)."""
+
+    def _import_png(self, tmp_path: Path):
+        target = tmp_path / "reload_src.png"
+        target.write_bytes((ASSETS / "8bits_compressed.png").read_bytes())
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(target))
+        return project, item, target
+
+    def test_reload_updates_dimensions(self, tmp_path: Path) -> None:
+        project, item, target = self._import_png(tmp_path)
+        assert (item.width, item.height) == (25, 26)
+        new_content = (ASSETS / "image_with_alpha.png").read_bytes()
+        target.write_bytes(new_content)
+        item.main_source.reload()
+        # The AE fixture values for the same file swap.
+        assert (item.width, item.height) == (640, 346)
+        assert item.main_source._sspc.data_size == len(new_content)
+        assert item.name == "reload_src.png"  # reload never renames
+
+    def test_reload_survives_save_and_reparse(self, tmp_path: Path) -> None:
+        project, item, target = self._import_png(tmp_path)
+        target.write_bytes((ASSETS / "image_with_alpha.png").read_bytes())
+        item.main_source.reload()
+        out = tmp_path / "reloaded.aep"
+        project.save(out)
+        reparsed = parse_aep(out).project
+        item2 = next(i for i in reparsed.footages if i.name == "reload_src.png")
+        assert (item2.width, item2.height) == (640, 346)
+
+    def test_reload_proxy_source(self, tmp_path: Path) -> None:
+        # ExtendScript forbids this; py_aep allows it. Every chunk reload
+        # touches lives in the source's own Pin, so it is self-contained.
+        project, item, _ = self._import_png(tmp_path)
+        proxy = tmp_path / "proxy.png"
+        proxy.write_bytes((ASSETS / "8bits_compressed.png").read_bytes())
+        item.set_proxy(proxy)
+        assert isinstance(item.proxy_source, FileSource)
+        assert (item.proxy_source._width, item.proxy_source._height) == (25, 26)
+
+        # Swap the proxy file on disk for one with different dimensions.
+        # (item.width is not asserted here: AE reports the MAIN source's
+        # dimensions even while use_proxy is on - see proxy.json.)
+        proxy.write_bytes((ASSETS / "image_with_alpha.png").read_bytes())
+        item.proxy_source.reload()
+        assert (item.proxy_source._width, item.proxy_source._height) == (640, 346)
+
+        out = tmp_path / "proxy_reloaded.aep"
+        project.save(out)
+        reparsed = parse_aep(out).project
+        item2 = next(i for i in reparsed.footages if i.name == "reload_src.png")
+        assert isinstance(item2.proxy_source, FileSource)
+        assert (item2.proxy_source._width, item2.proxy_source._height) == (640, 346)
+
+    def test_reload_proxy_leaves_main_source_alone(self, tmp_path: Path) -> None:
+        # The proxy and main sources own separate Pins: reloading one must
+        # not disturb the other, nor the item's idta footage-kind flags.
+        project, item, _ = self._import_png(tmp_path)
+        proxy = tmp_path / "proxy.png"
+        proxy.write_bytes((ASSETS / "8bits_compressed.png").read_bytes())
+        item.set_proxy(proxy)
+        main_dims = (item.main_source._width, item.main_source._height)
+        flags_before = item._idta._flags_17
+
+        proxy.write_bytes((ASSETS / "image_with_alpha.png").read_bytes())
+        assert isinstance(item.proxy_source, FileSource)
+        item.proxy_source.reload()
+
+        assert (item.main_source._width, item.main_source._height) == main_dims
+        assert item._idta._flags_17 == flags_before
+
+    def test_reload_missing_file_raises(self, tmp_path: Path) -> None:
+        project, item, target = self._import_png(tmp_path)
+        target.unlink()
+        with pytest.raises(ValueError):
+            item.main_source.reload()
+
+    def test_reload_path_replaced_by_directory_raises(self, tmp_path: Path) -> None:
+        # A directory exists, so an existence check alone passes it through to
+        # the format reader, which fails with an OS-specific error
+        # (PermissionError on Windows, IsADirectoryError elsewhere) instead of
+        # refusing cleanly at the API boundary.
+        project, item, target = self._import_png(tmp_path)
+        target.unlink()
+        target.mkdir()
+        with pytest.raises(ValueError, match="not a file"):
+            item.main_source.reload()
+
+    def test_import_a_directory_raises(self, tmp_path: Path) -> None:
+        # Same class as the reload case, on the import path.
+        folder = tmp_path / "looks_like.png"
+        folder.mkdir()
+        project = parse_aep(BASE).project
+        with pytest.raises(ValueError, match="not a file"):
+            project.import_file(ImportOptions(folder))
+
+    def test_reload_sequence_rescans_frames(self, tmp_path: Path) -> None:
+        data = (ASSETS / "8bits_compressed.png").read_bytes()
+        for n in range(1, 4):
+            (tmp_path / f"seq_{n:04d}.png").write_bytes(data)
+        project = parse_aep(BASE).project
+        opts = ImportOptions(tmp_path / "seq_0001.png")
+        opts.sequence = True
+        item = project.import_file(opts)
+        sspc = item.main_source._sspc
+        assert (sspc.start_frame, sspc.end_frame) == (1, 3)
+
+        for n in range(4, 7):
+            (tmp_path / f"seq_{n:04d}.png").write_bytes(data)
+        item.main_source.reload()
+        assert (sspc.start_frame, sspc.end_frame) == (1, 6)
+        assert item.duration == pytest.approx(6 / 30, abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# PSD layer styles (ImportOptions.layer_styles / FootageItem.replace)
+# ---------------------------------------------------------------------------
+
+STYLED_PSD = ASSETS / "psd_layer_styles.psd"
+VARIANT_PSD = ASSETS / "psd_layer_styles_variant.psd"
+SINGLE_PSD = ASSETS / "psd_layer_styles_8bits_single.psd"
+
+
+def _serialize_tree(chunk: object) -> bytes:
+    """Serialize a chunk subtree exactly as write_aep would (skip synthetic)."""
+    from io import BytesIO
+
+    from py_aep.binary.chunk import write_chunk
+
+    buffer = BytesIO()
+    write_chunk(buffer, chunk)  # type: ignore[arg-type]
+    return buffer.getvalue()
+
+
+def _styles_tdgp(project: object, comp_name: str, layer_name: str) -> object:
+    comp = next(
+        item
+        for item in project.items.values()  # type: ignore[attr-defined]
+        if isinstance(item, CompItem) and item.name == comp_name
+    )
+    layer = comp.layer(name=layer_name)
+    return layer.property("ADBE Layer Styles")._tdgp
+
+
+def _styles_import(
+    psd: Path, import_as: ImportAsType, layer_styles: str | None = None
+) -> tuple[object, object]:
+    project = parse_aep(BASE).project
+    opts = ImportOptions(psd)
+    opts.import_as = import_as
+    if layer_styles is not None:
+        opts.layer_styles = layer_styles
+    return project, project.import_file(opts)
+
+
+def _psd_footage_source(project: object, name: str) -> FileSource:
+    for item in project.items.values():  # type: ignore[attr-defined]
+        if isinstance(item, FootageItem) and item.name == name:
+            source = item.main_source
+            assert isinstance(source, FileSource)
+            return source
+    raise AssertionError(f"footage {name!r} not found")
+
+
+class TestLayerStylesEditableImport:
+    """COMP + editable layer styles vs the AE 2026 dialog fixtures.
+
+    The whole `ADBE Layer Styles` subtree must serialize byte-identically
+    to AE for every layer of all three sample documents (values, enable
+    bytes, tdb4 canon, bounds, gradient GCst containers).
+    """
+
+    _TWO_LAYERS = ("Layer 1", "Layer 1 copy")
+
+    @pytest.mark.parametrize(
+        "psd,fixture,fixture_comp,layers",
+        [
+            (
+                STYLED_PSD,
+                "psd_layer_styles.aep",
+                "COMP Editable layer styles",
+                _TWO_LAYERS,
+            ),
+            (VARIANT_PSD, "psd_layer_styles_variant.aep", None, _TWO_LAYERS),
+            (SINGLE_PSD, "psd_layer_styles_single.aep", None, _TWO_LAYERS),
+            # Noise-type gradients: the style imports without its gradient
+            # leaf. The 32-bit sibling also exercises the Lr32 layer records.
+            (
+                ASSETS / "psd_noise_gradient.psd",
+                "psd_noise_gradient.aep",
+                None,
+                _TWO_LAYERS,
+            ),
+            (
+                ASSETS / "psd_noise_gradient_32bpc.psd",
+                "psd_noise_gradient.aep",
+                None,
+                _TWO_LAYERS,
+            ),
+            # 2D point leaves: dragged Gradient Overlay offset + Pattern
+            # Overlay phase (the only 2D-spatial style leaves).
+            (
+                ASSETS / "psd_styles_offset_phase.psd",
+                "psd_styles_offset_phase.aep",
+                None,
+                _TWO_LAYERS,
+            ),
+            # Gradient smoothness: Intr 2048/1024 -> gradientSmoothness 50/25.
+            (
+                ASSETS / "psd_styles_smoothness.psd",
+                "psd_styles_smoothness.aep",
+                None,
+                _TWO_LAYERS,
+            ),
+            # Blend options without styles (iOpa alone enables the chain)
+            # and a present-but-disabled drop shadow (tdsb 0x00 + values).
+            (
+                ASSETS / "psd_fill_opacity.psd",
+                "psd_fill_opacity.aep",
+                None,
+                ("fill only", "fill plus disabled shadow", "Layer 1"),
+            ),
+            # Legacy 4CC blend-mode enum spellings (spliced Mltp/SftL).
+            (
+                ASSETS / "psd_blend_4cc.psd",
+                "psd_blend_4cc.aep",
+                None,
+                ("legacy modes", "Layer 1"),
+            ),
+            # The full 27-mode 4CC probe: AE resolves the 16 true-legacy
+            # typeIDs and silently defaults the post-CS ones; py must
+            # match both behaviors byte-for-byte on every layer.
+            (
+                ASSETS / "psd_blend_4cc_all.psd",
+                "psd_blend_4cc_all.aep",
+                None,
+                (
+                    "normal",
+                    "dissolve",
+                    "darken",
+                    "multiply",
+                    "colorBurn",
+                    "linearBurn",
+                    "darkerColor",
+                    "lighten",
+                    "screen",
+                    "colorDodge",
+                    "linearDodge",
+                    "lighterColor",
+                    "overlay",
+                    "softLight",
+                    "hardLight",
+                    "vividLight",
+                    "linearLight",
+                    "pinLight",
+                    "hardMix",
+                    "difference",
+                    "exclusion",
+                    "hue",
+                    "saturation",
+                    "color",
+                    "luminosity",
+                    "blendSubtraction",
+                    "blendDivide",
+                    "Layer 1",
+                ),
+            ),
+            # Styles on a layer GROUP: AE drops them (plain skeleton on the
+            # precomp layer); the child's own style still imports.
+            (
+                ASSETS / "psd_group_styles.psd",
+                "psd_group_styles.aep",
+                None,
+                ("styled group", "outside", "Layer 1"),
+            ),
+            (
+                ASSETS / "psd_group_styles.psd",
+                "psd_group_styles.aep",
+                "styled group",
+                ("inner bottom", "inner top"),
+            ),
+        ],
+    )
+    def test_styles_subtree_matches_ae(
+        self,
+        psd: Path,
+        fixture: str,
+        fixture_comp: str | None,
+        layers: tuple[str, ...],
+    ) -> None:
+        ae_project = parse_aep(IMPORT_DIR / fixture).project
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            project, comp = _styles_import(psd, ImportAsType.COMP)
+        # A named fixture_comp that exists in the py project too (the nested
+        # group comp) targets that comp on both sides; otherwise the py side
+        # is the freshly imported main comp.
+        py_comp = comp.name
+        if fixture_comp is not None and any(
+            item.name == fixture_comp for item in project.items.values()
+        ):
+            py_comp = fixture_comp
+        ae_comp = fixture_comp if fixture_comp is not None else comp.name
+        for layer_name in layers:
+            ae_tree = _serialize_tree(_styles_tdgp(ae_project, ae_comp, layer_name))
+            py_tree = _serialize_tree(_styles_tdgp(project, py_comp, layer_name))
+            assert py_tree == ae_tree, f"{psd.name} {layer_name}"
+
+    def test_survives_disk_roundtrip(self, tmp_path: Path) -> None:
+        # Enable/flag bytes are validated through a real save + re-parse:
+        # a forgiving reader can mask a wrong written byte.
+        ae_project = parse_aep(IMPORT_DIR / "psd_layer_styles_single.aep").project
+        project, comp = _styles_import(SINGLE_PSD, ImportAsType.COMP)
+        out = tmp_path / "editable.aep"
+        project.save(out)
+        reparsed = parse_project_fresh(out)
+        ae_tree = _serialize_tree(_styles_tdgp(ae_project, comp.name, "Layer 1"))
+        re_tree = _serialize_tree(_styles_tdgp(reparsed, comp.name, "Layer 1"))
+        assert re_tree == ae_tree
+        layer = next(
+            item
+            for item in reparsed.items.values()
+            if isinstance(item, CompItem) and item.name == comp.name
+        ).layer(name="Layer 1")
+        styles = layer.property("ADBE Layer Styles")
+        assert styles.enabled is True
+        assert styles["dropShadow/enabled"].enabled is True
+        assert styles["dropShadow/enabled"]["dropShadow/mode2"].value == 17.0
+
+    def test_new_enable_states_survive_disk_roundtrip(self, tmp_path: Path) -> None:
+        # The blend-only chain (tdsb 0x01 with zero styles), the
+        # present-but-disabled 0x00 state, and the always-enabled Adv Blend
+        # subgroup, re-read from an actual save (synthetic chunks flip real).
+        ae_project = parse_aep(IMPORT_DIR / "psd_fill_opacity.aep").project
+        project, comp = _styles_import(
+            ASSETS / "psd_fill_opacity.psd", ImportAsType.COMP
+        )
+        out = tmp_path / "fill_opacity.aep"
+        project.save(out)
+        reparsed = parse_project_fresh(out)
+        for layer_name in ("fill only", "fill plus disabled shadow", "Layer 1"):
+            ae_tree = _serialize_tree(_styles_tdgp(ae_project, comp.name, layer_name))
+            re_tree = _serialize_tree(_styles_tdgp(reparsed, comp.name, layer_name))
+            assert re_tree == ae_tree, layer_name
+        comp_item = next(
+            item
+            for item in reparsed.items.values()
+            if isinstance(item, CompItem) and item.name == comp.name
+        )
+        styles = comp_item.layer(name="fill plus disabled shadow").property(
+            "ADBE Layer Styles"
+        )
+        assert styles["dropShadow/enabled"].enabled is False
+        assert styles["dropShadow/enabled"]._tdsb._enable_flags == 0
+        adv = styles["ADBE Blend Options Group"]["ADBE Adv Blend Group"]
+        assert adv["ADBE Layer Fill Opacity2"].value == 60.0
+
+    def test_per_layer_footage_matches_ae(self) -> None:
+        # sspc parity (modulo the documented still-import noise) + opti
+        # byte-equality for the editable per-layer footage, including the
+        # document pixel-aspect resource (4/3) and the mode byte 0x02.
+        ae_project = parse_aep(IMPORT_DIR / "psd_layer_styles_single.aep").project
+        project, _ = _styles_import(SINGLE_PSD, ImportAsType.COMP)
+        for name in (
+            "Layer 1/psd_layer_styles_8bits_single.psd",
+            "Layer 1 copy/psd_layer_styles_8bits_single.psd",
+        ):
+            ae_source = _psd_footage_source(ae_project, name)
+            py_source = _psd_footage_source(project, name)
+            _assert_sspc_matches(_sspc_bytes(ae_source), _sspc_bytes(py_source))
+            assert py_source._opti.tobytes() == ae_source._opti.tobytes()
+            assert py_source.layer_styles == "editable"
+
+    def test_multi_instance_styles_warn_and_disable(self) -> None:
+        with pytest.warns(UserWarning, match="frameFX"):
+            project, comp = _styles_import(STYLED_PSD, ImportAsType.COMP)
+        layer = comp.layer(name="Layer 1")
+        styles = layer.property("ADBE Layer Styles")
+        assert styles["frameFX/enabled"].enabled is False
+        assert styles["dropShadow/enabled"].enabled is True
+
+
+class TestLayerStylesModes:
+    def test_comp_merge_writes_skeleton_and_mode_byte(self) -> None:
+        project, comp = _styles_import(SINGLE_PSD, ImportAsType.COMP, "merge")
+        source = _psd_footage_source(
+            project, "Layer 1/psd_layer_styles_8bits_single.psd"
+        )
+        assert source._sspc._reserved_c8 == b"\x00\x01"
+        assert source.layer_styles == "merge"
+        layer = comp.layer(name="Layer 1")
+        styles = layer.property("ADBE Layer Styles")
+        assert styles.enabled is False
+        assert all(
+            not child.enabled
+            for child in styles.properties
+            if child.match_name.endswith("/enabled")
+        )
+
+    def test_cropped_merge_on_styled_layer_raises(self) -> None:
+        with pytest.raises(NotImplementedError, match="layer styles"):
+            _styles_import(SINGLE_PSD, ImportAsType.COMP_CROPPED_LAYERS, "merge")
+
+    def test_cropped_merge_on_style_less_psd_works(self) -> None:
+        _, comp = _styles_import(
+            ASSETS / "choose_layer.psd", ImportAsType.COMP_CROPPED_LAYERS, "merge"
+        )
+        assert isinstance(comp, CompItem)
+
+    def test_footage_ignore_matches_ae_fixture_item(self) -> None:
+        ae_project = parse_aep(IMPORT_DIR / "psd_layer_styles.aep").project
+        ae_item = next(
+            item
+            for item in ae_project.items.values()
+            if isinstance(item, FootageItem)
+            and item.name == "FOOTAGE Layer 1 Ignore layer styles"
+        )
+        project = parse_aep(BASE).project
+        opts = ImportOptions(STYLED_PSD)
+        opts.layer_index = 1  # "Layer 1" (bottom) in top-first dropdown order
+        opts.layer_styles = "ignore"
+        item = project.import_file(opts)
+        ae_source, py_source = ae_item.main_source, item.main_source
+        assert isinstance(py_source, FileSource)
+        _assert_sspc_matches(_sspc_bytes(ae_source), _sspc_bytes(py_source))
+        assert py_source._opti.tobytes() == ae_source._opti.tobytes()
+        assert py_source.layer_styles == "ignore"
+
+    def test_footage_merge_on_styled_layer_keeps_raw_bounds(self) -> None:
+        # Documented divergence: AE stores the style-EXPANDED raster bounds
+        # for merge mode; py writes the raw content box and AE restores the
+        # expanded opti bbox on open (self-healing; data_size is a tolerated
+        # stale cache). See docs/limitations.md.
+        project = parse_aep(BASE).project
+        opts = ImportOptions(STYLED_PSD)
+        opts.layer_index = 1
+        item = project.import_file(opts)  # merge is the FOOTAGE default
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source._sspc._reserved_c8 == b"\x00\x01"
+        opti = source._opti
+        assert (
+            opti.psd_layer_left,
+            opti.psd_layer_top,
+            opti.psd_layer_right,
+            opti.psd_layer_bottom,
+        ) == (0, 0, 24, 25)
+
+    def test_layer_size_merge_on_styled_layer_raises(self) -> None:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(STYLED_PSD)
+        opts.layer_index = 1
+        opts.layer_dimensions = "layer"
+        with pytest.raises(NotImplementedError, match="layer styles"):
+            project.import_file(opts)
+
+    def test_layer_size_ignore_on_styled_layer_works(self) -> None:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(STYLED_PSD)
+        opts.layer_index = 1
+        opts.layer_dimensions = "layer"
+        opts.layer_styles = "ignore"
+        item = project.import_file(opts)
+        assert (item.width, item.height) == (24, 25)
+
+
+class TestLayerStylesValidation:
+    def test_setter_rejects_bad_values(self) -> None:
+        opts = ImportOptions(STYLED_PSD)
+        with pytest.raises(ValueError):
+            opts.layer_styles = "bake"
+        with pytest.raises(ValueError, match="CURRENT_VALUE"):
+            opts.layer_styles = CURRENT_VALUE
+
+    @pytest.mark.parametrize(
+        "import_as,layer_index,layer_styles,match",
+        [
+            (ImportAsType.FOOTAGE, 1, "editable", "COMP import"),
+            (ImportAsType.FOOTAGE, None, "merge", "requires layer_index"),
+            (ImportAsType.COMP, None, "ignore", "no Ignore option"),
+        ],
+    )
+    def test_import_context_rules(
+        self,
+        import_as: ImportAsType,
+        layer_index: int | None,
+        layer_styles: str,
+        match: str,
+    ) -> None:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(STYLED_PSD)
+        opts.import_as = import_as
+        if layer_index is not None:
+            opts.layer_index = layer_index
+        opts.layer_styles = layer_styles
+        with pytest.raises(ValueError, match=match):
+            project.import_file(opts)
+
+    def test_non_psd_rejected(self) -> None:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(ASSETS / "ai.ai")
+        opts.import_as = ImportAsType.COMP
+        opts.layer_styles = "merge"
+        with pytest.raises(ValueError, match="Photoshop"):
+            project.import_file(opts)
+
+
+class TestLayerStylesReplace:
+    def _ignore_item(self) -> FootageItem:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(STYLED_PSD)
+        opts.layer_index = 1
+        opts.layer_styles = "ignore"
+        item = project.import_file(opts)
+        assert isinstance(item, FootageItem)
+        return item
+
+    def test_current_value_preserves_recorded_choice(self) -> None:
+        item = self._ignore_item()
+        item.replace(VARIANT_PSD, CURRENT_VALUE)
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_styles == "ignore"
+
+    def test_current_value_preserves_editable_byte(self) -> None:
+        # Per-layer footage of an editable comp records mode 0x02; replace
+        # keeps the byte verbatim (editable state lives on comp layers).
+        project, _ = _styles_import(SINGLE_PSD, ImportAsType.COMP)
+        for item in project.items.values():
+            if (
+                isinstance(item, FootageItem)
+                and item.name == "Layer 1/psd_layer_styles_8bits_single.psd"
+            ):
+                break
+        else:
+            raise AssertionError("per-layer footage not found")
+        item.replace(VARIANT_PSD, CURRENT_VALUE)
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_styles == "editable"
+        assert source._sspc._reserved_c8 == b"\x00\x02"
+
+    def test_explicit_values_and_rejections(self) -> None:
+        item = self._ignore_item()
+        item.replace(STYLED_PSD, CURRENT_VALUE, layer_styles="merge")
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_styles == "merge"
+        with pytest.raises(ValueError):
+            item.replace(STYLED_PSD, CURRENT_VALUE, layer_styles="editable")
+        with pytest.raises(ValueError, match="Photoshop"):
+            item.replace(ASSETS / "ai.ai", 0, layer_styles="ignore")
+
+    def test_merged_current_falls_back_to_merge(self) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(STYLED_PSD))
+        assert isinstance(item, FootageItem)
+        item.replace(STYLED_PSD, 1)
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_styles == "merge"
+
+
+# ---------------------------------------------------------------------------
+# PSD vector masks / shape layers (imported as AE masks)
+# ---------------------------------------------------------------------------
+
+
+def _mask_parade_bytes(project: object, comp_name: str, layer_name: str) -> bytes:
+    """Serialize a layer's Mask Parade with the per-machine mkif noise
+    normalized: `_reserved_0c` carries an app-global counter + timestamp
+    fingerprint, and the outline color follows AE's non-reproducible
+    global mask-color cycle (see MaskPropertyGroup._MASK_COLOR_CYCLE)."""
+    comp = next(
+        item
+        for item in project.items.values()  # type: ignore[attr-defined]
+        if isinstance(item, CompItem) and item.name == comp_name
+    )
+    parade = comp.layer(name=layer_name).property("ADBE Mask Parade")
+    for mask in parade.properties:
+        mkif = mask._mkif
+        if mkif is not None and not mkif.synthetic:
+            mkif._reserved_0c = bytes(33)
+            mkif.color_r = mkif.color_g = mkif.color_b = 0
+    return _serialize_tree(parade._tdgp)
+
+
+class TestVectorMaskImport:
+    """PSD vector masks and shape-layer paths become AE masks, one per
+    subpath, byte-matched (modulo the documented mkif noise) against the
+    AE 2026 fixtures."""
+
+    @pytest.mark.parametrize(
+        "name,layer_name,mask_count",
+        [
+            ("psd_vector_mask", "vector masked", 1),
+            ("psd_shape_layer", "rect shape", 1),
+            # Smooth knots: tangent decode fidelity.
+            ("psd_vector_mask_curves", "curved", 1),
+            # Two subpaths: AE creates Mask 1 + Mask 2.
+            ("psd_vector_mask_multi", "two rects", 2),
+        ],
+    )
+    def test_mask_parade_matches_ae(
+        self, name: str, layer_name: str, mask_count: int
+    ) -> None:
+        ae_project = parse_aep(IMPORT_DIR / f"{name}.aep").project
+        project, comp = _styles_import(ASSETS / f"{name}.psd", ImportAsType.COMP)
+        py_parade = (
+            next(
+                item
+                for item in project.items.values()
+                if isinstance(item, CompItem) and item.name == comp.name
+            )
+            .layer(name=layer_name)
+            .property("ADBE Mask Parade")
+        )
+        assert len(py_parade.properties) == mask_count
+        assert all(m.roto_bezier is False for m in py_parade.properties)
+        ae_tree = _mask_parade_bytes(ae_project, name, layer_name)
+        py_tree = _mask_parade_bytes(project, comp.name, layer_name)
+        assert py_tree == ae_tree
+
+    def test_cropped_import_offsets_mask_to_content_box(self) -> None:
+        # Mask vertices are canvas coordinates; a COMP_CROPPED_LAYERS layer
+        # is cropped to its content box, so AE shifts the mask by the crop
+        # origin ((20,12)-(52,44) minus origin (4,4), AE 2026 fixture).
+        ae_project = parse_aep(IMPORT_DIR / "psd_vector_mask_cropped.aep").project
+        project, comp = _styles_import(
+            ASSETS / "psd_vector_mask.psd", ImportAsType.COMP_CROPPED_LAYERS
+        )
+        py_comp = next(
+            item
+            for item in project.items.values()
+            if isinstance(item, CompItem) and item.name == comp.name
+        )
+        parade = py_comp.layer(name="vector masked").property("ADBE Mask Parade")
+        shape = parade.properties[0].property("ADBE Mask Shape").value
+        assert shape.vertices == [[16.0, 8.0], [48.0, 8.0], [48.0, 40.0], [16.0, 40.0]]
+        ae_tree = _mask_parade_bytes(ae_project, "psd_vector_mask", "vector masked")
+        py_tree = _mask_parade_bytes(project, comp.name, "vector masked")
+        assert py_tree == ae_tree
+
+    def test_cropped_mask_vertices_survive_reparse(self, tmp_path: Path) -> None:
+        # Mask space is LAYER space: after save + reparse, the cached parse
+        # Shape must still denormalize by the (56px cropped) layer size, not
+        # the 64px comp - reading vertices must return the same layer-space
+        # coordinates as before the round-trip.
+        project, comp = _styles_import(
+            ASSETS / "psd_vector_mask.psd", ImportAsType.COMP_CROPPED_LAYERS
+        )
+        out = tmp_path / "cropped_mask.aep"
+        project.save(out)
+        reparsed = parse_project_fresh(out)
+        layer = next(
+            item
+            for item in reparsed.items.values()
+            if isinstance(item, CompItem) and item.name == comp.name
+        ).layer(name="vector masked")
+        assert (layer.width, layer.height) == (56, 56)
+        shape = (
+            layer.property("ADBE Mask Parade")
+            .properties[0]
+            .property("ADBE Mask Shape")
+            .value
+        )
+        # f4 shph precision loss on the round-trip; the scale basis is what
+        # matters (layer 56, not comp 64 which would give ~18.3/9.1).
+        flat = [coord for vertex in shape.vertices for coord in vertex]
+        assert flat == pytest.approx(
+            [16.0, 8.0, 48.0, 8.0, 48.0, 40.0, 16.0, 40.0], abs=1e-3
+        )
+
+    def test_clipping_run_auto_precomposes(self, tmp_path: Path) -> None:
+        """A PSD clipping pair (base + clipped-to-base layer) imports like
+        AE: a nested comp named "<stem> (1)", the base's name baked on the
+        uncollapsed parent layer with name_set off, and preserve
+        transparency on the clipped member (psd_clipping_mask fixture) -
+        verified through a disk round-trip."""
+        project, comp = _styles_import(
+            ASSETS / "psd_clipping_mask.psd", ImportAsType.COMP
+        )
+        out = tmp_path / "clipping.aep"
+        project.save(out)
+        reparsed = parse_project_fresh(out)
+        main = next(
+            item
+            for item in reparsed.items.values()
+            if isinstance(item, CompItem) and item.name == comp.name
+        )
+        base_layer = main.layer(name="base")
+        assert isinstance(base_layer.source, CompItem)
+        assert base_layer.source.name == f"{comp.name} (1)"
+        assert base_layer._ldta.name_set is False
+        assert base_layer.label == 15
+        assert base_layer.collapse_transformation is False
+        nested = base_layer.source
+        assert [layer.name for layer in nested.layers] == ["clipped", "base"]
+        assert nested.layer(name="clipped").preserve_transparency is True
+        assert nested.layer(name="base").preserve_transparency is False
+        assert nested.parent_folder.name == f"{comp.name} Layers"
+
+    def test_cropped_clipping_matches_ae(self) -> None:
+        # COMP_CROPPED_LAYERS + a clipping run: AE still auto-precomposes,
+        # the base crops to its content box (40x40), the clipped layer keeps
+        # its full-canvas content box, and every per-layer footage matches
+        # AE byte-for-byte (opti + sspc modulo the still-import noise).
+        ae_project = parse_aep(IMPORT_DIR / "psd_clipping_mask_cropped.aep").project
+        project = parse_aep(BASE).project
+        project.import_file(_cropped_opts(ASSETS / "psd_clipping_mask.psd"))
+        ae_foot = {
+            i.name: i.main_source
+            for i in ae_project.items.values()
+            if isinstance(i, FootageItem) and isinstance(i.main_source, FileSource)
+        }
+        py_foot = {
+            i.name: i.main_source
+            for i in project.items.values()
+            if isinstance(i, FootageItem) and isinstance(i.main_source, FileSource)
+        }
+        assert set(ae_foot) == set(py_foot)
+        for name, ae_src in ae_foot.items():
+            py_src = py_foot[name]
+            assert py_src._opti.tobytes() == ae_src._opti.tobytes(), name
+            _assert_sspc_matches(_sspc_bytes(ae_src), _sspc_bytes(py_src))
+        # The empty background "Layer 1" is full-canvas (64x64), not 1x1, and
+        # keeps its raster channel count (4) despite the empty content box.
+        empty = py_foot["Layer 1/psd_clipping_mask.psd"]
+        assert (empty._width, empty._height) == (64, 64)
+        assert empty._sspc.data_size == 0
+        assert empty._opti.psd_layer_channels == 4
+
+    def test_layers_without_vector_masks_get_none(self, tmp_path: Path) -> None:
+        # Raster layer masks are baked into the footage by AE (masks=0);
+        # the disk round-trip also re-reads the created mask chunks.
+        project, comp = _styles_import(
+            ASSETS / "psd_raster_mask.psd", ImportAsType.COMP
+        )
+        comp_item = next(
+            item
+            for item in project.items.values()
+            if isinstance(item, CompItem) and item.name == comp.name
+        )
+        parade = comp_item.layer(name="masked").property("ADBE Mask Parade")
+        assert len(parade.properties) == 0
+
+        project2, comp2 = _styles_import(
+            ASSETS / "psd_vector_mask.psd", ImportAsType.COMP
+        )
+        out = tmp_path / "vector_mask.aep"
+        project2.save(out)
+        reparsed = parse_project_fresh(out)
+        ae_project = parse_aep(IMPORT_DIR / "psd_vector_mask.aep").project
+        ae_tree = _mask_parade_bytes(ae_project, "psd_vector_mask", "vector masked")
+        re_tree = _mask_parade_bytes(reparsed, comp2.name, "vector masked")
+        assert re_tree == ae_tree
+
+
+class TestImportChoicePrefsWiring:
+    """import_file fills an unset layer_styles/layer_dimensions from the
+    machine's sticky PSD import-dialog preferences (AE's own importFile does
+    the same). Factory fallbacks are covered by the merge/editable tests
+    above; these cover the pref-driven path and its PSD-only gating."""
+
+    _SECTION = "Choose Layer Dialog"
+
+    def test_footage_layer_styles_from_pref(self) -> None:
+        project = parse_aep(BASE).project
+        # PSD Footage Layer Styles Option: 1 = ignore.
+        project._preferences.set_pref_as_number(
+            self._SECTION, "PSD Footage Layer Styles Option", 1
+        )
+        source = project.import_file(_layer_opts(STYLED_PSD, 1)).main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_styles == "ignore"
+
+    def test_explicit_layer_styles_overrides_pref(self) -> None:
+        project = parse_aep(BASE).project
+        project._preferences.set_pref_as_number(
+            self._SECTION,
+            "PSD Footage Layer Styles Option",
+            1,  # ignore
+        )
+        opts = _layer_opts(STYLED_PSD, 1)
+        opts.layer_styles = "merge"
+        source = project.import_file(opts).main_source
+        assert isinstance(source, FileSource)
+        assert source.layer_styles == "merge"
+
+    def test_footage_dimensions_from_pref(self) -> None:
+        project = parse_aep(BASE).project
+        # PSD Dimensions Popup: 0 = layer (style-less solo layer, no expansion).
+        project._preferences.set_pref_as_number(
+            self._SECTION, "PSD Dimensions Popup", 0
+        )
+        source = project.import_file(
+            _layer_opts(ASSETS / "choose_layer.psd", 3)
+        ).main_source
+        assert isinstance(source, FileSource)
+        assert source._sspc.full_frame is False
+
+    def test_comp_layer_styles_from_pref(self) -> None:
+        project = parse_aep(BASE).project
+        # PSD Comp Layer Styles Option v2: 1 = merge (bakes the styles in).
+        project._preferences.set_pref_as_number(
+            self._SECTION, "PSD Comp Layer Styles Option v2", 1
+        )
+        opts = ImportOptions(SINGLE_PSD)
+        opts.import_as = ImportAsType.COMP
+        project.import_file(opts)
+        source = _psd_footage_source(
+            project, "Layer 1/psd_layer_styles_8bits_single.psd"
+        )
+        assert source.layer_styles == "merge"
+
+    def test_ai_layer_import_ignores_psd_dimensions_pref(self) -> None:
+        # The dimensions pref is PSD-only. An AI/PDF layer import must keep
+        # its document-size default: a PSD "layer" pref leaking through would
+        # trip _from_layer's Layer-Size NotImplementedError for AI.
+        project = parse_aep(BASE).project
+        project._preferences.set_pref_as_number(
+            self._SECTION,
+            "PSD Dimensions Popup",
+            0,  # layer
+        )
+        source = project.import_file(_layer_opts(ASSETS / "ai.ai", 0)).main_source
+        assert isinstance(source, FileSource)
+        assert source._sspc.full_frame is True

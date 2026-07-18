@@ -80,7 +80,10 @@ class Application:
         cause issues when opening the file in After Effects.
     """
 
-    is_beta = ChunkField[bool]("_head", "ae_version_beta_flag")
+    is_beta = ChunkField.bool(
+        "_head",
+        "ae_version_beta_flag",
+    )
     """Indicates whether the After Effects version is a beta version. Read / Write.
 
     Warning:

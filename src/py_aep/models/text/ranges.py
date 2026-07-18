@@ -47,13 +47,15 @@ from ...enums import (
 from ...resolvers.text_composition import CompositionUnsupported, compose_lines
 from ...svg.fonts import font_version_string
 from ..validators import (
+    validate_bool,
     validate_enum,
     validate_font_name,
-    validate_int,
     validate_normalized_float,
+    validate_number,
     validate_positive_nonzero_number,
     validate_positive_number,
     validate_rgb_color,
+    validate_s4,
     validate_text,
 )
 from .font_object import FontObject
@@ -143,39 +145,23 @@ def _kern_run_spans(doc: TextDocument) -> list[tuple[int, int, dict[str, Any]]]:
     return run_spans(doc._doc, "8", None)
 
 
-def _cached_line_data(
-    doc: TextDocument,
-) -> tuple[list[tuple[int, int]], list[float | None]] | None:
-    """Line `(start, end)` spans + baselines from the persisted cache.
+def _cached_line_nodes(doc: TextDocument) -> list[dict[str, Any]]:
+    """The persisted `/L` line records of the layout cache, in order.
 
     The cache lives at `doc["1"]["2"]` as a `/PC` node; `/L` records are
-    collected depth-first through the nested `"6"` arrays, each line's
-    length is the sum of its `/S` segment counts (`seg["15"]["0"]`) and
-    its baseline is the `/L` `"10"` value. Returns `None` when the
+    collected depth-first through the nested `"6"` arrays. Empty when the
     document has no cache.
     """
     entries = cos_get(doc._doc, "1", "2")
     if not isinstance(entries, list):
-        return None
-    lengths: list[int] = []
-    baselines: list[float | None] = []
+        return []
+    lines: list[dict[str, Any]] = []
 
     def collect(node: Any) -> None:
         if not isinstance(node, dict):
             return
         if str(node.get("99")) == "L":
-            total = 0
-            children = node.get("6")
-            if isinstance(children, list):
-                for seg in children:
-                    count = cos_get(seg, "15", "0")
-                    if isinstance(count, int):
-                        total += count
-            lengths.append(total)
-            baseline = node.get("10")
-            baselines.append(
-                float(baseline) if isinstance(baseline, (int, float)) else None
-            )
+            lines.append(node)
             return
         children = node.get("6")
         if isinstance(children, list):
@@ -184,6 +170,45 @@ def _cached_line_data(
 
     for entry in entries:
         collect(entry)
+    return lines
+
+
+def _cached_line_data(
+    doc: TextDocument,
+) -> tuple[list[tuple[int, int]], list[float | None]] | None:
+    """Line `(start, end)` spans + baselines from the persisted cache.
+
+    Returns `None` when the document has no cache. Callers that also need
+    the `/L` nodes should fetch them once with `_cached_line_nodes` and
+    use `_line_data_from_nodes` to avoid a second cache walk.
+    """
+    return _line_data_from_nodes(_cached_line_nodes(doc))
+
+
+def _line_data_from_nodes(
+    nodes: list[dict[str, Any]],
+) -> tuple[list[tuple[int, int]], list[float | None]] | None:
+    """Line `(start, end)` spans + baselines from `/L` cache nodes.
+
+    Each line's length is the sum of its `/S` segment counts
+    (`seg["15"]["0"]`) and its baseline is the `/L` `"10"` value. Returns
+    `None` for an empty node list (no cache).
+    """
+    lengths: list[int] = []
+    baselines: list[float | None] = []
+    for node in nodes:
+        total = 0
+        children = node.get("6")
+        if isinstance(children, list):
+            for seg in children:
+                count = cos_get(seg, "15", "0")
+                if isinstance(count, int):
+                    total += count
+        lengths.append(total)
+        baseline = node.get("10")
+        baselines.append(
+            float(baseline) if isinstance(baseline, (int, float)) else None
+        )
     if not lengths:
         return None
     spans: list[tuple[int, int]] = []
@@ -192,6 +217,46 @@ def _cached_line_data(
         spans.append((pos, pos + length))
         pos += length
     return spans, baselines
+
+
+def _line_origin(node: dict[str, Any]) -> tuple[float, float]:
+    """A `/L` record's pen origin `(x, y)` in composition-cache space.
+
+    Stored at `/L "0" "0"`; AE omits it on the first line (origin `(0, 0)`),
+    where the baseline key `"10"` is absent too.
+    """
+    origin = cos_get(node, "0", "0")
+    if isinstance(origin, list) and len(origin) >= 2:
+        return float(origin[0]), float(origin[1])
+    baseline = node.get("10")
+    y = float(baseline) if isinstance(baseline, (int, float)) else 0.0
+    return 0.0, y
+
+
+def _line_advances(node: dict[str, Any]) -> list[float]:
+    """Per-code-unit cumulative pen advances across a `/L` record's
+    `/S` segments (`seg["15"]["7"]["7"]`).
+
+    AE does not split segments on style or font changes - every observed
+    line (including mixed-font ones) carries a single segment whose
+    advances are cumulative from the line start. Multiple segments are
+    chained by carrying the running total forward.
+    """
+    out: list[float] = []
+    base = 0.0
+    children = node.get("6")
+    if not isinstance(children, list):
+        return out
+    for seg in children:
+        advances = cos_get(seg, "15", "7", "7")
+        if not isinstance(advances, list):
+            continue
+        for advance in advances:
+            if isinstance(advance, (int, float)):
+                out.append(base + float(advance))
+        if out:
+            base = out[-1]
+    return out
 
 
 def _fresh_composed_spans(doc: TextDocument) -> list[tuple[int, int]] | None:
@@ -265,19 +330,29 @@ def _build_font_entry(post_script_name: str) -> dict[str, Any]:
     return {"0": {"99": CosName("CoolTypeFont"), "0": {"0": post_script_name, "2": 1}}}
 
 
-def _register_font_prepended(doc: TextDocument, post_script_name: str) -> int:
-    """Prepend a font entry and reindex every existing reference.
+def _register_font_at(
+    doc: TextDocument,
+    post_script_name: str,
+    index: int = 0,
+    *,
+    used_record: bool = True,
+) -> int:
+    """Insert a font entry at `index` and reindex the existing references.
 
-    AE inserts new fonts at index 0 and bumps all existing references by
-    one (probed: `W_FONT`, `W_PASTE_XDOC`). Font indices live in the
-    char-run styles of every keyframe document sharing this `_cos_data`,
-    the document-default character style at `cos["1"]["2"]`, the
-    typography settings at `cos["1"]["0"]`, the used-font records at
-    `cos["1"]["5"][*]["4"]` (which also gain a record for the new font)
-    and the header style presets at `cos["0"]["5"]["0"]`; the layout
-    cache holds none. The host font's version string (name ID 5) is
-    stamped on the entry and the used-font record like AE does, when
-    the font is installed. Returns the new font's index (always 0).
+    Every reference at or after `index` is bumped by one. Font indices live
+    in the char-run styles of every keyframe document sharing this
+    `_cos_data`, the document-default character style at `cos["1"]["2"]`,
+    the typography settings at `cos["1"]["0"]`, the used-font records at
+    `cos["1"]["5"][*]["4"]` (which also gain a record for the new font) and
+    the header style presets at `cos["0"]["5"]["0"]`; the layout cache holds
+    none. The host font's version string (name ID 5) is stamped on the entry
+    and the used-font record like AE does, when the font is installed.
+
+    `index` 0 is AE's insertion point for a new font on a style write
+    (probed: `W_FONT`, `W_PASTE_XDOC`); `Project.replace_font` inserts
+    directly after the font being replaced instead, and passes
+    `used_record=False` because a replacement repoints the used-font
+    record of the font it replaces rather than adding one. Returns `index`.
     """
     cos = doc._cos_data
     font_array = cos.setdefault("0", {}).setdefault("1", {}).setdefault("0", [])
@@ -285,29 +360,35 @@ def _register_font_prepended(doc: TextDocument, post_script_name: str) -> int:
     version = font_version_string(post_script_name)
     if version is not None:
         entry["0"]["0"]["5"] = version
-    font_array.insert(0, entry)
+    font_array.insert(index, entry)
+
+    def bump(holder: dict[str, Any]) -> None:
+        current = holder.get("0")
+        if isinstance(current, int) and current >= index:
+            holder["0"] = current + 1
+
     for entry_doc in cos.get("1", {}).get("1", []) or []:
         runs = cos_get(entry_doc, "0", "6", "0")
         if not isinstance(runs, list):
             continue
         for run in runs:
             style = cos_get(run, "0", "0", "6")
-            if isinstance(style, dict) and isinstance(style.get("0"), int):
-                style["0"] += 1
+            if isinstance(style, dict):
+                bump(style)
     default_char = cos_get(cos, "1", "2")
-    if isinstance(default_char, dict) and isinstance(default_char.get("0"), int):
-        default_char["0"] += 1
+    if isinstance(default_char, dict):
+        bump(default_char)
     typography = cos_get(cos, "1", "0", "0")
-    if isinstance(typography, dict) and isinstance(typography.get("0"), int):
-        typography["0"] += 1
+    if isinstance(typography, dict):
+        bump(typography)
     presets = cos_get(cos, "0", "5", "0")
     if isinstance(presets, list):
         for preset in presets:
             style = cos_get(preset, "0", "6")
-            if isinstance(style, dict) and isinstance(style.get("0"), int):
-                style["0"] += 1
+            if isinstance(style, dict):
+                bump(style)
     sessions = cos_get(cos, "1", "5")
-    new_record: dict[str, Any] = {"0": 0}
+    new_record: dict[str, Any] = {"0": index}
     if version is not None:
         new_record["1"] = version
     if isinstance(sessions, list):
@@ -317,13 +398,91 @@ def _register_font_prepended(doc: TextDocument, post_script_name: str) -> int:
             if not isinstance(records, list):
                 continue
             for record in records:
-                if isinstance(record, dict) and isinstance(record.get("0"), int):
-                    record["0"] += 1
-            if not appended:
+                if isinstance(record, dict):
+                    bump(record)
+            if used_record and not appended:
                 records.append(new_record)
                 appended = True
-    doc._fonts.insert(0, FontObject(_font_data=entry["0"]["0"], _font_entry=entry["0"]))
-    return 0
+    doc._fonts.insert(
+        index, FontObject(_font_data=entry["0"]["0"], _font_entry=entry["0"])
+    )
+    return index
+
+
+def _replace_layer_font(docs: list[TextDocument], from_name: str, to_name: str) -> bool:
+    """Repoint one text layer's `from_name` character runs at `to_name`.
+
+    All of a layer's keyframe documents share one font table and one COS
+    tree, so the font is registered once per layer. After Effects inserts
+    the replacement directly AFTER the font it replaces and leaves the old
+    entry in place (probed AE 2026: `Verdana`@0 -> `Georgia`@1), which is
+    what `_register_font_at` reproduces.
+
+    A font table can hold SEVERAL entries with one PostScript name (AE
+    writes a second `MyriadPro-Regular` when a style reset re-applies the
+    panel font), and the runs may reference any of them, so every entry
+    carrying `from_name` is matched - taking only the first would silently
+    skip layers whose runs point at a later duplicate.
+    """
+    first = docs[0]
+    from_indices = {
+        i for i, font in enumerate(first._fonts) if font.post_script_name == from_name
+    }
+    if not from_indices:
+        return False
+    if not any(
+        style.get("0") in from_indices
+        for doc in docs
+        for _start, _end, style in _char_run_spans(doc)
+    ):
+        return False
+
+    to_index = next(
+        (i for i, font in enumerate(first._fonts) if font.post_script_name == to_name),
+        None,
+    )
+    if to_index is None:
+        # Inserting past the LAST matching entry leaves every from-index
+        # unshifted (`_register_font_at` only bumps references at or after
+        # the insertion point).
+        to_index = _register_font_at(
+            first, to_name, max(from_indices) + 1, used_record=False
+        )
+
+    for doc in docs:
+        for _start, _end, style in _char_run_spans(doc):
+            if style.get("0") in from_indices:
+                style["0"] = to_index
+    _repoint_used_font_record(first, from_indices, to_index, to_name)
+    first._propagate_cos()
+    return True
+
+
+def _repoint_used_font_record(
+    doc: TextDocument, from_indices: set[int], to_index: int, to_name: str
+) -> None:
+    """Point the replaced font's used-font records at its replacement.
+
+    After Effects rewrites the existing record in place - index and name-ID-5
+    version - rather than appending one and leaving the now-unused font
+    behind (probed AE 2026: Verdana's record becomes Georgia's).
+    """
+    version = font_version_string(to_name)
+    sessions = cos_get(doc._cos_data, "1", "5")
+    if not isinstance(sessions, list):
+        return
+    for session in sessions:
+        records = session.get("4") if isinstance(session, dict) else None
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict) or record.get("0") not in from_indices:
+                continue
+            record["0"] = to_index
+            if version is None:
+                record.pop("1", None)
+            else:
+                record["1"] = version
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +970,11 @@ class RangeField(Generic[T]):
             kwargs["transform"] = getattr(enum_cls, "from_binary", enum_cls)
         if "reverse" not in kwargs:
             kwargs["reverse"] = getattr(enum_cls, "to_binary", int)
+        if "validate" not in kwargs:
+            # Reject out-of-enum ints on write (ExtendScript parity); reads
+            # stay tolerant via `from_binary`. Without this a stray int
+            # serializes a value that reads back as `None`/undefined.
+            kwargs["validate"] = validate_enum(enum_cls)
         return cls(kind, key, **kwargs)
 
 
@@ -849,6 +1013,20 @@ class DocumentWideCosField(CosField[T]):
         propagate = getattr(obj, "_propagate_cos", None)
         if propagate is not None:
             propagate()
+
+    @classmethod
+    def enum(
+        cls, enum_cls: type[T], dict_attr: str, key: str, **kwargs: Any
+    ) -> CosField[T]:
+        """Reject out-of-enum ints on write (ExtendScript parity).
+
+        Mirrors `RangeField.enum`; the base `CosField.enum` does not
+        validate, so a stray int would serialize a value that reads back
+        as `None`/undefined. Reads stay tolerant via `from_binary`.
+        """
+        if "validate" not in kwargs:
+            kwargs["validate"] = validate_enum(enum_cls)
+        return super().enum(enum_cls, dict_attr, key, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1092,7 +1270,7 @@ class CharacterRange(_TextRange):
             existing = {f.post_script_name for f in doc._fonts}
             for name in needed.values():
                 if name not in existing:
-                    _register_font_prepended(doc, name)
+                    _register_font_at(doc, name)
                     existing.add(name)
             target_index = {f.post_script_name: i for i, f in enumerate(doc._fonts)}
             for clone in entries:
@@ -1150,22 +1328,23 @@ class CharacterRange(_TextRange):
 
     @auto_leading.setter
     def auto_leading(self, value: bool) -> None:
+        validate_bool(value)
         start, end = self._bounds()
-        _apply_char_key(self._doc_ref, start, end, "4", bool(value))
+        _apply_char_key(self._doc_ref, start, end, "4", value)
         if value:
             _apply_char_key(self._doc_ref, start, end, "5", 0.01)
         self._propagate()
 
-    horizontal_scale = RangeField.float("char", "6")
+    horizontal_scale = RangeField.float("char", "6", validate=validate_number)
     """The range's horizontal scale; `None` when mixed. Read / Write."""
 
-    vertical_scale = RangeField.float("char", "7")
+    vertical_scale = RangeField.float("char", "7", validate=validate_number)
     """The range's vertical scale; `None` when mixed. Read / Write."""
 
-    tracking = RangeField.int("char", "8")
+    tracking = RangeField.int("char", "8", validate=validate_s4)
     """The range's spacing between characters; `None` when mixed. Read / Write."""
 
-    baseline_shift = RangeField.float("char", "9")
+    baseline_shift = RangeField.float("char", "9", validate=validate_number)
     """The range's baseline shift in pixels; `None` when mixed. Read / Write."""
 
     @property
@@ -1251,19 +1430,21 @@ class CharacterRange(_TextRange):
     justification = RangeField.enum(ParagraphJustification, "para", "0")
     """The justification of paragraphs in the range; `None` when mixed. Read / Write."""
 
-    first_line_indent = RangeField.float("para", "1", default=0.0)
+    first_line_indent = RangeField.float(
+        "para", "1", default=0.0, validate=validate_number
+    )
     """The paragraphs' first line indent; `None` when mixed. Read / Write."""
 
-    start_indent = RangeField.float("para", "2", default=0.0)
+    start_indent = RangeField.float("para", "2", default=0.0, validate=validate_number)
     """The paragraphs' start indent; `None` when mixed. Read / Write."""
 
-    end_indent = RangeField.float("para", "3", default=0.0)
+    end_indent = RangeField.float("para", "3", default=0.0, validate=validate_number)
     """The paragraphs' end indent; `None` when mixed. Read / Write."""
 
-    space_before = RangeField.float("para", "4", default=0.0)
+    space_before = RangeField.float("para", "4", default=0.0, validate=validate_number)
     """The paragraphs' space before; `None` when mixed. Read / Write."""
 
-    space_after = RangeField.float("para", "5", default=0.0)
+    space_after = RangeField.float("para", "5", default=0.0, validate=validate_number)
     """The paragraphs' space after; `None` when mixed. Read / Write."""
 
     leading_type = RangeField.enum(
@@ -1360,7 +1541,7 @@ class CharacterRange(_TextRange):
                 index = i
                 break
         if index is None:
-            index = _register_font_prepended(doc, value)
+            index = _register_font_at(doc, value)
         _apply_char_key(doc, start, end, "0", index)
         self._propagate()
 
@@ -1421,10 +1602,12 @@ class CharacterRange(_TextRange):
 
     @kerning.setter
     def kerning(self, value: int) -> None:
-        validate_int(value, self._doc_ref)
-        # Normalize bools (a subclass of int) so the serializer emits an
-        # integer, not a `true`/`false` token.
-        value = int(value)
+        validate_s4(value, self._doc_ref)
+        # `validate_s4` accepts a float (see its definition): round it on
+        # write, matching the sibling `tracking` field, whose `RangeField.int`
+        # sets `reverse=round`. `round` also normalizes bools (a subclass of
+        # int) so the serializer emits an integer, not a `true`/`false` token.
+        value = round(value)
         doc = self._doc_ref
         raw = _raw_text(doc)
         start, end = self._bounds()

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from ..enums.general import PREFType
+from ..enums.text_document import AutoKernType, ParagraphJustification
 from ..parsers.comp_presets import CompPreset, parse_comp_presets
 from ..parsers.prefs import (
     PrefsFile,
@@ -20,7 +21,7 @@ from .validators import validate_bool, validate_enum, validate_name, validate_nu
 
 if TYPE_CHECKING:
     import os
-    from typing import Any
+    from typing import Any, Callable
 
     from .text.text_document import TextDocument
 
@@ -66,6 +67,236 @@ def default_sequence_fps(preferences: Preferences) -> float:
     return float(value)
 
 
+_CHOOSE_LAYER_SECTION = "Choose Layer Dialog"
+
+# AE's PSD/PSB import-dialog popup indices, probed in AE 2026 by toggling
+# each dropdown and re-reading the machine-specific prefs. These are dialog
+# positions, NOT the `sspc` c9 byte enum - footage merge/ignore is reversed
+# there ({merge:0, ignore:1} here vs the c9 {ignore:0, merge:1}). AE's own
+# importFile follows the last sticky choice, so py_aep uses them to fill an
+# unset ImportOptions field.
+_PSD_COMP_LAYER_STYLES: dict[int, str] = {0: "editable", 1: "merge"}
+_PSD_FOOTAGE_LAYER_STYLES: dict[int, str] = {0: "merge", 1: "ignore"}
+_PSD_FOOTAGE_DIMENSIONS: dict[int, str] = {0: "layer", 1: "document"}
+
+
+def _choose_layer_pref(
+    preferences: Preferences, key: str, mapping: dict[int, str]
+) -> str | None:
+    """Resolve a `Choose Layer Dialog` popup index to its string value, or
+    `None` when the preference is unset (or holds an unknown index)."""
+    if not preferences.have_pref(
+        _CHOOSE_LAYER_SECTION, key, PREFType.PREF_Type_MACHINE_SPECIFIC
+    ):
+        return None
+    idx = int(
+        preferences.get_pref_as_number(
+            _CHOOSE_LAYER_SECTION, key, PREFType.PREF_Type_MACHINE_SPECIFIC
+        )
+    )
+    return mapping.get(idx)
+
+
+def psd_comp_layer_styles(preferences: Preferences) -> str | None:
+    """The sticky Layer Options choice for a PSD/PSB COMP import (`"editable"`
+    or `"merge"`), or `None` when the preference is unset.
+
+    Mirrors the "PSD Comp Layer Styles Option v2" import-dialog preference
+    that AE's own `importFile` follows.
+    """
+    return _choose_layer_pref(
+        preferences, "PSD Comp Layer Styles Option v2", _PSD_COMP_LAYER_STYLES
+    )
+
+
+def psd_footage_layer_styles(preferences: Preferences) -> str | None:
+    """The sticky Layer Options choice for a single-layer PSD/PSB FOOTAGE
+    import (`"merge"` or `"ignore"`), or `None` when the preference is unset.
+
+    Mirrors the "PSD Footage Layer Styles Option" import-dialog preference.
+    """
+    return _choose_layer_pref(
+        preferences, "PSD Footage Layer Styles Option", _PSD_FOOTAGE_LAYER_STYLES
+    )
+
+
+def psd_footage_dimensions(preferences: Preferences) -> str | None:
+    """The sticky Footage Dimensions choice for a single-layer PSD/PSB FOOTAGE
+    import (`"document"` or `"layer"`), or `None` when the preference is unset.
+
+    Mirrors the "PSD Dimensions Popup" import-dialog preference.
+    """
+    return _choose_layer_pref(
+        preferences, "PSD Dimensions Popup", _PSD_FOOTAGE_DIMENSIONS
+    )
+
+
+_TEXT_STYLE_SECTION = "Text Style Sheet"
+_PARA_SHEET_SECTION = "Text Paragraph Sheet"
+_TXT = PREFType.PREF_Type_MACHINE_SPECIFIC_TEXT
+
+# The horizontal/vertical scale preferences are percentages, while the
+# document stores (and ExtendScript reports) a fraction.
+_SCALE_PERCENT = 100.0
+
+# AE's factory Character/Paragraph panel values, used when the preference
+# file is unavailable (a project parsed without an `ae_preferences_dir`).
+_FACTORY_CHAR_STYLE: dict[str, Any] = {
+    "font": "MyriadPro-Regular",
+    "font_size": 36.0,
+    "faux_bold": False,
+    "faux_italic": False,
+    "apply_fill": True,
+    "apply_stroke": False,
+    # The full-precision value AE stores; the preference file mirrors it
+    # rounded to six decimals, so a prefs-backed reset lands ~1e-7 away.
+    "fill_color": [0.92156994342804, 0.92156994342804, 0.92156994342804],
+    "stroke_color": [0.0, 0.0, 0.0],
+    "stroke_width": 1.0,
+    "stroke_over_fill": True,
+    "tracking": 0.0,
+    "tsume": 0.0,
+    "horizontal_scale": 1.0,
+    "vertical_scale": 1.0,
+    "baseline_shift": 0.0,
+    "auto_leading": True,
+    "auto_kern_type": AutoKernType.METRIC_KERN,
+}
+
+# AE names the Character panel's kerning modes in prose.
+_AUTO_KERN_BY_PREF: dict[str, AutoKernType] = {
+    "No Auto Kerning": AutoKernType.NO_AUTO_KERN,
+    "Metric Auto Kerning": AutoKernType.METRIC_KERN,
+    "Optical Auto Kerning": AutoKernType.OPTICAL_KERN,
+}
+_FACTORY_PARA_STYLE: dict[str, Any] = {
+    "justification": ParagraphJustification.LEFT_JUSTIFY,
+    "first_line_indent": 0.0,
+    "start_indent": 0.0,
+    "end_indent": 0.0,
+    "space_before": 0.0,
+    "space_after": 0.0,
+    "hanging_roman": False,
+    "every_line_composer": False,
+}
+
+# AE writes the horizontal half of "Justification" before a `|`.
+_JUSTIFICATION_BY_PREF: dict[str, ParagraphJustification] = {
+    "Left": ParagraphJustification.LEFT_JUSTIFY,
+    "Center": ParagraphJustification.CENTER_JUSTIFY,
+    "Right": ParagraphJustification.RIGHT_JUSTIFY,
+}
+
+
+def _sheet_readers(
+    preferences: Preferences, section: str
+) -> tuple[Callable[[str, float], float], Callable[[str, bool], bool]]:
+    """Build `(number, flag)` readers over one machine-specific text sheet."""
+
+    def number(key: str, fallback: float) -> float:
+        value = preferences.get_pref_as_number(section, key, _TXT, default=fallback)
+        return float(value)
+
+    def flag(key: str, fallback: bool) -> bool:
+        return preferences.get_pref_as_bool(section, key, _TXT, default=fallback)
+
+    return number, flag
+
+
+def default_character_style(preferences: Preferences) -> dict[str, Any]:
+    """AE's Character-panel defaults - the `["Text Style Sheet"]` section of
+    the machine-specific text preferences.
+
+    This is the style `TextDocument.reset_char_style()` restores and the
+    style `addText` gives a new layer. Keys map to `TextDocument`
+    attributes. Missing preferences fall back to AE's factory values.
+    """
+    number, flag = _sheet_readers(preferences, _TEXT_STYLE_SECTION)
+    factory = _FACTORY_CHAR_STYLE
+    fill = [
+        number("Fill Red", factory["fill_color"][0]),
+        number("Fill Green", factory["fill_color"][1]),
+        number("Fill Blue", factory["fill_color"][2]),
+    ]
+    stroke = [
+        number("Stroke Red", factory["stroke_color"][0]),
+        number("Stroke Green", factory["stroke_color"][1]),
+        number("Stroke Blue", factory["stroke_color"][2]),
+    ]
+    return {
+        "font": preferences.get_pref_as_string(
+            _TEXT_STYLE_SECTION,
+            "Font PostScript Name",
+            PREFType.PREF_Type_MACHINE_SPECIFIC_TEXT,
+            default=cast("str", factory["font"]),
+        ),
+        "font_size": number("Size", factory["font_size"]),
+        "faux_bold": flag("Synthetic Bold", factory["faux_bold"]),
+        "faux_italic": flag("Synthetic Italic", factory["faux_italic"]),
+        "apply_fill": flag("Render Fill", factory["apply_fill"]),
+        "apply_stroke": flag("Render Stroke", factory["apply_stroke"]),
+        "fill_color": fill,
+        "stroke_color": stroke,
+        "stroke_width": number("Stroke Width", factory["stroke_width"]),
+        "stroke_over_fill": flag("Stroke Over Fill", factory["stroke_over_fill"]),
+        "tracking": number("Tracking", factory["tracking"]),
+        "tsume": number("Tsume", factory["tsume"]),
+        "horizontal_scale": number(
+            "Horizontal Scale", factory["horizontal_scale"] * _SCALE_PERCENT
+        )
+        / _SCALE_PERCENT,
+        "vertical_scale": number(
+            "Vertical Scale", factory["vertical_scale"] * _SCALE_PERCENT
+        )
+        / _SCALE_PERCENT,
+        "baseline_shift": number("Baseline Shift", factory["baseline_shift"]),
+        "auto_leading": flag("Auto Leading", factory["auto_leading"]),
+        "auto_kern_type": _AUTO_KERN_BY_PREF.get(
+            preferences.get_pref_as_string(
+                _TEXT_STYLE_SECTION,
+                "Auto Kerning Type",
+                PREFType.PREF_Type_MACHINE_SPECIFIC_TEXT,
+                default="Metric Auto Kerning",
+            ).strip(),
+            cast("AutoKernType", factory["auto_kern_type"]),
+        ),
+    }
+
+
+def default_paragraph_style(preferences: Preferences) -> dict[str, Any]:
+    """AE's Paragraph-panel defaults - the `["Text Paragraph Sheet"]`
+    section of the machine-specific text preferences.
+
+    This is the style `TextDocument.reset_paragraph_style()` restores.
+    Note that hyphenation has no entry in this sheet, which is why After
+    Effects leaves `auto_hyphenate` untouched on a reset.
+    """
+    number, flag = _sheet_readers(preferences, _PARA_SHEET_SECTION)
+    factory = _FACTORY_PARA_STYLE
+    raw_justification = preferences.get_pref_as_string(
+        _PARA_SHEET_SECTION,
+        "Justification",
+        PREFType.PREF_Type_MACHINE_SPECIFIC_TEXT,
+        default="Left",
+    )
+    justification = _JUSTIFICATION_BY_PREF.get(
+        raw_justification.split("|")[0].strip(),
+        cast("ParagraphJustification", factory["justification"]),
+    )
+    return {
+        "justification": justification,
+        "first_line_indent": number("First Line Indent", factory["first_line_indent"]),
+        "start_indent": number("Start Indent", factory["start_indent"]),
+        "end_indent": number("End Indent", factory["end_indent"]),
+        "space_before": number("Space Before", factory["space_before"]),
+        "space_after": number("Space After", factory["space_after"]),
+        "hanging_roman": flag("Roman Hanging Punctuation", factory["hanging_roman"]),
+        "every_line_composer": flag(
+            "Every-line Composer", factory["every_line_composer"]
+        ),
+    }
+
+
 def _default_out_point(preferences: Preferences, key: str) -> float | None:
     """Parse a `"value/scale"` default-out-point preference into seconds.
 
@@ -89,10 +320,6 @@ def _default_out_point(preferences: Preferences, key: str) -> float | None:
     if scale == 0 or value <= 0:
         return None
     return value / scale
-
-
-_TEXT_STYLE_SECTION = "Text Style Sheet"
-_TXT = PREFType.PREF_Type_MACHINE_SPECIFIC_TEXT
 
 
 def apply_text_style_prefs(document: TextDocument, preferences: Preferences) -> None:

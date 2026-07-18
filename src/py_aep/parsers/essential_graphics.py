@@ -105,7 +105,7 @@ def parse_essential_graphics(
     controllers. `CIF3` is the current, authoritative version (AE 2022+);
     `CIF2`/`CIFO` are same-structure legacy versions that can be STALE
     snapshots holding fewer (or zero) controllers than `CIF3` in the same
-    file. The `CIF3 -> CIF2 -> CIFO` order is therefore load-bearing - prefer
+    file. The `CIF3 -> CIF2 -> CIFO` order is therefore necessary - prefer
     `CIF3` when present, and fall back to the legacy versions only so a
     pre-CIF3 file still yields its template name and controllers rather than
     silently parsing as no Essential Graphics.

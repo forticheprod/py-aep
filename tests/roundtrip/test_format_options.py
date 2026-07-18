@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -10,11 +11,13 @@ from py_aep import parse
 from py_aep.enums import (
     AudioCodec,
     CineonFileFormat,
+    DnxResolution,
     Hdr10ColorPrimaries,
     JpegFormatType,
     MPEGAudioFormat,
     MPEGMultiplexer,
     MPEGMuxStreamCompatibility,
+    MPEGProfile,
     OpenExrCompression,
     PngCompression,
     VideoCodec,
@@ -199,6 +202,36 @@ class TestRoundtripCineonFormatOptions:
         with pytest.raises(ValueError):
             opts.ten_bit_black_point = 1024
 
+    @pytest.mark.parametrize("value", [-100, 0x10000, 10**12])
+    def test_validate_highlight_expansion_rejects_out_of_u2(self, value: int) -> None:
+        # Backed by a u2 field: an unbounded value overflowed `struct` and
+        # crashed save() mid-write, leaving a partial .aep (fuzz finding).
+        _, opts = _parse_fresh(FORMAT_DIR / "cineon" / "base.aep")
+        assert isinstance(opts, CineonFormatOptions)
+        with pytest.raises(ValueError):
+            opts.highlight_expansion = value
+
+    @pytest.mark.parametrize(
+        "field", ["converted_black_point", "converted_white_point", "current_gamma"]
+    )
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_validate_float_fields_reject_nonfinite(
+        self, field: str, bad: float
+    ) -> None:
+        _, opts = _parse_fresh(FORMAT_DIR / "cineon" / "base.aep")
+        assert isinstance(opts, CineonFormatOptions)
+        with pytest.raises(ValueError, match="finite"):
+            setattr(opts, field, bad)
+
+    def test_highlight_expansion_valid_roundtrips(self, tmp_path: Path) -> None:
+        project, opts = _parse_fresh(FORMAT_DIR / "cineon" / "base.aep")
+        assert isinstance(opts, CineonFormatOptions)
+        opts.highlight_expansion = 42
+        project.save(tmp_path / "out.aep")
+        _, opts2 = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(opts2, CineonFormatOptions)
+        assert opts2.highlight_expansion == 42
+
 
 class TestRoundtripOpenExrFormatOptions:
     """Roundtrip tests for OpenExrFormatOptions."""
@@ -243,6 +276,224 @@ class TestRoundtripOpenExrFormatOptions:
         _, opts2 = _parse_fresh(tmp_path / "out.aep")
         assert isinstance(opts2, OpenExrFormatOptions)
         assert opts2.dwa_compression_level == 100.0
+
+
+class TestMPEGProfile:
+    """The H.264 `Profile` dropdown.
+
+    AE encodes `Baseline` by REMOVING the parameter's `<ParamValue>` while
+    KEEPING its `<ExporterParam>` element (the `ObjectID` is referenced by
+    the PremiereData object graph). Both encodings decode identically, so
+    only the element-level assertions below catch a writer that deletes the
+    whole element.
+    """
+
+    H264 = FORMAT_DIR / "h.264"
+    KEY = "ADBEVideoMPEGProfile"
+
+    @classmethod
+    def _elements(cls, opts: XmlFormatOptions, key: str) -> list[ET.Element]:
+        root = opts._xml_root
+        assert root is not None
+        out = []
+        for elem in root.iter("ExporterParam"):
+            ident = elem.find("ParamIdentifier")
+            if ident is not None and ident.text == key:
+                out.append(elem)
+        return out
+
+    @classmethod
+    def _child_tags(cls, opts: XmlFormatOptions, key: str) -> list[str]:
+        """The param element's child tags - the ObjectID-independent shape.
+
+        `ObjectID` is per-file, so comparing serialized elements across
+        samples is meaningless; the child sequence is the invariant.
+        """
+        elements = cls._elements(opts, key)
+        assert len(elements) == 1
+        return [child.tag for child in elements[0]]
+
+    @pytest.mark.parametrize(
+        ("sample", "expected"),
+        [
+            ("h264_baseline.aep", MPEGProfile.BASELINE),
+            ("h264_high.aep", MPEGProfile.HIGH),
+            ("base.aep", MPEGProfile.MAIN),
+        ],
+    )
+    def test_reads(self, sample: str, expected: MPEGProfile) -> None:
+        _, opts = _parse_fresh(self.H264 / sample)
+        assert isinstance(opts, XmlFormatOptions)
+        assert opts.profile is expected
+
+    def test_absent_param_reads_as_baseline(self) -> None:
+        _, opts = _parse_fresh(self.H264 / "h264_baseline.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        assert self.KEY not in opts.params
+        assert opts.profile is MPEGProfile.BASELINE
+
+    def test_write_baseline_matches_ae(self, tmp_path: Path) -> None:
+        # The bar is parity with AE's OWN output for the same input: the
+        # element must survive VALUELESS, exactly as AE's Baseline module
+        # has it - not be deleted (which decodes identically).
+        #
+        # h264_high/h264_baseline are the controlled pair (one AE batch,
+        # differing only in the Profile dropdown). `base.aep` is NOT: it was
+        # authored separately and carries an extra ParamIsDisabled child.
+        project, opts = _parse_fresh(self.H264 / "h264_high.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        assert opts.profile is MPEGProfile.HIGH
+        opts.profile = MPEGProfile.BASELINE
+        project.save(tmp_path / "out.aep")
+
+        _, written = _parse_fresh(tmp_path / "out.aep")
+        _, ae = _parse_fresh(self.H264 / "h264_baseline.aep")
+        assert isinstance(written, XmlFormatOptions)
+        assert isinstance(ae, XmlFormatOptions)
+        assert written.profile is MPEGProfile.BASELINE
+        assert self._child_tags(written, self.KEY) == self._child_tags(ae, self.KEY)
+        assert "ParamValue" not in self._child_tags(ae, self.KEY)
+
+    def test_write_baseline_keeps_the_element_and_its_object_id(
+        self, tmp_path: Path
+    ) -> None:
+        project, opts = _parse_fresh(self.H264 / "base.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        before = self._elements(opts, self.KEY)[0].attrib["ObjectID"]
+        opts.profile = MPEGProfile.BASELINE
+        project.save(tmp_path / "out.aep")
+        _, written = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(written, XmlFormatOptions)
+        elements = self._elements(written, self.KEY)
+        assert len(elements) == 1  # not deleted, not duplicated
+        assert elements[0].find("ParamValue") is None
+        # The PremiereData object graph references this id.
+        assert elements[0].attrib["ObjectID"] == before
+
+    def test_baseline_then_set_restores_value_in_place(self, tmp_path: Path) -> None:
+        # Re-setting must restore ParamValue INSIDE the existing element (as
+        # its first child, where AE puts it), not append a second element.
+        project, opts = _parse_fresh(self.H264 / "h264_baseline.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        opts.profile = MPEGProfile.MAIN
+        project.save(tmp_path / "out.aep")
+        _, written = _parse_fresh(tmp_path / "out.aep")
+        _, ae_valued = _parse_fresh(self.H264 / "h264_high.aep")
+        assert isinstance(written, XmlFormatOptions)
+        assert isinstance(ae_valued, XmlFormatOptions)
+        assert written.profile is MPEGProfile.MAIN
+        assert self._child_tags(written, self.KEY) == self._child_tags(
+            ae_valued, self.KEY
+        )
+        assert self._child_tags(written, self.KEY)[0] == "ParamValue"
+
+    @pytest.mark.parametrize(
+        "profile", [MPEGProfile.MAIN, MPEGProfile.HIGH, MPEGProfile.HIGH10]
+    )
+    def test_roundtrip(self, profile: MPEGProfile, tmp_path: Path) -> None:
+        project, opts = _parse_fresh(self.H264 / "h264_baseline.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        opts.profile = profile
+        project.save(tmp_path / "out.aep")
+        _, opts2 = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(opts2, XmlFormatOptions)
+        assert opts2.profile is profile
+
+    def test_rejects_out_of_enum(self) -> None:
+        _, opts = _parse_fresh(self.H264 / "base.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        with pytest.raises(ValueError):
+            opts.profile = 2  # unobserved; deliberately not an enum member
+
+
+class TestOpenExrHtj2k:
+    """AE 2026 added two HTJ2K compression modes beyond the 0-9 block."""
+
+    @pytest.mark.parametrize(
+        ("sample", "expected"),
+        [
+            ("exr_htj2k-256.aep", OpenExrCompression.HTJ2K_256),
+            ("exr_htj2k-32.aep", OpenExrCompression.HTJ2K_32),
+        ],
+    )
+    def test_reads(self, sample: str, expected: OpenExrCompression) -> None:
+        _, opts = _parse_fresh(FORMAT_DIR / "openexr" / sample)
+        assert isinstance(opts, OpenExrFormatOptions)
+        assert opts.compression is expected
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        project, opts = _parse_fresh(FORMAT_DIR / "openexr" / "exr_htj2k-256.aep")
+        assert isinstance(opts, OpenExrFormatOptions)
+        opts.compression = OpenExrCompression.HTJ2K_32
+        project.save(tmp_path / "out.aep")
+        _, opts2 = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(opts2, OpenExrFormatOptions)
+        assert opts2.compression is OpenExrCompression.HTJ2K_32
+
+
+class TestDnxResolution:
+    """The DNxHR/DNxHD `Resolution` preset ids (a contiguous 1001-1019 block).
+
+    Only a few presets are committed as fixtures; the rest of the mapping is
+    recorded in [DnxResolution][] from the AE 2026 sample sweep.
+    """
+
+    @pytest.mark.parametrize(
+        ("sample", "expected"),
+        [
+            ("720p DNxHD HQX 10-bit.aep", DnxResolution.DNXHD_720P_HQX_10_BIT),
+            ("1080p DNxHD LB 8-bit.aep", DnxResolution.DNXHD_1080P_LB_8_BIT),
+            ("DNxHR HQ 8-bit.aep", DnxResolution.DNXHR_HQ_8_BIT),
+        ],
+    )
+    def test_reads(self, sample: str, expected: DnxResolution) -> None:
+        _, opts = _parse_fresh(FORMAT_DIR / "dnx" / sample)
+        assert isinstance(opts, XmlFormatOptions)
+        assert opts.video_codec == VideoCodec.DNXHR_DNXHD
+        assert opts.resolution is expected
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        project, opts = _parse_fresh(FORMAT_DIR / "dnx" / "DNxHR HQ 8-bit.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        opts.resolution = DnxResolution.DNXHR_LB_8_BIT
+        project.save(tmp_path / "out.aep")
+        _, opts2 = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(opts2, XmlFormatOptions)
+        assert opts2.resolution is DnxResolution.DNXHR_LB_8_BIT
+
+    def test_rejects_out_of_enum(self) -> None:
+        _, opts = _parse_fresh(FORMAT_DIR / "dnx" / "DNxHR HQ 8-bit.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        with pytest.raises(ValueError):
+            opts.resolution = 9999
+
+
+class TestFormatOptionsBoolValidation:
+    """`ChunkField.bool` bakes in `validate_bool`, so a non-bool cannot
+    reach the 1-byte chunk field (`= 2` would write a byte AE never
+    writes; `= "no"` would only fail later, inside `save()`)."""
+
+    BOOL_FIELDS = [
+        ("openexr/base.aep", "luminance_chroma"),
+        ("openexr/base.aep", "thirty_two_bit_float"),
+        ("targa/base.aep", "rle_compression"),
+        ("tiff/base.aep", "lzw_compression"),
+        ("tiff/base.aep", "ibm_pc_byte_order"),
+        ("cineon/base.aep", "logarithmic_conversion"),
+    ]
+
+    @pytest.mark.parametrize(("sample", "field"), BOOL_FIELDS)
+    @pytest.mark.parametrize("bad", ["no", 2, 1, 0, None, []])
+    def test_rejects_non_bool(self, sample: str, field: str, bad: object) -> None:
+        _, opts = _parse_fresh(FORMAT_DIR / sample)
+        with pytest.raises(TypeError):
+            setattr(opts, field, bad)
+
+    @pytest.mark.parametrize(("sample", "field"), BOOL_FIELDS)
+    def test_accepts_bool(self, sample: str, field: str) -> None:
+        _, opts = _parse_fresh(FORMAT_DIR / sample)
+        setattr(opts, field, True)
+        assert getattr(opts, field) is True
 
 
 class TestRoundtripPngFormatOptions:
@@ -422,6 +673,9 @@ class TestRoundtripXmlFormatOptions:
         project, opts = _parse_fresh(FORMAT_DIR / "h.264" / "base.aep")
         assert isinstance(opts, XmlFormatOptions)
         assert opts.mpeg_audio_format == MPEGAudioFormat.AAC
+        # PCM is only offered without a container: switch the
+        # multiplexer to None first (as AE's dialog requires).
+        opts.mpeg_multiplexer = MPEGMultiplexer.NONE
         opts.mpeg_audio_format = MPEGAudioFormat.PCM
         project.save(tmp_path / "out.aep")
         _, opts2 = _parse_fresh(tmp_path / "out.aep")
@@ -456,3 +710,47 @@ class TestRoundtripXmlFormatOptions:
         assert isinstance(opts, XmlFormatOptions)
         with pytest.raises(AttributeError):
             opts.settings["Format Code"] = "MooV"
+
+
+class TestRoundtripXmlParamsDict:
+    """`params` mutations must reach the XML, not just the dict.
+
+    `dict.update`/`setdefault` are C-level and skip `__setitem__`, so
+    they used to update the dict (and the typed accessors reading it)
+    while the saved file kept the old value.
+    """
+
+    def test_update_persists(self, tmp_path: Path) -> None:
+        project, opts = _parse_fresh(FORMAT_DIR / "mp3" / "mp3_mono_320.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        assert opts.bitrate == 320
+        opts.params.update({"BitRate": "128"})
+        project.save(tmp_path / "out.aep")
+        _, opts2 = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(opts2, XmlFormatOptions)
+        assert opts2.params["BitRate"] == "128"
+        assert opts2.bitrate == 128
+
+    def test_update_kwargs_persists(self, tmp_path: Path) -> None:
+        project, opts = _parse_fresh(FORMAT_DIR / "mp3" / "mp3_mono_320.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        opts.params.update(BitRate="192")
+        project.save(tmp_path / "out.aep")
+        _, opts2 = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(opts2, XmlFormatOptions)
+        assert opts2.bitrate == 192
+
+    def test_setdefault_persists_new_key(self, tmp_path: Path) -> None:
+        project, opts = _parse_fresh(FORMAT_DIR / "mp3" / "mp3_mono_320.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        assert opts.params.setdefault("ADBEUnusedParam", "7") == "7"
+        project.save(tmp_path / "out.aep")
+        _, opts2 = _parse_fresh(tmp_path / "out.aep")
+        assert isinstance(opts2, XmlFormatOptions)
+        assert opts2.params["ADBEUnusedParam"] == "7"
+
+    def test_setdefault_keeps_existing(self) -> None:
+        _, opts = _parse_fresh(FORMAT_DIR / "mp3" / "mp3_mono_320.aep")
+        assert isinstance(opts, XmlFormatOptions)
+        assert opts.params.setdefault("BitRate", "1") == "320"
+        assert opts.bitrate == 320

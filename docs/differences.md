@@ -203,26 +203,37 @@ project.folders        # list[FolderItem] - all folders
 project.footages       # list[FootageItem] - all footages
 ```
 
+### FolderItem
+
+`FolderItem` provides filtered item lists:
+
+```python
+folder.compositions    # list[CompItem] - compositions in the folder
+folder.folders         # list[FolderItem] - subfolders
+folder.footages        # list[FootageItem] - footages in the folder
+```
+
 ### CompItem
 
 `CompItem` provides filtered layer lists:
 
 ```python
-comp.text_layers         # list[TextLayer]
-comp.shape_layers        # list[ShapeLayer]
-comp.camera_layers       # list[CameraLayer]
-comp.light_layers        # list[LightLayer]
-comp.null_layers         # list[Layer]
-comp.solid_layers        # list[AVLayer]
-comp.adjustment_layers   # list[AVLayer]
-comp.three_d_layers      # list[AVLayer]
-comp.guide_layers        # list[AVLayer]
-comp.solo_layers         # list[Layer]
-comp.composition_layers  # list[AVLayer] - layers sourced from comps
-comp.footage_layers      # list[AVLayer] - layers sourced from footages
-comp.file_layers         # list[AVLayer] - layers sourced from files
-comp.placeholder_layers  # list[AVLayer]
-comp.av_layers           # list[AVLayer] - all AV layers
+comp.text_layers             # list[TextLayer]
+comp.shape_layers            # list[ShapeLayer]
+comp.camera_layers           # list[CameraLayer]
+comp.light_layers            # list[LightLayer]
+comp.parametric_mesh_layers  # list[ParametricMeshLayer]
+comp.null_layers             # list[Layer]
+comp.solid_layers            # list[AVLayer]
+comp.adjustment_layers       # list[AVLayer]
+comp.three_d_layers          # list[AVLayer]
+comp.guide_layers            # list[AVLayer]
+comp.solo_layers             # list[Layer]
+comp.composition_layers      # list[AVLayer] - layers sourced from comps
+comp.footage_layers          # list[AVLayer] - layers sourced from footages
+comp.file_layers             # list[AVLayer] - layers sourced from files
+comp.placeholder_layers      # list[AVLayer]
+comp.av_layers               # list[AVLayer] - all AV layers
 ```
 
 ## Extra Attributes
@@ -260,7 +271,7 @@ not available in ExtendScript:
 
 | Attribute | Description |
 |-----------|-------------|
-| `layer_type` | The layer type (`"AVLayer"`, `"Layer"`, `"CameraLayer"`, `"LightLayer"`) |
+| `layer_type` | The layer type (`"AVLayer"`, `"Layer"`, `"CameraLayer"`, `"LightLayer"` `"ParametricMeshLayer"`) |
 
 ### RenderQueueItem
 
@@ -321,3 +332,75 @@ parses these from the binary and exposes them:
 - `TargaFormatOptions` - bits per pixel, RLE compression
 - `TiffFormatOptions` - LZW compression, byte order
 - `XmlFormatOptions` - video/audio codec, frame rate, MPEG settings
+
+## Stricter Write Validation
+
+py_aep validates values like After Effects' *dialogs*, which is sometimes
+stricter than ExtendScript's own setters. Where AE scripting accepts a
+degenerate value and silently misbehaves, py_aep raises instead:
+
+- **Render time spans**: AE scripting accepts a `timeSpanStart` before 0 or
+  past the span end, then silently renders garbage (a span starting at -5
+  renders 5 seconds of void lead-in; an end before the start renders a
+  single frame, both with a `DONE` status - probed in AE 2026). py_aep
+  rejects a negative start, a start at or past the end, and a duration
+  below one frame. The *semantics* match ExtendScript: setting the start
+  keeps the span end fixed (the duration is recomputed), setting the
+  duration keeps the start.
+- **Booleans**: AE coerces any truthy value, so `"no"` becomes `True`.
+  py_aep boolean attributes and settings accept only `True` / `False`.
+
+## Approximated Runtime Behaviors
+
+Some ExtendScript methods gate their behavior on runtime state that only a
+running After Effects has. py_aep implements the closest file-level
+equivalent and documents the divergence:
+
+- **`Project.auto_fix_expressions()`**: After Effects only rewrites
+  expressions that are currently *erroring* - runtime state that is not
+  stored in the project file (verified: broken and working expressions are
+  chunk-identical on disk). py_aep instead replaces the quoted forms
+  `"old_text"` / `'old_text'` in **every enabled expression**. Everything
+  else matches AE (probed in AE 2026): both quote styles are fixed,
+  disabled expressions are never touched, unquoted mentions are ignored,
+  and quoted occurrences inside comments of a rewritten expression are
+  replaced too. The one divergent case: an expression that evaluates
+  cleanly but contains the quoted text is rewritten by py_aep, while AE
+  leaves it alone.
+- **`AVLayer` geometry methods** (`source_point_to_comp()`,
+  `comp_point_to_source()`, `source_rect_at_time()`): After Effects
+  evaluates these at the current playhead position, which py_aep reads as
+  the comp's stored `time` attribute - deterministic per file, but it
+  reflects wherever the playhead sat when the project was last saved. The
+  two point conversions accept an optional `time` keyword (py_aep
+  extension) to evaluate at an explicit time instead. Layers whose parent
+  chain uses auto-orientation raise `NotImplementedError` (the transform
+  math does not model it), as do text and shape layers for
+  `source_rect_at_time()` (content bounds need glyph extents / shape
+  geometry evaluation). `calculate_transform_from_points()` names its
+  third parameter `point_bottom_left`: the AE guide calls it
+  `pointBottomRight`, but After Effects treats it as the bottom-left
+  corner (probed AE 2026; the guide's own example passes `bl`).
+- **`TextDocument.reset_char_style()` / `reset_paragraph_style()`**: After
+  Effects restores the *Character* / *Paragraph* panel defaults, which are
+  application state rather than project data - they live in the AE
+  preferences (`["Text Style Sheet"]` / `["Text Paragraph Sheet"]` in
+  `Prefs-text.txt`), not in the `.aep`. py_aep reads those same sections
+  from the preferences directory the project was parsed with (see
+  `parse(..., ae_preferences_dir=...)`), so a reset restores *your* panel
+  defaults exactly as AE would. Parsed without a preferences directory, it
+  falls back to AE's factory values. Only the attributes present in those
+  panel sheets are restored - which is why, like After Effects, a paragraph
+  reset leaves `auto_hyphenate` untouched.
+- **`TextDocument.baseline_locs`**: reports the layout After Effects
+  persisted. The per-line pen origins and glyph advances exist only in that
+  cache, so - unlike `composed_line_count` - this never recomposes; after a
+  layout-affecting py-side write the values stay at the persisted layout
+  (see `composition_stale`).
+- **`Project.replace_font()`**: `no_font_locking` is accepted for parity and
+  ignored. After Effects uses it to suppress the fallback font it picks when
+  the target font lacks glyphs for the text; that is a runtime font-engine
+  decision py_aep does not make, so py_aep always performs the direct
+  replacement (it behaves as if `no_font_locking` were `True`). Like every
+  py_aep text write, the layer's layout cache is left as-is (AE recomputes
+  it on open), so glyph advances cached for the old font stay until then.

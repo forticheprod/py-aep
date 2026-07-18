@@ -233,3 +233,27 @@ class TestListColorProfiles:
         project = parse_project(SAMPLES_DIR / "colorManagementSystem_ocio.aep")
         assert project.color_management_system.name == "OCIO"
         assert project.list_color_profiles() == []
+
+
+class TestDynamicLinkGUID:
+    """Tests for Item.dynamic_link_guid.
+
+    The id-derived formula was validated against AE 2026 (2026-07-14 probe:
+    all 11 items of a generated project matched, stable across re-open, and
+    reading the attribute left the chunk tree byte-identical).
+    """
+
+    def test_derived_from_item_id(self) -> None:
+        project = parse_project(SAMPLES_DIR / "bitsPerChannel_8.aep")
+        assert project.items
+        for item_id, item in project.items.items():
+            assert item.dynamic_link_guid == (
+                f"{item_id:08x}-0000-0000-0000-000000000000"
+            )
+
+    def test_guid_shape(self) -> None:
+        project = parse_project(SAMPLES_DIR / "bitsPerChannel_8.aep")
+        guid = next(iter(project.items.values())).dynamic_link_guid
+        groups = guid.split("-")
+        assert [len(g) for g in groups] == [8, 4, 4, 4, 12]
+        assert guid == guid.lower()

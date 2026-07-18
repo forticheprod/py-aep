@@ -143,7 +143,14 @@ class SspcChunk(Chunk):
     """Zero-padded digit count for image sequences (0 for non-sequences)."""
 
     # -- Extended settings (bytes 184-221) ---------------------------------
-    _reserved_b8: bytes = bytes_field(4, repr=False)
+    _reserved_b8: bytes = bytes_field(1, repr=False)
+    frame_range_set: bool = bool_field()
+    """Byte 0xB9: `True` when the sequence was imported with a user-set
+    frame range. AE sets it for ranged imports only - a sequence with
+    missing interior frames but no range keeps 0 (probed range fixtures,
+    AE 2026)."""
+
+    _reserved_ba: bytes = bytes_field(2, repr=False)
     layer_id: int = u4_field(default=0xFFFFFFFF)
     """Byte 0xBC: Photoshop layer id (`lyid`) when the footage references a
     single layer of a layered file; `0xFFFFFFFF` otherwise (merged,
@@ -426,6 +433,7 @@ def build_psd_layer_opti_data(
     layer_id: int,
     layer_name: str,
     bounds: tuple[int, int, int, int],
+    is_adjustment: bool = False,
 ) -> bytes:
     """Build the 602-byte `8BPS` `opti` for one layer of a layered PSD import.
 
@@ -440,8 +448,9 @@ def build_psd_layer_opti_data(
     - `psd_layer_index`: the 0-based layer index, clearing the merged sentinel.
     - `psd_layer_top/left/bottom/right`: the layer's content bounding box
       (LE s32), i.e. the layer record's rectangle - NOT the canvas.
-    - `psd_layer_channels`: 4 (RGBA) for a layer with pixel content, 0 for an
-      empty content box (e.g. an adjustment layer).
+    - `psd_layer_channels`: 4 (RGBA) for a raster layer - including a fully
+      transparent one with an empty content box - and 0 for an adjustment
+      layer (which contributes no pixel channels).
     - `psd_layer_id`: the Photoshop layer id (`lyid`, LE u32).
     - the trailing name block (`psd_group_name`): the layer name,
       NUL-terminated UTF-8.
@@ -471,9 +480,12 @@ def build_psd_layer_opti_data(
         psd_layer_left=left,
         psd_layer_bottom=bottom,
         psd_layer_right=right,
-        # 4 (RGBA) for a layer with pixel content, 0 for an empty content
-        # box (e.g. an adjustment layer with no pixels). AE 2026 measured.
-        psd_layer_channels=0x04 if right > left and bottom > top else 0x00,
+        # 4 (RGBA) for a raster layer - even a fully transparent one whose
+        # content box is empty (psd_clipping_mask "Layer 1") - and 0 for an
+        # adjustment layer, which has no pixel channels (grouped_layers
+        # "hue/sat adj"). AE 2026 measured; the empty content box alone does
+        # NOT drop the channels.
+        psd_layer_channels=0x00 if is_adjustment else 0x04,
         psd_layer_id=layer_id,
     )
     chunk.psd_group_name = layer_name
@@ -505,7 +517,7 @@ def build_text_opti_data(width: int, height: int) -> bytes:
     AE stores this opti for every file imported with source format `TEXT`
     (Illustrator, EPS, PDF). AE caches `sspc` (not this opti) for
     dimensions, so AE's per-file flag bytes (0x33, 0x3C) and the redundant
-    dimension tail (0x248-0x24D) are not load-bearing and are left zero.
+    dimension tail (0x248-0x24D) are not necessary and are left zero.
     Reverse-engineered from AE 2026 for ai.ai (612x792), eps.eps
     (1921x2881), pdf.pdf (595x842); the layout lives on `TextOptiChunk`.
     """
@@ -772,7 +784,7 @@ class TextOptiChunk(OptiChunk):
     _pad_2c: bytes = bytes_field(7, repr=False)
     text_color_space: int = u1_field()
     """Document color-space flag: 0x02 = CMYK, 0x08 = RGB/default. Not
-    load-bearing for whole-document footage, where builders leave 0."""
+    necessary for whole-document footage, where builders leave 0."""
 
     _pad_34: bytes = bytes_field(8, repr=False)
     text_element_count: int = u1_field()

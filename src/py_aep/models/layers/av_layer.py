@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import (
+    AutoOrientType,
     BlendingMode,
     FrameBlendingType,
     LayerQuality,
@@ -15,10 +16,24 @@ from ...ae_version import requires_version
 from ...binary.layer_chunks import LdtaChunk
 from ...resolvers.essential_properties import resolve_essential_property_controllers
 from ...resolvers.motion_graphics import can_add_layer
+from ...resolvers.transform import (
+    build_world_matrix,
+    camera_ray,
+    intersect_layer_plane,
+    project_to_comp,
+    transform_from_points,
+)
 from ..descriptors import ChunkField
 from ..items.av_item import AVItem
 from ..properties.property import Property
-from ..validators import validate_enum, validate_name, validate_number
+from ..validators import (
+    validate_bool,
+    validate_enum,
+    validate_name,
+    validate_number,
+    validate_vector2,
+    validate_vector3,
+)
 from .layer import Layer
 
 if TYPE_CHECKING:
@@ -68,6 +83,7 @@ def _unregister_source_usage(
 
 
 def _validate_collapse_transformation(value: bool, obj: AVLayer) -> None:
+    validate_bool(value)
     if not obj.can_set_collapse_transformation:
         raise AttributeError(
             "'collapse_transformation' is read-only when"
@@ -103,14 +119,20 @@ class AVLayer(Layer):
     See: https://ae-scripting.docsforadobe.dev/layer/avlayer/
     """
 
-    adjustment_layer = ChunkField[bool]("_ldta", "adjustment_layer")
+    adjustment_layer = ChunkField.bool(
+        "_ldta",
+        "adjustment_layer",
+    )
     """When `True`, the layer is an adjustment layer. Read / Write."""
 
-    audio_enabled = ChunkField[bool]("_ldta", "audio_enabled")
+    audio_enabled = ChunkField.bool(
+        "_ldta",
+        "audio_enabled",
+    )
     """When `True`, the layer's audio is enabled. This value corresponds
     to the audio toggle switch in the Timeline panel. Read / Write."""
 
-    collapse_transformation = ChunkField[bool](
+    collapse_transformation = ChunkField.bool(
         "_ldta",
         "collapse_transformation",
         validate=_validate_collapse_transformation,
@@ -118,12 +140,17 @@ class AVLayer(Layer):
     """`True` if collapse transformation is on for this layer.
     Read / Write."""
 
-    effects_active = ChunkField[bool]("_ldta", "effects_active")
+    effects_active = ChunkField.bool(
+        "_ldta",
+        "effects_active",
+    )
     """`True` if the layer's effects are active, as indicated by the
     <f> icon next to it in the user interface. Read / Write."""
 
-    environment_layer = ChunkField[bool](
-        "_ldta", "environment_layer", post_set="_on_environment_layer_set"
+    environment_layer = ChunkField.bool(
+        "_ldta",
+        "environment_layer",
+        post_set="_on_environment_layer_set",
     )
     """`True` if this is an environment layer in a Ray-traced 3D
     composition. Setting this to `True` automatically sets
@@ -136,13 +163,22 @@ class AVLayer(Layer):
     )
     """The type of frame blending for the layer. Read / Write."""
 
-    guide_layer = ChunkField[bool]("_ldta", "guide_layer")
+    guide_layer = ChunkField.bool(
+        "_ldta",
+        "guide_layer",
+    )
     """`True` if the layer is a guide layer. Read / Write."""
 
-    motion_blur = ChunkField[bool]("_ldta", "motion_blur_flag")
+    motion_blur = ChunkField.bool(
+        "_ldta",
+        "motion_blur_flag",
+    )
     """`True` if motion blur is enabled for the layer. Read / Write."""
 
-    preserve_transparency = ChunkField[bool]("_ldta", "preserve_transparency")
+    preserve_transparency = ChunkField.bool(
+        "_ldta",
+        "preserve_transparency",
+    )
     """`True` if preserve transparency is enabled for the layer.
     Read / Write."""
 
@@ -154,14 +190,19 @@ class AVLayer(Layer):
     )
     """The layer's sampling method. Read / Write."""
 
-    three_d_layer = ChunkField[bool](
-        "_ldta", "three_d_layer", post_set="_on_three_d_layer_set"
+    three_d_layer = ChunkField.bool(
+        "_ldta",
+        "three_d_layer",
+        post_set="_on_three_d_layer_set",
     )
     """`True` if this layer is a 3D layer. Setting this to `True`
     automatically sets [environment_layer][] to `False`.
     Read / Write."""
 
-    three_d_per_char = ChunkField[bool]("_ldta", "three_d_per_char")
+    three_d_per_char = ChunkField.bool(
+        "_ldta",
+        "three_d_per_char",
+    )
     """`True` if this layer has the Enable Per-character 3D switch set,
     allowing its characters to be animated off the plane of the text
     layer. Applies only to text layers. Read / Write."""
@@ -483,6 +524,210 @@ class AVLayer(Layer):
 
         return True
 
+    # ------------------------------------------------------------------
+    # Geometry evaluation (sourceRectAtTime, point conversions)
+    # ------------------------------------------------------------------
+
+    def _geometry_time(self, time: float | None) -> float:
+        """Resolve the evaluation time for a geometry method: an explicit
+        `time` (py_aep extension), else the comp's current time - what AE
+        uses, i.e. the playhead position saved in the file."""
+        if time is not None:
+            validate_number(time)
+            return time
+        return self.time
+
+    def _guard_auto_orient(self) -> None:
+        """The transform math does not model auto-orientation; refuse
+        rather than silently return wrong values."""
+        current: Layer | None = self
+        while current is not None:
+            if current.auto_orient != AutoOrientType.NO_AUTO_ORIENT:
+                raise NotImplementedError(
+                    f"layer {current.name!r} uses auto-orient "
+                    f"({current.auto_orient.name}), which the point "
+                    "conversion math does not model"
+                )
+            current = current.parent
+
+    def source_point_to_comp(
+        self, point: list[float], time: float | None = None
+    ) -> list[float]:
+        """Converts layer coordinates, such as `boxTextPos`, to composition
+        coordinates.
+
+        The layer's transform chain (parenting included) is evaluated at
+        the composition's current [time][Layer.time] - like After Effects,
+        which uses the playhead position stored in the file; pass `time`
+        to evaluate at another time (py_aep extension). 3D layers project
+        through AE's DEFAULT comp camera: `sourcePointToComp()` is
+        camera-independent (verified against AE 2026 across one-node,
+        two-node and keyframed-zoom rigs).
+
+        Args:
+            point: A position array of `[x, y]` layer coordinates.
+            time: Composition time in seconds (py_aep extension; defaults
+                to the comp's current time).
+
+        Returns:
+            A position array of `[x, y]` composition coordinates.
+
+        Raises:
+            NotImplementedError: If a layer in the parent chain uses
+                auto-orientation.
+        """
+        validate_vector2(point)
+        eval_time = self._geometry_time(time)
+        self._guard_auto_orient()
+        comp = self.containing_comp
+        world = build_world_matrix(self, eval_time)
+        world_point = world.transform_point([point[0], point[1], 0.0])
+        return project_to_comp(world_point, comp.width, comp.height, comp.pixel_aspect)
+
+    def comp_point_to_source(
+        self, point: list[float], time: float | None = None
+    ) -> list[float]:
+        """Converts composition coordinates, such as `sourcePointToComp`,
+        to layer coordinates.
+
+        The layer's transform chain (parenting included) is evaluated at
+        the composition's current [time][Layer.time] - like After Effects,
+        which uses the playhead position stored in the file; pass `time`
+        to evaluate at another time (py_aep extension). For a 3D layer the
+        comp point is cast as a ray from the ACTIVE camera (the front-most
+        enabled camera layer active at that time, else AE's default comp
+        camera) and intersected with the layer's plane - unlike
+        `sourcePointToComp()`, this direction IS camera-dependent
+        (verified against AE 2026).
+
+        Args:
+            point: A position array of `[x, y]` composition coordinates.
+            time: Composition time in seconds (py_aep extension; defaults
+                to the comp's current time).
+
+        Returns:
+            A position array of `[x, y]` layer coordinates.
+
+        Raises:
+            NotImplementedError: If a layer in the parent chain uses
+                auto-orientation.
+            ValueError: If the camera ray does not reach the layer plane
+                going forward - it is parallel to the plane, or the layer
+                is at or behind the camera. After Effects returns a literal
+                `[0, 0]` for these; py_aep raises instead, because that
+                sentinel cannot be told apart from a real result.
+        """
+        validate_vector2(point)
+        eval_time = self._geometry_time(time)
+        self._guard_auto_orient()
+        comp = self.containing_comp
+        world = build_world_matrix(self, eval_time)
+        camera = self._active_camera_at(eval_time) if self.three_d_layer else None
+        origin, direction = camera_ray(
+            camera,
+            [point[0], point[1]],
+            comp.width,
+            comp.height,
+            comp.pixel_aspect,
+            eval_time,
+        )
+        return intersect_layer_plane(world, origin, direction)
+
+    def _active_camera_at(self, time: float) -> Layer | None:
+        """The front-most enabled camera layer active at `time`, or `None`."""
+        for camera in self.containing_comp.camera_layers:
+            if camera.enabled and camera.in_point <= time < camera.out_point:
+                return camera
+        return None
+
+    def calculate_transform_from_points(
+        self,
+        point_top_left: list[float],
+        point_top_right: list[float],
+        point_bottom_left: list[float],
+    ) -> dict[str, Any]:
+        """Calculates a transformation from a set of points in this layer.
+
+        A pure function of the three points and the layer's source
+        dimensions - the current transform is ignored (verified against
+        AE 2026). Shear between the axes is absorbed into
+        `scale[2] = 100 * sin(angle)`, and mirrored point sets come out as
+        180-degree rotation combinations rather than negative scale.
+
+        Note:
+            The AE Scripting Guide names the third parameter
+            `pointBottomRight`, but After Effects treats it as the
+            BOTTOM-LEFT corner (the guide's own example passes `bl`);
+            py_aep names it accordingly.
+
+        Args:
+            point_top_left: `[x, y, z]` comp-space position of the
+                source's top-left corner.
+            point_top_right: `[x, y, z]` position of the top-right corner.
+            point_bottom_left: `[x, y, z]` position of the bottom-left
+                corner.
+
+        Returns:
+            A dict of transform property values (`anchor_point`,
+            `position`, `x_rotation`, `y_rotation`, `z_rotation`,
+            `scale`), assignable to the matching transform properties.
+
+        Raises:
+            ValueError: If the points are coincident or collinear.
+        """
+        for pt in (point_top_left, point_top_right, point_bottom_left):
+            validate_vector3(pt)
+        return transform_from_points(
+            point_top_left,
+            point_top_right,
+            point_bottom_left,
+            float(self.width),
+            float(self.height),
+        )
+
+    def source_rect_at_time(self, time: float, extents: bool) -> dict[str, float]:
+        """Retrieves the rectangle bounds of the layer at the specified
+        time index, corrected for text or shape layer content.
+
+        For footage, solid, precomposition and adjustment layers this is
+        `(0, 0, width, height)` of the layer source at every time
+        (verified against AE 2026 - the layer transform never affects it).
+
+        Note:
+            Text layers (the tight ink bounding box, which requires glyph
+            extents) and shape layers (geometry bounds with
+            under-determined `extents` growth) are not implemented yet and
+            raise `NotImplementedError`.
+
+        Args:
+            time: The time index, in seconds.
+            extents: `True` to include the extents. Only relevant for
+                shape layers (not implemented).
+
+        Returns:
+            A dict with `top`, `left`, `width` and `height` keys.
+        """
+        validate_number(time)
+        validate_bool(extents)
+        layer_type = self._ldta.layer_type
+        if layer_type == LayerType.TEXT:
+            raise NotImplementedError(
+                "source_rect_at_time is not implemented for text layers: the "
+                "content bounds require glyph ink extents from the "
+                "composition engine"
+            )
+        if layer_type == LayerType.SHAPE:
+            raise NotImplementedError(
+                "source_rect_at_time is not implemented for shape layers: "
+                "the content bounds require shape geometry evaluation"
+            )
+        return {
+            "top": 0.0,
+            "left": 0.0,
+            "width": float(self.width),
+            "height": float(self.height),
+        }
+
     @property
     def can_set_collapse_transformation(self) -> bool:
         """`True` if it is possible to set the
@@ -531,6 +776,7 @@ class AVLayer(Layer):
 
     @time_remap_enabled.setter
     def time_remap_enabled(self, value: bool) -> None:
+        validate_bool(value)
         if not self.can_set_time_remap_enabled:
             raise AttributeError(
                 "'time_remap_enabled' is read-only when"

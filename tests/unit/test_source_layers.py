@@ -77,6 +77,42 @@ class TestResolvePsdLayer:
         assert [leaf.record_index for leaf in leaves] == [0, 1, 3, 5]
 
 
+class TestPsd16BitLayers:
+    """16/32-bit documents store their records in the global Lr16/Lr32 block.
+
+    The classic Layer Info section is empty there; misreading it used to
+    surface every 16-bit layered PSD as FlattenedPsdError.
+    """
+
+    @pytest.mark.parametrize(
+        "name", ["psd_layer_styles.psd", "psd_layer_styles_variant.psd"]
+    )
+    def test_16bit_leaves_read_from_lr16(self, name: str) -> None:
+        leaves = psd_leaf_layers(ASSETS / name)
+        assert [(leaf.name, leaf.layer_id, leaf.record_index) for leaf in leaves] == [
+            ("Layer 1", 2, 0),
+            ("Layer 1 copy", 4, 1),
+        ]
+        assert all(leaf.bounds == (0, 0, 24, 25) for leaf in leaves)
+
+    def test_32bit_leaves_read_from_lr32(self) -> None:
+        # A 32-bit document keeps its records in the global Lr32 block.
+        leaves = psd_leaf_layers(ASSETS / "psd_noise_gradient_32bpc.psd")
+        assert {(leaf.name, leaf.layer_id) for leaf in leaves} == {
+            ("Layer 1", 2),
+            ("Layer 1 copy", 5),
+        }
+        assert {leaf.record_index for leaf in leaves} == {0, 1}
+
+    def test_16bit_probe_layer_count(self) -> None:
+        from py_aep.resolvers.media_probe import probe_media
+
+        info = probe_media(ASSETS / "psd_layer_styles.psd")
+        assert info.layer_count == 2
+        assert info.has_alpha is True
+        assert info.bit_depth == 16
+
+
 class TestResolveAiLayer:
     def test_resolves_document_index_and_name(self) -> None:
         # Dropdown order is top-first; the document (OCG) order it maps to

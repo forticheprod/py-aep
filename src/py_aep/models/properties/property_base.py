@@ -12,7 +12,7 @@ from ...binary.property_chunks import TDSN_SENTINEL, TdmnChunk
 from ...binary.utils import find_by_type, index_by_identity
 from ...data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..descriptors import ChunkField
-from ..validators import validate_name
+from ..validators import validate_bool, validate_name
 
 if TYPE_CHECKING:
     from ...binary.chunk import Chunk
@@ -52,6 +52,7 @@ _TEXT_ANIMATOR_TOGGLEABLE: frozenset[str] = frozenset(
 
 
 def _validate_enabled(value: bool, obj: PropertyBase) -> None:
+    validate_bool(value)
     if not obj.can_set_enabled:
         raise AttributeError("'enabled' is read-only when 'can_set_enabled' is False.")
 
@@ -105,7 +106,7 @@ class PropertyBase:
     See: https://ae-scripting.docsforadobe.dev/property/propertybase/
     """
 
-    enabled = ChunkField[bool](
+    enabled = ChunkField.bool(
         "_tdsb",
         "enabled",
         default=True,

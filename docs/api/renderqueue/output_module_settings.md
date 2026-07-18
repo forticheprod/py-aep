@@ -23,7 +23,6 @@ Output module settings are accessed via `OutputModule.settings`, a [SettingsView
 | `"Include Source XMP Metadata"` | `bool` | Whether to include source XMP metadata |
 | `"Lock Aspect Ratio"` | `bool` | Whether the aspect ratio is locked when resizing |
 | `"Output Audio"` | [OutputAudio][py_aep.enums.OutputAudio] | Audio output mode |
-| `"Output Color Space"` | `str` | Output color space name, or empty string if unset |
 | `"Output File Info"` | `dict[str, str]` | Output file path info (see [sub-keys](#output-file-info-sub-keys) below) |
 | `"Post-Render Action"` | [PostRenderActionSetting][py_aep.enums.PostRenderActionSetting] | Action after rendering |
 | `"Preserve RGB"` | `bool` | When `true`, disables color management conversions for this output module |
@@ -34,6 +33,12 @@ Output module settings are accessed via `OutputModule.settings`, a [SettingsView
 | `"Use Comp Frame Number"` | `bool` | Whether to use composition frame numbers |
 | `"Use Region of Interest"` | `bool` | Whether to use the region of interest |
 | `"Video Output"` | `bool` | Whether video output is enabled |
+
+!!! note "Output color space"
+    The output color space is not a settings key (After Effects does not expose
+    it in `getSettings`). Read or write it through the
+    [`OutputModule.output_color_space`][py_aep.models.renderqueue.output_module.OutputModule.output_color_space]
+    property instead.
 
 ### Output File Info Sub-Keys
 

@@ -63,6 +63,70 @@ class OpenExrCompression(IntEnum):
     B44A = 7
     DWAA = 8
     DWAB = 9
+    HTJ2K_256 = 10
+    HTJ2K_32 = 11
+
+
+class MPEGProfile(IntEnum):
+    """H.264 encoding profile (the `Profile` dropdown).
+
+    Stored in the `ADBEVideoMPEGProfile` XML parameter, except for
+    `BASELINE`: After Effects writes NO parameter at all for Baseline, so
+    it is represented by the `-1` sentinel (assigning it removes the
+    parameter; reading an absent parameter returns it). `-1` is never
+    stored in a file.
+
+    The dropdown's `Auto` is resolved at save time and is not a distinct
+    stored value - an Auto module was observed storing `1`, so it reads
+    back as `MAIN`.
+
+    Values mapped from AE 2026-authored samples. `2` is unobserved (the
+    dropdown offers no fifth profile), so it is absent from this enum and
+    reads back as a raw `int` if a file ever holds it.
+
+    Not available in ExtendScript.
+    """
+
+    BASELINE = -1
+    MAIN = 1
+    HIGH = 3
+    HIGH10 = 4
+
+
+class DnxResolution(IntEnum):
+    """DNxHR / DNxHD resolution preset.
+
+    The `Resolution` dropdown of the DNxHR/DNxHD codec options, stored in
+    the `ADBEVideoResolution` XML parameter. Only meaningful when the
+    module's `video_codec` is `VideoCodec.DNXHR_DNXHD`; the parameter
+    survives a codec change, so it can read back stale under another codec.
+
+    Member names follow the dropdown labels. Ids are a contiguous
+    1001-1019 block, mapped one-to-one from AE 2026-authored samples
+    (`samples/models/format_options/dnx/`).
+
+    Not available in ExtendScript.
+    """
+
+    DNXHD_720P_HQX_10_BIT = 1001
+    DNXHD_720P_HQ_8_BIT = 1002
+    DNXHD_720P_SQ_8_BIT = 1003
+    DNXHD_720P_SQ_THIN_RASTER_8_BIT = 1004
+    DNXHD_1080I_HQX_10_BIT = 1005
+    DNXHD_1080I_HQ_8_BIT = 1006
+    DNXHD_1080I_SQ_8_BIT = 1007
+    DNXHD_1080I_SQ_THIN_RASTER_8_BIT = 1008
+    DNXHD_1080P_RGB_444_10_BIT = 1009
+    DNXHD_1080P_HQX_10_BIT = 1010
+    DNXHD_1080P_HQ_8_BIT = 1011
+    DNXHD_1080P_SQ_8_BIT = 1012
+    DNXHD_1080P_SQ_THIN_RASTER_8_BIT = 1013
+    DNXHD_1080P_LB_8_BIT = 1014
+    DNXHR_RGB_444_12_BIT = 1015
+    DNXHR_HQX_10_BIT = 1016
+    DNXHR_HQ_8_BIT = 1017
+    DNXHR_SQ_8_BIT = 1018
+    DNXHR_LB_8_BIT = 1019
 
 
 class AudioCodec(IntEnum):
@@ -206,8 +270,42 @@ class VideoCodec(IntEnum):
     """Uncompressed YUV 10 bit 4:2:2 (FourCC `'v210'`)."""
 
 
+class AudioInterleave(IntEnum):
+    """AVI audio interleave interval.
+
+    These values are extracted from the `ADBEAudioInterleave` parameter in
+    the XML-based format options of AVI output modules. The dialog's
+    `None` choice stores no parameter at all (the accessor reads `None`).
+
+    Not available in ExtendScript.
+    """
+
+    ONE_FRAME = 1
+    HALF_SECOND = 2
+    ONE_SECOND = 3
+    TWO_SECONDS = 4
+
+
+class MPEGAudioLayer(IntEnum):
+    """MPEG-1 audio layer.
+
+    These values are extracted from the `ADBEMPEGAudioLayer` parameter in
+    the XML-based format options of H.264 output modules (only meaningful
+    when the audio format is MPEG).
+
+    Not available in ExtendScript.
+    """
+
+    LAYER_I = 1
+    LAYER_II = 2
+
+
 class MPEGAudioFormat(IntEnum):
     """MPEG audio format identifier.
+
+    The dialog's top-level `Audio Format` dropdown (AAC / MPEG / PCM) for
+    H.264 output modules; despite the `MPEG` prefix in the parameter name
+    it selects among all three families (AE-sample verified).
 
     These values are extracted from the `ADBEMPEGAudioFormat` parameter in
     the XML-based format options of output modules (H.264, QuickTime).

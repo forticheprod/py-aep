@@ -139,6 +139,12 @@ def resolve_can_set_expression(prop: Property) -> bool:
 
     # Camera layers cannot set expressions on Scale/Opacity
     if layer_type == 2:
+        # Point of Interest (the camera's anchor point) is expressionable
+        # only on a two-node camera (orient towards POI); a one-node camera
+        # leaves the POI inactive (probed AE 2026). poi_auto_orient is the
+        # ldta bit set for the two-node rig.
+        if mn == "ADBE Anchor Point":
+            return bool(layer._ldta.poi_auto_orient)
         return mn not in _CAMERA_NO_EXPRESSION
 
     # Light layers have complex rules depending on light type

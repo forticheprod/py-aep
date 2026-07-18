@@ -53,6 +53,18 @@ class PropSpec(NamedTuple):
     regardless of the actual clamp, e.g. Smoothing Angle is 0-180 with a
     0/100 tduM). When True, `min_value`/`max_value` resolve ONLY from the
     spec (`None` = unbounded) and the chunk values are ignored."""
+    hint_bounds: tuple[float, float] | None = None
+    """The `tdum`/`tduM` values AE writes when this property materializes -
+    UI slider hints, which can differ from the real clamp (a Layer Styles
+    Size is 0-250 with a 0/100 tduM). `None` keeps the family default
+    (the `[0.0]` placeholders or no bound chunks at all)."""
+    property_category: int | None = None
+    """Override for the `tdb4` `_property_category` byte; `None` keeps the
+    kind-branch default (integer 0x04, color 0x01, vector 0x09). Layer
+    Styles angles use 0x06."""
+    pad2a: int | None = None
+    """Override for the `tdb4` `_pad2a` field; `None` keeps 0. Layer
+    Styles colors carry 1."""
 
 
 class GroupSpec(NamedTuple):
@@ -1196,7 +1208,10 @@ _CAMERA_SPECS: list[PropSpec] = [
     _spec(
         "ADBE Camera Aperture",
         "Aperture",
-        0.0,
+        # AE's constant default aperture for a fresh camera (probed AE 2026
+        # at comp widths 1920/1280/640 - width-independent, unlike Zoom and
+        # Focus Distance, which are overridden per comp in synthesis).
+        25.3093363329584,
         PropertyValueType.OneD,
         min_value=0,
     ),
@@ -1206,6 +1221,30 @@ _CAMERA_SPECS: list[PropSpec] = [
         100.0,
         PropertyValueType.OneD,
         min_value=0,
+    ),
+    # Added in After Effects 2026 (major 26); AE 25 reports 13 camera
+    # options, AE 26 reports 15 (probed type.json AE25 vs camera_defaults
+    # AE26). Gated so older-AE files keep the 13-option layout.
+    _spec(
+        "ADBE Camera Focus Area Width",
+        "Focus Area Width",
+        0.0,
+        PropertyValueType.OneD,
+        min_value=0,
+        min_major=26,
+        # AE writes tdum/tduM bound chunks but ExtendScript reports no max
+        # (hasMax False): the chunk bounds are UI hints, so the spec (min 0,
+        # no max) is authoritative.
+        chunk_bounds_are_hints=True,
+    ),
+    _spec(
+        "ADBE Camera Split Blur Level",
+        "Near, Far Blur Level",
+        [100.0, 100.0],
+        PropertyValueType.TwoD,
+        min_value=0,
+        min_major=26,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Iris Shape",
@@ -2595,10 +2634,24 @@ _TEXT_EXPRESSIBLE_SELECTOR_SPECS: list[PropSpec] = [
 ]
 
 # Canonical children of "ADBE Blend Options Group".
+# tdb4 canon from the psd_layer_styles*.aep fixtures: the global-light
+# angles are vector-typed with value hint 2 and no bound chunks; Fill
+# Opacity carries the 0/100 slider hints; the channel/interior/range
+# toggles are integer-typed with the default 0xFFFF hint.
 _BLEND_OPTIONS_SPECS: list[PropSpec | GroupSpec] = [
-    _spec("ADBE Global Angle2", "Global Light Angle", 120.0, PropertyValueType.OneD),
     _spec(
-        "ADBE Global Altitude2", "Global Light Altitude", 30.0, PropertyValueType.OneD
+        "ADBE Global Angle2",
+        "Global Light Angle",
+        120.0,
+        PropertyValueType.OneD,
+        value_hint_type=2,
+    ),
+    _spec(
+        "ADBE Global Altitude2",
+        "Global Light Altitude",
+        30.0,
+        PropertyValueType.OneD,
+        value_hint_type=2,
     ),
     GroupSpec("ADBE Adv Blend Group", "Advanced Blending"),
 ]
@@ -2611,6 +2664,8 @@ _ADV_BLEND_SPECS: list[PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=100,
+        value_hint_type=0xFFFF,
+        hint_bounds=(0.0, 100.0),
     ),
     _spec(
         "ADBE R Channel Blend",
@@ -2619,6 +2674,7 @@ _ADV_BLEND_SPECS: list[PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=1,
+        integer=True,
     ),
     _spec(
         "ADBE G Channel Blend",
@@ -2627,6 +2683,7 @@ _ADV_BLEND_SPECS: list[PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=1,
+        integer=True,
     ),
     _spec(
         "ADBE B Channel Blend",
@@ -2635,6 +2692,7 @@ _ADV_BLEND_SPECS: list[PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=1,
+        integer=True,
     ),
     _spec(
         "ADBE Blend Interior",
@@ -2643,6 +2701,7 @@ _ADV_BLEND_SPECS: list[PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=1,
+        integer=True,
     ),
     _spec(
         "ADBE Blend Ranges",
@@ -2651,6 +2710,7 @@ _ADV_BLEND_SPECS: list[PropSpec] = [
         PropertyValueType.OneD,
         min_value=0,
         max_value=1,
+        integer=True,
     ),
 ]
 
@@ -3391,18 +3451,96 @@ _STROKE_SPECS: list[PropSpec] = [
     ),
 ]
 
+# AE 2026 tdb4/bounds canon for Layer Styles leaves, keyed by the leaf's
+# match-name suffix (byte-diffed from the psd_layer_styles*.aep fixtures).
+# The menu/toggle leaves are integer-typed with value hint 1; angles are
+# integer-typed with property category 0x06 and the default 0xFFFF hint;
+# scalars keep the vector kind with a 0xFFFF hint and carry the UI slider
+# hints (NOT the real clamp) in tdum/tduM; colors add `_pad2a` = 1.
+# The enum/angle/scalar classification below is the single source of truth:
+# `models/project.py` `_STYLE_TDB4_CANON` is built from these same tables so
+# the write-time tdb4 stamp cannot drift from the synthesis-time one. Keep the
+# two in sync - inlining these onto the per-style specs would fork them.
+_STYLE_ENUM_SUFFIXES = frozenset(
+    {
+        "mode2",
+        "highlightMode",
+        "shadowMode",
+        "useGlobalAngle",
+        "layerConceals",
+        "AEColorChoice",
+        "glowTechnique",
+        "innerGlowSource",
+        "bevelStyle",
+        "bevelTechnique",
+        "bevelDirection",
+        "invert",
+        "type",
+        "reverse",
+        "align",
+        "style",
+    }
+)
+_STYLE_ANGLE_SUFFIXES = frozenset(
+    {"localLightingAngle", "localLightingAltitude", "angle"}
+)
+_STYLE_HINT_BOUNDS: dict[str, tuple[float, float]] = {
+    "opacity": (0.0, 100.0),
+    "highlightOpacity": (0.0, 100.0),
+    "shadowOpacity": (0.0, 100.0),
+    "chokeMatte": (0.0, 100.0),
+    "noise": (0.0, 100.0),
+    "shadingNoise": (0.0, 100.0),
+    "gradientSmoothness": (0.0, 100.0),
+    "inputRange": (1.0, 100.0),
+    "strengthRatio": (1.0, 1000.0),
+    "softness": (0.0, 16.0),
+    "distance": (0.0, 100.0),
+    "blur": (0.0, 100.0),
+    "size": (1.0, 100.0),
+}
+# Full-match-name exceptions to the suffix rules.
+_STYLE_HINT_BOUNDS_EXCEPTIONS: dict[str, tuple[float, float]] = {
+    "chromeFX/distance": (1.0, 100.0),
+    "bevelEmboss/blur": (0.0, 250.0),
+    "gradientFill/scale": (10.0, 150.0),
+    "patternFill/scale": (1.0, 1000.0),
+}
+
+
+def _style_leaf_canon(spec: PropSpec) -> PropSpec:
+    """Stamp the AE materialization canon onto a Layer Styles leaf spec."""
+    suffix = spec.match_name.rsplit("/", 1)[-1]
+    if spec.color:
+        return spec._replace(pad2a=1)
+    if suffix in _STYLE_ENUM_SUFFIXES:
+        return spec._replace(integer=True, value_hint_type=1)
+    if suffix in _STYLE_ANGLE_SUFFIXES:
+        return spec._replace(integer=True, property_category=0x06)
+    bounds = _STYLE_HINT_BOUNDS_EXCEPTIONS.get(
+        spec.match_name, _STYLE_HINT_BOUNDS.get(suffix)
+    )
+    if bounds is not None:
+        return spec._replace(value_hint_type=0xFFFF, hint_bounds=bounds)
+    return spec
+
+
+def _style_canon_list(specs: list[PropSpec]) -> list[PropSpec]:
+    return [_style_leaf_canon(spec) for spec in specs]
+
+
 # Layer Styles sub-group specs (keyed by sub-group match name).
 _LAYER_STYLE_CHILD_SPECS: dict[str, list[PropSpec]] = {
-    "dropShadow/enabled": _DROP_SHADOW_SPECS,
-    "innerShadow/enabled": _INNER_SHADOW_SPECS,
-    "outerGlow/enabled": _OUTER_GLOW_SPECS,
-    "innerGlow/enabled": _INNER_GLOW_SPECS,
-    "bevelEmboss/enabled": _BEVEL_EMBOSS_SPECS,
-    "chromeFX/enabled": _SATIN_SPECS,
-    "solidFill/enabled": _COLOR_OVERLAY_SPECS,
-    "gradientFill/enabled": _GRADIENT_OVERLAY_SPECS,
-    "patternFill/enabled": _PATTERN_OVERLAY_SPECS,
-    "frameFX/enabled": _STROKE_SPECS,
+    "dropShadow/enabled": _style_canon_list(_DROP_SHADOW_SPECS),
+    "innerShadow/enabled": _style_canon_list(_INNER_SHADOW_SPECS),
+    "outerGlow/enabled": _style_canon_list(_OUTER_GLOW_SPECS),
+    "innerGlow/enabled": _style_canon_list(_INNER_GLOW_SPECS),
+    "bevelEmboss/enabled": _style_canon_list(_BEVEL_EMBOSS_SPECS),
+    "chromeFX/enabled": _style_canon_list(_SATIN_SPECS),
+    "solidFill/enabled": _style_canon_list(_COLOR_OVERLAY_SPECS),
+    "gradientFill/enabled": _style_canon_list(_GRADIENT_OVERLAY_SPECS),
+    "patternFill/enabled": _style_canon_list(_PATTERN_OVERLAY_SPECS),
+    "frameFX/enabled": _style_canon_list(_STROKE_SPECS),
 }
 
 # Canonical children of "ADBE Layer Styles" (Blending Options + 10 styles).
