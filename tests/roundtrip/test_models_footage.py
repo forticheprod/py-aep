@@ -21,11 +21,16 @@ from py_aep import (
 )
 from py_aep import parse as parse_aep
 from py_aep.color.icc import default_icc_directories
+from py_aep.color.ocio import resolve_ocio_config
 from py_aep.enums.mappings import profile_id_for_name
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "footage"
 # Adobe-CMS ICC embedding needs the installed Adobe Color profiles on disk.
 _ICC_AVAILABLE = any(d.is_dir() for d in default_icc_directories())
+# The OCIO byte-fidelity tests below pick color spaces by their ACES 1.2 names
+# and compare against AE-authored samples; both need AE's bundled "ACES 1.2"
+# config, which is absent on CI (no AE install).
+_ACES12_AVAILABLE = resolve_ocio_config("ACES 1.2") is not None
 
 
 class TestRoundtripLoop:
@@ -405,6 +410,9 @@ class TestRoundtripMediaColorSpace:
         assert item is not None
         return item.main_source
 
+    @pytest.mark.skipif(
+        not _ACES12_AVAILABLE, reason="AE's bundled ACES 1.2 config not installed"
+    )
     def test_set_ocio_colorspace(self, tmp_path: Path) -> None:
         # The project's config is the built-in ACES 1.2, where the color space
         # is named "ACES - ACEScg" (family "ACES"). AE stores a direct pick's
@@ -425,6 +433,9 @@ class TestRoundtripMediaColorSpace:
         assert ocsp is not None and ae_ocsp is not None
         assert ocsp.value == ae_ocsp.value
 
+    @pytest.mark.skipif(
+        not _ACES12_AVAILABLE, reason="AE's bundled ACES 1.2 config not installed"
+    )
     def test_set_ocio_name_absent_from_config_raises(self) -> None:
         # "ACEScg" is not in ACES 1.2 (it is "ACES - ACEScg"). py used to
         # fabricate an envelope for it; the config is authoritative.
@@ -462,6 +473,9 @@ class TestRoundtripMediaColorSpace:
         source2 = self._first_source(parse_aep(out).project)
         assert source2.media_color_space == "Embedded"
 
+    @pytest.mark.skipif(
+        not _ACES12_AVAILABLE, reason="AE's bundled ACES 1.2 config not installed"
+    )
     def test_set_ocio_then_back_to_embedded(self, tmp_path: Path) -> None:
         project = parse_aep(
             SAMPLES_DIR / "override_media_colorspace_embedded.aep"
@@ -477,6 +491,9 @@ class TestRoundtripMediaColorSpace:
             self._first_source(parse_aep(out).project).media_color_space == "Embedded"
         )
 
+    @pytest.mark.skipif(
+        not _ACES12_AVAILABLE, reason="AE's bundled ACES 1.2 config not installed"
+    )
     def test_set_ocio_role(self, tmp_path: Path) -> None:
         # A role pick stores the role's TARGET with ocioColorSpaceType 2 - a
         # different envelope from a direct pick of that same color space.
@@ -495,6 +512,9 @@ class TestRoundtripMediaColorSpace:
         assert ocsp is not None and ae_ocsp is not None
         assert ocsp.value == ae_ocsp.value
 
+    @pytest.mark.skipif(
+        not _ACES12_AVAILABLE, reason="AE's bundled ACES 1.2 config not installed"
+    )
     def test_qualified_name_round_trips(self, tmp_path: Path) -> None:
         # The getter returns "<family>/<name>" for a direct pick; assigning
         # that straight back must reproduce the same envelope.
