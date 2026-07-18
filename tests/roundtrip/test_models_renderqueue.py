@@ -18,6 +18,7 @@ from py_aep.binary.render_chunks import (
 )
 from py_aep.binary.utils import find_by_list_type
 from py_aep.enums import (
+    ColorManagementSystem,
     FieldRender,
     FrameRateSetting,
     GetSettingsFormat,
@@ -830,7 +831,10 @@ class TestRoundtripOutputModuleSettings:
         om = rqi.output_modules[0]
         with pytest.raises(AttributeError, match="read-only"):
             om.settings["Output File Info"] = {}
-        with pytest.raises(AttributeError, match="read-only"):
+        # "Output Color Space" is not a settings key - it is a KeyError, not
+        # a read-only setting (use the OutputModule.output_color_space
+        # property to read/write it).
+        with pytest.raises(KeyError):
             om.settings["Output Color Space"] = "sRGB"
 
     def test_om_settings_contain_required_keys(self) -> None:
@@ -1637,12 +1641,20 @@ class TestRenderQueueNoLRdr:
 class TestRoundtripOutputColorSpace:
     """Roundtrip tests for OutputModule.output_color_space."""
 
-    SAMPLE = Path(__file__).parent.parent.parent / (
-        "samples/models/renderqueue/render_settings.aep"
+    _ROOT = Path(__file__).parent.parent.parent
+    #: Adobe-CMS project (output color space = a catalogued Adobe ICC profile).
+    ADOBE_SAMPLE = _ROOT / "samples/models/output_module/output_color_space/srgb.aep"
+    #: OCIO-CMS project generated from `sergb.ocio` (its committed output id is
+    #: the AE-computed `Guid` of "ACEScg yo").
+    OCIO_SAMPLE = _ROOT / (
+        "samples/models/output_module/output_color_space_ocio/aces_acescg_yo.aep"
+    )
+    OCIO_CONFIG = _ROOT / (
+        "samples/models/output_module/output_color_space_ocio/sergb.ocio"
     )
 
     def test_set_adobe_profile(self, tmp_path: Path) -> None:
-        project = parse_aep(self.SAMPLE).project
+        project = parse_aep(self.ADOBE_SAMPLE).project
         om = project.render_queue.items[0].output_modules[0]
         name = "ARRI LogC3 Wide Color Gamut - EI 800"
         om.output_color_space = name
@@ -1656,7 +1668,7 @@ class TestRoundtripOutputColorSpace:
         assert om2._om_ldat.output_color_space_working == 0
 
     def test_set_working_color_space(self, tmp_path: Path) -> None:
-        project = parse_aep(self.SAMPLE).project
+        project = parse_aep(self.ADOBE_SAMPLE).project
         om = project.render_queue.items[0].output_modules[0]
         om.output_color_space = "ARRI LogC3 Wide Color Gamut - EI 800"
         assert om._om_ldat.output_color_space_working == 0
@@ -1670,8 +1682,35 @@ class TestRoundtripOutputColorSpace:
         # "Working Color Space" resolves to the project's working space name.
         assert om2.output_color_space == project2.working_space
 
-    def test_ocio_or_unknown_name_not_supported(self) -> None:
-        project = parse_aep(self.SAMPLE).project
+    def test_unknown_adobe_name_not_supported(self) -> None:
+        project = parse_aep(self.ADOBE_SAMPLE).project
+        assert project.color_management_system == ColorManagementSystem.ADOBE
         om = project.render_queue.items[0].output_modules[0]
         with pytest.raises(NotImplementedError):
-            om.output_color_space = "ACEScg"  # OCIO name, not a catalogued ICC
+            om.output_color_space = "not a catalogued ICC profile"
+
+    def test_set_ocio_color_space(self, tmp_path: Path) -> None:
+        project = parse_aep(self.OCIO_SAMPLE).project
+        assert project.color_management_system == ColorManagementSystem.OCIO
+        project.ocio_configuration_file = str(self.OCIO_CONFIG)
+        om = project.render_queue.items[0].output_modules[0]
+        # "ACEScc yo" - AE's own Guid for it is the committed aces_acescc_yo id.
+        om.output_color_space = "ACEScc yo"
+        expected = bytes.fromhex("596cbde737d61ec5a84b8008888dd03f")
+        assert om._om_ldat.output_profile_id == expected
+        assert om._om_ldat.output_color_space_working == 0
+        # the id reverse-maps back to the color-space name (read/write symmetry).
+        assert om.output_color_space == "ACEScc yo"
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        om2 = parse_aep(out).project.render_queue.items[0].output_modules[0]
+        assert om2._om_ldat.output_profile_id == expected
+        assert om2.output_color_space == "ACEScc yo"
+
+    def test_ocio_unknown_color_space_raises(self) -> None:
+        project = parse_aep(self.OCIO_SAMPLE).project
+        project.ocio_configuration_file = str(self.OCIO_CONFIG)
+        om = project.render_queue.items[0].output_modules[0]
+        with pytest.raises(ValueError, match="not a color space"):
+            om.output_color_space = "NotAColorSpaceInThisConfig"

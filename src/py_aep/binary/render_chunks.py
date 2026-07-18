@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-from attrs import define
+from attrs import define, fields
 
 from .bin_utils import read_bytes, to_dividend_divisor
 from .bitfield import BitField
@@ -366,9 +366,9 @@ class RenderSettingsItem(FmtItem):
     comp_id: int = u4_field()
     status: int = s4_field(default=2)  # RQItemStatus.QUEUED (-1 = WILL_CONTINUE)
     _reserved_06: bytes = bytes_field(4, default=b"\x00\x03\x00\x00", repr=False)
-    time_span_start_dividend: int = u4_field()
+    time_span_start_dividend: int = s4_field()
     time_span_start_divisor: int = u4_field(default=1)
-    time_span_duration_dividend: int = u4_field()
+    time_span_duration_dividend: int = s4_field()
     time_span_duration_divisor: int = u4_field(default=1)
     _reserved_11: bytes = bytes_field(8, repr=False)
     frame_rate_integer: int = u2_field()
@@ -596,6 +596,16 @@ class OutputModuleSettingsItem(FmtItem):
         """
         for field in self._TEMPLATE_FIELDS:
             setattr(self, field, getattr(source, field))
+
+    def restore_from(self, source: OutputModuleSettingsItem) -> None:
+        """Copy EVERY field from `source`, keeping this item's identity.
+
+        Used by `OutputModule.batch_edit` rollback: this item is
+        referenced from the ldat items list, so restoring in place
+        avoids re-wiring references.
+        """
+        for field in fields(OutputModuleSettingsItem):
+            setattr(self, field.name, getattr(source, field.name))
 
 
 _ROUT_ITEM_SIZE = 4

@@ -268,13 +268,13 @@ class TestOutputColorSpace:
     def test_output_color_space(self, sample_name: str, expected_value: str) -> None:
         project = parse_project(OCS_SAMPLES_DIR / f"{sample_name}.aep")
         om = project.render_queue.items[0].output_modules[0]
-        assert om.settings["Output Color Space"] == expected_value
+        assert om.output_color_space == expected_value
 
     def test_output_color_space_working(self) -> None:
         """Working Color Space should resolve to the project's working space."""
         project = parse_project(OCS_SAMPLES_DIR / "working_color_space.aep")
         om = project.render_queue.items[0].output_modules[0]
-        assert om.settings["Output Color Space"] == project.working_space
+        assert om.output_color_space == project.working_space
 
 
 class TestGetSettings:

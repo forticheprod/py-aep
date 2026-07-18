@@ -8,6 +8,11 @@ import pytest
 
 import py_aep
 from py_aep.enums import PREFType
+from py_aep.models.preferences import (
+    psd_comp_layer_styles,
+    psd_footage_dimensions,
+    psd_footage_layer_styles,
+)
 from py_aep.parsers.prefs import (
     PrefsFile,
     decode_pref_bool,
@@ -372,6 +377,45 @@ class TestCreationWiring:
     def test_solids_folder_name_factory_default(self) -> None:
         app = py_aep.new()
         assert app.project._solids_folder_name == "Solids"
+
+
+class TestImportChoicePrefs:
+    """PSD import-dialog sticky choices - popup indices probed in AE 2026, not
+    the sspc c9 byte enum (footage merge/ignore is reversed there)."""
+
+    SECTION = "Choose Layer Dialog"
+
+    def test_unset_returns_none(self) -> None:
+        prefs = py_aep.Preferences()
+        assert psd_comp_layer_styles(prefs) is None
+        assert psd_footage_layer_styles(prefs) is None
+        assert psd_footage_dimensions(prefs) is None
+
+    def test_comp_layer_styles_mapping(self) -> None:
+        prefs = py_aep.Preferences()
+        prefs.set_pref_as_number(self.SECTION, "PSD Comp Layer Styles Option v2", 0)
+        assert psd_comp_layer_styles(prefs) == "editable"
+        prefs.set_pref_as_number(self.SECTION, "PSD Comp Layer Styles Option v2", 1)
+        assert psd_comp_layer_styles(prefs) == "merge"
+
+    def test_footage_layer_styles_mapping(self) -> None:
+        prefs = py_aep.Preferences()
+        prefs.set_pref_as_number(self.SECTION, "PSD Footage Layer Styles Option", 0)
+        assert psd_footage_layer_styles(prefs) == "merge"
+        prefs.set_pref_as_number(self.SECTION, "PSD Footage Layer Styles Option", 1)
+        assert psd_footage_layer_styles(prefs) == "ignore"
+
+    def test_footage_dimensions_mapping(self) -> None:
+        prefs = py_aep.Preferences()
+        prefs.set_pref_as_number(self.SECTION, "PSD Dimensions Popup", 0)
+        assert psd_footage_dimensions(prefs) == "layer"
+        prefs.set_pref_as_number(self.SECTION, "PSD Dimensions Popup", 1)
+        assert psd_footage_dimensions(prefs) == "document"
+
+    def test_unknown_index_returns_none(self) -> None:
+        prefs = py_aep.Preferences()
+        prefs.set_pref_as_number(self.SECTION, "PSD Dimensions Popup", 7)
+        assert psd_footage_dimensions(prefs) is None
 
 
 class TestCompositionPresets:

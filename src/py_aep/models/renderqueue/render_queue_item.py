@@ -39,8 +39,10 @@ from ..descriptors import (
 )
 from ..validators import (
     _validate_number,
+    validate_bool,
     validate_positive_int,
     validate_positive_number,
+    validate_sequence,
     validate_string,
 )
 from .settings import (
@@ -134,7 +136,7 @@ class RenderQueueItem:
     """The name of the render settings template used for this item.
     Read / Write."""
 
-    queue_item_notify = ChunkField[bool]("_ldat", "queue_item_notify", min_version=22)
+    queue_item_notify = ChunkField.bool("_ldat", "queue_item_notify", min_version=22)
     """When `True`, a user notification is enabled for this render queue
     item, signaling the user upon render completion. Read / Write."""
 
@@ -227,7 +229,7 @@ class RenderQueueItem:
         "quality",
     )
 
-    _skip_existing_files = ChunkField[bool](
+    _skip_existing_files = ChunkField.bool(
         "_ldat",
         "skip_existing_files",
     )
@@ -418,6 +420,7 @@ class RenderQueueItem:
 
     @render.setter
     def render(self, value: bool) -> None:
+        validate_bool(value)
         self.status = RQItemStatus.QUEUED if value else RQItemStatus.UNQUEUED
 
     @property
@@ -467,7 +470,7 @@ class RenderQueueItem:
 
     @skip_frames.setter
     def skip_frames(self, value: int) -> None:
-        validate_positive_int(value)
+        _validate_number(min=0, max=99, integer=True)(value)
         new_frame_rate = round(self.comp.frame_rate / (value + 1))
         for om in self.output_modules:
             om._roou.frame_rate = new_frame_rate
@@ -489,15 +492,23 @@ class RenderQueueItem:
 
     @_resolution.setter
     def _resolution(self, value: list[int]) -> None:
-        if len(value) != 2:
-            raise ValueError(f"Resolution must be [x, y], got {len(value)} elements")
-        if not all(isinstance(v, int) for v in value):
-            raise ValueError("Resolution divisors must be integers")
-        x, y = round(value[0]), round(value[1])
-        if x <= 0 or y <= 0:
-            raise ValueError(f"Resolution divisors must be positive, got [{x}, {y}]")
-        self._ldat.resolution_x = x
-        self._ldat.resolution_y = y
+        # [0, 0] is a legal value meaning "Current Settings".
+        validate_sequence(length=2, min=0, max=99, integer=True)(value)
+        # A HALF-zero pair is not: zero is only meaningful as the both-axes
+        # "Current Settings" sentinel. AE's own dialog can only ever produce
+        # [0, 0] or a pair with both axes >= 1, and `setSettings` on a
+        # half-zero pair NATIVE-CRASHES AE 2026 (probed: [0, 5] and [5, 0]
+        # crash; [0, 0], [3, 7] and [99, 99] are all fine). py_aep has no
+        # coherent reading for it either - `_effective_dimensions` degrades
+        # the 0 to 1, silently rendering full width at a fraction of the
+        # height.
+        if (value[0] == 0) != (value[1] == 0):
+            raise ValueError(
+                f'Resolution divisors must both be zero ("Current Settings") '
+                f"or both be positive, got [{value[0]}, {value[1]}]"
+            )
+        self._ldat.resolution_x = value[0]
+        self._ldat.resolution_y = value[1]
         for om in self.output_modules:
             om._update_output_dimensions()
 
@@ -573,6 +584,12 @@ class RenderQueueItem:
     ) -> None:
         """Write a time span value, switching to CUSTOM.
 
+        Setting the start keeps the END time fixed and recomputes the duration; setting
+        the duration keeps the start. Unlike AE scripting which accepts degenerate spans
+        and silently renders garbage (a start before 0 renders void
+        lead-in frames, an end before the start renders a single frame) -
+        py_aep validates the values like AE's own dialog.
+
         Args:
             value: Time in seconds, or frame count if `is_frames` is True.
             field: Either "start" or "duration".
@@ -580,20 +597,45 @@ class RenderQueueItem:
                 to seconds via the composition frame rate before writing.
 
         Raises:
-            ValueError: If `value` is negative for start fields, or
-                non-positive for duration fields.
+            ValueError: If a start is negative, or if either field would
+                leave a duration shorter than one frame (AE's own
+                scripting bound); a start keeps the end fixed.
         """
-        is_duration = field == "duration"
-        if is_duration and value <= 0:
-            raise ValueError(f"Duration must be positive, got {value}")
-        if not is_duration and value < 0:
-            raise ValueError(f"Start time must be non-negative, got {value}")
-        self._ldat.time_span_source = int(TimeSpanSource.CUSTOM)
+        frame_duration = 1.0 / self.comp.frame_rate
         seconds = value / self.comp.frame_rate if is_frames else float(value)
-        if field == "start":
-            self._ldat.time_span_start = seconds
-        else:
+        # Both fields resolve the span BEFORE switching the source to
+        # CUSTOM: a WORK_AREA_ONLY / LENGTH_OF_COMP item takes its span
+        # from the comp, so CUSTOM has to carry the resolved values over
+        # or the untouched field silently jumps to a stale ldat value.
+        old_start, old_duration = self._resolved_time_span()
+        if field == "duration":
+            if seconds < frame_duration - 1e-9:
+                raise ValueError(
+                    f"Duration must be at least one frame "
+                    f"({frame_duration:.6g}s), got {seconds}"
+                )
+            self._ldat.time_span_source = int(TimeSpanSource.CUSTOM)
+            self._ldat.time_span_start = old_start
             self._ldat.time_span_duration = seconds
+            return
+        if seconds < 0:
+            raise ValueError(f"Start time must be non-negative, got {seconds}")
+        new_duration = old_start + old_duration - seconds
+        if new_duration <= 0:
+            raise ValueError(
+                f"Start time {seconds} is at or past the span end "
+                f"({old_start + old_duration})"
+            )
+        # The same one-frame floor the duration path enforces: reaching it
+        # through the start must not be a back door to a degenerate span.
+        if new_duration < frame_duration - 1e-9:
+            raise ValueError(
+                f"Start time {seconds} leaves a duration shorter than one "
+                f"frame ({frame_duration:.6g}s), got {new_duration}"
+            )
+        self._ldat.time_span_source = int(TimeSpanSource.CUSTOM)
+        self._ldat.time_span_start = seconds
+        self._ldat.time_span_duration = new_duration
 
     @property
     def time_span_start(self) -> float:
@@ -601,7 +643,8 @@ class RenderQueueItem:
         The time in the composition, in seconds, at which rendering will
         begin. Read / Write.
 
-        Setting this switches the time span source to CUSTOM.
+        Setting this keeps the span END fixed - the duration is
+        recomputed - and switches the time span source to CUSTOM.
         """
         return self._resolved_time_span()[0]
 
@@ -629,7 +672,8 @@ class RenderQueueItem:
         """The time in the composition, in frames, at which rendering will
         begin. Read / Write.
 
-        Setting this switches the time span source to CUSTOM.
+        Setting this keeps the span END fixed - the duration is
+        recomputed - and switches the time span source to CUSTOM.
         """
         return self._resolved_time_span_frames()[0]
 

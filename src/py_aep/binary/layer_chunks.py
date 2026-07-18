@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from attrs import define
 
+from ..enums import LayerType
 from .bin_utils import to_dividend_divisor
 from .bitfield import BitField
 from .chunk import Chunk
@@ -119,6 +120,11 @@ class LdtaChunk(Chunk):
 
     # byte 38: _layer_flags_1
     null_layer = BitField("_layer_flags_1", 7)
+    # bit 6: camera/light "orient towards point of interest" (the two-node
+    # rig). AE stores the camera variant of CAMERA_OR_POINT_OF_INTEREST here,
+    # NOT in bit 5 (probed AE 2026: a default two-node camera has 0x44, a
+    # NO_AUTO_ORIENT camera 0x04).
+    poi_auto_orient = BitField("_layer_flags_1", 6)
     camera_or_poi_auto_orient = BitField("_layer_flags_1", 5)
     markers_locked = BitField("_layer_flags_1", 4)
     solo = BitField("_layer_flags_1", 3)
@@ -193,6 +199,10 @@ class LdtaChunk(Chunk):
             return 1
         if self.camera_or_poi_auto_orient and self.three_d_layer:
             return 2
+        # Camera/light layers store their two-node "orient towards point of
+        # interest" in bit 6 instead.
+        if self.poi_auto_orient and self.three_d_layer:
+            return 2
         if self.characters_toward_camera and self.three_d_per_char:
             return 3
         return 0
@@ -200,9 +210,16 @@ class LdtaChunk(Chunk):
     @auto_orient.setter
     def auto_orient(self, value: int) -> None:
         self.auto_orient_along_path = value == 1
-        self.camera_or_poi_auto_orient = value == 2
+        is_poi_rig = self.layer_type in (LayerType.CAMERA, LayerType.LIGHT)
+        self.camera_or_poi_auto_orient = value == 2 and not is_poi_rig
+        self.poi_auto_orient = value == 2 and is_poi_rig
         self.characters_toward_camera = value == 3
-        self.three_d_per_char = value == 3
+        # Per-character 3D is a precondition of chars_toward_camera (the
+        # getter needs both bits), but it is an independent layer switch
+        # otherwise - AE ships layers with it on and auto-orient off - so
+        # selecting another mode must not clear it.
+        if value == 3:
+            self.three_d_per_char = True
 
     @property
     def frame_blending_type(self) -> int:

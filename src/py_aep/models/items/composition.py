@@ -12,7 +12,7 @@ from ...binary.comp_skeleton import (
     build_new_comp_item,
 )
 from ...binary.composition_chunks import CdtaChunk
-from ...binary.item_chunks import IdtaChunk
+from ...binary.item_chunks import IdtaChunk, IideChunk
 from ...binary.layer_chunks import (
     _LDTA_SOURCE_ID_END,
     _LDTA_SOURCE_ID_OFFSET,
@@ -38,14 +38,16 @@ from ...binary.property_chunks import (
     TdsbChunk,
     TdsnChunk,
 )
-from ...binary.scalar_chunks import F8Chunk, U1Chunk, U4Chunk, Utf8Chunk
+from ...binary.scalar_chunks import F8Chunk, S4Chunk, U1Chunk, U4Chunk, Utf8Chunk
 from ...binary.utils import (
     ChunkNotFoundError,
     block_slice,
     filter_by_list_type,
+    filter_by_type,
     find_by_list_type,
     find_by_type,
     index_by_identity,
+    recursive_find,
 )
 from ...enums import Label, LayerType, LineOrientation, ParametricMeshType, PREFType
 from ...parsers.essential_graphics import parse_essential_graphics
@@ -235,6 +237,56 @@ def _insert_layer_skeleton_extras(layer: Layer) -> None:
             break
 
 
+def _rewrite_eg_identity(
+    cloned_item: ListChunk,
+    old_comp_id: int,
+    new_comp_id: int,
+    id_map: dict[int, int],
+) -> None:
+    """Give a duplicated comp's Essential Graphics controllers a new identity.
+
+    AE's duplicate mints a fresh uuid per controller - kept identical
+    across the CIFO/CIF2/CIF3 containers, matched here by the OLD uuid
+    since the legacy containers can be stale - and retargets `CCId` /
+    `CLId` at the duplicate. Layer-side OvG2 override uuids are NOT
+    touched: they reference controllers of other (source) comps.
+    """
+    uuid_map: dict[str, str] = {}
+    for cif in cloned_item.chunks:
+        if not isinstance(cif, ListChunk) or cif.list_type not in (
+            "CIFO",
+            "CIF2",
+            "CIF3",
+        ):
+            continue
+        for cctl in filter_by_list_type(chunks=cif.chunks, list_type="CCtl"):
+            utf8s = filter_by_type(chunks=cctl.chunks, chunk_type="Utf8")
+            if utf8s:
+                uuid_utf8 = cast("Utf8Chunk", utf8s[0])
+                if uuid_utf8.value not in uuid_map:
+                    uuid_map[uuid_utf8.value] = str(uuid.uuid4())
+                uuid_utf8.value = uuid_map[uuid_utf8.value]
+            for chunk in cctl.chunks:
+                # AE zeroes the controller's cached value/default in the
+                # duplicate and re-derives them from the source property
+                # (probed in AE 2026 on a slider controller).
+                if chunk.chunk_type in ("CVal", "CDef") and chunk.data:
+                    chunk.data = b"\x00" * len(chunk.data)
+            try:
+                cprp = find_by_list_type(chunks=cctl.chunks, list_type="CPrp")
+            except ChunkNotFoundError:
+                continue
+            for chunk in cprp.chunks:
+                if chunk.chunk_type == "CCId":
+                    ccid = cast("U4Chunk", chunk)
+                    if ccid.value == old_comp_id:
+                        ccid.value = new_comp_id
+                elif chunk.chunk_type == "CLId":
+                    clid = cast("U4Chunk", chunk)
+                    if clid.value in id_map:
+                        clid.value = id_map[clid.value]
+
+
 class CompItem(AVItem):
     """
     The `CompItem` object represents a composition, and allows you to
@@ -269,36 +321,54 @@ class CompItem(AVItem):
     """The background color of the composition. The three array values specify
     the red, green, and blue components of the color. Read / Write."""
 
-    draft3d = ChunkField[bool]("_cdta", "draft3d")
+    draft3d = ChunkField.bool(
+        "_cdta",
+        "draft3d",
+    )
     """When `True`, Draft 3D mode is enabled for the composition.
     Read / Write.
 
     Warning:
         Deprecated in After Effects 2024 in favor of the new Draft 3D mode."""
 
-    frame_blending = ChunkField[bool]("_cdta", "frame_blending")
+    frame_blending = ChunkField.bool(
+        "_cdta",
+        "frame_blending",
+    )
     """When `True`, frame blending is enabled for this Composition. Corresponds
     to the value of the Frame Blending button in the Composition panel.
     Read / Write."""
 
-    hide_shy_layers = ChunkField[bool]("_cdta", "hide_shy_layers")
+    hide_shy_layers = ChunkField.bool(
+        "_cdta",
+        "hide_shy_layers",
+    )
     """When `True`, only layers with `shy` set to `False` are shown in the
     Timeline panel. When `False`, all layers are visible, including those
     whose `shy` value is `True`. Corresponds to the value of the Hide All
     Shy Layers button in the Composition panel. Read / Write."""
 
-    motion_blur = ChunkField[bool]("_cdta", "motion_blur")
+    motion_blur = ChunkField.bool(
+        "_cdta",
+        "motion_blur",
+    )
     """When `True`, motion blur is enabled for the composition. Corresponds
     to the value of the Motion Blur button in the Composition panel.
     Read / Write."""
 
-    preserve_nested_frame_rate = ChunkField[bool]("_cdta", "preserve_nested_frame_rate")
+    preserve_nested_frame_rate = ChunkField.bool(
+        "_cdta",
+        "preserve_nested_frame_rate",
+    )
     """When `True`, the frame rate of nested compositions is preserved in
     the current composition. Corresponds to the value of the "Preserve frame
     rate when nested or in render queue" option in the Advanced tab of the
     Composition Settings dialog box. Read / Write."""
 
-    preserve_nested_resolution = ChunkField[bool]("_cdta", "preserve_nested_resolution")
+    preserve_nested_resolution = ChunkField.bool(
+        "_cdta",
+        "preserve_nested_resolution",
+    )
     """When `True`, the resolution of nested compositions is preserved in
     the current composition. Corresponds to the value of the "Preserve
     Resolution When Nested" option in the Advanced tab of the Composition
@@ -479,8 +549,12 @@ class CompItem(AVItem):
     """The current time of the item when it is being previewed directly from
     the Project panel. This value is a number of frames. Read / Write."""
 
-    drop_frame = ChunkField[bool](
-        "_cdrp", "value", transform=bool, reverse=int, default=False
+    drop_frame = ChunkField.bool(
+        "_cdrp",
+        "value",
+        transform=bool,
+        reverse=int,
+        default=False,
     )
     """When `True`, timecode is displayed in drop-frame format. Only
     applicable when `frameRate` is 29.97 or 59.94. Read / Write."""
@@ -517,7 +591,7 @@ class CompItem(AVItem):
         validate_duration(duration)
         validate_frame_rate(frame_rate)
 
-        new_id = project._allocate_item_id()
+        new_id = project._allocate_id()
 
         # AE hard-crashes opening a comp item without the full view-state
         # skeleton (~180 chunks of viewer pseudo-layers and panel state),
@@ -530,7 +604,7 @@ class CompItem(AVItem):
             pixel_aspect=pixel_aspect,
             duration=duration,
             frame_rate=frame_rate,
-            allocate_layer_id=project._allocate_layer_id,
+            allocate_layer_id=project._allocate_id,
             label=label_index(project._preferences, "Comp Label Index 2", 15),
         )
 
@@ -654,6 +728,105 @@ class CompItem(AVItem):
                 if om._om_ldat.post_render_target_comp_id == comp_id:
                     om._om_ldat.post_render_target_comp_id = 0
         super().remove()
+
+    def duplicate(self) -> CompItem:
+        """Creates and returns a duplicate of this composition, which
+        contains the same layers as the original.
+
+        The duplicate is placed directly after the original in its folder and named with
+        the next numeric suffix (`Comp` > `Comp 2`). Every layer id - including the
+        viewer pseudo-layers - is freshly allocated, with parent, track
+        matte and effect layer-references remapped to the new siblings.
+        Essential Graphics controllers get fresh uuids with their comp and
+        layer references retargeted at the duplicate. Layer sources
+        (footage, precomps) and layer-side Essential Property override
+        uuids stay shared with the original.
+
+        Returns:
+            The newly created [CompItem][].
+        """
+        # Circular: parsers.item -> parsers.composition -> models.
+        from ...parsers.item import parse_item  # noqa: PLC0415
+
+        project = self._project
+        parent = self._parent_folder
+        assert parent is not None
+        container = parent._children_container
+
+        # Clone the comp's whole block: LIST:Item + trailing view chunks.
+        start, end = block_slice(
+            container, self._item_list, self._ITEM_BOUNDARY_LIST_TYPES
+        )
+        cloned_block = [clone_chunk_tree(c) for c in container[start:end]]
+        cloned_item = cast("ListChunk", cloned_block[0])
+
+        old_comp_id = self.id
+        new_comp_id = project._allocate_id()
+        try:
+            # Pre-2020 files have no iide; the id then lives only in idta.
+            cast(
+                "IideChunk", find_by_type(chunks=cloned_item.chunks, chunk_type="iide")
+            ).value = new_comp_id
+        except ChunkNotFoundError:
+            pass
+        cast(
+            "IdtaChunk", find_by_type(chunks=cloned_item.chunks, chunk_type="idta")
+        ).item_id = new_comp_id
+
+        # Fresh ids for every ldta - real layers AND viewer pseudo-layers,
+        # AE reallocates them all - then remap every intra-comp layer
+        # reference. Ids not in the map (0 / stale) stay untouched, and
+        # source_id is deliberately kept: footage and precomp sources are
+        # shared with the original.
+        ldta_chunks = [
+            cast("LdtaChunk", c)
+            for c in recursive_find(cloned_item.chunks, chunk_type="ldta")
+        ]
+        id_map: dict[int, int] = {}
+        for ldta in ldta_chunks:
+            id_map[ldta.layer_id] = project._allocate_id()
+        for ldta in ldta_chunks:
+            ldta.layer_id = id_map[ldta.layer_id]
+            if ldta.parent_id in id_map:
+                ldta.parent_id = id_map[ldta.parent_id]
+            # matte_layer_id is absent (None) in pre-AE23 files.
+            matte = ldta.matte_layer_id
+            if matte is not None and matte in id_map:
+                ldta.matte_layer_id = id_map[matte]
+        # tdpi layer references: the effect owner (hidden -0000 param) and
+        # effect layer parameters (e.g. Set Matte's source layer) - both
+        # can only point at layers of this comp.
+        for tdpi in recursive_find(cloned_item.chunks, chunk_type="tdpi"):
+            value = cast("S4Chunk", tdpi).value
+            if value in id_map:
+                cast("S4Chunk", tdpi).value = id_map[value]
+
+        _rewrite_eg_identity(cloned_item, old_comp_id, new_comp_id, id_map)
+
+        # Name (the item block's first direct Utf8), numbered like AE.
+        existing = {item.name for item in project.items.values()}
+        cast(
+            "Utf8Chunk", find_by_type(chunks=cloned_item.chunks, chunk_type="Utf8")
+        ).value = auto_name(self.name, existing)
+
+        # Insert right after the original's block, then build the model
+        # through the normal parse path (registers it in project.items).
+        container[end:end] = cloned_block
+        new_comp = cast(
+            "CompItem",
+            parse_item(item_chunk=cloned_item, project=project, parent_folder=parent),
+        )
+        parent.items.insert(parent.items.index(self) + 1, new_comp)
+
+        # Register the duplicate on its layer sources' used_in if linking
+        # already ran (the lazy pass covers it otherwise).
+        if project._used_in_linked:
+            for source_id in new_comp._source_ids_for_linking():
+                source = project.items.get(source_id)
+                if source is not None and hasattr(source, "_used_in"):
+                    source._used_in.add(new_comp)
+
+        return new_comp
 
     def _source_ids_for_linking(self) -> set[int]:
         """Return source IDs for `_used_in` linking without forcing layer parse."""
@@ -1387,7 +1560,7 @@ class CompItem(AVItem):
         # name resolves from the footage item).
         layer = AVLayer._new(
             name="",
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             source_id=footage.id,
             duration=(
                 duration if duration is not None else self._synthetic_layer_duration()
@@ -1411,7 +1584,7 @@ class CompItem(AVItem):
 
         layer = ShapeLayer._new(
             name=name,
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             duration=self._synthetic_layer_duration(),
             containing_comp=self,
             effect_param_defs=self._project._effect_param_defs,
@@ -1445,7 +1618,7 @@ class CompItem(AVItem):
 
         layer = CameraLayer._new(
             name=name,
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             duration=self._synthetic_layer_duration(),
             containing_comp=self,
             effect_param_defs=self._project._effect_param_defs,
@@ -1502,7 +1675,7 @@ class CompItem(AVItem):
 
         layer = LightLayer._new(
             name=name,
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             duration=self._synthetic_layer_duration(),
             containing_comp=self,
             light_type=1,
@@ -1550,7 +1723,7 @@ class CompItem(AVItem):
 
         layer = ParametricMeshLayer._new(
             name=name,
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             duration=self._synthetic_layer_duration(),
             containing_comp=self,
             mesh_type=mesh_type,
@@ -1597,7 +1770,7 @@ class CompItem(AVItem):
         # in AE 2026, including user-recolored items).
         layer = AVLayer._new(
             name="",
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             source_id=item.id,
             duration=layer_duration,
             containing_comp=self,
@@ -1751,7 +1924,7 @@ class CompItem(AVItem):
         # each layer's tdgp reference the owning layer id and must follow.
         id_map: dict[int, int] = {}
         for ly in moved:
-            new_id = project._allocate_layer_id()
+            new_id = project._allocate_id()
             id_map[ly.id] = new_id
             ly._ldta.layer_id = new_id
             rewrite_owner_tdpi(ly._layer_list, new_id)
@@ -1777,7 +1950,7 @@ class CompItem(AVItem):
                         "LdtaChunk",
                         find_by_type(chunks=m_list.chunks, chunk_type="ldta"),
                     )
-                    copy_id = project._allocate_layer_id()
+                    copy_id = project._allocate_id()
                     m_ldta.layer_id = copy_id
                     rewrite_owner_tdpi(m_list, copy_id)
                     # The clone's own references point at old-comp layer
@@ -1910,7 +2083,7 @@ class CompItem(AVItem):
         # name resolves from the solid footage item).
         layer = AVLayer._new(
             name="",
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             source_id=footage.id,
             duration=(
                 duration if duration is not None else self._synthetic_layer_duration()
@@ -2002,7 +2175,7 @@ class CompItem(AVItem):
 
         layer = TextLayer._new(
             name=text,
-            layer_id=self._project._allocate_layer_id(),
+            layer_id=self._project._allocate_id(),
             duration=self._synthetic_layer_duration(),
             containing_comp=self,
             btds=btds,

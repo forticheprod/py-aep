@@ -106,6 +106,23 @@ class FootageItem(AVItem):
         return self._main_source._has_audio
 
     @property
+    def is_media_replacement_compatible(self) -> bool:
+        """`True` if the footage can be used as an alternate source when setting
+        [Property.alternate_source][py_aep.models.properties.property.Property.alternate_source].
+        Read-only.
+
+        `False` for solids, for footage without a video component (audio-only
+        or data files), and for 3D model scenes (AE 2026 reports an imported
+        `.fbx` as incompatible even though it has video).
+        """
+        source = self._main_source
+        if isinstance(source, SolidSource):
+            return False
+        if isinstance(source, FileSource) and source._is_3d_model_scene:
+            return False
+        return self.has_video
+
+    @property
     def start_frame(self) -> int:
         """The footage start frame. Read-only."""
         return self._main_source._start_frame
@@ -221,7 +238,7 @@ class FootageItem(AVItem):
             project: The project that owns this item.
             parent_folder: The folder that will contain this item.
         """
-        item_id = project._allocate_item_id()
+        item_id = project._allocate_id()
 
         # AE labels footage items by kind (probed in AE 2026): solids use
         # "Solid Label Index 2" (factory 1), audio-only files "Audio Label
@@ -350,6 +367,7 @@ class FootageItem(AVItem):
         file: str | os.PathLike[str],
         layer_index: int | _CurrentValue | None = None,
         layer_dimensions: str | _CurrentValue = CURRENT_VALUE,
+        layer_styles: str | _CurrentValue = CURRENT_VALUE,
     ) -> None:
         """Replace the footage source with a file on disk.
 
@@ -381,6 +399,16 @@ class FootageItem(AVItem):
         `NotImplementedError`. `layer_dimensions` is ignored when
         `layer_index` is `None` (a merged document is always document-sized).
 
+        `layer_styles` chooses how a PSD layer's styles are treated (see
+        `ImportOptions.layer_styles`): `"merge"` (bake them into the raster,
+        AE's dialog default) or `"ignore"`. `CURRENT_VALUE` (the default)
+        preserves the current binding's recorded choice verbatim - including
+        the `"editable"` marker of an editable-comp per-layer footage item,
+        which is not accepted as an explicit argument (AE's footage dialog
+        offers merge/ignore only) - and falls back to `"merge"` when the
+        current source has no PSD layer binding. Like `layer_dimensions`, it
+        is ignored when `layer_index` is `None`.
+
         Note:
             Unlike ExtendScript, if the specified file has an unlabeled alpha channel,
             this method does not estimate the alpha interpretation.
@@ -392,18 +420,25 @@ class FootageItem(AVItem):
                 only); `None` replaces with the merged/whole document.
             layer_dimensions: `"document"`, `"layer"`, or `CURRENT_VALUE` to
                 keep the current binding's choice (the default).
+            layer_styles: `"merge"`, `"ignore"`, or `CURRENT_VALUE` to keep
+                the current binding's choice (the default). PSD targets only.
 
         Raises:
             ValueError: If the extension is not a supported footage format,
                 if `layer_index` is passed for a non-layered file, if
                 `layer_index` is out of range for the new file, if
                 `layer_dimensions` is not `"document"`/`"layer"`/`CURRENT_VALUE`,
-                or if `CURRENT_VALUE` is passed while the current source does
+                if `layer_styles` is not `"merge"`/`"ignore"`/`CURRENT_VALUE`
+                or is passed explicitly for an AI/PDF target, or if
+                `CURRENT_VALUE` is passed while the current source does
                 not reference a single layer (or the new file has no layer at
                 the stored index).
             NotImplementedError: If After Effects requires a format-specific
-                `opti` header not implemented for this format, or if
-                `layer_dimensions="layer"` is requested for an AI/PDF file.
+                `opti` header not implemented for this format, if
+                `layer_dimensions="layer"` is requested for an AI/PDF file,
+                or if `layer_dimensions="layer"` is combined with merge-mode
+                styles on a PSD layer that has styles (the style-expanded
+                bounds are not derivable).
         """
         if layer_index is None:
             self._replace_main_source(FileSource._from_file(file))
@@ -412,11 +447,19 @@ class FootageItem(AVItem):
             validate_positive_int(layer_index)
         if not isinstance(layer_dimensions, _CurrentValue):
             validate_one_of(("document", "layer"))(layer_dimensions)
+        if not isinstance(layer_styles, _CurrentValue):
+            validate_one_of(("merge", "ignore"))(layer_styles)
         suffix = Path(file).suffix.lower()
         if suffix not in PSD_COMP_EXTENSIONS and suffix not in AI_COMP_EXTENSIONS:
             raise ValueError(
                 f"layer_index requires a layered .psd/.psb/.ai/.pdf "
                 f"file, got {suffix!r}"
+            )
+        if suffix not in PSD_COMP_EXTENSIONS and not isinstance(
+            layer_styles, _CurrentValue
+        ):
+            raise ValueError(
+                "layer_styles applies to Photoshop (.psd/.psb) targets only"
             )
         if isinstance(layer_index, _CurrentValue):
             current = self._main_source
@@ -442,8 +485,18 @@ class FootageItem(AVItem):
                 dimensions = "layer"
         else:
             dimensions = layer_dimensions
+        if isinstance(layer_styles, _CurrentValue):
+            # Preserve the recorded choice verbatim (00/01/02); "merge" is
+            # AE's dialog default when the current source has no binding.
+            current = self._main_source
+            styles = current.layer_styles if isinstance(current, FileSource) else None
+            resolved_styles = styles if styles is not None else "merge"
+        else:
+            resolved_styles = layer_styles
         self._replace_main_source(
-            FileSource._from_layer(file, layer_index, dimensions=dimensions)
+            FileSource._from_layer(
+                file, layer_index, dimensions=dimensions, layer_styles=resolved_styles
+            )
         )
 
     def replace_with_sequence(

@@ -7,7 +7,7 @@ from py_aep.enums import KeyframeInterpolationType, Label
 
 from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
-from ..validators import validate_int, validate_number, validate_sequence
+from ..validators import validate_bool, validate_int, validate_number, validate_sequence
 from .gradient import Gradient
 from .marker import MarkerValue
 from .parallel import TEXT_KIND
@@ -28,6 +28,27 @@ if TYPE_CHECKING:
 _DEFAULT_INFLUENCE = 100.0 / 6.0
 
 _VALUE_FROM_CHUNK = object()  # sentinel: read value from _ldat_item
+
+
+def _validate_interpolation_type(
+    value: KeyframeInterpolationType, keyframe: Keyframe
+) -> None:
+    """Reject an interpolation type the owning property cannot use.
+
+    Hold-only properties (markers, source text, checkbox/dropdown effect
+    params) would otherwise accept a LINEAR/BEZIER byte AE never writes.
+    An unbound keyframe has no property to ask, so it is left alone.
+    """
+    prop = keyframe._property
+    if prop is None:
+        return
+    # Raises for an out-of-enum value before the descriptor's own
+    # membership check gets a chance to.
+    if not prop.is_interpolation_type_valid(value):
+        raise ValueError(
+            f"{KeyframeInterpolationType(value).name} is not a valid "
+            f"interpolation type for {prop.name!r}."
+        )
 
 
 class Keyframe:
@@ -51,9 +72,16 @@ class Keyframe:
     """
 
     in_interpolation_type = ChunkField.enum(
-        KeyframeInterpolationType, "_ldat_item", "in_interpolation_type"
+        KeyframeInterpolationType,
+        "_ldat_item",
+        "in_interpolation_type",
+        validate=_validate_interpolation_type,
     )
-    """The "in" interpolation type for the keyframe. Read / Write."""
+    """The "in" interpolation type for the keyframe. Read / Write.
+
+    Raises `ValueError` if the type is not valid for the owning property
+    (see [is_interpolation_type_valid][py_aep.models.properties.property.Property.is_interpolation_type_valid]).
+    """
 
     label = ChunkField.enum(Label, "_ldat_item", "label")
     """
@@ -63,17 +91,30 @@ class Keyframe:
     """
 
     out_interpolation_type = ChunkField.enum(
-        KeyframeInterpolationType, "_ldat_item", "out_interpolation_type"
+        KeyframeInterpolationType,
+        "_ldat_item",
+        "out_interpolation_type",
+        validate=_validate_interpolation_type,
     )
-    """The "out" interpolation type for the keyframe. Read / Write."""
+    """The "out" interpolation type for the keyframe. Read / Write.
 
-    roving = ChunkField[bool]("_ldat_item", "roving")
+    Raises `ValueError` if the type is not valid for the owning property
+    (see [is_interpolation_type_valid][py_aep.models.properties.property.Property.is_interpolation_type_valid]).
+    """
+
+    roving = ChunkField.bool(
+        "_ldat_item",
+        "roving",
+    )
     """
     `True` if the keyframe is roving. The first and last keyframe in
     a property cannot rove. Read / Write.
     """
 
-    temporal_auto_bezier = ChunkField[bool]("_ldat_item", "temporal_auto_bezier")
+    temporal_auto_bezier = ChunkField.bool(
+        "_ldat_item",
+        "temporal_auto_bezier",
+    )
     """
     `True` if the keyframe has temporal auto-Bezier interpolation. Temporal
     auto-Bezier interpolation affects this keyframe only if the keyframe
@@ -81,7 +122,10 @@ class Keyframe:
     `in_interpolation_type` and `out_interpolation_type`. Read / Write.
     """
 
-    temporal_continuous = ChunkField[bool]("_ldat_item", "temporal_continuous")
+    temporal_continuous = ChunkField.bool(
+        "_ldat_item",
+        "temporal_continuous",
+    )
     """
     `True` if the keyframe has temporal continuity. Temporal continuity affects
     this keyframe only if the keyframe interpolation type is
@@ -493,6 +537,7 @@ class Keyframe:
         # Orientation, whose kf_data is KfMultiDimensional) have no slot for
         # it; the getter tolerantly reads False there, but a write must not
         # silently vanish (ExtendScript's setSpatialAutoBezierAtKey errors).
+        validate_bool(value)
         if not hasattr(self._ldat_item.kf_data, "spatial_auto_bezier"):
             raise ValueError("spatial_auto_bezier can only be set on spatial keyframes")
         self._ldat_item.kf_data.spatial_auto_bezier = value
@@ -509,6 +554,7 @@ class Keyframe:
     @spatial_continuous.setter
     def spatial_continuous(self, value: bool) -> None:
         # See spatial_auto_bezier: non-spatial kf_data has no such slot.
+        validate_bool(value)
         if not hasattr(self._ldat_item.kf_data, "spatial_continuous"):
             raise ValueError("spatial_continuous can only be set on spatial keyframes")
         self._ldat_item.kf_data.spatial_continuous = value

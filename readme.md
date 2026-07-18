@@ -13,6 +13,7 @@ After Effects files (.aep) are mostly binary files, encoded in RIFX format. This
 ### Supported
 * Reading .aep files
 * Creating a new empty project from scratch (`py_aep.new`), replicating File > New > New Project
+* Saving to a new .aep file
 * Modifying most properties, including some that are not accessible through ExtendScript such as gradients, render settings, output module settings, etc. (<a href="https://forticheprod.github.io/py-aep/">Differences from ExtendScript</a> for more details)
 * Adding and removing keyframes on any property - including mask paths, source text, markers, orientation and gradients - with static/animated transitions matching After Effects' own output
 * Adding new compositions and folders, moving items between folders
@@ -22,17 +23,21 @@ After Effects files (.aep) are mostly binary files, encoded in RIFX format. This
 * Replacing a footage item's source, including rebinding to a specific layer of a layered file
 * Variable font axes on text layers, and editing dropdown menu items (property parameters)
 * Render queue management: adding compositions, removing and duplicating items, adding output modules, applying render/output templates from the AE preferences
-* Saving to a new .aep file
+* Essential Graphics, Essential Properties and alternate sources
+* Preferences parsing for Render Queue Item / Output Module templates, New Composition / Project presets, ...
 * Interpolation between numeric keyframe values
+* Color Management: working and display space, footage interpretation and output module
 
 ### Limited support
-* Essential graphics: controllers and override UUIDs are exposed but automatic resolution between them is not implemented
 * Properties that are synthesized by After Effects at runtime and not stored in the binary are supported but some might be missing or inaccurate
+* When adding effect properties to a layer or PropertyGroup, only effects that are already present in a .aep can be added
 * Some Text layers attributes are missing
 
 ### Not supported
 * Expression evaluation
-* Runtime things such as System information, preferences, available color spaces, UI state, etc.
+* Image sampling and rendering
+* Layers, properties and keyframes selection
+* Runtime things such as System information, UI state, etc.
 
 
 

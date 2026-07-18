@@ -43,7 +43,13 @@ def _validate_number(
     def _validator(value: object, instance: object | None = None) -> None:
         if isinstance(value, (list, tuple)):
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
-        if integer and not isinstance(value, int):
+        if integer and (not isinstance(value, int) or isinstance(value, bool)):
+            # `bool` subclasses `int`, so an isinstance check alone lets
+            # `skip_frames = True` through as 1. AE rejects it outright
+            # ("true is not an unsigned integer"), and so does every other
+            # place in this codebase that had to hand-roll the same guard.
+            # Not `type(value) is not int`: that would also reject IntEnum
+            # members and numpy integers.
             raise TypeError(f"expected {type_label}, got {type(value).__name__}")
         if isinstance(value, float) and not math.isfinite(value):
             # NaN/inf would pass any `value < min or value > max` check (those
@@ -94,6 +100,7 @@ def validate_sequence(
         exclusive_min: When `True`, each element must be strictly greater
             than `min` (e.g. a non-zero-area box size).
     """
+    type_label = "an integer" if integer else "a number"
     _element_validator = _validate_number(
         min=min, max=max, integer=integer, exclusive_min=exclusive_min
     )
@@ -108,6 +115,15 @@ def validate_sequence(
         if n is not None and len(items) != n:
             raise ValueError(f"expected {n} elements, got {len(items)}")
         for i, v in enumerate(items):
+            # Elements are numeric whatever the bounds are. `_validate_number`
+            # skips its own type check once both bounds resolve to None, an
+            # exemption for unbounded SCALAR fields carrying complex values
+            # (Gradient, Shape, ...) - never for a member of a fixed-length
+            # numeric sequence, which would otherwise accept a string here.
+            if not isinstance(v, (int, float)):
+                raise TypeError(
+                    f"element [{i}] expected {type_label}, got {type(v).__name__}"
+                )
             try:
                 _element_validator(v, instance)
             except (TypeError, ValueError) as exc:
@@ -116,20 +132,37 @@ def validate_sequence(
     return _validator
 
 
+#: One shared validator per enum class. Enum validators are factory-built
+#: closures (unlike the module-level singleton validators), so callers that
+#: default their enum validator - e.g. `RangeField.enum` and
+#: `DocumentWideCosField.enum` for the same field - would otherwise hold
+#: distinct instances; memoizing keeps them identity-equal.
+_ENUM_VALIDATORS: dict[type, Callable[..., None]] = {}
+
+
 def validate_enum(enum_cls: type) -> Callable[..., None]:
     """Return a validator that checks value is a member of `enum_cls`.
 
     Accepts both enum instances and their int equivalents. An int that is
     not a valid member value raises `ValueError`; any other wrong type
-    raises `TypeError`.
+    raises `TypeError`. The returned validator is memoized per `enum_cls`.
 
     Args:
         enum_cls: The enum class the value must be a member of.
     """
+    cached = _ENUM_VALIDATORS.get(enum_cls)
+    if cached is not None:
+        return cached
 
     def _validator(value: object, instance: object | None = None) -> None:
         if isinstance(value, enum_cls):
             return
+        # Before the int branch: `bool` subclasses `int`, so `om.format =
+        # True` would otherwise silently select the member whose value is 1.
+        if isinstance(value, bool):
+            raise TypeError(
+                f"expected a {enum_cls.__name__}, got {type(value).__name__}"
+            )
         if isinstance(value, int):
             try:
                 enum_cls(value)
@@ -140,6 +173,7 @@ def validate_enum(enum_cls: type) -> Callable[..., None]:
             return
         raise TypeError(f"expected a {enum_cls.__name__}, got {type(value).__name__}")
 
+    _ENUM_VALIDATORS[enum_cls] = _validator
     return _validator
 
 
@@ -195,6 +229,7 @@ def _validate_str(
 def _validate_path(
     *,
     must_exist: bool | None = None,
+    must_be_file: bool = False,
 ) -> Callable[..., None]:
     """Return a validator that checks a filesystem path.
 
@@ -202,6 +237,10 @@ def _validate_path(
         must_exist: When `True`, reject paths that don't exist
             (`ValueError`). When `False`, reject paths that do exist
             (`FileExistsError`). When `None`, allow both.
+        must_be_file: When `True`, also reject an existing path that is not
+            a regular file. Without this a directory passes `must_exist` and
+            only fails later, deep in a reader, as an OS-specific error
+            (`PermissionError` on Windows, `IsADirectoryError` elsewhere).
     """
 
     def _validator(value: object, instance: object | None = None) -> None:
@@ -211,6 +250,8 @@ def _validate_path(
         if must_exist is True:
             if not path.exists():
                 raise ValueError(f"path does not exist: {path}")
+            if must_be_file and not path.is_file():
+                raise ValueError(f"path is not a file: {path}")
         elif must_exist is False:
             if path.exists():
                 raise FileExistsError(f"path already exists: {path}")
@@ -244,6 +285,13 @@ validate_u2 = _validate_number(min=0, max=0xFFFF, integer=True)
 # A u4 frame counter (e.g. a marker's frame_duration) holds 0..4294967295.
 validate_u4 = _validate_number(min=0, max=0xFFFFFFFF, integer=True)
 
+# A signed 32-bit metric (e.g. text kerning/tracking). AE 2026 reads values
+# up to 2**31 fine but rejects the whole text layer for larger magnitudes
+# ("Error reading the text layer", probed 2**31 OK / 10**10 fails); the s4
+# range is the conservative bound that stays inside that limit. Not
+# `integer=True`: kerning/tracking accept a float and round it on write.
+validate_s4 = _validate_number(min=-(2**31), max=2**31 - 1)
+
 # A marker duration in seconds maps to a u4 600ths-of-a-second field
 # (round(seconds * 600)); cap at the field capacity and reject NaN/inf/negative.
 validate_marker_duration = _validate_number(min=0.0, max=0xFFFFFFFF / 600.0)
@@ -261,6 +309,8 @@ validate_duration = _validate_number(min=1.0 / 99.0, max=10800.0)
 validate_frame_rate = _validate_number(min=1.0, max=99.0)
 
 validate_vector2 = validate_sequence(length=2)
+
+validate_vector3 = validate_sequence(length=3)
 
 validate_rgb_color = validate_sequence(length=3, min=0.0, max=1.0)
 
@@ -285,5 +335,8 @@ validate_box_size = validate_sequence(length=2, min=0.0, exclusive_min=True)
 validate_path = _validate_path()
 
 validate_path_exists = _validate_path(must_exist=True)
+
+# For media paths: a directory must be refused here, not by the format reader.
+validate_file_exists = _validate_path(must_exist=True, must_be_file=True)
 
 validate_path_does_not_exist = _validate_path(must_exist=False)

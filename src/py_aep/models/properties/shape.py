@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ...binary.ldat_chunks import ShapePoint
 from ...binary.misc_chunks import ShphChunk
 from ..descriptors import ChunkField
 from ..validators import (
+    validate_bool,
     validate_normalized_float,
     validate_positive_int,
     validate_vector2,
@@ -16,6 +17,8 @@ from ..validators import (
 if TYPE_CHECKING:
     from ...binary.misc_chunks import FeatherPointItem
     from ..items.composition import CompItem
+    from ..layers.av_layer import AVLayer
+    from ..layers.layer import Layer
 
 
 def _interp_transform(raw: int) -> int:
@@ -166,6 +169,7 @@ class Shape:
         self._shph.open = not closed
         self._is_mask = False
         self._composition: CompItem | None = None
+        self._layer: Layer | None = None
         self._closed_fallback = closed
         self.feather_points = feather_points if feather_points is not None else []
         """List of variable-width mask feather points."""
@@ -231,12 +235,22 @@ class Shape:
         obj._points = _points
         obj._is_mask = _is_mask
         obj._composition = _composition
+        obj._layer = None
         obj.feather_points = feather_points if feather_points is not None else []
         return obj
 
     @property
     def _comp_size(self) -> tuple[float, float] | None:
-        """Composition size for mask shape denormalization, read lazily."""
+        """Mask-shape denormalization size, read lazily.
+
+        Mask space is LAYER space, so the owning layer's source size wins
+        (pinned by the psd_vector_mask_cropped fixture: a layer smaller
+        than its comp); the composition is the parse-context fallback for
+        shapes not yet bound to a layer.
+        """
+        if self._layer is not None:
+            layer = cast("AVLayer", self._layer)
+            return (float(layer.width), float(layer.height))
         if self._composition is not None:
             return (float(self._composition.width), float(self._composition.height))
         return None
@@ -396,7 +410,8 @@ class Shape:
 
     @closed.setter
     def closed(self, value: bool) -> None:
+        validate_bool(value)
         if self._shph is not None:
             self._shph.open = not value
         else:
-            self._closed_fallback = bool(value)
+            self._closed_fallback = value

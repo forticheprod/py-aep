@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...descriptors import ChunkField
+from .base import FormatOptionsBase
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import RoptChunk
 
 
-class TiffFormatOptions:
+class TiffFormatOptions(FormatOptionsBase):
     """TIFF format-specific render options.
 
     These settings correspond to the TIFF Options dialog in After Effects,
@@ -28,13 +29,13 @@ class TiffFormatOptions:
     def __init__(self, *, _body: RoptChunk) -> None:
         self._body = _body
 
-    lzw_compression = ChunkField[bool](
+    lzw_compression = ChunkField.bool(
         "_body",
         "lzw_compression",
     )
     """Whether LZW compression is enabled. Read / Write."""
 
-    ibm_pc_byte_order = ChunkField[bool](
+    ibm_pc_byte_order = ChunkField.bool(
         "_body",
         "ibm_pc_byte_order",
     )

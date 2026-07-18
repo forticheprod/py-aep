@@ -11,10 +11,10 @@ from ...binary.utils import (
 from ...color.envelope import (
     PROFILE_TYPE_OCIO,
     build_icc_envelope,
-    build_ocio_colorspace_envelope,
     parse_envelope,
 )
 from ...color.icc import default_icc_library
+from ...color.ocio import ocio_color_profile_envelope, require_ocio_config
 from ...enums import (
     AlphaMode,
     FieldSeparationType,
@@ -23,7 +23,12 @@ from ...enums import (
 )
 from ...enums.mappings import map_media_color_space, profile_id_for_name
 from ..descriptors import ChunkField
-from ..validators import _validate_number, validate_rgb_color, validate_string
+from ..validators import (
+    _validate_number,
+    validate_bool,
+    validate_rgb_color,
+    validate_string,
+)
 
 if TYPE_CHECKING:
     from ...binary.chunk import ListChunk
@@ -66,7 +71,7 @@ class FootageSource:
     values. When `False`, those attributes have no relevant meaning for the
     footage. Read-only."""
 
-    high_quality_field_separation = ChunkField[bool](
+    high_quality_field_separation = ChunkField.bool(
         "_sspc",
         "high_quality_field_separation",
         transform=lambda v: v % 2 != 0,
@@ -75,7 +80,10 @@ class FootageSource:
     """When `True`, After Effects uses special algorithms to determine how to
     perform high-quality field separation. Read / Write."""
 
-    invert_alpha = ChunkField[bool]("_sspc", "invert_alpha")
+    invert_alpha = ChunkField.bool(
+        "_sspc",
+        "invert_alpha",
+    )
     """When `True`, an alpha channel in a footage clip or proxy should be
     inverted. This attribute is valid only if an alpha is present. If
     `has_alpha` is `False`, or if `alpha_mode` is
@@ -221,11 +229,12 @@ class FootageSource:
 
     @preserve_rgb.setter
     def preserve_rgb(self, value: bool) -> None:
+        validate_bool(value)
         if self._clrs is None:
             raise AttributeError(
                 "Cannot set preserve_rgb: no CLRS container. Update the value in After Effects then re-parse the project to modify this footage source."
             )
-        toggle_flag_chunk(self._clrs, "prgb", bool(value))
+        toggle_flag_chunk(self._clrs, "prgb", value)
 
     @property
     def media_color_space(self) -> str:
@@ -233,13 +242,30 @@ class FootageSource:
         Color Management tab. Read / Write.
 
         Returns `"Embedded"`, `"Working Color Space"`, the name of an assigned
-        OCIO color space (e.g. `"ACEScg"`), or the name of an Adobe ICC profile
-        (e.g. `"Apple RGB"`).
+        OCIO color space, or the name of an Adobe ICC profile (e.g.
+        `"Apple RGB"`). As with [working_space][py_aep.models.project.Project.working_space],
+        an assigned OCIO space reads back as AE's stored `colorProfileName`:
+        `"<family>/<name>"` for a direct color-space pick (e.g.
+        `"ACES/ACES - ACEScg"`), or the target name for a role/alias pick.
 
-        Writable: `"Working Color Space"`, `"Embedded"`, an OCIO color-space
-        name, or an Adobe ICC profile name. An Adobe profile is identified by its
-        16-byte ID and its ICC bytes are discovered on disk
+        Writable: `"Working Color Space"`, `"Embedded"`, an Adobe ICC profile
+        name, or - in OCIO mode - any color space, role, alias or
+        `display/view` pair of the project's OCIO configuration (the
+        `"<family>/<name>"` form this getter returns is accepted too). The
+        config must be resolvable, since the envelope AE writes depends on
+        which kind the name is. An Adobe profile is identified by its 16-byte
+        ID and its ICC bytes are discovered on disk
         (`ColorProfileNotFoundError` if not installed).
+
+        Note:
+            Assigning back what this getter returns is lossy for a ROLE pick.
+            AE stores the role's TARGET, not the role, and many roles can
+            share one target (ACES 1.2 points `rendering`, `scene_linear` and
+            `compositing_linear` all at `ACES - ACEScg`), so which role was
+            chosen is not recoverable from the file. Re-assigning the target
+            name records a direct color-space pick instead - the same color
+            transform, different bytes. Pass the role name (e.g.
+            `"matte_paint"`) to write a role pick.
 
         Note:
             Not exposed in ExtendScript."""
@@ -295,8 +321,20 @@ class FootageSource:
             self._write_ocsp(build_icc_envelope(value, lib.bytes_for(value)))
             return
         # Treat any other name as an OCIO color space (no ICC, apid unmanaged).
+        # The envelope depends on the SELECTION KIND, so the config is
+        # required - AE-verified against a direct-pick and a role-pick sample.
         apid_chunk.data = b"\xff" * 16
-        self._write_ocsp(build_ocio_colorspace_envelope(value))
+        self._write_ocsp(self._ocio_envelope(value))
+
+    def _ocio_envelope(self, name: str) -> str:
+        """Build the OCIO envelope AE writes for `name` (see
+        [ocio_color_profile_envelope][py_aep.color.ocio.ocio_color_profile_envelope])."""
+        project = self._project
+        config = require_ocio_config(
+            project.ocio_configuration_file if project is not None else None,
+            f"build the color-profile envelope for {name!r}",
+        )
+        return ocio_color_profile_envelope(config, name)
 
     def _ocsp_utf8(self) -> Utf8Chunk | None:
         """The `Utf8` chunk after the CLRS `ocsp` marker (the assigned space)."""

@@ -108,6 +108,14 @@ class Item:
                 self._ldat = None
 
     @property
+    def dynamic_link_guid(self) -> str:
+        """A unique and persistent identification number used for the
+        dynamic link, in form of `00000000-0000-0000-0000-000000000000`.
+        Read-only.
+        """
+        return f"{self.id:08x}-0000-0000-0000-000000000000"
+
+    @property
     def comment(self) -> str:
         """The item comment. Read / Write."""
         if self._cmta is None:

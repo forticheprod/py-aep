@@ -68,10 +68,16 @@ class MarkerValue:
     Read / Write.
     """
 
-    navigation = ChunkField[bool]("_nmhd", "navigation")
+    navigation = ChunkField.bool(
+        "_nmhd",
+        "navigation",
+    )
     """Whether the marker is a navigation marker. Read / Write."""
 
-    protected_region = ChunkField[bool]("_nmhd", "protected_region")
+    protected_region = ChunkField.bool(
+        "_nmhd",
+        "protected_region",
+    )
     """
     State of the Protected Region option in the Composition Marker dialog box.
     When `True`, the composition marker behaves as a protected region. Will

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import uuid
+import warnings
 import xml.etree.ElementTree as ET
+from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -41,12 +43,16 @@ from ..binary.utils import (
 )
 from ..color.envelope import (
     build_icc_envelope,
-    build_ocio_colorspace_envelope,
     build_ocio_display_envelope,
     envelope_profile_name,
 )
 from ..color.icc import IccProfileLibrary
-from ..color.ocio import list_config_color_spaces, resolve_ocio_config
+from ..color.ocio import (
+    list_config_color_spaces,
+    ocio_color_profile_envelope,
+    require_ocio_config,
+    resolve_ocio_config,
+)
 from ..data.file_formats import (
     AI_COMP_EXTENSIONS,
     EPS_COMP_EXTENSIONS,
@@ -70,20 +76,54 @@ from ..resolvers.ai_layers import (
     read_ai_layers,
 )
 from ..resolvers.media_probe import probe_media
-from ..resolvers.psd_layers import FlattenedPsdError, PsdGroup, read_psd_layers
+from ..resolvers.psd_layers import (
+    FlattenedPsdError,
+    PsdGroup,
+    PsdLayer,
+    read_psd_layers,
+)
+from ..resolvers.psd_paths import parse_vector_mask
+from ..resolvers.psd_styles import (
+    has_enabled_styles,
+    parse_layer_styles,
+    read_global_light,
+)
 from ..synthesis.layer import LayerGroupSpec, LayerSpec
+from ..synthesis.property import (
+    _ADV_BLEND_SPECS,
+    _BLEND_OPTIONS_SPECS,
+    _LAYER_STYLE_CHILD_SPECS,
+    _STYLE_ANGLE_SUFFIXES,
+    _STYLE_ENUM_SUFFIXES,
+    _STYLE_HINT_BOUNDS,
+    _STYLE_HINT_BOUNDS_EXCEPTIONS,
+    PropSpec,
+)
 from .descriptors import ChunkField
 from .import_options import ImportOptions
 from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
 from .items.item import Item
-from .preferences import Preferences, default_sequence_fps
+from .preferences import (
+    Preferences,
+    default_sequence_fps,
+    psd_comp_layer_styles,
+    psd_footage_dimensions,
+    psd_footage_layer_styles,
+)
+from .properties.gradient import Gradient
+from .properties.property import Property, _values_equal
+from .properties.property_group import PropertyGroup
+from .properties.shape import Shape
 from .renderqueue.render_queue import RenderQueue
-from .sources.file import FileSource
+from .sources.file import PSD_LAYER_STYLES_C8, FileSource
+from .text.ranges import _replace_layer_font
 from .validators import (
     _validate_number,
+    validate_bool,
     validate_enum,
+    validate_font_name,
     validate_one_of,
     validate_path,
     validate_path_does_not_exist,
@@ -99,13 +139,28 @@ if TYPE_CHECKING:
     from ..binary.render_chunks import RenderSettingsItem
     from ..parsers.templates import OutputModuleTemplate
     from ..resolvers.media_probe import MediaInfo
+    from ..resolvers.psd_styles import PsdLayerStyles
+    from .items.av_item import AVItem
     from .layers.av_layer import AVLayer
     from .layers.layer import Layer
-    from .properties.property import Property
-    from .properties.property_group import PropertyGroup
+    from .properties.mask_property_group import MaskPropertyGroup
+    from .text.font_object import FontObject
+    from .text.text_document import TextDocument
 
 
 _validate_expression_engine = validate_one_of(("extendscript", "javascript-1.0"))
+
+
+def _font_post_script_name(font: FontObject | str) -> str:
+    """The PostScript name of a `replace_font` argument."""
+    if isinstance(font, str):
+        validate_font_name(font)
+        return font
+    name = getattr(font, "post_script_name", None)
+    if not isinstance(name, str) or not name:
+        raise TypeError("expected a FontObject or a PostScript name string")
+    return name
+
 
 # AE's default new-composition import timing for a layered file: a 30-second
 # duration rounded to whole frames at 29.97 fps. This is AE's built-in
@@ -193,7 +248,7 @@ class Project:
     """The start frame number for the project display (0 or 1). An alternate
     way of setting the Frame Count menu setting. Read / Write."""
 
-    frames_use_feet_frames = ChunkField[bool](
+    frames_use_feet_frames = ChunkField.bool(
         "_nnhd",
         "frames_use_feet_frames",
         post_set=lambda obj: obj._sync_nhed_field("_feet_byte"),
@@ -210,7 +265,7 @@ class Project:
     """The time display style, corresponding to the Time Display Style
     section in the Project Settings dialog box. Read / Write."""
 
-    transparency_grid_thumbnails = ChunkField[bool](
+    transparency_grid_thumbnails = ChunkField.bool(
         "_nnhd",
         "transparency_grid_thumbnails",
         post_set=lambda obj: obj._sync_nhed_field("transparency_grid_thumbnails"),
@@ -226,8 +281,12 @@ class Project:
         This attribute is read-only in ExtendScript.
     """
 
-    compensate_for_scene_referred_profiles = ChunkField[bool](
-        "_acer", "value", transform=bool, reverse=int, min_version=16
+    compensate_for_scene_referred_profiles = ChunkField.bool(
+        "_acer",
+        "value",
+        transform=bool,
+        reverse=int,
+        min_version=16,
     )
     """When True, After Effects compensates for scene-referred profiles when
     rendering."""
@@ -323,7 +382,7 @@ class Project:
         self._effect_definitions_cache: list[tuple[str, str, ListChunk]] | None = None
         self._used_in_linked = False
 
-        self._max_layer_id = -1  # lazily computed on first allocation
+        self._id_counter_reconciled = False  # lazily done on first allocation
         self._ae_preferences_dir = ae_preferences_dir
         self._preferences = Preferences(ae_preferences_dir)
         # ICC profile discovery for Adobe-CMS working-space writes. `None`
@@ -597,6 +656,7 @@ class Project:
 
     @linear_blending.setter
     def linear_blending(self, value: bool) -> None:
+        validate_bool(value)
         # AE keeps `lnrb` in a fixed slot right after `cpid` (before `lnrp` /
         # `dwga`); appending it at the tail makes AE report "missing data".
         toggle_flag_chunk(self._rifx, "lnrb", value, after_types=("cpid",))
@@ -610,6 +670,7 @@ class Project:
     @linearize_working_space.setter
     @requires_version(16)
     def linearize_working_space(self, value: bool) -> None:
+        validate_bool(value)
         # `lnrp` sits immediately after `lnrb` (or after `cpid` when linear
         # blending is off), before `dwga`.
         toggle_flag_chunk(self._rifx, "lnrp", value, after_types=("lnrb", "cpid"))
@@ -644,11 +705,16 @@ class Project:
         """The name of the working color space (e.g., "sRGB IEC61966-2.1",
         "ACEScg", "None"). Read / Write.
 
-        In OCIO mode, assigning an OCIO color-space name rewrites the embedded
-        profile JSON (AE identifies it by name, no ICC data). In Adobe CMS mode,
-        the matching ICC profile is discovered on disk (see [icc_profile_dirs][])
-        and embedded; `ColorProfileNotFoundError` is raised if it is not
-        installed.
+        In OCIO mode, assigning any color space, role, alias, or
+        `display/view` pair of [ocio_configuration_file][] rewrites the
+        embedded profile JSON (AE identifies it by name, no ICC data). The
+        config must be resolvable, because the envelope AE writes depends on
+        which of those kinds the name is; `ValueError` is raised if it cannot
+        be located or the name is not in it.
+
+        In Adobe CMS mode, the matching ICC profile is discovered on disk (see
+        [icc_profile_dirs][]) and embedded; `ColorProfileNotFoundError` is
+        raised if it is not installed.
         """
         if self._ws_utf8 is not None:
             return envelope_profile_name(self._ws_utf8.value)
@@ -660,28 +726,24 @@ class Project:
     def working_space(self, value: str) -> None:
         validate_string(value)
         if self.color_management_system == ColorManagementSystem.OCIO:
-            self._validate_ocio_color_space(value)
-            envelope = build_ocio_colorspace_envelope(value)
+            envelope = self._ocio_envelope(value)
         else:
             # bytes_for already raises ColorProfileNotFoundError for an
             # unknown Adobe profile name, so no separate name check is needed.
             envelope = build_icc_envelope(value, self._icc_lib().bytes_for(value))
         self._ws_utf8 = self._rewrite_color_profile("PwCs", envelope)
 
-    def _validate_ocio_color_space(self, name: str) -> None:
-        """Reject an OCIO color-space name absent from the active config.
+    def _ocio_envelope(self, name: str) -> str:
+        """Build the OCIO color-profile envelope AE writes for `name`.
 
-        `list_color_profiles()` returns `[]` when the config cannot be located
-        or read; in that case skip the check rather than block a name that
-        cannot be verified.
+        `ocio_color_profile_envelope` raises for a name the config does not
+        contain, so no separate membership check is needed.
         """
-        available = self.list_color_profiles()
-        if available and name not in available:
-            raise ValueError(
-                f"{name!r} is not an active color space in the current OCIO "
-                f"configuration ({self.ocio_configuration_file!r}). Call "
-                "Project.list_color_profiles() to see the valid names."
-            )
+        config = require_ocio_config(
+            self.ocio_configuration_file,
+            f"build the color-profile envelope for {name!r}",
+        )
+        return ocio_color_profile_envelope(config, name)
 
     @property
     def icc_profile_dirs(self) -> list[Path] | None:
@@ -980,11 +1042,37 @@ class Project:
             raise ValueError("layer_dimensions requires layer_index")
 
         suffix = options.file.suffix.lower()
+        if options.layer_styles is not None:
+            if suffix not in PSD_COMP_EXTENSIONS:
+                raise ValueError(
+                    "layer_styles applies to Photoshop (.psd/.psb) imports only"
+                )
+            if options.import_as == ImportAsType.FOOTAGE:
+                if options.layer_index is None:
+                    raise ValueError(
+                        "layer_styles requires layer_index for a FOOTAGE "
+                        'import: a "Merged Layers" whole-document import '
+                        "always flattens the styles into the composite"
+                    )
+                if options.layer_styles == "editable":
+                    raise ValueError(
+                        "editable layer styles require a COMP import; a "
+                        'FOOTAGE import offers "merge" or "ignore"'
+                    )
+            elif options.layer_styles == "ignore":
+                raise ValueError(
+                    'a COMP import offers "editable" or "merge" layer '
+                    "styles (AE's dialog has no Ignore option there)"
+                )
         if options.import_as == ImportAsType.COMP_CROPPED_LAYERS:
             if suffix == ".svg":
                 return self._import_svg_cropped(options.file)
             if suffix in PSD_COMP_EXTENSIONS:
-                return self._import_psd_layered(options.file, cropped=True)
+                return self._import_psd_layered(
+                    options.file,
+                    cropped=True,
+                    layer_styles=self._resolve_comp_layer_styles(options),
+                )
             raise ValueError(
                 "import_file supports COMP_CROPPED_LAYERS for SVG and layered "
                 f".psd/.psb; {suffix} cropped import is not implemented yet"
@@ -995,7 +1083,10 @@ class Project:
             if suffix in EPS_COMP_EXTENSIONS:
                 return self._import_eps_comp(options.file)
             if suffix in PSD_COMP_EXTENSIONS:
-                return self._import_psd_layered(options.file)
+                return self._import_psd_layered(
+                    options.file,
+                    layer_styles=self._resolve_comp_layer_styles(options),
+                )
             raise ValueError(f"import_file does not support COMP import for {suffix!r}")
         if options.import_as == ImportAsType.PROJECT:
             raise ValueError(
@@ -1010,10 +1101,23 @@ class Project:
             )
 
         if options.layer_index is not None:
+            # Fill unset PSD layer-import choices from the machine's sticky
+            # import-dialog preferences, as AE's own importFile does. These
+            # prefs are PSD-only: an AI/PDF layer import keeps None (its
+            # downstream default), since a PSD "layer" dimension would wrongly
+            # trip _from_layer's Layer-Size NotImplementedError for AI/PDF.
+            dimensions = options.layer_dimensions
+            styles = options.layer_styles
+            if suffix in PSD_COMP_EXTENSIONS:
+                if styles is None:
+                    styles = psd_footage_layer_styles(self._preferences)
+                if dimensions is None:
+                    dimensions = psd_footage_dimensions(self._preferences)
             source = FileSource._from_layer(
                 options.file,
                 options.layer_index,
-                dimensions=options.layer_dimensions,
+                dimensions=dimensions,
+                layer_styles=styles,
             )
         else:
             source = FileSource._from_file(
@@ -1021,6 +1125,8 @@ class Project:
                 sequence=options.sequence,
                 force_alphabetical=options.force_alphabetical,
                 default_sequence_fps=default_sequence_fps(self._preferences),
+                range_start=options.range_start if options.sequence else 0,
+                range_end=options.range_end if options.sequence else 0,
             )
 
         item = FootageItem._new(source, project=self, parent_folder=self.root_folder)
@@ -1030,6 +1136,14 @@ class Project:
         self.items[item.id] = item
         self.root_folder.items.append(item)
         return item
+
+    def _resolve_comp_layer_styles(self, options: ImportOptions) -> str | None:
+        """The COMP-import Layer Options value: the user's explicit choice, or
+        the machine's sticky PSD-comp import preference. `None` (no preference,
+        or no preferences directory) keeps AE's `editable` dialog default."""
+        if options.layer_styles is not None:
+            return options.layer_styles
+        return psd_comp_layer_styles(self._preferences)
 
     def _import_svg_cropped(self, file: Path) -> CompItem:
         """Import an SVG as a cropped comp (one shape layer of its art)."""
@@ -1140,7 +1254,10 @@ class Project:
         for spec in specs:
             if isinstance(spec, LayerGroupSpec):
                 nested = self._new_layered_comp(
-                    folder, spec.name, info.width, info.height
+                    folder,
+                    spec.comp_name if spec.comp_name is not None else spec.name,
+                    info.width,
+                    info.height,
                 )
                 self._add_layered_specs(
                     nested,
@@ -1153,8 +1270,16 @@ class Project:
                 )
                 # AE imports a PSD group as a collapsed precomp and leaves the
                 # layer name empty (it inherits the nested comp's name), so
-                # `name_set` stays off - matching avoids both deltas.
-                cast("AVLayer", comp.add(nested)).collapse_transformation = True
+                # `name_set` stays off - matching avoids both deltas. A
+                # clipping-run precomp instead bakes the base layer's name
+                # (still with `name_set` off) and stays uncollapsed.
+                group_layer = cast("AVLayer", comp.add(nested))
+                if spec.collapsed:
+                    group_layer.collapse_transformation = True
+                if spec.layer_name is not None:
+                    group_layer.name = spec.layer_name
+                    group_layer._ldta.name_set = False
+                _serialize_import_layer_styles(group_layer, None, file.name)
                 continue
             source = FileSource._new(
                 file,
@@ -1172,6 +1297,7 @@ class Project:
                 layer_id=spec.layer_id,
                 layer_index=spec.layer_index,
                 data_size=spec.data_size,
+                reserved_c8=spec.reserved_c8,
             )
             footage = FootageItem._new(source, project=self, parent_folder=folder)
             folder._children_container.append(footage._item_list)
@@ -1195,6 +1321,18 @@ class Project:
                 ]
             if spec.is_adjustment:
                 cast("AVLayer", layer).adjustment_layer = True
+            if spec.preserve_transparency:
+                cast("AVLayer", layer).preserve_transparency = True
+            if spec.masks:
+                # A PSD vector-mask/shape-layer path: AE creates one mask
+                # per subpath (psd_vector_mask* fixtures).
+                parade = cast("PropertyGroup", layer.property("ADBE Mask Parade"))
+                for shape in spec.masks:
+                    mask = cast(
+                        "MaskPropertyGroup", parade.add_property("ADBE Mask Atom")
+                    )
+                    cast("Property", mask.property("ADBE Mask Shape")).value = shape
+            _serialize_import_layer_styles(layer, spec.styles, file.name)
 
     def _import_ai_layered(self, file: Path) -> CompItem:
         """Import a layered Illustrator/PDF file as a composition."""
@@ -1241,13 +1379,20 @@ class Project:
         )
         return self._import_layered_comp(file, "TEXT", [spec], info, None)
 
-    def _import_psd_layered(self, file: Path, cropped: bool = False) -> CompItem:
+    def _import_psd_layered(
+        self,
+        file: Path,
+        cropped: bool = False,
+        layer_styles: str | None = None,
+    ) -> CompItem:
         """Import a layered Photoshop file (`.psd`/`.psb`) as a composition.
 
         Layer groups become nested compositions (recursively); adjustment
         layers are flagged. With `cropped`, each leaf layer is cropped to its
         content box (`COMP_CROPPED_LAYERS`); otherwise the full canvas is kept
-        (`COMP`).
+        (`COMP`). `layer_styles` is the dialog's Layer Options choice
+        (`"editable"`, the default, or `"merge"`; see
+        `ImportOptions.layer_styles`).
 
         A flattened file (no layer records) is imported as a one-layer
         composition of the merged still, matching AE 2026: a `<stem> Layers`
@@ -1274,43 +1419,131 @@ class Project:
                 ),
             )
             return self._import_layered_comp(file, "8BPS", [spec], info)
+        resolved_styles = "editable" if layer_styles is None else layer_styles
         specs = self._psd_layer_specs(
             nodes,
+            file,
             info.width,
             info.height,
             info.bit_depth,
             info.layer_count,
             cropped,
+            resolved_styles,
+            # The global light is a document constant; read it once here
+            # rather than per recursion level (one file scan per group).
+            read_global_light(file) if resolved_styles == "editable" else None,
         )
         return self._import_layered_comp(file, "8BPS", specs, info)
 
     def _psd_layer_specs(
         self,
         nodes: list[Any],
+        file: Path,
         canvas_w: int,
         canvas_h: int,
         bit_depth: int,
         layer_count: int,
         cropped: bool,
+        layer_styles: str,
+        global_light: tuple[float, float] | None,
+        clip_counter: Iterator[int] | None = None,
+        group_clipping: bool = True,
     ) -> list[LayerSpec | LayerGroupSpec]:
-        """Convert a PSD layer tree into import specs (recursively)."""
+        """Convert a PSD layer tree into import specs (recursively).
+
+        `clip_counter` numbers the clipping-run precomps document-wide
+        (AE names them `"<stem> (n)"`); `group_clipping=False` disables
+        run detection while building a run's own children.
+        """
+        if clip_counter is None:
+            clip_counter = count(1)
+        reserved_c8 = PSD_LAYER_STYLES_C8[layer_styles]
         specs: list[LayerSpec | LayerGroupSpec] = []
-        for node in nodes:
+        index = 0
+        while index < len(nodes):
+            node = nodes[index]
+            index += 1
             if isinstance(node, PsdGroup):
+                if has_enabled_styles(node):
+                    # Photoshop allows styles on a group; applying them to
+                    # the nested-comp layer is not supported yet.
+                    warnings.warn(
+                        f"{file.name}: styles on layer group {node.name!r} "
+                        "were ignored - importing group layer styles is "
+                        "not supported",
+                        stacklevel=2,
+                    )
                 specs.append(
                     LayerGroupSpec(
                         node.name,
                         self._psd_layer_specs(
                             node.children,
+                            file,
                             canvas_w,
                             canvas_h,
                             bit_depth,
                             layer_count,
                             cropped,
+                            layer_styles,
+                            global_light,
+                            clip_counter,
                         ),
                     )
                 )
                 continue
+            if group_clipping and not node.clipped:
+                # A clipping run (this base + the clipped layers above it)
+                # is auto-precomposed by AE: nested comp "<stem> (n)", the
+                # base's name baked on the uncollapsed parent layer, and
+                # preserve-transparency on the clipped members
+                # (psd_clipping_mask fixture).
+                run = [node]
+                while (
+                    index < len(nodes)
+                    and isinstance(nodes[index], PsdLayer)
+                    and nodes[index].clipped
+                ):
+                    run.append(nodes[index])
+                    index += 1
+                if len(run) > 1:
+                    specs.append(
+                        LayerGroupSpec(
+                            node.name,
+                            self._psd_layer_specs(
+                                run,
+                                file,
+                                canvas_w,
+                                canvas_h,
+                                bit_depth,
+                                layer_count,
+                                cropped,
+                                layer_styles,
+                                global_light,
+                                clip_counter,
+                                group_clipping=False,
+                            ),
+                            comp_name=f"{file.stem} ({next(clip_counter)})",
+                            layer_name=node.name,
+                            collapsed=False,
+                        )
+                    )
+                    continue
+            if cropped and layer_styles == "merge" and has_enabled_styles(node):
+                # Merging styles expands the rasterized content box, which
+                # sets the cropped footage size and the layer transform here.
+                # AE derives the expansion with its style renderer; py_aep
+                # cannot (see docs/limitations.md).
+                raise NotImplementedError(
+                    f"layer {node.name!r} of {file.name} has layer styles: "
+                    "merging them expands the rasterized bounds, so a "
+                    "COMP_CROPPED_LAYERS import cannot size its layers; "
+                    'import as COMP or pass layer_styles="editable"'
+                )
+            styles = (
+                parse_layer_styles(node, global_light)
+                if global_light is not None
+                else None
+            )
             opti_data = build_psd_layer_opti_data(
                 canvas_w,
                 canvas_h,
@@ -1320,20 +1553,43 @@ class Project:
                 node.layer_id,
                 node.name,
                 node.bounds,
+                node.is_adjustment,
             )
             left, top, right, bottom = node.bounds
             data_size = (
                 max(right - left, 0) * max(bottom - top, 0) * 4 * (bit_depth // 8)
             )
+            masks: tuple[Shape, ...] = ()
+            if node.vector_mask is not None:
+                masks = tuple(parse_vector_mask(node.vector_mask, canvas_w, canvas_h))
             if cropped:
-                # AE stores an empty layer as 1x1 (its content box is degenerate).
-                crop_w = max(1, right - left)
-                crop_h = max(1, bottom - top)
+                # An empty layer (degenerate content box) is kept at FULL
+                # CANVAS size, centered - not cropped to 1x1 (probed AE 2026:
+                # psd_clipping_mask "Layer 1" and grouped_layers "hue/sat adj"
+                # both bounds (0,0,0,0) -> full-canvas, centered).
+                if right <= left or bottom <= top:
+                    box = (0, 0, canvas_w, canvas_h)
+                else:
+                    box = (left, top, right, bottom)
+                b_left, b_top, b_right, b_bottom = box
+                crop_w = b_right - b_left
+                crop_h = b_bottom - b_top
                 # Anchor at the cropped footage centre; position the layer so the
                 # content sits where it was in the document (AE 2026 verified).
                 transform = (
                     (crop_w / 2, crop_h / 2),
-                    ((left + right) / 2, (top + bottom) / 2),
+                    ((b_left + b_right) / 2, (b_top + b_bottom) / 2),
+                )
+                # Mask vertices are canvas coordinates; a cropped layer's
+                # source origin is the content box.
+                masks = tuple(
+                    Shape(
+                        vertices=[[x - b_left, y - b_top] for x, y in shape.vertices],
+                        in_tangents=shape.in_tangents,
+                        out_tangents=shape.out_tangents,
+                        closed=shape.closed,
+                    )
+                    for shape in masks
                 )
                 specs.append(
                     LayerSpec(
@@ -1346,7 +1602,13 @@ class Project:
                         is_adjustment=node.is_adjustment,
                         layer_id=node.layer_id,
                         layer_index=node.record_index,
+                        # Empty layers have no pixels: data_size stays 0 (from
+                        # the real bounds), even though the layer is full-canvas.
                         data_size=data_size,
+                        reserved_c8=reserved_c8,
+                        styles=styles,
+                        masks=masks,
+                        preserve_transparency=not group_clipping and node.clipped,
                     )
                 )
             else:
@@ -1360,9 +1622,169 @@ class Project:
                         layer_id=node.layer_id,
                         layer_index=node.record_index,
                         data_size=data_size,
+                        reserved_c8=reserved_c8,
+                        styles=styles,
+                        masks=masks,
+                        preserve_transparency=not group_clipping and node.clipped,
                     )
                 )
         return specs
+
+    def _iter_text_source_properties(self) -> Iterator[tuple[Layer, Property]]:
+        """Yield `(layer, source_text)` for every text layer in the project."""
+        for comp in self.compositions:
+            for layer in comp.layers:
+                group = layer.text
+                if group is None:
+                    continue
+                source_text = group["ADBE Text Document"]
+                if isinstance(source_text, Property):
+                    yield layer, source_text
+
+    @property
+    def used_fonts(self) -> list[dict[str, Any]]:
+        """Returns an Array of Objects containing references to used fonts
+        and the Text Layers and times on which they appear in the current
+        Project. Read-only.
+
+        Each entry is `{"font": FontObject, "used_at": [...]}`, where every
+        `used_at` record is `{"layer_id": int, "layer_time": float}` - one
+        per source-text keyframe whose document references that font (a
+        single record at time 0 for an unanimated document). A document
+        with several fonts contributes one record per distinct font.
+        Entries are sorted by PostScript name, matching After Effects.
+
+        Note:
+            `layer_time` is in LAYER time, not composition time - After
+            Effects names it `layerTimeD` because `Source Text`'s
+            `value_at_time` expects layer time, unlike other properties.
+        """
+        records: dict[
+            tuple[str, str | None, tuple[float, ...] | None],
+            tuple[FontObject, list[dict[str, float]]],
+        ] = {}
+        for layer, source_text in self._iter_text_source_properties():
+            if source_text.keyframes:
+                entries = [
+                    (cast("TextDocument", kf.value), kf.time - layer.start_time)
+                    for kf in source_text.keyframes
+                ]
+            else:
+                entries = [(cast("TextDocument", source_text.value), 0.0)]
+            for doc, layer_time in entries:
+                if doc is None:
+                    continue
+                for font in doc._used_font_objects():
+                    vector = font.design_vector
+                    key = (
+                        font.post_script_name,
+                        font.version,
+                        tuple(vector) if vector is not None else None,
+                    )
+                    record = records.get(key)
+                    if record is None:
+                        record = (font, [])
+                        records[key] = record
+                    record[1].append({"layer_id": layer.id, "layer_time": layer_time})
+        return [
+            {"font": font, "used_at": used_at}
+            for _key, (font, used_at) in sorted(
+                records.items(), key=lambda item: item[0][0]
+            )
+        ]
+
+    def replace_font(
+        self,
+        from_font: FontObject | str,
+        to_font: FontObject | str,
+        no_font_locking: bool = False,
+    ) -> bool:
+        """Replace all usages of `from_font` with `to_font`.
+
+        A complete and precise replacement, even on text documents with
+        mixed styling: the character ranges `from_font` was applied to are
+        preserved, and every source-text keyframe of every text layer is
+        covered. This operation is not undoable.
+
+        Each font may be given as a [FontObject][] (e.g. from
+        [used_fonts][Project.used_fonts]) or as a PostScript name.
+
+        Args:
+            from_font: Font to be replaced.
+            to_font: Font to replace it with.
+            no_font_locking: Accepted for ExtendScript parity and ignored.
+                After Effects uses it to suppress the fallback font it
+                picks when `to_font` lacks glyphs for the text; that
+                fallback is a runtime font-engine decision py_aep does not
+                make, so py_aep always performs the direct replacement
+                (i.e. it behaves as if this were `True`).
+
+        Returns:
+            `True` if at least one layer was changed.
+        """
+        validate_bool(no_font_locking)
+        from_name = _font_post_script_name(from_font)
+        to_name = _font_post_script_name(to_font)
+        if from_name == to_name:
+            return False
+
+        changed = False
+        for _layer, source_text in self._iter_text_source_properties():
+            docs = [cast("TextDocument", kf.value) for kf in source_text.keyframes]
+            if not docs:
+                docs = [cast("TextDocument", source_text.value)]
+            docs = [doc for doc in docs if doc is not None]
+            if docs and _replace_layer_font(docs, from_name, to_name):
+                changed = True
+        return changed
+
+    def auto_fix_expressions(self, old_text: str, new_text: str) -> None:
+        """Automatically replaces text found in broken expressions in the
+        project, if the new text causes the expression to evaluate without
+        errors.
+
+        py_aep cannot evaluate expressions, and After Effects' actual gate
+        (is the expression currently erroring) is runtime state that is not
+        stored in the project file. Instead, py_aep replaces the quoted
+        forms `"old_text"` and `'old_text'` in EVERY enabled expression of
+        the project. Divergence from After Effects (probed AE 2026): an
+        expression that evaluates cleanly but contains the quoted text is
+        rewritten here, while After Effects leaves it untouched. Matching
+        After Effects: disabled expressions are never modified, both quote
+        styles are fixed, and quoted occurrences inside comments of a
+        rewritten expression are replaced too.
+
+        Args:
+            old_text: The text to replace.
+            new_text: The new text.
+        """
+        validate_string(old_text)
+        validate_string(new_text)
+        if not old_text:
+            return
+        old_double = f'"{old_text}"'
+        new_double = f'"{new_text}"'
+        old_single = f"'{old_text}'"
+        new_single = f"'{new_text}'"
+
+        def walk(group: PropertyGroup) -> Iterator[Property]:
+            for child in group:
+                if isinstance(child, PropertyGroup):
+                    yield from walk(child)
+                elif isinstance(child, Property):
+                    yield child
+
+        for comp in self.compositions:
+            for layer in comp.layers:
+                for prop in walk(layer):
+                    expression = prop.expression
+                    if not expression or not prop.expression_enabled:
+                        continue
+                    fixed = expression.replace(old_double, new_double).replace(
+                        old_single, new_single
+                    )
+                    if fixed != expression:
+                        prop.expression = fixed
 
     def remove_unused_footage(self) -> int:
         """Remove footage items that are not used in any composition.
@@ -1534,23 +1956,20 @@ class Project:
         self._output_templates_cache = templates
         return self._output_templates_cache
 
-    def _allocate_item_id(self) -> int:
-        """Return the next unique item ID and update the counter.
+    def _allocate_id(self) -> int:
+        """Return the next unique id for a new item or layer.
 
-        ID 0 is reserved for the root folder, so the minimum returned
-        value is 1. Also updates the next-item-ID counter in the head chunk.
+        After Effects draws item ids AND layer ids (including viewer
+        pseudo-layers in DLay/SLay/CLay/SecL lists) from one project-wide
+        counter persisted in `head.next_item_id`, and TRUSTS that counter
+        on open without rescanning - probed in AE 2026: opening a file
+        whose counter sits below the live ids makes AE itself mint
+        duplicate layer ids. So there is a single allocator, reconciled
+        once against every live id, then
+        strictly counter-driven. ID 0 is reserved for the root folder.
         """
-        new_id = self._head.next_item_id
-        self._head.next_item_id = new_id + 1
-        return new_id
-
-    def _allocate_layer_id(self) -> int:
-        """Return the next unique layer ID and update the counter."""
-        if self._max_layer_id == -1:
-            # AE allocates viewer pseudo-layer IDs (DLay/SLay/CLay/SecL
-            # lists) from the same project-wide counter as real layers, so
-            # scan every ldta in each comp's item tree, not just LIST:Layr.
-            self._max_layer_id = max(
+        if not self._id_counter_reconciled:
+            max_layer_id = max(
                 (
                     cast("LdtaChunk", ldta).layer_id
                     for comp in self.compositions
@@ -1560,8 +1979,14 @@ class Project:
                 ),
                 default=0,
             )
-        self._max_layer_id += 1
-        return self._max_layer_id
+            max_item_id = max(self.items.keys(), default=0)
+            floor = max(max_layer_id, max_item_id) + 1
+            if self._head.next_item_id < floor:
+                self._head.next_item_id = floor
+            self._id_counter_reconciled = True
+        new_id = self._head.next_item_id
+        self._head.next_item_id = new_id + 1
+        return new_id
 
     @property
     def _solids_folder_name(self) -> str:
@@ -1618,3 +2043,199 @@ def _get_effect_names(root_chunks: list[Chunk]) -> list[str]:
     pefl_chunk = find_by_list_type(chunks=root_chunks, list_type="Pefl")
     pjef_chunks = filter_by_type(chunks=pefl_chunk.chunks, chunk_type="pjef")
     return [cast("Utf8Chunk", chunk).value for chunk in pjef_chunks]
+
+
+# tdb4 canon AE writes on materialized Layer Styles leaves, keyed by leaf
+# suffix or full match name: (value_hint_type, value_hint_flag, cvot_flags,
+# type_flags, property_category, pad2a, vector), None leaving the
+# materialized value. Byte-diffed from the psd_layer_styles*.aep fixtures;
+# stamped after the value write because the static-state tdb4 templates run
+# there. The enum/angle/scalar classification is derived from the synthesis
+# canon tables so the two mechanisms cannot drift; "gradient" is
+# scalar-stamped here although `_style_leaf_canon` leaves the spec
+# uncanonized, the 2D point rows come from the psd_styles_offset_phase
+# fixture, and the blend-options leaves are keyed by full match name.
+_STYLE_TDB4_ENUM: Any = (0x0001, None, 0x04, 0x04, 0x04, None, None, False)
+_STYLE_TDB4_SCALAR: Any = (0xFFFF, None, None, None, None, None, None, False)
+_STYLE_TDB4_ANGLE: Any = (0xFFFF, 0xFF, 0xFF, 0x04, 0x06, None, None, False)
+_STYLE_TDB4_TOGGLE: Any = (0xFFFF, None, 0x04, 0x04, 0x04, None, None, False)
+_STYLE_TDB4_POINT: Any = (0xFFFF, 0xFF, 0xFF, 0x04, 0x06, 3, False, True)
+
+# The spatial-block epsilon AE writes on the 2D point style leaves (exact
+# double 0x3D9B7CDFD9D7BDBC, both leaves and layers of the
+# psd_styles_offset_phase fixture; ordinary spatial properties carry 1e-4).
+_STYLE_POINT_EPSILON = float.fromhex("0x1.b7cdfd9d7bdbcp-38")
+_STYLE_TDB4_CANON: dict[str, Any] = {
+    **dict.fromkeys(_STYLE_ENUM_SUFFIXES, _STYLE_TDB4_ENUM),
+    **dict.fromkeys(_STYLE_ANGLE_SUFFIXES, _STYLE_TDB4_ANGLE),
+    **dict.fromkeys(_STYLE_HINT_BOUNDS, _STYLE_TDB4_SCALAR),
+    **{
+        name.rsplit("/", 1)[-1]: _STYLE_TDB4_SCALAR
+        for name in _STYLE_HINT_BOUNDS_EXCEPTIONS
+    },
+    "gradient": _STYLE_TDB4_SCALAR,
+    "offset": _STYLE_TDB4_POINT,
+    "phase": _STYLE_TDB4_POINT,
+    "ADBE Global Angle2": (0x0002, None, None, None, None, None, None, False),
+    "ADBE Global Altitude2": (0x0002, None, None, None, None, None, None, False),
+    "ADBE Layer Fill Opacity2": (0xFFFF, None, None, 0x04, 0x08, None, None, False),
+    "ADBE R Channel Blend": _STYLE_TDB4_TOGGLE,
+    "ADBE G Channel Blend": _STYLE_TDB4_TOGGLE,
+    "ADBE B Channel Blend": _STYLE_TDB4_TOGGLE,
+    "ADBE Blend Interior": _STYLE_TDB4_TOGGLE,
+}
+
+
+def _stamp_style_tdb4(
+    leaf: Property, match_name: str, timebase: int, point_aspect: float
+) -> None:
+    """Apply the AE tdb4 canon to a just-written Layer Styles leaf."""
+    tdb4 = leaf._tdb4
+    if tdb4 is None:
+        return
+    canon = _STYLE_TDB4_CANON.get(match_name) or _STYLE_TDB4_CANON.get(
+        match_name.rsplit("/", 1)[-1]
+    )
+    if canon is None:
+        return
+    hint, hint_flag, cvot, type_flags, category, pad2a, vector, spatial = canon
+    if hint is not None:
+        tdb4._value_hint_type = hint
+    if hint_flag is not None:
+        tdb4._value_hint_flag = hint_flag
+    if cvot is not None:
+        tdb4._cvot_flags = cvot
+    if type_flags is not None:
+        tdb4._type_flags = type_flags
+    if category is not None:
+        tdb4._property_category = category
+    if pad2a is not None:
+        tdb4._pad2a = pad2a
+    if vector is not None:
+        tdb4.vector = vector
+    if spatial:
+        # AE fills the spatial block on the 2D point leaves: marker + flags
+        # 0x0F, its point epsilon, and the LAYER's display aspect
+        # (source_width * PAR / source_height; 1.28 in the fixture).
+        tdb4._spatial_marker = True
+        tdb4._spatial_static_flags = 0x0F
+        tdb4._unknown_float_0 = _STYLE_POINT_EPSILON
+        tdb4.pixel_aspect = point_aspect
+    tdb4._time_base = timebase
+
+
+# AE default values per Layer Styles leaf match name. Editable imports
+# write a parameter leaf only when its value differs from these (AE 2026);
+# the synthesis tables are the byte-verified source, and only the Layer
+# Styles + Blend Options tables can carry keys the resolver emits.
+_STYLE_SPEC_DEFAULTS: dict[str, Any] = {
+    spec.match_name: spec.value
+    for spec_list in _LAYER_STYLE_CHILD_SPECS.values()
+    for spec in spec_list
+    if spec.value is not None
+}
+_STYLE_SPEC_DEFAULTS.update(
+    {
+        spec.match_name: spec.value
+        for spec in (*_BLEND_OPTIONS_SPECS, *_ADV_BLEND_SPECS)
+        if isinstance(spec, PropSpec) and spec.value is not None
+    }
+)
+
+
+def _style_leaf_map(group: PropertyGroup) -> dict[str, Property]:
+    """Map of match name -> leaf under `group`, first-in-tree-order."""
+    leaves: dict[str, Property] = {}
+    for child in group.properties:
+        if isinstance(child, PropertyGroup):
+            for name, leaf in _style_leaf_map(child).items():
+                leaves.setdefault(name, leaf)
+        elif child.match_name not in leaves:
+            leaves[child.match_name] = cast("Property", child)
+    return leaves
+
+
+def _serialize_import_layer_styles(
+    layer: Layer, styles: PsdLayerStyles | None, source_name: str
+) -> None:
+    """Serialize a comp layer's `ADBE Layer Styles` subtree like AE's imports.
+
+    AE writes the container, Blend Options (with its Advanced group) and the
+    ten style groups as real chunks on EVERY layer a layered-file import
+    creates (all modes, all formats - the `psd_layer_styles*`, `psd_comp`,
+    `ai_comp` and `grouped_layers_comp` fixtures). With `styles`, the present
+    styles are enabled and their non-default parameter values written; the
+    `tdsb` enable bytes follow AE exactly (styled: container/Blend Options
+    0x01, enabled style 0x01, absent style 0x02; plain skeleton: 0x03 and
+    0x02 - functional bits, fixture-pinned).
+    """
+    container = cast("PropertyGroup", layer["ADBE Layer Styles"])
+    # AE enables the container + Blend Options chain when any style is
+    # enabled OR the layer carries blend-options data (a Photoshop Fill
+    # slider away from 100% enables the chain with zero styles - the
+    # psd_fill_opacity fixture).
+    styled = styles is not None and bool(styles.enabled or styles.blend_options)
+    container_flags = 1 if styled else 3
+    container._ensure_materialized()
+    assert container._tdsb is not None
+    container._tdsb._enable_flags = container_flags
+    # The synthesis pass stamped derived `enabled` overrides while every
+    # group was still synthetic-disabled; refresh them to the written state
+    # (ExtendScript semantics: container/Blend Options = any style enabled).
+    container.__dict__["enabled"] = styled
+    for child in container.properties:
+        if not isinstance(child, PropertyGroup):
+            continue
+        child._ensure_materialized()
+        assert child._tdsb is not None
+        if child.match_name == "ADBE Blend Options Group":
+            child._tdsb._enable_flags = container_flags
+            child.__dict__["enabled"] = styled
+            for sub in child.properties:
+                if isinstance(sub, PropertyGroup):
+                    sub._ensure_materialized()
+                    assert sub._tdsb is not None
+                    # AE writes the Advanced Blending subgroup enabled on
+                    # EVERY import, plain skeletons included (pinned by the
+                    # psd_fill_opacity/psd_layer_styles/ai_comp fixtures).
+                    sub._tdsb._enable_flags = 1
+        else:
+            prefix = child.match_name.split("/")[0]
+            if styles is not None and prefix in styles.enabled:
+                flags = 1
+            elif styles is not None and prefix in styles.disabled:
+                # Present-but-unchecked style: parameters imported, distinct
+                # enable byte 0x00 (psd_fill_opacity fixture).
+                flags = 0
+            else:
+                flags = 2
+            child._tdsb._enable_flags = flags
+            child.__dict__.pop("enabled", None)
+    if styles is None:
+        return
+    for prefix in styles.dropped:
+        warnings.warn(
+            f"{source_name}: layer {layer.name!r} style {prefix!r} was "
+            "imported as disabled - After Effects drops styles with "
+            "multiple instances or unrepresentable content, and py_aep "
+            "matches its output",
+            stacklevel=2,
+        )
+    if not styles.values:
+        return
+    timebase = layer.containing_comp._cdta.internal_timebase
+    source = cast("AVItem", layer.source)
+    point_aspect = source.width * source.pixel_aspect / source.height
+    leaves = _style_leaf_map(container)
+    for match_name, value in styles.values.items():
+        if _values_equal(value, _STYLE_SPEC_DEFAULTS.get(match_name)):
+            continue
+        leaf = leaves.get(match_name)
+        if leaf is None:
+            continue
+        leaf.value = value
+        if isinstance(value, Gradient) and leaf._tdb4 is not None:
+            # AE's style gradient tdb4 is vector-typed (the NO_VALUE-seeded
+            # spec builds a bare one).
+            leaf._tdb4.vector = True
+        _stamp_style_tdb4(leaf, match_name, timebase, point_aspect)

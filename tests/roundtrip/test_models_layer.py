@@ -1627,3 +1627,44 @@ class TestLayerReservedBytes:
         for layer in (camera, light):
             assert layer._ldta._reserved_3b == 0
             assert layer._ldta._reserved_3c == 0
+
+
+class TestGeometryAutoOrientGuard:
+    """Mutates auto-orient, so it lives here rather than in read_only/."""
+
+    def test_auto_orient_chain_raises(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "geometry_probe.aep")
+        comp = next(c for c in project.compositions if c.name == "PROBE_MAIN")
+        layer = next(ly for ly in comp.layers if ly.name == "solid_xform")
+        layer.auto_orient = AutoOrientType.ALONG_PATH
+        with pytest.raises(NotImplementedError, match="auto-orient"):
+            layer.source_point_to_comp([0.0, 0.0])
+        child = next(ly for ly in comp.layers if ly.name == "solid_parented")
+        with pytest.raises(NotImplementedError, match="auto-orient"):
+            child.comp_point_to_source([0.0, 0.0])
+
+
+class TestForwardRayOnly:
+    """`compPointToSource` only casts the FORWARD ray (probed AE 2026).
+
+    AE returns a literal `[0, 0]` when the layer plane is not hit going
+    forward; py_aep raises instead, because that sentinel cannot be told
+    apart from a real result.
+    """
+
+    @staticmethod
+    def _probe_3d_layer():
+        project = parse_project_fresh(SAMPLES_DIR / "geometry_probe.aep")
+        comp = next(c for c in project.compositions if c.name == "PROBE_MAIN")
+        return next(ly for ly in comp.layers if ly.name == "solid_3d")
+
+    def test_layer_in_front_resolves(self) -> None:
+        layer = self._probe_3d_layer()
+        assert layer.comp_point_to_source([100.0, 100.0]) is not None
+
+    def test_layer_behind_camera_raises(self) -> None:
+        layer = self._probe_3d_layer()
+        # Default comp camera sits at z = -zoom; push the layer behind it.
+        layer.transform["ADBE Position"].value = [960.0, 540.0, -20000.0]
+        with pytest.raises(ValueError, match="not in front of the camera"):
+            layer.comp_point_to_source([100.0, 100.0])

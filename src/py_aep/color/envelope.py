@@ -74,14 +74,38 @@ def _envelope(color_profile_data_b64: str, name: str, profile_type: int) -> str:
     )
 
 
-def build_ocio_colorspace_envelope(colorspace: str) -> str:
-    """Envelope for a single OCIO color space.
+def build_ocio_envelope(profile_name: str, profile_data: str) -> str:
+    """Envelope for an OCIO color space from a resolved `(name, data)` pair.
 
-    Used for the project working space and for footage media color space in OCIO
-    mode. `colorProfileName` is the color-space name itself.
+    The pair depends on the selection KIND and so needs the `.ocio` config to
+    resolve; see
+    [ocio_color_profile_envelope][py_aep.color.ocio.ocio_color_profile_envelope],
+    which is what callers should use. This function is the pure byte-format
+    half, kept here with the rest of the envelope spec.
 
     Args:
-        colorspace: The OCIO color-space name (e.g. `"ACEScg"`).
+        profile_name: The `colorProfileName` (e.g. `"ACES/ACEScg yo"`).
+        profile_data: The `colorProfileData` JSON (e.g. `{"colorSpace1":"ACEScg yo"}`).
+    """
+    return _envelope(_b64(profile_data), profile_name, PROFILE_TYPE_OCIO)
+
+
+def build_ocio_colorspace_envelope(colorspace: str) -> str:
+    """Envelope for an OCIO color space selected by ROLE or ALIAS.
+
+    `colorProfileName` is the role's target (or the alias) itself, and the
+    data carries `ocioColorSpaceType: 2`.
+
+    Warning:
+        This is only one of the four selection kinds. A DIRECT colorspace
+        pick uses `colorProfileName = "<family>/<name>"` and omits
+        `ocioColorSpaceType` - passing a direct colorspace name here
+        produces an envelope AE would not write. Prefer
+        [ocio_color_profile_envelope][py_aep.color.ocio.ocio_color_profile_envelope],
+        which resolves the kind against the config.
+
+    Args:
+        colorspace: The OCIO role target or alias name.
     """
     inner = _compact(
         {"colorSpace1": colorspace, "ocioColorSpaceType": OCIO_TYPE_COLORSPACE}

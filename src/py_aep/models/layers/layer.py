@@ -76,7 +76,10 @@ class Layer(PropertyGroup):
         LayerType.PARAMETRIC_MESH: "ParametricMeshLayer",
     }
 
-    enabled = ChunkField[bool]("_ldta", "enabled")
+    enabled = ChunkField.bool(
+        "_ldta",
+        "enabled",
+    )
     """When `True`, the layer is enabled. Overrides `PropertyBase.enabled`
     to read from the ldta chunk. Read / Write."""
 
@@ -89,7 +92,10 @@ class Layer(PropertyGroup):
     or 1 to 16 for one of the preset colors in the Labels preferences).
     Read / Write."""
 
-    locked = ChunkField[bool]("_ldta", "locked")
+    locked = ChunkField.bool(
+        "_ldta",
+        "locked",
+    )
     """When `True`, the layer is locked. This corresponds to the lock toggle
     in the Layer panel. Read / Write."""
 
@@ -99,12 +105,18 @@ class Layer(PropertyGroup):
     _parent_id = ChunkField[int]("_ldta", "parent_id")
     """The ID of the layer's parent layer. `0` if the layer has no parent."""
 
-    shy = ChunkField[bool]("_ldta", "shy")
+    shy = ChunkField.bool(
+        "_ldta",
+        "shy",
+    )
     """When `True`, the layer is "shy", meaning that it is hidden in the
     Layer panel if the composition's "Hide all shy layers" option is
     toggled on. Read / Write."""
 
-    solo = ChunkField[bool]("_ldta", "solo")
+    solo = ChunkField.bool(
+        "_ldta",
+        "solo",
+    )
     """When `True`, the layer is soloed. Read / Write."""
 
     start_time = ChunkField[float]("_ldta", "start_time")
@@ -788,7 +800,7 @@ class Layer(PropertyGroup):
             ),
         )
         # Layer IDs are unique project-wide, not per-comp.
-        cloned_ldta.layer_id = into_comp._project._allocate_layer_id()
+        cloned_ldta.layer_id = into_comp._project._allocate_id()
         # AE points every effect's hidden -0000 param tdpi at the owning
         # layer; retarget the clones at the fresh id (layer-reference
         # tdpi values keep pointing at the originally referenced layer).

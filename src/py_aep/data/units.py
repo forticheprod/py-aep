@@ -83,6 +83,7 @@ UNITS_TEXT_MAP: dict[str, str] = {
     "ADBE Camera Aperture": "pixels",
     "ADBE Camera Blur Level": "percent",
     "ADBE Camera Focus Distance": "pixels",
+    "ADBE Camera Split Blur Level": "percent",
     "ADBE Camera Zoom": "pixels",
     "ADBE Change Color-0003": "pixels",
     "ADBE Change Color-0004": "pixels",

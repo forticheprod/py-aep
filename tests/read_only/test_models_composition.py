@@ -889,6 +889,32 @@ class TestEssentialGraphics:
         assert src is not None and src is not blur
         assert src.match_name == "ADBE Gaussian Blur 2-0001"
 
+    def test_point_override_value_in_source_pixels(self) -> None:
+        # A point-control override leaf borrows its source parameter's pixel
+        # denormalization scale, so its value is in source-comp pixels (matching
+        # ExtendScript), not the raw 0-1 the leaf stores. is_modified then
+        # compares like for like. Source comp is 1000x1000, so 0.5 -> 500.
+        project = parse_project(EG_SAMPLES_DIR / "point_controller.aep")
+        layer = next(
+            la
+            for comp in project.compositions
+            for la in comp.layers
+            if any(
+                p.match_name == "ADBE Layer Overrides" and p.num_properties > 0
+                for p in la.properties
+            )
+        )
+        overrides = next(
+            p for p in layer.properties if p.match_name == "ADBE Layer Overrides"
+        )
+        leaf = overrides.properties[0]
+        assert leaf.match_name == "ADBE Point Control-0001"
+        assert leaf.value == [500.0, 500.0]  # pixels, not the stored [0.5, 0.5]
+        assert leaf.is_modified is False  # equals source, once in the same units
+        assert leaf.units_text == "pixels"
+        src = leaf.essential_property_source
+        assert src is not None and src.value == [500.0, 500.0]
+
     def test_essential_property_override_name_from_controller(self) -> None:
         # When an override leaf's own tdsn is empty, its display name comes from
         # the Essential Graphics controller, not the match-name fallback.

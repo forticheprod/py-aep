@@ -10,7 +10,7 @@ from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.utils import find_by_list_type, find_by_type
 from ...enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
 from ..descriptors import ChunkField
-from ..validators import validate_rgb_color
+from ..validators import validate_bool, validate_rgb_color
 from .property_group import PropertyGroup, _insert_before_group_end
 
 if TYPE_CHECKING:
@@ -69,10 +69,16 @@ class MaskPropertyGroup(PropertyGroup):
     The three array values specify the red, green, and blue components
     of the color. Read / Write."""
 
-    inverted = ChunkField[bool]("_mkif", "inverted")
+    inverted = ChunkField.bool(
+        "_mkif",
+        "inverted",
+    )
     """When `True`, the mask is inverted. Read / Write."""
 
-    locked = ChunkField[bool]("_mkif", "locked")
+    locked = ChunkField.bool(
+        "_mkif",
+        "locked",
+    )
     """When `True`, the mask is locked and cannot be edited in the user
     interface. Read / Write."""
 
@@ -104,12 +110,12 @@ class MaskPropertyGroup(PropertyGroup):
 
     @roto_bezier.setter
     def roto_bezier(self, value: bool) -> None:
-        value = bool(value)
+        validate_bool(value)
         if self._mask_shape_tdsb is None:
             if not value:
                 # Already the default; AE writes no Mask Shape for this state.
                 return
-            self._materialize_mask_shape()
+            self._materialize_mask_shape(roto_bezier=True)
         assert self._mask_shape_tdsb is not None
         self._mask_shape_tdsb.roto_bezier = value
 
@@ -205,14 +211,16 @@ class MaskPropertyGroup(PropertyGroup):
         self._mkif = _mkif
         self._mask_shape_tdsb = _mask_shape_tdsb
 
-    def _materialize_mask_shape(self) -> None:
+    def _materialize_mask_shape(self, *, roto_bezier: bool = False) -> None:
         """Insert the default full-frame Mask Shape AE writes when a
-        path-less mask first needs one (e.g. RotoBezier enabled), and
-        rebind the Mask Path child to it.
+        path-less mask first needs one, and rebind the Mask Path child
+        to it.
 
         Mirrors After Effects: a freshly added mask carries no Mask Shape
-        subtree, and enabling RotoBezier (or setting a path) materializes
-        the implicit default full-frame rectangle as an explicit path.
+        subtree, and enabling RotoBezier (`roto_bezier=True`) or setting a
+        plain bezier path (`False` - the tdsb roto flag stays clear, like
+        AE's own imports) materializes the implicit default full-frame
+        rectangle as an explicit path.
         """
         from ...parsers.property import parse_properties  # noqa: PLC0415
 
@@ -220,7 +228,9 @@ class MaskPropertyGroup(PropertyGroup):
         self._ensure_children_synthesized()
         assert self._tdgp is not None
         comp = self._containing_layer.containing_comp
-        tdmn, oms = build_default_mask_shape(comp._cdta.internal_timebase)
+        tdmn, oms = build_default_mask_shape(
+            comp._cdta.internal_timebase, roto_bezier=roto_bezier
+        )
 
         # Synthesis inserts a bare synthetic `tdmn + tdbs` placeholder for
         # every child; replace the Mask Shape placeholder in place with the

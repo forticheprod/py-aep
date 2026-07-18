@@ -16,6 +16,7 @@ from ..binary.utils import (
     find_by_list_type,
     find_by_type,
 )
+from ..enums import PropertyValueType
 from ..models.properties.marker import MarkerValue
 from ..models.properties.property import Property
 from .property_value import parse_property
@@ -52,6 +53,9 @@ def parse_markers(
         tdmn=tdmn,
     )
     marker_prop._wrapper = mrst_chunk
+    # ExtendScript reports MARKER (6420); the tdb4 flags alone would fall
+    # back to OneD like any 1-D scalar.
+    marker_prop._property_value_type = PropertyValueType.MARKER
     mrky_chunk = find_by_list_type(chunks=mrst_chunk.chunks, list_type="mrky")
     marker_prop._kf_value_container = mrky_chunk
     nmrd_chunks = filter_by_list_type(chunks=mrky_chunk.chunks, list_type="Nmrd")

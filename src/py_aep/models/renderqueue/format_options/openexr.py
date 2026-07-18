@@ -5,12 +5,13 @@ from typing import TYPE_CHECKING
 from ....enums import OpenExrCompression
 from ...descriptors import ChunkField
 from ...validators import validate_positive_number
+from .base import FormatOptionsBase
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import OpenExrRoptChunk
 
 
-class OpenExrFormatOptions:
+class OpenExrFormatOptions(FormatOptionsBase):
     """OpenEXR format-specific render options.
 
     These settings correspond to the OpenEXR Options dialog in After Effects,
@@ -34,13 +35,15 @@ class OpenExrFormatOptions:
         OpenExrCompression,
         "_body",
         "compression",
+        allow_out_of_enum_values=True,
     )
     """
     The compression method. Corresponds to the `Compression` dropdown
-    in the OpenEXR Options dialog. Read / Write.
+    in the OpenEXR Options dialog. An out-of-enum stored value reads
+    back as a raw `int` (the binary is trusted). Read / Write.
     """
 
-    luminance_chroma = ChunkField[bool](
+    luminance_chroma = ChunkField.bool(
         "_body",
         "luminance_chroma",
     )
@@ -50,7 +53,7 @@ class OpenExrFormatOptions:
     Not applicable when compression is DWAA or DWAB. Read / Write.
     """
 
-    thirty_two_bit_float = ChunkField[bool](
+    thirty_two_bit_float = ChunkField.bool(
         "_body",
         "thirty_two_bit_float",
     )

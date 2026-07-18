@@ -117,7 +117,7 @@ class FolderItem(Item):
             parent_folder: The folder that will contain this folder.
         """
         validate_string(name)
-        new_id = project._allocate_item_id()
+        new_id = project._allocate_id()
 
         iide = IideChunk(value=new_id)
         idpc = IdpcChunk()

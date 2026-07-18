@@ -21,7 +21,33 @@ from .render_queue import parse_render_queue
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ..binary.chunk import ListChunk
+    from ..binary.chunk import Chunk, ListChunk
+
+
+def _color_profile_utf8(root_chunks: list[Chunk], marker: str) -> Utf8Chunk | None:
+    """The color-profile `Utf8` AE writes immediately after `marker`.
+
+    `marker` is `PwCs` (working space) or `pdvc` (display space). The slot is
+    identified by its marker rather than by the order the envelopes appear in:
+    an unset slot holds a literal `{}`, so keying on "first profile envelope
+    wins" reads a display space as the working space whenever the working space
+    is unset. Mirrors `Project._rewrite_color_profile`, which writes by this
+    same rule.
+
+    Returns:
+        The `Utf8Chunk` holding the profile envelope, or `None` when the marker
+        is absent or its slot is unset.
+    """
+    for i, chunk in enumerate(root_chunks):
+        if chunk.chunk_type != marker or i + 1 >= len(root_chunks):
+            continue
+        following = root_chunks[i + 1]
+        if following.chunk_type != "Utf8":
+            continue
+        utf8 = cast("Utf8Chunk", following)
+        if "baseColorProfile" in utf8.value:
+            return utf8
+    return None
 
 
 @_suppress_materialization()
@@ -62,21 +88,24 @@ def parse_project(
             "Utf8Chunk", find_by_type(chunks=exen_chunk.chunks, chunk_type="Utf8")
         )
 
-    # CMS settings JSON and baseColorProfile Utf8 chunks
+    # CMS settings JSON
     cms_utf8: Utf8Chunk | None = None
-    ws_utf8: Utf8Chunk | None = None
-    dcs_utf8: Utf8Chunk | None = None
     for c in cast(
         "list[Utf8Chunk]", filter_by_type(chunks=root_chunks, chunk_type="Utf8")
     ):
         content = c.value
-        if cms_utf8 is None and "lutInterpolationMethod" in content:
+        # The color-management settings JSON is fragmented across AE versions:
+        # some files store `{"colorManagementSystem":..,"ocioConfigurationFile":..}`,
+        # others `{"graphicsWhiteLuminance":..,"lutInterpolationMethod":..}`. Prefer
+        # the `colorManagementSystem` chunk (so OCIO projects are detected), but
+        # fall back to a `lutInterpolationMethod`-only chunk when there is none.
+        if "colorManagementSystem" in content:
             cms_utf8 = c
-        if "baseColorProfile" in content:
-            if ws_utf8 is None:
-                ws_utf8 = c
-            elif dcs_utf8 is None:
-                dcs_utf8 = c
+        elif cms_utf8 is None and "lutInterpolationMethod" in content:
+            cms_utf8 = c
+
+    ws_utf8 = _color_profile_utf8(root_chunks, "PwCs")
+    dcs_utf8 = _color_profile_utf8(root_chunks, "pdvc")
 
     project = Project(
         _nhed=nhed_chunk,

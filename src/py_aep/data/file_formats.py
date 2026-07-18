@@ -36,6 +36,9 @@ class FileFormat(NamedTuple):
       reverse-engineered; import is refused rather than crashing AE."""
 
 
+#: `sspc.source_format_type` of a 3D model scene (`.fbx`).
+FORMAT_3D_MODEL_SCENE = "LDOM"
+
 _FILE_FORMATS: dict[str, FileFormat] = {
     ".exr": FileFormat("oEXR", True, "empty"),
     ".mov": FileFormat("MOoV", False, "generic"),
@@ -64,7 +67,7 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     # Motion-graphics data stream (duration from the sampled time range).
     ".mgjson": FileFormat("sjgm", False, "generic"),
     # 3D scene - empty opti; AE re-reads the scene and uses default render dims.
-    ".fbx": FileFormat("LDOM", False, "empty"),
+    ".fbx": FileFormat(FORMAT_3D_MODEL_SCENE, False, "empty"),
     # Data footage - 0x0 items; empty source code for txt/csv, reversed-ext code
     # for json.
     ".txt": FileFormat("", False, "generic"),

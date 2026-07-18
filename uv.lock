@@ -1395,7 +1395,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "attrs", specifier = ">=20.1.0" },
+    { name = "attrs", specifier = ">=21.3.0" },
     { name = "fonttools", marker = "python_full_version < '3.8'", specifier = ">=4.38,<4.39" },
     { name = "fonttools", marker = "python_full_version >= '3.8'", specifier = ">=4.38" },
     { name = "importlib-metadata", marker = "python_full_version < '3.8'" },

@@ -97,6 +97,10 @@ def _coerce_enum(enum_class: type[IntEnum], value: Any) -> IntEnum:
     """
     if isinstance(value, enum_class):
         return value
+    if isinstance(value, bool):
+        # bool is int: settings["Output Audio"] = True would silently
+        # coerce to OutputAudio.OFF (== 1). Reject rather than surprise.
+        raise TypeError(f"Expected {enum_class.__name__}, int, or str, got bool")
     if isinstance(value, int):
         try:
             return enum_class(value)
@@ -124,6 +128,9 @@ def _coerce_enum(enum_class: type[IntEnum], value: Any) -> IntEnum:
 
 
 _RESOLUTION_STRINGS: dict[tuple[int, int], str] = {
+    # [0, 0] is the "use the comp's own resolution" sentinel (probed AE
+    # 2026: getSettings(STRING) reads back "Current Settings").
+    (0, 0): "Current Settings",
     (1, 1): "Full",
     (2, 2): "Half",
     (3, 3): "Third",

@@ -7,7 +7,13 @@ import re
 from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
-from py_aep.enums import PropertyControlType, PropertyType, PropertyValueType
+from py_aep.enums import (
+    KeyframeInterpolationType,
+    LayerType,
+    PropertyControlType,
+    PropertyType,
+    PropertyValueType,
+)
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import interpolate_keyframes
 
@@ -54,6 +60,8 @@ from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
 from ..validators import (
     _validate_number,
+    validate_bool,
+    validate_enum,
     validate_name,
     validate_number,
     validate_sequence,
@@ -446,6 +454,11 @@ class Property(PropertyBase):
             _tdb4.vector = spec.dimensions > 1
             _tdb4.can_vary_over_time = can_vary
 
+        if spec.property_category is not None:
+            _tdb4._property_category = spec.property_category
+        if spec.pad2a is not None:
+            _tdb4._pad2a = spec.pad2a
+
         # AE writes the unnamed sentinel; the display name resolves
         # from auto_name on the model.
         tdsn = TdsnChunk.new(TDSN_SENTINEL, synthetic=synthetic)
@@ -513,6 +526,8 @@ class Property(PropertyBase):
                 prop._min_value_fallback = spec.min_value
             if spec.max_value is not None:
                 prop._max_value_fallback = spec.max_value
+        if spec.hint_bounds is not None:
+            prop._hint_bounds = spec.hint_bounds
         if spec.bound_chunks is not None:
             prop._bound_chunks_hint = spec.bound_chunks
         else:
@@ -865,6 +880,13 @@ class Property(PropertyBase):
         """
         if self._tdum is not None or self._tduM is not None:
             return
+        if self._hint_bounds is not None:
+            # Layer Styles scalars: AE writes the UI slider hints (not the
+            # real clamp) as the bound values (psd_layer_styles fixtures).
+            low, high = self._hint_bounds
+            self._tdbs.chunks.append(TdumChunk(chunk_type="tdum", values=[low]))
+            self._tdbs.chunks.append(TdumChunk(chunk_type="tduM", values=[high]))
+            return
         # Synthetic EFFECT params: AE writes [0.0] tdum/tduM for SCALAR /
         # INTEGER / SLIDER control types (RE'd vs AE 2026) regardless of
         # can_vary, and omits them for ANGLE / POINT / 3D / COLOR / BOOLEAN /
@@ -919,6 +941,12 @@ class Property(PropertyBase):
         self._tdbs.chunks.append(
             TdumChunk(chunk_type="tduM", values=[0.0], is_integer=is_int)
         )
+
+    # The tdum/tduM values AE writes for this property at materialization
+    # (UI slider hints); set from `PropSpec.hint_bounds` in `_new`, `None`
+    # (the class default, covering parsed properties) keeps the family
+    # behavior in `_ensure_bound_chunks`.
+    _hint_bounds: tuple[float, float] | None = None
 
     _NUMERIC_PVTS = frozenset(
         {
@@ -1266,6 +1294,18 @@ class Property(PropertyBase):
                 return 0
             return self._composition._layer_id_to_index.get(layer_id, -1) + 1
         if self._value is not None:
+            if (
+                self.match_name == "ADBE Mask Shape"
+                and isinstance(self._value, Shape)
+                and self._value._layer is None
+            ):
+                # Mask space is LAYER space, but the cached parse Shape
+                # (from `_parse_shape_shap`) only knows the comp. Stamp the
+                # owning layer so its vertices/tangents denormalize by the
+                # layer's source size, matching the write and parallel-read
+                # paths (a mask on a layer smaller than its comp would
+                # otherwise read comp-scaled coordinates).
+                self._value._layer = self._containing_layer
             return self._wire_text_version(self._value)
         if self.keyframes:
             return self.value_at_time(0)
@@ -1678,11 +1718,12 @@ class Property(PropertyBase):
 
     @dimensions_separated.setter
     def dimensions_separated(self, value: bool) -> None:
+        validate_bool(value)
         if self.match_name == _SEPARATION_LEADER:
             self._ensure_materialized()
             assert self._tdsb is not None
-            self._tdsb.dimensions_separated = bool(value)
-            self._dimensions_separated = bool(value)
+            self._tdsb.dimensions_separated = value
+            self._dimensions_separated = value
 
     @property
     def expression(self) -> str:
@@ -1748,8 +1789,9 @@ class Property(PropertyBase):
 
     @expression_enabled.setter
     def expression_enabled(self, value: bool) -> None:
+        validate_bool(value)
         self._ensure_materialized()
-        self._expression_enabled = bool(value)
+        self._expression_enabled = value
         self._tdb4.expression_disabled = not value
 
     @property
@@ -1947,6 +1989,20 @@ class Property(PropertyBase):
             return True
         if self.expression:
             return True
+        # A separation follower of an UNSEPARATED leader (e.g. Z Position
+        # while Position is not dimension-separated) is an inactive
+        # placeholder whose stored value is a meaningless 0. AE still reports
+        # the Z follower as modified on camera and light layers, which are
+        # always positioned in depth (probed AE 2026: camera/light Z follower
+        # is True; regular layers are False). X/Y followers and every regular
+        # layer fall through to the value/default comparison below, which
+        # already matches AE for their comp-centered defaults.
+        if self.is_separation_follower and self.separation_dimension == 2:
+            leader = self.separation_leader
+            if leader is not None and not leader.dimensions_separated:
+                layer = self._containing_layer
+                if layer._ldta.layer_type in (LayerType.CAMERA, LayerType.LIGHT):
+                    return True
         # Source Text has no meaningful default - always modified when it
         # has a value (text is always user-authored).
         if self.match_name == "ADBE Text Document" and self.value is not None:
@@ -2013,15 +2069,20 @@ class Property(PropertyBase):
         """Set the alternate (replacement) source for a Media Replacement
         slot.
 
-        `source` must be an item already in the project. When `source` is a
-        `FootageItem`, After Effects wraps it in a composition - placed in a
-        root-level `Media Replacement Comps` folder and sized to the host comp -
-        and points the slot at that wrapper; py_aep matches this. A `CompItem`
-        is used directly (it is assumed to already be a wrapper).
+        `source` must be an item already in the project, and must itself be
+        media-replacement compatible - AE requires both sides: "The Property
+        object and the input parameters for the AVItem that is being called
+        needs to be Media Replacement compatible for the action to go
+        through." When `source` is a `FootageItem`, After Effects wraps it in
+        a composition - placed in a root-level `Media Replacement Comps`
+        folder and sized to the host comp - and points the slot at that
+        wrapper; py_aep matches this. A `CompItem` is used directly (it is
+        assumed to already be a wrapper).
 
         Raises `ValueError` when this property is not a media-replacement slot
-        (`can_set_alternate_source` is `False`) or `source` is not in the
-        project, and `TypeError` when `source` is not an `AVItem`.
+        (`can_set_alternate_source` is `False`), when `source` is not in the
+        project, or when `source.is_media_replacement_compatible` is `False`,
+        and `TypeError` when `source` is not an `AVItem`.
         """
         from ..items.av_item import AVItem  # noqa: PLC0415
         from ..items.footage import FootageItem  # noqa: PLC0415
@@ -2041,6 +2102,13 @@ class Property(PropertyBase):
         ):
             raise ValueError(
                 f"Item {source.name!r} (id={source.id}) is not in the project."
+            )
+        # Checked on the passed item, not the wrapper: wrapping an audio-only
+        # footage in a comp would make the slot look compatible.
+        if not source.is_media_replacement_compatible:
+            raise ValueError(
+                f"Item {source.name!r} (id={source.id}) cannot be used as an "
+                "alternate source (is_media_replacement_compatible is False)."
             )
         if isinstance(source, FootageItem):
             self._blsi.value = self._build_replacement_wrapper(source).id
@@ -2146,6 +2214,48 @@ class Property(PropertyBase):
 
         return interpolate_keyframes(time, self.keyframes, self.is_spatial)
 
+    def is_interpolation_type_valid(
+        self, type: int | KeyframeInterpolationType
+    ) -> bool:
+        """Returns `True` if the named property can be interpolated using
+        the specified keyframe interpolation type.
+
+        `KeyframeInterpolationType.HOLD` is valid for every property that
+        can vary over time. `LINEAR` and `BEZIER` are additionally invalid
+        for hold-only properties: markers, text documents, and
+        checkbox/dropdown effect parameters. When the property cannot vary
+        over time (e.g. a Layer Control parameter), every type is invalid.
+        (Truth table probed against AE 2026; integer effect sliders DO
+        accept all three types.)
+
+        Args:
+            type: A `KeyframeInterpolationType` value.
+
+        Raises:
+            ValueError: If `type` is not a `KeyframeInterpolationType`
+                member (After Effects raises a parameter error rather than
+                returning `False`).
+        """
+        validate_enum(KeyframeInterpolationType)(type)
+        interp = KeyframeInterpolationType(type)
+        if not self.can_vary_over_time:
+            return False
+        if interp == KeyframeInterpolationType.HOLD:
+            return True
+        if self.property_value_type in (
+            PropertyValueType.MARKER,
+            PropertyValueType.TEXT_DOCUMENT,
+        ):
+            return False
+        # Only the pard-derived control type is authoritative for the
+        # checkbox/dropdown test: the tdb4 flag fallback in
+        # _determine_property_types maps any 1-D integer scalar to BOOLEAN,
+        # but integer sliders (e.g. Mosaic blocks) interpolate in AE.
+        return self._property_control_type not in (
+            PropertyControlType.BOOLEAN,
+            PropertyControlType.ENUM,
+        )
+
     # -- Keyframe mutation -------------------------------------------------
 
     def _time_units(self) -> tuple[float, float]:
@@ -2175,7 +2285,14 @@ class Property(PropertyBase):
             return MARKER_KIND
         # By match name as well as by value: a never-edited gradient has no
         # Gradient value to sample (no GCst data in the binary).
-        if self.match_name == "ADBE Vector Grad Colors":
+        if self.match_name in (
+            "ADBE Vector Grad Colors",
+            # The Layer Styles gradients (a synthesized one has no pard and
+            # a NO_VALUE seed, so only the match name identifies the kind).
+            "outerGlow/gradient",
+            "innerGlow/gradient",
+            "gradientFill/gradient",
+        ):
             return GRADIENT_KIND
         # A freshly-synthesized mask path is seeded as CUSTOM_VALUE (not
         # SHAPE), so guard it by match name or its value write silently no-ops.
@@ -2541,10 +2658,12 @@ class Property(PropertyBase):
         """Build a `shap` LIST chunk from a [Shape][].
 
         For a mask property, a pixel-space (from-scratch) shape is
-        converted to the normalized `[0, 1]`-of-composition bounding box AE
-        uses (dividing the box by the composition size leaves the points,
-        which are normalized to that box, unchanged). A shape already in
-        mask space (parsed) is used as-is.
+        converted to the normalized `[0, 1]`-of-LAYER bounding box AE uses
+        (mask space is layer space: the psd_vector_mask_cropped fixture
+        pins the divisor as the layer source size, not the comp size).
+        Dividing the box leaves the points, which are normalized to that
+        box, unchanged. A shape already in mask space (parsed) is used
+        as-is.
         """
         points = [ShapePoint(x=p.x, y=p.y) for p in (shape._points or [])]
         src = shape._shph
@@ -2558,8 +2677,8 @@ class Property(PropertyBase):
         else:
             bbox = [0.0, 0.0, 0.0, 0.0]
         if self.match_name == "ADBE Mask Shape" and not shape._is_mask:
-            comp = self._containing_layer.containing_comp
-            w, h = float(comp.width), float(comp.height)
+            layer = cast("AVLayer", self._containing_layer)
+            w, h = float(layer.width), float(layer.height)
             bbox = [bbox[0] / w, bbox[1] / h, bbox[2] / w, bbox[3] / h]
         shap = build_shap(
             (bbox[0], bbox[1], bbox[2], bbox[3]),
@@ -3104,13 +3223,17 @@ class _EssentialOverrideProperty(Property):
     """An Essential Properties override leaf (a child of `ADBE Layer Overrides`).
 
     Its `value` is its own override (the leaf `cdat`), but its derived metadata
-    - `enabled`, `min_value`/`max_value` (hence `has_min`/`has_max`) and
-    `is_modified` - reflects the Essential Graphics *source* property the
-    override points at, matching After Effects: the override leaf's own `tdsb`
-    enable bit and `tdum`/`tduM` bounds are the EGP slider state, not what
-    ExtendScript reports. Leaves are re-classed to this type after the override
-    group is parsed (see `parsers/property.py::_dispatch_ovg2`); this keeps the
-    base `Property` accessors - and round-trip serialization - untouched.
+    - `enabled`, `min_value`/`max_value` (hence `has_min`/`has_max`),
+    `is_modified`, `is_spatial`, `units_text`, `can_vary_over_time` and
+    `can_set_expression` - reflects the Essential Graphics *source* property
+    the override points at, matching After Effects: the override leaf's own
+    `tdsb` enable bit, `tdum`/`tduM` bounds and `tdb4` flags are the EGP
+    slider state, not what ExtendScript reports (the leaf has no `pard`, so
+    e.g. a checkbox override's own `tdb4` reports it cannot vary over time
+    while ExtendScript reports the source checkbox's `True`). Leaves are
+    re-classed to this type after the override group is parsed (see
+    `parsers/property.py::_dispatch_ovg2`); this keeps the base `Property`
+    accessors - and round-trip serialization - untouched.
     """
 
     def _override_source(self) -> Property | None:
@@ -3174,6 +3297,55 @@ class _EssentialOverrideProperty(Property):
         if src is not None:
             return not _values_equal(self.value, src.value)
         return super().is_modified
+
+    @property
+    def is_spatial(self) -> bool:
+        src = self._override_source()
+        return src.is_spatial if src is not None else super().is_spatial
+
+    @property
+    def units_text(self) -> str:
+        src = self._override_source()
+        return src.units_text if src is not None else super().units_text
+
+    @property
+    def can_vary_over_time(self) -> bool:
+        src = self._override_source()
+        return src.can_vary_over_time if src is not None else super().can_vary_over_time
+
+    @property
+    def can_set_expression(self) -> bool:
+        src = self._override_source()
+        return src.can_set_expression if src is not None else super().can_set_expression
+
+    @property
+    def _effect_scale(self) -> list[float] | None:
+        """Inherit the source parameter's denormalization scale.
+
+        An override leaf stores its value in the raw 0-1 form AE keeps, but
+        the leaf is not inside an effect, so its own `_effect_scale` is `None`
+        and the value would stay normalized. Borrowing the source's scale puts
+        `value` in the same units the source reports (e.g. source-comp pixels
+        for a point control), matching ExtendScript and making `is_modified`
+        compare like for like. `None` for non-point sources and for
+        media-replacement overrides (whose source is an `AVLayer`, not a
+        `Property`), which fall back to the base (also `None`).
+        """
+        if "_effect_scale" in self.__dict__:
+            result: list[float] | None = self.__dict__["_effect_scale"]
+            return result
+        src = self._override_source()
+        if src is not None:
+            return src._effect_scale
+        return super()._effect_scale
+
+    @_effect_scale.setter
+    def _effect_scale(self, value: list[float] | None) -> None:
+        if value is not None and (
+            not isinstance(value, (list, tuple)) or len(value) < 2
+        ):
+            raise ValueError("_effect_scale must be a list of at least 2 floats")
+        self.__dict__["_effect_scale"] = value
 
 
 def _find_or_create_wrapper_folder(project: Project) -> FolderItem:

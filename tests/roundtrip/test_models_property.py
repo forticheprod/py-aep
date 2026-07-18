@@ -20,7 +20,7 @@ from py_aep.enums import (
     MaskMotionBlur,
     PropertyType,
 )
-from py_aep.models import Layer, MaskPropertyGroup, Property, PropertyGroup
+from py_aep.models import Keyframe, Layer, MaskPropertyGroup, Property, PropertyGroup
 from py_aep.models.layers import ShapeLayer, TextLayer
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "property"
@@ -1310,6 +1310,34 @@ class TestAddProperty:
         assert isinstance(mp2, Property)
         assert isinstance(mp2.value, Shape)
         assert len(mp2.value.vertices) == 4
+
+    def test_set_mask_path_keeps_roto_bezier_off(self, tmp_path: Path) -> None:
+        """A plain bezier path write must NOT enable RotoBezier: the
+        materialization template originates from an enable-rotoBezier
+        capture, but AE writes the roto tdsb byte 0 for ordinary paths
+        (psd_vector_mask fixtures). Validated through a disk round-trip -
+        the flag lives in the written mask-shape tdsb."""
+        from py_aep.models.properties.shape import Shape
+
+        app = parse_aep(self.NO_MASK_AEP)
+        parade = app.project.compositions[0].layers[0]["ADBE Mask Parade"]
+        assert isinstance(parade, PropertyGroup)
+        mask = parade.add_property("ADBE Mask Atom")
+        assert isinstance(mask, MaskPropertyGroup)
+        mask_path = mask.property("ADBE Mask Shape")
+        assert isinstance(mask_path, Property)
+        mask_path.value = Shape(
+            vertices=[[10.0, 10.0], [50.0, 10.0], [50.0, 50.0], [10.0, 50.0]],
+            closed=True,
+        )
+        assert mask.roto_bezier is False
+        out = tmp_path / "plain_path.aep"
+        app.project.save(out)
+        m2 = parse_aep(out).project.compositions[0].layers[0].masks.properties[-1]
+        assert isinstance(m2, MaskPropertyGroup)
+        assert m2.roto_bezier is False
+        assert m2._mask_shape_tdsb is not None
+        assert m2._mask_shape_tdsb.roto_bezier is False
 
     def test_materialize_mask_shape_preserves_handle(self) -> None:
         """Materializing the Mask Shape keeps the existing child object.
@@ -2745,3 +2773,148 @@ class TestPlaceholderBoundsValueSetter:
         # Light Intensity: ES hasMin=False, hasMax=False.
         li = found["ADBE Light Intensity"]
         assert (li.has_min, li.has_max) == (False, False)
+
+
+class TestIsInterpolationTypeValid:
+    """Truth table probed against AE 2026 (2026-07-14 probe run): every type
+    is valid for normal properties; marker / source text / checkbox /
+    dropdown are HOLD-only; a property that cannot vary over time (Layer
+    Control) rejects all three; integer sliders interpolate fully; an
+    out-of-enum argument raises instead of returning False."""
+
+    ALL = (
+        KeyframeInterpolationType.LINEAR,
+        KeyframeInterpolationType.BEZIER,
+        KeyframeInterpolationType.HOLD,
+    )
+
+    def _table(self, prop: Property) -> tuple[bool, ...]:
+        return tuple(prop.is_interpolation_type_valid(t) for t in self.ALL)
+
+    def test_transform_properties_accept_all(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "is_modified_false.aep").project
+        layer = project.compositions[0].layers[0]
+        for match in (
+            "ADBE Position",
+            "ADBE Scale",
+            "ADBE Rotate Z",
+            "ADBE Opacity",
+            "ADBE Anchor Point",
+        ):
+            prop = layer.transform[match]
+            assert isinstance(prop, Property)
+            assert self._table(prop) == (True, True, True), match
+
+    def test_marker_is_hold_only(self) -> None:
+        project = parse_aep(SAMPLES_DIR.parent / "marker" / "layer_marker.aep").project
+        layer = project.compositions[0].layers[0]
+        marker = layer.marker
+        assert marker is not None
+        assert self._table(marker) == (False, False, True)
+
+    def test_source_text_is_hold_only(self) -> None:
+        project = parse_aep(SAMPLES_DIR.parent / "text" / "text_ranges.aep").project
+        layer = next(
+            ly
+            for comp in project.compositions
+            for ly in comp.layers
+            if isinstance(ly, TextLayer)
+        )
+        prop = layer["ADBE Text Properties"]["ADBE Text Document"]
+        assert isinstance(prop, Property)
+        assert self._table(prop) == (False, False, True)
+
+    def test_mask_shape_accepts_all(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "mask_add.aep").project
+        layer = project.compositions[0].layers[0]
+        mask = layer.masks[0]
+        shape = mask["ADBE Mask Shape"]
+        assert isinstance(shape, Property)
+        assert self._table(shape) == (True, True, True)
+
+    def test_effect_controls(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "is_modified_false.aep").project
+        layer = project.compositions[0].layers[0]
+        parade = layer.effects
+        assert parade is not None
+
+        slider = parade.add_property("ADBE Slider Control").properties[0]
+        assert self._table(slider) == (True, True, True)
+
+        checkbox = parade.add_property("ADBE Checkbox Control").properties[0]
+        assert self._table(checkbox) == (False, False, True)
+
+        dropdown = parade.add_property("ADBE Dropdown Control").properties[0]
+        assert self._table(dropdown) == (False, False, True)
+
+        layer_ctl = parade.add_property("ADBE Layer Control").properties[0]
+        assert self._table(layer_ctl) == (False, False, False)
+
+    def test_invalid_type_raises(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "is_modified_false.aep").project
+        prop = project.compositions[0].layers[0].transform["ADBE Position"]
+        assert isinstance(prop, Property)
+        with pytest.raises(ValueError):
+            prop.is_interpolation_type_valid(9999)
+        with pytest.raises(TypeError):
+            prop.is_interpolation_type_valid("hold")  # type: ignore[arg-type]
+
+
+class TestKeyframeInterpolationTypeGuard:
+    """The in/out interpolation setters are gated on
+    `is_interpolation_type_valid`, so a hold-only property cannot be given
+    a LINEAR/BEZIER byte AE never writes."""
+
+    SIDES = ("in_interpolation_type", "out_interpolation_type")
+
+    def _marker_keyframe(self) -> Keyframe:
+        project = parse_aep(SAMPLES_DIR.parent / "marker" / "layer_marker.aep").project
+        marker = project.compositions[0].layers[0].marker
+        assert marker is not None
+        return marker.keyframes[0]
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize(
+        "interp",
+        [KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.BEZIER],
+    )
+    def test_hold_only_property_rejects_non_hold(
+        self, side: str, interp: KeyframeInterpolationType
+    ) -> None:
+        kf = self._marker_keyframe()
+        with pytest.raises(ValueError, match="not a valid interpolation type"):
+            setattr(kf, side, interp)
+        assert getattr(kf, side) == KeyframeInterpolationType.HOLD
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_hold_only_property_accepts_hold(self, side: str) -> None:
+        # A no-op rewrite of an AE-written marker keyframe must not raise.
+        kf = self._marker_keyframe()
+        setattr(kf, side, KeyframeInterpolationType.HOLD)
+        assert getattr(kf, side) == KeyframeInterpolationType.HOLD
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize(
+        "interp",
+        [
+            KeyframeInterpolationType.LINEAR,
+            KeyframeInterpolationType.BEZIER,
+            KeyframeInterpolationType.HOLD,
+        ],
+    )
+    def test_normal_property_accepts_every_type(
+        self, side: str, interp: KeyframeInterpolationType
+    ) -> None:
+        project = parse_aep(SAMPLES_DIR / "keyframe_interpolation.aep").project
+        layer = get_comp(project, "keyframe_LINEAR").layers[0]
+        prop = _find_property(layer, "ADBE Position")
+        setattr(prop.keyframes[0], side, interp)
+        assert getattr(prop.keyframes[0], side) == interp
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_out_of_enum_value_rejected(self, side: str) -> None:
+        kf = self._marker_keyframe()
+        with pytest.raises(ValueError):
+            setattr(kf, side, 9999)
+        with pytest.raises(TypeError):
+            setattr(kf, side, "hold")

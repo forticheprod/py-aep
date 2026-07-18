@@ -200,6 +200,28 @@ class _EnumModel:
         self._body = body
 
 
+class _ForgivingEnumModel:
+    """Model whose enum field tolerates out-of-enum stored values."""
+
+    _body: _FakeBody | None
+
+    mode = ChunkField.enum(_MyEnum, "_body", "mode", allow_out_of_enum_values=True)
+
+    def __init__(self, body: _FakeBody | None) -> None:
+        self._body = body
+
+
+class _BoolModel:
+    """Model with a ChunkField.bool field."""
+
+    _body: _FakeBody | None
+
+    flag = ChunkField.bool("_body", "flag")
+
+    def __init__(self, body: _FakeBody | None) -> None:
+        self._body = body
+
+
 class TestChunkFieldDictOverride:
     """Parse-time __dict__ overrides take priority over chunk body."""
 
@@ -367,6 +389,99 @@ class TestChunkFieldEnumValidation:
         finally:
             _materialization_allowed.reset(token)
         assert body.mode == 2
+
+
+class TestChunkFieldEnumAllowOutOfEnumValues:
+    """Forgiving read (the binary is trusted), strict write."""
+
+    def test_out_of_enum_stored_value_reads_back_raw(self) -> None:
+        body = _FakeBody(mode=99)
+        model = _ForgivingEnumModel(body)
+        assert model.mode == 99
+        assert not isinstance(model.mode, _MyEnum)
+
+    def test_in_enum_stored_value_still_reads_as_member(self) -> None:
+        body = _FakeBody(mode=2)
+        model = _ForgivingEnumModel(body)
+        assert model.mode is _MyEnum.AUTO
+
+    def test_write_still_rejects_out_of_enum(self) -> None:
+        # The wrapped transform hides the enum class from `_enum_class`,
+        # so strictness has to come from the auto-added validate_enum.
+        body = _FakeBody(mode=0)
+        _FakeParent(body)
+        model = _ForgivingEnumModel(body)
+        token = _materialization_allowed.set(True)
+        try:
+            with pytest.raises(ValueError):
+                model.mode = 99  # type: ignore[assignment]
+        finally:
+            _materialization_allowed.reset(token)
+        assert body.mode == 0
+
+    def test_write_accepts_member(self) -> None:
+        body = _FakeBody(mode=0)
+        _FakeParent(body)
+        model = _ForgivingEnumModel(body)
+        token = _materialization_allowed.set(True)
+        try:
+            model.mode = _MyEnum.AUTO
+        finally:
+            _materialization_allowed.reset(token)
+        assert body.mode == 2
+
+    def test_caller_validate_is_not_overridden(self) -> None:
+        calls: list[object] = []
+
+        def _record(value: object, obj: object) -> None:
+            calls.append(value)
+
+        cf = ChunkField.enum(
+            _MyEnum, "_body", "mode", allow_out_of_enum_values=True, validate=_record
+        )
+        assert cf.validate is _record
+
+    def test_read_only_gets_no_validate(self) -> None:
+        cf = ChunkField.enum(
+            _MyEnum, "_body", "mode", allow_out_of_enum_values=True, read_only=True
+        )
+        assert cf.validate is None
+
+
+class TestChunkFieldBool:
+    """`ChunkField.bool` bakes in `validate_bool`."""
+
+    @pytest.mark.parametrize("bad", ["no", 2, 1, 0, None, [], 1.0])
+    def test_rejects_non_bool(self, bad: object) -> None:
+        body = _FakeBody(flag=False)
+        _FakeParent(body)
+        model = _BoolModel(body)
+        token = _materialization_allowed.set(True)
+        try:
+            with pytest.raises(TypeError, match="expected a bool"):
+                model.flag = bad  # type: ignore[assignment]
+        finally:
+            _materialization_allowed.reset(token)
+        assert body.flag is False
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_accepts_bool(self, value: bool) -> None:
+        body = _FakeBody(flag=not value)
+        _FakeParent(body)
+        model = _BoolModel(body)
+        token = _materialization_allowed.set(True)
+        try:
+            model.flag = value
+        finally:
+            _materialization_allowed.reset(token)
+        assert body.flag is value
+
+    def test_caller_validate_is_not_overridden(self) -> None:
+        def _custom(value: object, obj: object) -> None:
+            pass
+
+        cf = ChunkField.bool("_body", "flag", validate=_custom)
+        assert cf.validate is _custom
 
 
 class TestChunkFieldTransform:

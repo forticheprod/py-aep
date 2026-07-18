@@ -709,17 +709,23 @@ _DEFAULT_ROTO_MASK_SHAPE_OMS = (
 )
 
 
-def build_default_mask_shape(time_base: int) -> tuple[TdmnChunk, ListChunk]:
+def build_default_mask_shape(
+    time_base: int, *, roto_bezier: bool = False
+) -> tuple[TdmnChunk, ListChunk]:
     """Build the `(tdmn, LIST:om-s)` pair AE writes for `ADBE Mask Shape`
-    when a mask's rotoBezier is enabled.
+    when a path-less mask first materializes one.
 
     A freshly added mask has no Mask Shape subtree (AE treats it as the
-    implicit default full-frame rectangle); enabling rotoBezier
-    materializes that default as an explicit roto-bezier path. The
-    geometry is normalized, so only the comp's internal timebase varies.
+    implicit default full-frame rectangle); enabling rotoBezier or setting
+    a path materializes that default as an explicit path. The geometry is
+    normalized, so only the comp's internal timebase varies.
 
     Args:
         time_base: The comp's internal timebase (`cdta.internal_timebase`).
+        roto_bezier: Whether the mask-shape `tdsb` roto flag is set. The
+            baked template originates from an enable-rotoBezier capture
+            (flag on); a plain bezier path write clears it, matching AE
+            (psd_vector_mask fixtures).
     """
     raw = bytes.fromhex(_DEFAULT_ROTO_MASK_SHAPE_OMS)
     oms = cast("ListChunk", read_chunks(BytesIO(raw), len(raw))[0])
@@ -727,6 +733,8 @@ def build_default_mask_shape(time_base: int) -> tuple[TdmnChunk, ListChunk]:
     for c in tdbs.chunks:
         if isinstance(c, Tdb4Chunk):
             c._time_base = time_base
+        elif isinstance(c, TdsbChunk):
+            c.roto_bezier = roto_bezier
     return TdmnChunk(value="ADBE Mask Shape"), oms
 
 

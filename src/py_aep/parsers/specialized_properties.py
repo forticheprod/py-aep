@@ -289,10 +289,14 @@ def parse_text_document(
 
     text_documents, _fonts = parse_btdk_cos(cos_data, btdk_chunk)
     # Wire each document to the project head so version-gated attributes
-    # (e.g. the box-text setters) can resolve the AE major version.
+    # (e.g. the box-text setters) can resolve the AE major version, and to
+    # the AE preferences, which hold the Character/Paragraph panel defaults
+    # the reset methods restore.
     project_head = composition._project._head
+    project_preferences = composition._project._preferences
     for doc in text_documents:
         doc._head = project_head
+        doc._preferences = project_preferences
     if text_documents:
         if prop.keyframes:
             for kf, doc in zip(prop.keyframes, text_documents):

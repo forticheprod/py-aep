@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ....enums import Hdr10ColorPrimaries, PngCompression
-from ...descriptors import ChunkField
+from ...descriptors import ChunkField, enum_or_raw
 from ...validators import validate_enum, validate_one_of, validate_positive_number
+from .base import FormatOptionsBase
 
 if TYPE_CHECKING:
     from ....binary.render_chunks import PngRoptChunk
     from ....binary.scalar_chunks import Utf8Chunk
 
 
-class PngFormatOptions:
+class PngFormatOptions(FormatOptionsBase):
     """PNG format-specific render options.
 
     These settings correspond to the PNG Options dialog in After Effects,
@@ -64,15 +65,17 @@ class PngFormatOptions:
     Common values are `8` and `16`. Read / Write.
     """
 
-    compression = ChunkField[PngCompression](
+    compression = ChunkField.enum(
+        PngCompression,
         "_body",
         "compression",
-        transform=PngCompression,
-        reverse=int,
+        allow_out_of_enum_values=True,
     )
     """
     The PNG compression / interlace mode. Corresponds to the
-    `Compression` dropdown in the PNG Options dialog. Read / Write.
+    `Compression` dropdown in the PNG Options dialog. An out-of-enum
+    stored value reads back as a raw `int` (the binary is trusted).
+    Read / Write.
     """
 
     def _sync_hdr10(self) -> None:
@@ -95,16 +98,21 @@ class PngFormatOptions:
         self._sync_hdr10()
 
     @property
-    def color_primaries(self) -> Hdr10ColorPrimaries:
+    def color_primaries(self) -> Hdr10ColorPrimaries | int:
         """
         The color primaries used for HDR10 metadata. Corresponds to the
         `Color Primaries` dropdown in the PNG Options dialog.
-        Only meaningful when `include_hdr10_metadata` is `True`. Read / Write.
+        Only meaningful when `include_hdr10_metadata` is `True`. An
+        out-of-enum stored value reads back as a raw `int` (the binary
+        is trusted). Read / Write.
         """
         raw = self._hdr10_meta.get("displayPrimaries")
         if raw is None:
             return Hdr10ColorPrimaries.P3_D65
-        return Hdr10ColorPrimaries(int(raw))
+        return cast(
+            "Hdr10ColorPrimaries | int",
+            enum_or_raw(lambda v: Hdr10ColorPrimaries(int(v)))(raw),
+        )
 
     @color_primaries.setter
     def color_primaries(self, value: Hdr10ColorPrimaries) -> None:

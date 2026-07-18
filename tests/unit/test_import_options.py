@@ -228,3 +228,65 @@ class TestImportOptionsLayerSelection:
         opts = ImportOptions(Path("a.psd"))
         with pytest.raises(ValueError):
             opts.layer_dimensions = "canvas"
+
+
+class TestImportOptionsRange:
+    """range_start / range_end semantics (probed against AE 2026)."""
+
+    def test_defaults_are_zero(self) -> None:
+        opts = ImportOptions(Path("a.png"))
+        assert opts.range_start == 0
+        assert opts.range_end == 0
+
+    def test_setters(self) -> None:
+        opts = ImportOptions(Path("a.png"))
+        opts.range_start = 10
+        opts.range_end = 30
+        assert opts.range_start == 10
+        assert opts.range_end == 30
+
+    def test_rejects_negative_and_non_int(self) -> None:
+        opts = ImportOptions(Path("a.png"))
+        with pytest.raises(ValueError):
+            opts.range_start = -1
+        with pytest.raises(TypeError):
+            opts.range_end = "5"  # type: ignore[assignment]
+
+    def test_accepts_the_full_u4_range(self) -> None:
+        opts = ImportOptions(Path("a.png"))
+        for value in (0, 1, 2**31, 0xFFFFFFFF):
+            opts.range_start = value
+            opts.range_end = value
+            assert (opts.range_start, opts.range_end) == (value, value)
+
+    @pytest.mark.parametrize("value", [0x1_0000_0000, 2**40, 2**63])
+    def test_rejects_values_wider_than_u4(self, value: int) -> None:
+        # Both land in an `sspc` u4_field(); a wider value used to be accepted
+        # here and then fail at save() as a struct.error from the binary layer.
+        # The bound is the field's capacity, NOT AE's 3-hour duration ceiling -
+        # AE 2026 opens a ranged sequence well past that.
+        opts = ImportOptions(Path("a.png"))
+        with pytest.raises(ValueError):
+            opts.range_start = value
+        with pytest.raises(ValueError):
+            opts.range_end = value
+
+    def test_set_time_error_when_alphabetical(self) -> None:
+        # AE: "You cannot set sequence range start for an alphabetical
+        # sequence" - thrown at set time.
+        opts = ImportOptions(Path("a.png"))
+        opts.force_alphabetical = True
+        with pytest.raises(ValueError, match="alphabetical"):
+            opts.range_start = 2
+        with pytest.raises(ValueError, match="alphabetical"):
+            opts.range_end = 5
+
+    def test_alphabetical_resets_range(self) -> None:
+        # AE resets the range (no error) when force_alphabetical is set
+        # AFTER a range - probed 2026-07-14.
+        opts = ImportOptions(Path("a.png"))
+        opts.range_start = 2
+        opts.range_end = 5
+        opts.force_alphabetical = True
+        assert opts.range_start == 0
+        assert opts.range_end == 0

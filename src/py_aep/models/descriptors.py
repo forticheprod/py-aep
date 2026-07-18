@@ -8,12 +8,14 @@ data and `Project.save()` persists the change.
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 from contextvars import ContextVar
 from enum import IntEnum
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, overload
 
 from ..ae_version import get_ae_version_major
+from .validators import validate_bool, validate_enum
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Iterator
@@ -63,6 +65,32 @@ def _enum_class(transform: Callable[..., Any] | None) -> type[IntEnum] | None:
     if isinstance(enum_cls, type) and issubclass(enum_cls, IntEnum):
         return enum_cls
     return None
+
+
+def enum_or_raw(convert: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """Wrap a get-transform so out-of-enum stored values read back raw.
+
+    Real `.aep` files can hold values outside our enums (e.g. a garbage
+    `Rouu.depth`, or a format id from a third-party output plugin); the
+    binary is trusted, so reads must not raise. Mirrors the fallback
+    `_try_enum_or_int` uses for XML params.
+
+    For a chunk-backed field prefer
+    `ChunkField.enum(..., allow_out_of_enum_values=True)`, which applies
+    this wrapper and restores write-side strictness for you. This helper
+    is for the read paths that are not `ChunkField`s (e.g. a `@property`
+    over decoded JSON).
+    """
+
+    def _transform(value: Any) -> Any:
+        try:
+            return convert(value)
+        except (ValueError, TypeError):
+            # TypeError: a `convert` that coerces first (e.g. `int(v)` over
+            # decoded JSON) raises it, not ValueError, for a non-scalar.
+            return value
+
+    return _transform
 
 
 def _validate_enum_member(
@@ -182,6 +210,16 @@ class ChunkField(Generic[T]):
                 f"parsing. Use obj.__dict__[{self.public_name!r}] for "
                 f"parse-time overrides."
             )
+        # Validate BEFORE touching anything. `_ensure_materialized` flips
+        # synthetic chunks to real, so a rejected write that reached it
+        # would mutate the tree and break the byte-identical round-trip
+        # (`parse()` -> `save()`). A field with no backing chunk body must
+        # validate too, or its `__dict__` fallback below would accept a
+        # value the chunk-backed path rejects.
+        if self.validate:
+            self.validate(value, obj)
+        if self._enum_cls is not None:
+            _validate_enum_member(self._enum_cls, value, self.public_name)
         obj.__dict__.pop(self.public_name, None)
         body = getattr(obj, self.chunk_attr)
         if body is None:
@@ -190,10 +228,6 @@ class ChunkField(Generic[T]):
         if getattr(body, "synthetic", False):
             obj._ensure_materialized()
             body = getattr(obj, self.chunk_attr)
-        if self.validate:
-            self.validate(value, obj)
-        if self._enum_cls is not None:
-            _validate_enum_member(self._enum_cls, value, self.public_name)
         if self.reverse is not None:
             setattr(body, self.field, self.reverse(value))
         else:
@@ -204,9 +238,35 @@ class ChunkField(Generic[T]):
             else:
                 self.post_set(obj)
 
+    # NOTE: this shadows the builtin `bool` inside the class body, so
+    # annotations below it must spell it `builtins.bool`.
+    @classmethod
+    def bool(
+        cls, chunk_attr: str, field: str, **kwargs: Any
+    ) -> ChunkField[builtins.bool]:
+        """Create a ChunkField for a boolean field.
+
+        Bakes in `validate=validate_bool` so a writable bool field cannot
+        silently accept a non-bool: the binary layer packs the value
+        straight into a 1-byte field, so `= 2` would write a byte AE never
+        writes and `= "no"` would only blow up later, at `save()`.
+
+        Pass `validate=` to override (compose by calling `validate_bool`
+        first). For a bool backed by a generic integer chunk field (e.g.
+        `U1Chunk.value`) add `transform=bool, reverse=int`.
+        """
+        kwargs.setdefault("validate", validate_bool)
+        return cast("ChunkField[builtins.bool]", cls(chunk_attr, field, **kwargs))
+
     @classmethod
     def enum(
-        cls, enum_cls: type[T], chunk_attr: str, field: str, **kwargs: Any
+        cls,
+        enum_cls: type[T],
+        chunk_attr: str,
+        field: str,
+        *,
+        allow_out_of_enum_values: builtins.bool = False,
+        **kwargs: Any,
     ) -> ChunkField[T]:
         """Create a ChunkField for IntEnum-backed fields.
 
@@ -215,9 +275,24 @@ class ChunkField(Generic[T]):
         `transform`; otherwise the class itself is used. If the enum
         has a `to_binary` method it is used as `reverse`; otherwise
         `int` is used.
+
+        Args:
+            allow_out_of_enum_values: When `True`, a stored value outside
+                the enum reads back raw instead of raising - real `.aep`
+                files hold them (a garbage `Rouu.depth`, a format id from a
+                third-party output plugin) and the binary is trusted.
+                Wrapping the transform hides the enum class from
+                `_enum_class`, so write-side membership strictness is
+                restored via `validate=validate_enum(enum_cls)` unless the
+                caller passes its own `validate` (which must then check
+                membership itself).
         """
         if "transform" not in kwargs:
             kwargs["transform"] = getattr(enum_cls, "from_binary", enum_cls)
         if "reverse" not in kwargs:
             kwargs["reverse"] = getattr(enum_cls, "to_binary", int)
+        if allow_out_of_enum_values:
+            kwargs["transform"] = enum_or_raw(kwargs["transform"])
+            if not kwargs.get("read_only"):
+                kwargs.setdefault("validate", validate_enum(enum_cls))
         return cls(chunk_attr, field, **kwargs)

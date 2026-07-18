@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ...ae_version import requires_version
 from ...binary.chunk import ListChunk
@@ -27,16 +27,24 @@ from ...enums import (
 from ...resolvers.text_composition import (
     calibrate as calibrate_composition,
 )
+from ..preferences import (
+    Preferences,
+    default_character_style,
+    default_paragraph_style,
+)
 from ..validators import (
+    validate_bool,
     validate_box_size,
     validate_enum,
     validate_font_name,
     validate_int,
     validate_normalized_float,
+    validate_number,
     validate_positive_int,
     validate_positive_nonzero_number,
     validate_positive_number,
     validate_rgb_color,
+    validate_s4,
     validate_text,
     validate_vector2,
 )
@@ -51,21 +59,32 @@ from .ranges import (
     _apply_char_key,
     _build_color_paint,
     _cached_line_data,
+    _cached_line_nodes,
+    _char_run_spans,
     _composed_line_spans,
     _fresh_composed_spans,
+    _line_advances,
+    _line_data_from_nodes,
+    _line_origin,
     _para_run_spans,
     _parse_color,
     _raw_text,
     _rebuild_kern_runs,
-    _register_font_prepended,
+    _register_font_at,
     _visible_length,
     u16_len,
+    u16_slice,
 )
 
 if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.item_chunks import HeadChunk
+
+
+_EMPTY_LINE_LOC = 3.4028234663852886e38
+"""`baseline_locs` entry for a line with no visible characters: the
+maximum 32-bit float, as After Effects reports (`3.402823466e+38`)."""
 
 
 def _box_coords(left: float, top: float, width: float, height: float) -> list[float]:
@@ -146,6 +165,11 @@ class TextDocument:
     # lazily by the owning Property when the document is handed out (and at
     # parse time); `None` until then. Underscore-prefixed, so to_dict skips it.
     _head: HeadChunk | None = None
+
+    # Back-reference to the project's AE preferences, wired at parse time.
+    # Holds the Character/Paragraph panel defaults the reset methods restore;
+    # `None` falls back to AE's factory values.
+    _preferences: Preferences | None = None
 
     # `True` for documents parsed from a layer's btdk data. The range API
     # (AE 24.3+) refuses documents never associated with a layer, exactly
@@ -234,7 +258,9 @@ class TextDocument:
     faux_italic = DocumentWideCosField.bool("_char_style", "3", default=None)
     """`True` if a Text layer has faux italic enabled. Read / Write."""
 
-    tracking = DocumentWideCosField.int("_char_style", "8", default=None)
+    tracking = DocumentWideCosField.int(
+        "_char_style", "8", default=None, validate=validate_s4
+    )
     """The Text layer's spacing between characters. Read / Write."""
 
     @property
@@ -269,13 +295,19 @@ class TextDocument:
             _rebuild_kern_runs(self, [None] * total)
         self._propagate_cos()
 
-    horizontal_scale = DocumentWideCosField.float("_char_style", "6", default=None)
+    horizontal_scale = DocumentWideCosField.float(
+        "_char_style", "6", default=None, validate=validate_number
+    )
     """This Text layer's horizontal scale in pixels. Read / Write."""
 
-    vertical_scale = DocumentWideCosField.float("_char_style", "7", default=None)
+    vertical_scale = DocumentWideCosField.float(
+        "_char_style", "7", default=None, validate=validate_number
+    )
     """This Text layer's vertical scale in pixels. Read / Write."""
 
-    baseline_shift = DocumentWideCosField.float("_char_style", "9", default=None)
+    baseline_shift = DocumentWideCosField.float(
+        "_char_style", "9", default=None, validate=validate_number
+    )
     """This Text layer's baseline shift in pixels. Read / Write."""
 
     font_caps_option = DocumentWideCosField.enum(
@@ -323,19 +355,29 @@ class TextDocument:
     )
     """The paragraph justification for the Text layer. Read / Write."""
 
-    first_line_indent = DocumentWideCosField.float("_para_style", "1", default=0.0)
+    first_line_indent = DocumentWideCosField.float(
+        "_para_style", "1", default=0.0, validate=validate_number
+    )
     """The Text layer's paragraph first line indent. Read / Write."""
 
-    start_indent = DocumentWideCosField.float("_para_style", "2", default=0.0)
+    start_indent = DocumentWideCosField.float(
+        "_para_style", "2", default=0.0, validate=validate_number
+    )
     """The Text layer's paragraph start indent. Read / Write."""
 
-    end_indent = DocumentWideCosField.float("_para_style", "3", default=0.0)
+    end_indent = DocumentWideCosField.float(
+        "_para_style", "3", default=0.0, validate=validate_number
+    )
     """The Text layer's paragraph end indent. Read / Write."""
 
-    space_before = DocumentWideCosField.float("_para_style", "4", default=0.0)
+    space_before = DocumentWideCosField.float(
+        "_para_style", "4", default=0.0, validate=validate_number
+    )
     """The Text layer's paragraph space before. Read / Write."""
 
-    space_after = DocumentWideCosField.float("_para_style", "5", default=0.0)
+    space_after = DocumentWideCosField.float(
+        "_para_style", "5", default=0.0, validate=validate_number
+    )
     """The Text layer's paragraph space after. Read / Write."""
 
     @property
@@ -354,12 +396,13 @@ class TextDocument:
 
     @auto_leading.setter
     def auto_leading(self, value: bool) -> None:
+        validate_bool(value)
         self.__dict__.pop("auto_leading", None)
         if self._char_style is None:
-            self._set_override("auto_leading", bool(value))
+            self._set_override("auto_leading", value)
             return
         total = u16_len(_raw_text(self))
-        _apply_char_key(self, 0, total, "4", bool(value))
+        _apply_char_key(self, 0, total, "4", value)
         if value:
             _apply_char_key(self, 0, total, "5", 0.01)
         self._propagate_cos()
@@ -677,7 +720,27 @@ class TextDocument:
         font reference (probed via the `W_FONT` / `W_PASTE_XDOC` write
         fixtures). Returns the new font's index (always 0).
         """
-        return _register_font_prepended(self, post_script_name)
+        return _register_font_at(self, post_script_name)
+
+    def _used_font_objects(self) -> list[FontObject]:
+        """The distinct fonts this document's character runs reference, in
+        first-appearance order.
+
+        The document's `_fonts` table can hold entries no run points at
+        (AE keeps them after an edit), so the runs - not the table - are
+        authoritative for "used". An empty text layer still references a
+        font through its terminator run, which is what AE reports.
+        """
+        used: list[FontObject] = []
+        seen: set[int] = set()
+        for _start, _end, style in _char_run_spans(self):
+            index = style.get("0")
+            if not isinstance(index, int) or index in seen:
+                continue
+            if 0 <= index < len(self._fonts):
+                seen.add(index)
+                used.append(self._fonts[index])
+        return used
 
     @property
     def font_object(self) -> FontObject | None:
@@ -1084,6 +1147,80 @@ class TextDocument:
         return len(spans)
 
     @property
+    def baseline_locs(self) -> list[float]:
+        """The baseline (x,y) locations for a Text layer. Line wraps in a
+        paragraph text box are treated as multiple lines. Read-only.
+
+        Four floats per composed line - `line.start_x, line.start_y,
+        line.end_x, line.end_y` - in layer coordinates. Empty for
+        documents never parsed from a layer or without a layout cache.
+
+        Tip:
+            If a line has no characters, the x and y values for start and
+            end are the maximum float value (`3.402823466e+38`).
+
+        Note:
+            Unlike [composed_line_count][TextDocument.composed_line_count],
+            this always reports the layout After Effects persisted: the
+            per-line pen origins and glyph advances only exist in that
+            cache, and the composed-line resolver does not reproduce them.
+            After a layout-affecting py-side write the values therefore
+            stay at the persisted layout even when the resolver could
+            recompose the line spans (see `composition_stale`).
+        """
+        if not self._associated:
+            return []
+        nodes = _cached_line_nodes(self)
+        data = _line_data_from_nodes(nodes)
+        if data is None:
+            return []
+        spans, _baselines = data
+        raw = _raw_text(self)
+        visible = _visible_length(self)
+        offset_x = 0.0
+        offset_y = 0.0
+        if self.box_text:
+            # A box's cache origins are box-relative; box_text_pos is the
+            # box's top-left corner in layer coordinates (probed AE 2026:
+            # a 220x140 centered box reports -110/-70).
+            box_pos = self.box_text_pos
+            if box_pos is not None:
+                offset_x = float(box_pos[0])
+                offset_y = float(box_pos[1])
+        out: list[float] = []
+        for (start, end), node in zip(spans, nodes):
+            advances = _line_advances(node)
+            line_text = u16_slice(raw, start, end)
+            # The stored advances carry one entry per GLYPH, not per
+            # character - a ligature ("ffi") merges several characters into
+            # one. Rather than map characters to glyphs, count the glyphs to
+            # drop from the END: a terminator, a character clipped past the
+            # visible text and a trailing space are each exactly one glyph
+            # (none of them ever joins a ligature), so this stays correct on
+            # ligated text.
+            tail = 0
+            if line_text.endswith("\r"):
+                line_text = line_text[:-1]
+                tail += 1
+            overshoot = max(0, u16_len(line_text) - max(0, visible - start))
+            if overshoot:
+                tail += overshoot
+                line_text = u16_slice(line_text, 0, u16_len(line_text) - overshoot)
+            if not line_text or not advances:
+                out.extend([_EMPTY_LINE_LOC] * 4)
+                continue
+            # A wrapped line keeps the space group it broke on, but that
+            # group sits outside the reported extent (probed AE 2026).
+            tail += u16_len(line_text) - u16_len(line_text.rstrip(" "))
+            index = len(advances) - tail - 1
+            advance = advances[index] if 0 <= index < len(advances) else 0.0
+            origin_x, origin_y = _line_origin(node)
+            start_x = origin_x + offset_x
+            start_y = origin_y + offset_y
+            out.extend([start_x, start_y, start_x + advance, start_y])
+        return out
+
+    @property
     def paragraph_ranges(self) -> list[dict[str, int]]:
         """Character bounds of every paragraph as `{"start", "end"}`
         records. Read-only.
@@ -1127,6 +1264,87 @@ class TextDocument:
                 break  # stale cache: lines wholly beyond the current text
             out.append({"start": start, "end": min(end, visible)})
         return out
+
+    # -- Style resets --------------------------------------------------------
+
+    def reset_char_style(self) -> None:
+        """Restores all characters in the Text layer to the default text
+        character characteristics in the Character panel.
+
+        After Effects applies its Character-panel defaults, which live in
+        the AE preferences rather than the project file (the
+        `["Text Style Sheet"]` section - the same values `addText` gives a
+        new layer). py_aep reads them from the preferences directory the
+        project was parsed with, and falls back to AE's factory values when
+        no preference file is available.
+
+        Note:
+            Attributes the Character panel does not carry are left alone,
+            matching After Effects.
+
+        Raises:
+            ValueError: If the document was never associated with a layer.
+        """
+        self._require_association()
+        style = default_character_style(self._effective_preferences())
+        self.font = cast("str", style["font"])
+        self.font_size = style["font_size"]
+        self.faux_bold = style["faux_bold"]
+        self.faux_italic = style["faux_italic"]
+        self.apply_fill = style["apply_fill"]
+        self.fill_color = style["fill_color"]
+        # Set the stroke colour and width before the toggle: AE refuses to
+        # read strokeColor once applyStroke is off, and py mirrors that.
+        self.stroke_color = style["stroke_color"]
+        self.stroke_width = style["stroke_width"]
+        self.stroke_over_fill = style["stroke_over_fill"]
+        self.apply_stroke = style["apply_stroke"]
+        self.tracking = style["tracking"]
+        self.tsume = style["tsume"]
+        self.horizontal_scale = style["horizontal_scale"]
+        self.vertical_scale = style["vertical_scale"]
+        self.baseline_shift = style["baseline_shift"]
+        self.auto_leading = style["auto_leading"]
+        # Last: the panel's kerning mode also clears any MANUAL kerning
+        # (probed AE 2026 - a reset takes autoKernType back to Metric and
+        # the per-pair values become undefined).
+        self.auto_kern_type = style["auto_kern_type"]
+
+    def reset_paragraph_style(self) -> None:
+        """Restores all paragraphs in the Text layer to the default text
+        paragraph characteristics in the Paragraph panel.
+
+        After Effects applies its Paragraph-panel defaults, which live in
+        the AE preferences rather than the project file (the
+        `["Text Paragraph Sheet"]` section). py_aep reads them from the
+        preferences directory the project was parsed with, and falls back to
+        AE's factory values when no preference file is available.
+
+        Note:
+            Hyphenation has no entry in that sheet, so - like After Effects -
+            this leaves [auto_hyphenate][TextDocument.auto_hyphenate]
+            untouched.
+
+        Raises:
+            ValueError: If the document was never associated with a layer.
+        """
+        self._require_association()
+        style = default_paragraph_style(self._effective_preferences())
+        self.justification = style["justification"]
+        self.first_line_indent = style["first_line_indent"]
+        self.start_indent = style["start_indent"]
+        self.end_indent = style["end_indent"]
+        self.space_before = style["space_before"]
+        self.space_after = style["space_after"]
+        self.hanging_roman = style["hanging_roman"]
+        self.every_line_composer = style["every_line_composer"]
+
+    def _effective_preferences(self) -> Preferences:
+        """The project's AE preferences, or an empty set (AE factory
+        defaults) for a document parsed without a preferences directory."""
+        if self._preferences is None:
+            return Preferences()
+        return self._preferences
 
     # -- Text ranges (AE 24.3+ ExtendScript API) -----------------------------
 

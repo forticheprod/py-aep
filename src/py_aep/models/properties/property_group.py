@@ -34,6 +34,7 @@ from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import ChunkNotFoundError, find_by_list_type, index_by_identity
 from ...data.dropdown_control import DROPDOWN_CONTROL
 from ...resolvers.font_axes import read_design_axes
+from ...resolvers.transform import default_camera_zoom
 from ...svg.fonts import resolve_font_exact
 from ...synthesis.property import (
     _GROUP_CHILD_SPECS,
@@ -515,7 +516,13 @@ class PropertyGroup(PropertyBase):
         """
         specs = _GROUP_CHILD_SPECS.get(self.match_name)
         if specs is not None:
-            _reorder_and_fill(self, specs, self.property_depth + 1, ae_major=ae_major)
+            _reorder_and_fill(
+                self,
+                specs,
+                self.property_depth + 1,
+                ae_major=ae_major,
+                value_overrides=self._synthesis_value_overrides(),
+            )
 
         if self.match_name == "ADBE Layer Styles":
             _derive_layer_styles_enabled(self, ae_major, synthesize_subgroups=True)
@@ -525,6 +532,31 @@ class PropertyGroup(PropertyBase):
                 child._deferred_ae_major = ae_major
             elif isinstance(child, Property):
                 _apply_bounds(child)
+
+    def _synthesis_value_overrides(
+        self,
+    ) -> dict[str, tuple[Any, Any]] | None:
+        """Comp-dependent default values for synthesized children.
+
+        Camera Zoom and Focus Distance default to AE's 50mm-lens zoom
+        (`comp width * pixel aspect / 0.72`), a value the static spec table
+        cannot express. Returns `None` for groups with no comp-dependent
+        defaults.
+        """
+        if self.match_name != "ADBE Camera Options Group":
+            return None
+        try:
+            comp = self._containing_layer.containing_comp
+            width = comp.width
+            pixel_aspect = comp.pixel_aspect
+        except (ValueError, AttributeError):
+            return None
+        # AE rounds the zoom to 8 decimals before storing it.
+        zoom = round(default_camera_zoom(width, pixel_aspect), 8)
+        return {
+            "ADBE Camera Zoom": (zoom, zoom),
+            "ADBE Camera Focus Distance": (zoom, zoom),
+        }
 
     @property
     def properties(self) -> list[Property | PropertyGroup]:

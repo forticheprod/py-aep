@@ -60,6 +60,23 @@ class OutputColorDepth(IntEnum):
         """ExtendScript STRING format label."""
         return _OUTPUT_COLOR_DEPTH_LABELS[self.value]
 
+    @classmethod
+    def from_binary(cls, value: int) -> OutputColorDepth:
+        """Decode the `Rouu` depth field.
+
+        Modern AE builds write noise in the upper three bytes of the s4
+        field with the real bpp in the low byte (constant `0xF8529Axx`
+        observed across every AE 2026 save on this corpus); older files
+        store the plain value. Raises `ValueError` when neither form
+        decodes, mirroring a plain enum call.
+        """
+        if value in cls._value2member_map_:
+            return cls(value)
+        low_byte = value & 0xFF
+        if low_byte in cls._value2member_map_:
+            return cls(low_byte)
+        raise ValueError(f"{value!r} is not a valid {cls.__name__}")
+
 
 _OUTPUT_COLOR_DEPTH_LABELS: dict[int, str] = {
     -32: "Floating Point Gray",
@@ -122,6 +139,28 @@ _OUTPUT_AUDIO_LABELS: dict[int, str] = {
 }
 
 
+class FormatKind(IntEnum):
+    """Output plugin capability class.
+
+    Mirrors the capability flags an AE output plugin declares
+    (`AEIO_MFlag_FILE_SEQUENCE` / `_VIDEO` / `_AUDIO` in the AE SDK's
+    `AE_IO.h`). The `.aep` binary carries no such flag (all `Rouu`
+    reserved bytes are identical across formats), so the classification
+    is static data keyed by the format identity.
+
+    Not available in ExtendScript.
+    """
+
+    AUDIO = 1
+    """Audio stream only (AIFF, MP3, WAV): video output is always off."""
+
+    MOVIE = 2
+    """Single movie file, video and/or audio (AVI, H.264, QuickTime)."""
+
+    SEQUENCE = 3
+    """One still image per frame (TIFF, PNG, ...): audio is always off."""
+
+
 class OutputFormat(IntEnum):
     """Output file format.
 
@@ -151,6 +190,12 @@ class OutputFormat(IntEnum):
     def label(self) -> str:
         """ExtendScript STRING format label."""
         return _OUTPUT_FORMAT_LABELS[self.value]
+
+    @property
+    def kind(self) -> FormatKind:
+        """Whether this format is an audio file, a movie, or a still
+        sequence. See [FormatKind][]."""
+        return _OUTPUT_FORMAT_KINDS[self.value]
 
     @classmethod
     def from_format_id(cls, format_id: str | bytes) -> OutputFormat:
@@ -194,6 +239,28 @@ _OUTPUT_FORMAT_LABELS: dict[int, str] = {
     13: "TIFF Sequence",
     14: "Targa Sequence",
     15: "WAV",
+}
+
+
+# Explicit classification (see FormatKind): never derive this from names -
+# OM/template names are user-defined and the binary has no category flag.
+_OUTPUT_FORMAT_KINDS: dict[int, FormatKind] = {
+    OutputFormat.AIFF: FormatKind.AUDIO,
+    OutputFormat.AVI: FormatKind.MOVIE,
+    OutputFormat.DPX_CINEON_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.H264: FormatKind.MOVIE,
+    OutputFormat.IFF_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.JPEG_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.MP3: FormatKind.AUDIO,
+    OutputFormat.OPENEXR_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.PNG_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.PHOTOSHOP_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.QUICKTIME: FormatKind.MOVIE,
+    OutputFormat.RADIANCE_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.SGI_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.TIFF_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.TARGA_SEQUENCE: FormatKind.SEQUENCE,
+    OutputFormat.WAV: FormatKind.AUDIO,
 }
 
 
@@ -322,6 +389,9 @@ class AudioSampleRate(IntEnum):
     OFF = -1
     RATE_8000 = 8000
     RATE_11025 = 11025
+    RATE_12000 = 12000
+    """Only reachable through MP3 mono at 18/20 kbps (AE-saved evidence);
+    no other format offers it."""
     RATE_16000 = 16000
     RATE_22050 = 22050
     RATE_24000 = 24000
