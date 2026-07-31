@@ -14,7 +14,7 @@ After Effects files (.aep) are mostly binary files, encoded in RIFX format. This
 * Reading .aep files
 * Creating a new empty project from scratch (`py_aep.new`), replicating File > New > New Project
 * Saving to a new .aep file
-* Modifying most properties, including some that are not accessible through ExtendScript such as gradients, render settings, output module settings, etc. (<a href="https://forticheprod.github.io/py-aep/">Differences from ExtendScript</a> for more details)
+* Modifying most properties, including some that are not accessible through ExtendScript such as gradients, render settings, 3D renderer options, output module settings, etc. (<a href="https://forticheprod.github.io/py-aep/">Differences from ExtendScript</a> for more details)
 * Adding and removing keyframes on any property - including mask paths, source text, markers, orientation and gradients - with static/animated transitions matching After Effects' own output
 * Adding new compositions and folders, moving items between folders
 * Creating layers: solids, nulls, shapes, cameras, lights, text (point, box and vertical text), and parametric 3D mesh layers (cube, sphere, plane, torus, cone, cylinder)
