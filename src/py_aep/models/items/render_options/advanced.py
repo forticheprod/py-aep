@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ....enums import EnvironmentLightShadowResolution
 from ...descriptors import ChunkField
 from ...validators import (
@@ -12,6 +14,8 @@ from ...validators import (
 )
 from .render_options_base import RenderOptionsBase
 
+if TYPE_CHECKING:
+    from ....binary.misc_chunks import AdvancedPrdaChunk
 
 class AdvancedRenderOptions(RenderOptionsBase):
     """Options for the Advanced 3D renderer.
@@ -28,6 +32,8 @@ class AdvancedRenderOptions(RenderOptionsBase):
       read back after saving can differ from the one written by a tiny
       fraction of a pixel.
     """
+
+    _body: AdvancedPrdaChunk
 
     _SPEC = {
         "Quality": ("quality", None),

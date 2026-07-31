@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .render_options_base import RenderOptionsBase
 
+if TYPE_CHECKING:
+    from ....binary.misc_chunks import RayTracedPrdaChunk
 
 
 class RayTracedRenderOptions(RenderOptionsBase):
@@ -14,5 +18,7 @@ class RayTracedRenderOptions(RenderOptionsBase):
     matched to controls. Files using it parse and re-save byte-exact;
     there is nothing safe to expose. Read-only.
     """
+
+    _body: RayTracedPrdaChunk
 
     _SPEC = {}
