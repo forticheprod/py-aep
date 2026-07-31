@@ -2,7 +2,7 @@
 
 Fixed-layout chunks use `fmt_field()` and `BitField`.
 Fth5Chunk uses `items_field()` for repeating feather points.
-PardChunk uses variant subclass dispatch for polymorphic layouts.
+PardChunk and PrdaChunk use variant subclass dispatch for polymorphic layouts.
 """
 
 from __future__ import annotations
@@ -93,19 +93,135 @@ class PguiChunk(Chunk):
 
 
 # ---------------------------------------------------------------------------
-# prda - renderer additional data (12 bytes)
+# prda - renderer additional data (variant dispatch, 12/16/20/52 bytes)
 # ---------------------------------------------------------------------------
 
 
 @register("prda")
 @define
 class PrdaChunk(Chunk):
-    """Renderer additional data."""
+    """Renderer additional data (polymorphic).
+
+    The layout is renderer-specific and each renderer's body is a distinct size,
+    so the base class dispatches on size; unknown sizes fall back to raw bytes.
+
+    These options are not exposed by ExtendScript.
+    """
 
     chunk_type: str = "prda"
-    _flag: int = u4_field(default=1)
-    _reserved: bytes = bytes_field(8, repr=False)
 
+    @classmethod
+    def read(
+        cls,
+        fp: IO[bytes],
+        size: int,
+        *,
+        chunk_type: str = "",
+        **kwargs: Any,
+    ) -> PrdaChunk:
+        if cls is not PrdaChunk:
+            result = super().read(fp, size, chunk_type=chunk_type)
+            assert isinstance(result, PrdaChunk)
+            return result
+        variant_cls = _PRDA_VARIANTS.get(size)
+        if variant_cls is None:
+            return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
+        return variant_cls.read(fp, size, chunk_type=chunk_type)
+
+@define
+class ClassicPrdaChunk(PrdaChunk):
+    """Classic 3D (`ADBE Escher`) options, 12 bytes."""
+
+    _version: int = u4_field(default=1, repr=False)
+    _renderer_tag: int = u4_field(default=0, repr=False)
+
+    shadow_map_resolution: int = u4_field(default=0)
+    """Index into the Shadow Map Resolution dropdown, 0='Comp Size',
+    1=250, 2=500, 3=750, 4=1000, 5=1500, 6=2000, 7=3000, 8=4000."""
+
+@define
+class AdvancedPrdaChunk(PrdaChunk):
+    """Advanced 3D (`ADBE Calder`) options, 52 bytes.
+
+    The body is genuinely mixed-endian: the header through `quality` is
+    big-endian like the rest of the format, while everything from offset
+    20 on is little-endian. That is AE's own layout, not a bug here.
+
+    The three `casting_box_size_*` fields are written in lockstep by a
+    single dialog control. All six float fields store fractions of the
+    composition's **raw pixel** dimensions - pixel aspect ratio is not
+    applied - rather than the pixel values the dialog displays.
+    """
+
+    _version: int = u4_field(default=1, repr=False)
+    _renderer_tag: int = u4_field(default=3, repr=False)
+
+    quality: int = u4_field(default=8)
+    """Renderer quality, 1-125."""
+
+    _reserved_12: int = u4_field(default=1, repr=False)
+    _reserved_16: int = u4_field(default=0, repr=False)
+
+    resolution: int = u4_field(default=1, endian="<")
+    """Environment light shadow resolution:
+    0='Half (2MB)', 1='Full (16MB)', 2='Double (128MB)'."""
+
+    smoothness: int = u4_field(default=3, endian="<")
+    """Environment light shadow smoothness, 1-20."""
+
+    casting_box_size_x: float = f4_field(default=1.0, endian="<")
+    """Casting box size on X, as a fraction of comp width."""
+
+    casting_box_size_y: float = f4_field(default=1.0, endian="<")
+    """Casting box size on Y, as a fraction of comp width."""
+
+    casting_box_size_z: float = f4_field(default=1.0, endian="<")
+    """Casting box size on Z, as a fraction of comp width."""
+
+    casting_box_center_x: float = f4_field(default=0.0, endian="<")
+    """Casting box centre on X, offset from comp centre, fraction of width."""
+
+    casting_box_center_y: float = f4_field(default=0.0, endian="<")
+    """Casting box centre on Y, offset from comp centre, fraction of height."""
+
+    casting_box_center_z: float = f4_field(default=0.0, endian="<")
+    """Casting box centre on Z, as a fraction of comp width."""
+
+@define
+class Cinema4DPrdaChunk(PrdaChunk):
+    """Cinema 4D (`ADBE Ernst`) options, 20 bytes."""
+
+    _version: int = u4_field(default=1, repr=False)
+    _renderer_tag: int = u4_field(default=1, repr=False)
+
+    quality: int = u4_field(default=25)
+    """Renderer quality, 1-99."""
+
+    _reserved_12: int = u4_field(default=1, repr=False)
+    _reserved_16: int = u4_field(default=0, repr=False)
+
+@define
+class RayTracedPrdaChunk(PrdaChunk):
+    """Ray-traced 3D (`ADBE Picasso`) options, 16 bytes.
+
+    Legacy: this renderer has been removed since AE 17.0.
+    Read-only in practice: files containing it can be parsed
+    and rewritten, but no supported AE version can author one.
+    """
+
+    _version: int = u4_field(default=1, repr=False)
+    _renderer_tag: int = u4_field(default=0, repr=False)
+    _unknown_08: int = u4_field(default=3, repr=False)
+    _unknown_12: int = u4_field(default=1, repr=False)
+
+# Body size -> variant. Sizes are distinct per renderer, so size alone
+# discriminates without needing the sibling `prin` chunk's match name.
+_PRDA_VARIANTS: dict[int, type[PrdaChunk]] = {
+    12: ClassicPrdaChunk,
+    16: RayTracedPrdaChunk,
+    20: Cinema4DPrdaChunk,
+    52: AdvancedPrdaChunk,
+}
 
 # ---------------------------------------------------------------------------
 # mkif - mask info (48 bytes)
