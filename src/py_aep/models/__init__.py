@@ -9,6 +9,13 @@ from .items.composition import CompItem
 from .items.folder import FolderItem
 from .items.footage import FootageItem
 from .items.item import Item
+from .items.render_options import (
+    AdvancedRenderOptions,
+    Cinema4DRenderOptions,
+    ClassicRenderOptions,
+    RayTracedRenderOptions,
+    RenderOptionsBase,
+)
 from .layers.av_layer import AVLayer
 from .layers.camera_layer import CameraLayer
 from .layers.layer import Layer
@@ -52,10 +59,13 @@ from .viewer import View, Viewer, ViewOptions
 
 __all__ = [
     "Application",
+    "AdvancedRenderOptions",
     "AVItem",
     "AVLayer",
     "CameraLayer",
+    "Cinema4DRenderOptions",
     "CineonFormatOptions",
+    "ClassicRenderOptions",
     "CompItem",
     "EssentialGraphicsController",
     "FeatherPoint",
@@ -85,6 +95,8 @@ __all__ = [
     "Property",
     "PropertyBase",
     "PropertyGroup",
+    "RayTracedRenderOptions",
+    "RenderOptionsBase",
     "RenderQueue",
     "RenderQueueItem",
     "SettingsView",

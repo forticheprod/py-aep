@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, List, cast
+from typing import TYPE_CHECKING, Any, List, Mapping, cast
 
 from ...ae_version import requires_version
 from ...binary.chunk import Chunk, DeferredListChunk, ListChunk
@@ -18,7 +18,7 @@ from ...binary.layer_chunks import (
     _LDTA_SOURCE_ID_OFFSET,
     LdtaChunk,
 )
-from ...binary.misc_chunks import PguiChunk, PrinChunk
+from ...binary.misc_chunks import PguiChunk, PrdaChunk, PrinChunk
 from ...binary.mutations import (
     build_checkbox_cctl,
     build_color_cctl,
@@ -110,6 +110,7 @@ if TYPE_CHECKING:
     from ..project import Project
     from ..properties.marker import MarkerValue
     from .folder import FolderItem
+    from .render_options import RenderOptionsBase
 
 # The binary prin chunk stores internal plugin match_names (e.g. ADBE Escher)
 # but ExtendScript exposes different module names (e.g. ADBE Advanced 3d).
@@ -681,6 +682,10 @@ class CompItem(AVItem):
         self._prin = cast(
             "PrinChunk",
             find_by_type(chunks=prin_list.chunks, chunk_type="prin"),
+        )
+        self._prda = cast(
+            "PrdaChunk",
+            find_by_type(chunks=prin_list.chunks, chunk_type="prda"),
         )
 
         # Layer deferral: collect layer chunks and source IDs now, parse
@@ -1265,6 +1270,36 @@ class CompItem(AVItem):
     def renderer(self, value: str) -> None:
         _validate_renderer(value)
         self._prin.match_name = _RENDERER_EXTENDSCRIPT_TO_BINARY[value]
+
+    @property
+    def render_options(self) -> RenderOptionsBase:
+        """The active 3D renderer's options, as a mutable mapping.
+
+        Keys are the labels the Render Options dialog uses, and the same
+        object also exposes each option as a typed attribute.
+
+        Example:
+            ```python
+            comp.render_options["Quality"] = 61
+            comp.render_options.quality = 61
+            ```
+
+        The concrete type follows [renderer][]: see
+        [ClassicRenderOptions][], [AdvancedRenderOptions][],
+        [Cinema4DRenderOptions][] and [RayTracedRenderOptions][].
+
+        Read / Write.
+        """
+        from .render_options import render_options_for  # noqa: PLC0415
+        return render_options_for(self._prda, self)
+
+    @render_options.setter
+    def render_options(self, value: Mapping[str, Any]) -> None:
+        if not isinstance(value, Mapping):
+            raise ValueError("render_options must be a mapping of key-value pairs")
+        view = self.render_options
+        for key, option in value.items():
+            view[key] = option
 
     @property
     def has_audio(self) -> bool:
