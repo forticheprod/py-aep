@@ -31,46 +31,48 @@ PRDA_CINEMA_SET = bytes.fromhex("00000001000000010000002c0000000100000000")
 
 class TestPrdaVariants:
     @pytest.mark.parametrize(
-        ("body", "expected_cls"),
+        ("body", "match_name", "expected_cls"),
         [
-            (PRDA_CLASSIC_DEFAULT, ClassicPrdaChunk),
-            (PRDA_RAYTRACED, RayTracedPrdaChunk),
-            (PRDA_CINEMA_DEFAULT, Cinema4DPrdaChunk),
-            (PRDA_ADVANCED_DEFAULT, AdvancedPrdaChunk),
+            (PRDA_CLASSIC_DEFAULT, "ADBE Escher", ClassicPrdaChunk),
+            (PRDA_RAYTRACED, "ADBE Picasso", RayTracedPrdaChunk),
+            (PRDA_CINEMA_DEFAULT, "ADBE Ernst", Cinema4DPrdaChunk),
+            (PRDA_ADVANCED_DEFAULT, "ADBE Calder", AdvancedPrdaChunk),
         ],
     )
-    def test_dispatch_by_size(self, body: bytes, expected_cls: type) -> None:
-        assert type(PrdaChunk.frombytes(body, chunk_type="prda")) is expected_cls
+    def test_dispatch_by_renderer(self, body: bytes, match_name: str, expected_cls: type) -> None:
+        """Dispatch keys off the sibling prin chunk's match name."""
+        chunk = PrdaChunk.frombytes(body, chunk_type="prda", renderer_match_name=match_name)
+        assert type(chunk) is expected_cls
 
     @pytest.mark.parametrize(
-        "body",
+        ("body", "match_name"),
         [
-            PRDA_CLASSIC_DEFAULT,
-            PRDA_CLASSIC_SET,
-            PRDA_RAYTRACED,
-            PRDA_CINEMA_DEFAULT,
-            PRDA_CINEMA_SET,
-            PRDA_ADVANCED_DEFAULT,
-            PRDA_ADVANCED_SET,
+            (PRDA_CLASSIC_DEFAULT, "ADBE Escher"),
+            (PRDA_CLASSIC_SET, "ADBE Escher"),
+            (PRDA_RAYTRACED, "ADBE Picasso"),
+            (PRDA_CINEMA_DEFAULT, "ADBE Ernst"),
+            (PRDA_CINEMA_SET, "ADBE Ernst"),
+            (PRDA_ADVANCED_DEFAULT, "ADBE Calder"),
+            (PRDA_ADVANCED_SET, "ADBE Calder"),
         ],
     )
-    def test_roundtrip_byte_exact(self, body: bytes) -> None:
-        chunk = PrdaChunk.frombytes(body, chunk_type="prda")
+    def test_roundtrip_byte_exact(self, body: bytes, match_name: str) -> None:
+        chunk = PrdaChunk.frombytes(body, chunk_type="prda", renderer_match_name=match_name)
         buf = BytesIO()
         chunk.write(buf)
         assert buf.getvalue() == body
 
     def test_classic_shadow_map_resolution(self) -> None:
-        chunk = PrdaChunk.frombytes(PRDA_CLASSIC_SET, chunk_type="prda")
+        chunk = PrdaChunk.frombytes(PRDA_CLASSIC_SET, chunk_type="prda", renderer_match_name="ADBE Escher")
         assert chunk.shadow_map_resolution == 3
 
     def test_cinema_quality(self) -> None:
-        chunk = PrdaChunk.frombytes(PRDA_CINEMA_SET, chunk_type="prda")
+        chunk = PrdaChunk.frombytes(PRDA_CINEMA_SET, chunk_type="prda", renderer_match_name="ADBE Ernst")
         assert chunk.quality == 44
 
     def test_advanced_fields_mixed_endian(self) -> None:
         """Head is big-endian, the tail from offset 20 little-endian."""
-        chunk = PrdaChunk.frombytes(PRDA_ADVANCED_SET, chunk_type="prda")
+        chunk = PrdaChunk.frombytes(PRDA_ADVANCED_SET, chunk_type="prda", renderer_match_name="ADBE Calder")
         assert chunk.quality == 61
         assert chunk.resolution == 2
         assert chunk.smoothness == 6
@@ -96,10 +98,26 @@ class TestPrdaVariants:
         cls().write(buf)
         assert buf.getvalue() == expected
 
-    def test_unknown_size_falls_back_to_raw(self) -> None:
-        """A future renderer must not corrupt the file."""
-        body = bytes.fromhex("00112233445566")
-        chunk = PrdaChunk.frombytes(body, chunk_type="prda")
+    @pytest.mark.parametrize(
+        ("body", "match_name"),
+        [
+            # A renderer we do not know about must not corrupt the file.
+            (bytes.fromhex("00112233445566"), "ADBE Future"),
+
+            # A known renderer whose body size changed must
+            # fall back to raw bytes rather than misparse.
+            (PRDA_CLASSIC_DEFAULT, "ADBE Calder"),
+
+            # No prin sibling resolved at all.
+            (PRDA_CLASSIC_DEFAULT, ""),
+        ],
+    )
+    def test_unrecognised_prda_falls_back_to_raw(
+        self, body: bytes, match_name: str
+    ) -> None:
+        chunk = PrdaChunk.frombytes(
+            body, chunk_type="prda", renderer_match_name=match_name
+        )
         assert type(chunk) is PrdaChunk
         buf = BytesIO()
         chunk.write(buf)

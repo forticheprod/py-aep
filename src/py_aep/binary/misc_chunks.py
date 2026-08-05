@@ -93,7 +93,7 @@ class PguiChunk(Chunk):
 
 
 # ---------------------------------------------------------------------------
-# prda - renderer additional data (variant dispatch, 12/16/20/52 bytes)
+# prda - renderer additional data (variant dispatch)
 # ---------------------------------------------------------------------------
 
 
@@ -102,8 +102,10 @@ class PguiChunk(Chunk):
 class PrdaChunk(Chunk):
     """Renderer additional data (polymorphic).
 
-    The layout is renderer-specific and each renderer's body is a distinct size,
-    so the base class dispatches on size; unknown sizes fall back to raw bytes.
+    The layout is renderer-specific, so the base class dispatches on the
+    sibling `prin` chunk's match name (resolved by the chunk reader), with
+    the body size as a sanity check. Unknown renderers and unexpected
+    sizes fall back to raw bytes and still round-trip byte-exact.
 
     These options are not exposed by ExtendScript.
     """
@@ -117,22 +119,28 @@ class PrdaChunk(Chunk):
         size: int,
         *,
         chunk_type: str = "",
+        renderer_match_name: str = "",
         **kwargs: Any,
     ) -> PrdaChunk:
         if cls is not PrdaChunk:
             result = super().read(fp, size, chunk_type=chunk_type)
             assert isinstance(result, PrdaChunk)
             return result
-        variant_cls = _PRDA_VARIANTS.get(size)
-        if variant_cls is None:
+        variant = _PRDA_VARIANTS.get(renderer_match_name)
+        if variant is None or variant[1] != size:
+            # preserve unknown raw bytes
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
-        return variant_cls.read(fp, size, chunk_type=chunk_type)
+        return variant[0].read(fp, size, chunk_type=chunk_type)
 
 @define
 class ClassicPrdaChunk(PrdaChunk):
     """Classic 3D (`ADBE Escher`) options, 12 bytes."""
 
     _version: int = u4_field(default=1, repr=False)
+    # Offset 4 seems likely to be unique per-renderer, but this is not fully proven.
+    # Both Classic and RayTraced share the same values (version=1, tag=0), so this
+    # works for now as RayTraced is deprecated. If a future renderer shares the same
+    # tag value as another existing renderer, we should rename this to `_unknown_04`.
     _renderer_tag: int = u4_field(default=0, repr=False)
 
     shadow_map_resolution: int = u4_field(default=0)
@@ -216,11 +224,11 @@ class RayTracedPrdaChunk(PrdaChunk):
 
 # Body size -> variant. Sizes are distinct per renderer, so size alone
 # discriminates without needing the sibling `prin` chunk's match name.
-_PRDA_VARIANTS: dict[int, type[PrdaChunk]] = {
-    12: ClassicPrdaChunk,
-    16: RayTracedPrdaChunk,
-    20: Cinema4DPrdaChunk,
-    52: AdvancedPrdaChunk,
+_PRDA_VARIANTS: dict[str, tuple[type[PrdaChunk], int]] = {
+    "ADBE Escher": (ClassicPrdaChunk, 12),
+    "ADBE Picasso": (RayTracedPrdaChunk, 16),
+    "ADBE Ernst": (Cinema4DPrdaChunk, 20),
+    "ADBE Calder": (AdvancedPrdaChunk, 52),
 }
 
 # ---------------------------------------------------------------------------
