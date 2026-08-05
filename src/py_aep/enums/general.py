@@ -69,8 +69,7 @@ class LayerType(IntEnum):
 
 
 class ParametricMeshType(IntEnum):
-    """Type of parametric mesh.
-    """
+    """Type of parametric mesh."""
 
     CUBE = 14612
     SPHERE = 14613

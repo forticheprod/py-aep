@@ -67,7 +67,9 @@ class TestRoundtripRenderer:
         with pytest.raises(ValueError, match="must be one of"):
             comp.renderer = "Not A Renderer"
 
-    def test_renderer_change_swaps_display_name_and_options(self, tmp_path: Path) -> None:
+    def test_renderer_change_swaps_display_name_and_options(
+        self, tmp_path: Path
+    ) -> None:
         """A renderer change must not leave the old renderer's prda behind.
 
         Rewriting only prin.match_name produced a file claiming one

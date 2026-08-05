@@ -17,6 +17,7 @@ from .renderer_options_base import RendererOptionsBase
 if TYPE_CHECKING:
     from ....binary.misc_chunks import AdvancedPrdaChunk
 
+
 class AdvancedRendererOptions(RendererOptionsBase):
     """Options for the Advanced 3D renderer.
 
@@ -43,9 +44,7 @@ class AdvancedRendererOptions(RendererOptionsBase):
         "Casting Box Center": ("casting_box_center", None),
     }
 
-    quality = ChunkField[int](
-        "_body", "quality", validate=validate_advanced_quality
-    )
+    quality = ChunkField[int]("_body", "quality", validate=validate_advanced_quality)
     """Renderer quality, `1` to `125`. Read / Write."""
 
     resolution = ChunkField.enum(

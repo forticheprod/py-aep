@@ -193,9 +193,7 @@ class TestPropSpecFieldConsistency:
         _ALL_PROP_SPECS,
         ids=[s[0] for s in _ALL_PROP_SPECS],
     )
-    def test_value_shape_matches_dimensions(
-        self, spec_id: str, spec: PropSpec
-    ) -> None:
+    def test_value_shape_matches_dimensions(self, spec_id: str, spec: PropSpec) -> None:
         if spec.value is None:
             return
         if spec.dimensions > 1:

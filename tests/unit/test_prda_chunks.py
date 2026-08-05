@@ -19,15 +19,20 @@ PRDA_ADVANCED_DEFAULT = bytes.fromhex(
     # big-endian head: version, renderer tag, quality 8, two reserved words
     "0000000100000003000000080000000100000000"
     # little-endian tail: resolution 1, smoothness 3, size 1.0 x3, centre 0.0 x3
-    "01000000030000000000803f0000803f0000803f000000000000000000000000")
+    "01000000030000000000803f0000803f0000803f000000000000000000000000"
+)
 PRDA_CINEMA_DEFAULT = bytes.fromhex("0000000100000001000000190000000100000000")
-PRDA_RAYTRACED = bytes.fromhex("00000001000000000000000300000001") # obsolete renderer, removed in AE 2020 (17.0)
+PRDA_RAYTRACED = bytes.fromhex(
+    "00000001000000000000000300000001"
+)  # obsolete renderer, removed in AE 2020 (17.0)
 
 PRDA_CLASSIC_SET = bytes.fromhex("000000010000000000000003")
 PRDA_ADVANCED_SET = bytes.fromhex(
     "00000001000000030000003d0000000100000000"
-    "02000000060000000000a03e0000a03e0000a03e565595be408e633d555555bd")
+    "02000000060000000000a03e0000a03e0000a03e565595be408e633d555555bd"
+)
 PRDA_CINEMA_SET = bytes.fromhex("00000001000000010000002c0000000100000000")
+
 
 class TestPrdaVariants:
     @pytest.mark.parametrize(
@@ -39,9 +44,13 @@ class TestPrdaVariants:
             (PRDA_ADVANCED_DEFAULT, "ADBE Calder", AdvancedPrdaChunk),
         ],
     )
-    def test_dispatch_by_renderer(self, body: bytes, match_name: str, expected_cls: type) -> None:
+    def test_dispatch_by_renderer(
+        self, body: bytes, match_name: str, expected_cls: type
+    ) -> None:
         """Dispatch keys off the sibling prin chunk's match name."""
-        chunk = PrdaChunk.frombytes(body, chunk_type="prda", renderer_match_name=match_name)
+        chunk = PrdaChunk.frombytes(
+            body, chunk_type="prda", renderer_match_name=match_name
+        )
         assert type(chunk) is expected_cls
 
     @pytest.mark.parametrize(
@@ -57,22 +66,30 @@ class TestPrdaVariants:
         ],
     )
     def test_roundtrip_byte_exact(self, body: bytes, match_name: str) -> None:
-        chunk = PrdaChunk.frombytes(body, chunk_type="prda", renderer_match_name=match_name)
+        chunk = PrdaChunk.frombytes(
+            body, chunk_type="prda", renderer_match_name=match_name
+        )
         buf = BytesIO()
         chunk.write(buf)
         assert buf.getvalue() == body
 
     def test_classic_shadow_map_resolution(self) -> None:
-        chunk = PrdaChunk.frombytes(PRDA_CLASSIC_SET, chunk_type="prda", renderer_match_name="ADBE Escher")
+        chunk = PrdaChunk.frombytes(
+            PRDA_CLASSIC_SET, chunk_type="prda", renderer_match_name="ADBE Escher"
+        )
         assert chunk.shadow_map_resolution == 3
 
     def test_cinema_quality(self) -> None:
-        chunk = PrdaChunk.frombytes(PRDA_CINEMA_SET, chunk_type="prda", renderer_match_name="ADBE Ernst")
+        chunk = PrdaChunk.frombytes(
+            PRDA_CINEMA_SET, chunk_type="prda", renderer_match_name="ADBE Ernst"
+        )
         assert chunk.quality == 44
 
     def test_advanced_fields_mixed_endian(self) -> None:
         """Head is big-endian, the tail from offset 20 little-endian."""
-        chunk = PrdaChunk.frombytes(PRDA_ADVANCED_SET, chunk_type="prda", renderer_match_name="ADBE Calder")
+        chunk = PrdaChunk.frombytes(
+            PRDA_ADVANCED_SET, chunk_type="prda", renderer_match_name="ADBE Calder"
+        )
         assert chunk.quality == 61
         assert chunk.resolution == 2
         assert chunk.smoothness == 6
@@ -103,11 +120,9 @@ class TestPrdaVariants:
         [
             # A renderer we do not know about must not corrupt the file.
             (bytes.fromhex("00112233445566"), "ADBE Future"),
-
             # A known renderer whose body size changed must
             # fall back to raw bytes rather than misparse.
             (PRDA_CLASSIC_DEFAULT, "ADBE Calder"),
-
             # No prin sibling resolved at all.
             (PRDA_CLASSIC_DEFAULT, ""),
         ],

@@ -132,6 +132,7 @@ class PrdaChunk(Chunk):
             return cls(chunk_type=chunk_type, data=read_bytes(fp, size))
         return variant[0].read(fp, size, chunk_type=chunk_type)
 
+
 @define
 class ClassicPrdaChunk(PrdaChunk):
     """Classic 3D (`ADBE Escher`) options, 12 bytes."""
@@ -146,6 +147,7 @@ class ClassicPrdaChunk(PrdaChunk):
     shadow_map_resolution: int = u4_field(default=0)
     """Index into the Shadow Map Resolution dropdown, 0='Comp Size',
     1=250, 2=500, 3=750, 4=1000, 5=1500, 6=2000, 7=3000, 8=4000."""
+
 
 @define
 class AdvancedPrdaChunk(PrdaChunk):
@@ -195,6 +197,7 @@ class AdvancedPrdaChunk(PrdaChunk):
     casting_box_center_z: float = f4_field(default=0.0, endian="<")
     """Casting box centre on Z, as a fraction of comp width."""
 
+
 @define
 class Cinema4DPrdaChunk(PrdaChunk):
     """Cinema 4D (`ADBE Ernst`) options, 20 bytes."""
@@ -207,6 +210,7 @@ class Cinema4DPrdaChunk(PrdaChunk):
 
     _reserved_12: int = u4_field(default=1, repr=False)
     _reserved_16: int = u4_field(default=0, repr=False)
+
 
 @define
 class RayTracedPrdaChunk(PrdaChunk):
@@ -221,6 +225,7 @@ class RayTracedPrdaChunk(PrdaChunk):
     _renderer_tag: int = u4_field(default=0, repr=False)
     _unknown_08: int = u4_field(default=3, repr=False)
     _unknown_12: int = u4_field(default=1, repr=False)
+
 
 # Body size -> variant. Sizes are distinct per renderer, so size alone
 # discriminates without needing the sibling `prin` chunk's match name.

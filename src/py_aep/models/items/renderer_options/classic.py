@@ -11,6 +11,7 @@ from .renderer_options_base import RendererOptionsBase
 if TYPE_CHECKING:
     from ....binary.misc_chunks import ClassicPrdaChunk
 
+
 class ClassicRendererOptions(RendererOptionsBase):
     """Options for the Classic 3D renderer."""
 

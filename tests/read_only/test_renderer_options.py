@@ -102,7 +102,9 @@ class TestRendererOptionsNonDefaults:
             COMPOSITION_DIR / "renderer_options_classic_3d.aep"
         ).project.compositions[0]
 
-        assert comp.renderer_options.shadow_map_resolution is ShadowMapResolution.RES_750
+        assert (
+            comp.renderer_options.shadow_map_resolution is ShadowMapResolution.RES_750
+        )
 
     def test_cinema_4d_non_default(self) -> None:
         comp = parse_aep(
@@ -117,7 +119,9 @@ class TestRendererOptionsNonDefaults:
         ).project.compositions[0]
 
         assert comp.renderer_options.quality == 61
-        assert comp.renderer_options.resolution is EnvironmentLightShadowResolution.DOUBLE
+        assert (
+            comp.renderer_options.resolution is EnvironmentLightShadowResolution.DOUBLE
+        )
         assert comp.renderer_options.smoothness == 6
         assert comp.renderer_options.casting_box_size == pytest.approx(600.0)
         assert comp.renderer_options.casting_box_center == pytest.approx(

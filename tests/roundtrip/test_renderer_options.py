@@ -28,7 +28,9 @@ class TestRoundtripRendererOptions:
 
         comp = _reparse(app, tmp_path)
 
-        assert comp.renderer_options.shadow_map_resolution is ShadowMapResolution.RES_4000
+        assert (
+            comp.renderer_options.shadow_map_resolution is ShadowMapResolution.RES_4000
+        )
 
     def test_cinema_4d_quality(self, tmp_path: Path) -> None:
         app = parse_aep(COMPOSITION_DIR / "renderer_cinema_4d.aep")

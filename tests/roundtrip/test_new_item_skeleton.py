@@ -25,7 +25,9 @@ from py_aep.binary.utils import (
 )
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models"
-PRDA_CLASSIC_DEFAULT = bytes.fromhex("000000010000000000000000") # default 3D render-options blob (Classic)
+PRDA_CLASSIC_DEFAULT = bytes.fromhex(
+    "000000010000000000000000"
+)  # default 3D render-options blob (Classic)
 
 
 def _saved_rifx(app, tmp_path):
@@ -217,6 +219,7 @@ class TestNewCompSkeleton:
         comp2 = next(c for c in app2.project.compositions if c.name == "RT")
         assert comp2.frame_rate == pytest.approx(30.0)
         assert [lyr.name for lyr in comp2.layers] == ["S"]
+
 
 class TestNewCompPrda:
     def test_new_comp_prda_is_classic_variant(self, tmp_path: Path) -> None:

@@ -125,7 +125,7 @@ _RENDERER_EXTENDSCRIPT_TO_BINARY: dict[str, str] = {
     v: k for k, v in _RENDERER_BINARY_TO_EXTENDSCRIPT.items()
 }
 
-_RENDERER_DISPLAY_NAMES: dict[str,str] = {
+_RENDERER_DISPLAY_NAMES: dict[str, str] = {
     "ADBE Escher": "Classic 3D",
     "ADBE Calder": "Advanced 3D",
     "ADBE Ernst": "Cinema 4D",
@@ -1294,7 +1294,6 @@ class CompItem(AVItem):
         prin_chunks[index_by_identity(prin_chunks, self._prda)] = new_prda
         self._prda = new_prda
 
-
     @property
     def renderer_options(self) -> RendererOptions:
         """The active 3D renderer's options, as a mutable mapping.
@@ -1320,6 +1319,7 @@ class CompItem(AVItem):
         Read / Write.
         """
         from .renderer_options import renderer_options_for  # noqa: PLC0415
+
         return renderer_options_for(self._prda, self)
 
     @renderer_options.setter

@@ -500,6 +500,7 @@ def _resolve_tdum_context(
             return {"is_color": tdb4.color, "is_integer": tdb4.integer}
     return {}
 
+
 def _resolve_prda_context(
     siblings: list[Chunk],
     ctx: ReadContext,
