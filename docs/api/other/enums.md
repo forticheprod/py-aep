@@ -2,6 +2,8 @@
 
 ::: py_aep.enums.property
 
+::: py_aep.enums.renderer_options
+
 ::: py_aep.enums.render_settings
 
 ::: py_aep.enums.render_queue
