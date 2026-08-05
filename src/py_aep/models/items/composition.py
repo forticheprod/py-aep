@@ -18,7 +18,7 @@ from ...binary.layer_chunks import (
     _LDTA_SOURCE_ID_OFFSET,
     LdtaChunk,
 )
-from ...binary.misc_chunks import PguiChunk, PrdaChunk, PrinChunk
+from ...binary.misc_chunks import _PRDA_VARIANTS, PguiChunk, PrdaChunk, PrinChunk
 from ...binary.mutations import (
     build_checkbox_cctl,
     build_color_cctl,
@@ -125,6 +125,12 @@ _RENDERER_EXTENDSCRIPT_TO_BINARY: dict[str, str] = {
     v: k for k, v in _RENDERER_BINARY_TO_EXTENDSCRIPT.items()
 }
 
+_RENDERER_DISPLAY_NAMES: dict[str,str] = {
+    "ADBE Escher": "Classic 3D",
+    "ADBE Calder": "Advanced 3D",
+    "ADBE Ernst": "Cinema 4D",
+    "ADBE Picasso": "Ray-traced 3D",
+}
 
 _LAYER_BOUNDARY_TYPES = frozenset({"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO"})
 
@@ -678,14 +684,14 @@ class CompItem(AVItem):
             )
         except ChunkNotFoundError:
             self._cdrp = None
-        prin_list = find_by_list_type(chunks=_child_chunks, list_type="PRin")
+        self.prin_list = find_by_list_type(chunks=_child_chunks, list_type="PRin")
         self._prin = cast(
             "PrinChunk",
-            find_by_type(chunks=prin_list.chunks, chunk_type="prin"),
+            find_by_type(chunks=self.prin_list.chunks, chunk_type="prin"),
         )
         self._prda = cast(
             "PrdaChunk",
-            find_by_type(chunks=prin_list.chunks, chunk_type="prda"),
+            find_by_type(chunks=self.prin_list.chunks, chunk_type="prda"),
         )
 
         # Layer deferral: collect layer chunks and source IDs now, parse
@@ -1262,14 +1268,32 @@ class CompItem(AVItem):
         """The current rendering plug-in module to be used to render this
         composition, as set in the Advanced tab of the Composition Settings
         dialog box. Allowed values are the members of `renderers`.
-        Read / Write."""
+        Read / Write.
+
+        Changing the renderer replaces the stored options with the new
+        renderer's defaults. Previous options are not preserved.
+        Read `renderer_options` again after changing the renderer."""
         binary_name = str(self._prin.match_name)
         return _RENDERER_BINARY_TO_EXTENDSCRIPT.get(binary_name, binary_name)
 
     @renderer.setter
     def renderer(self, value: str) -> None:
         _validate_renderer(value)
-        self._prin.match_name = _RENDERER_EXTENDSCRIPT_TO_BINARY[value]
+        binary_name = _RENDERER_EXTENDSCRIPT_TO_BINARY[value]
+        if binary_name == self._prin.match_name:
+            # If comp is already set to the requested renderer,
+            # preserve renderer options instead of replacing with defaults
+            return
+        # Otherwise update match name and display name
+        self._prin.match_name = binary_name
+        self._prin.display_name = _RENDERER_DISPLAY_NAMES[binary_name]
+        # Create a fresh prda chunk using requested renderer's default settings
+        new_prda = _PRDA_VARIANTS[binary_name][0]()
+        # Replace the existing prda chunk
+        prin_chunks = self.prin_list.chunks
+        prin_chunks[index_by_identity(prin_chunks, self._prda)] = new_prda
+        self._prda = new_prda
+
 
     @property
     def renderer_options(self) -> RendererOptionsBase:
