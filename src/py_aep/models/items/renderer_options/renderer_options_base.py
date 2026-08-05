@@ -35,5 +35,13 @@ class RendererOptionsBase(SettingsView):
         self._comp = comp
         super().__init__(self, type(self)._SPEC)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        # A fresh wrapper is built on every `renderer_options` access, so a
+        # write to a name with no backing descriptor would vanish with the
+        # wrapper. Reject it instead of silently dropping it.
+        if not name.startswith("_") and not hasattr(type(self), name):
+            raise AttributeError(f"{type(self).__name__} has no option {name!r}")
+        super().__setattr__(name, value)
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}({dict(self.items())!r})"

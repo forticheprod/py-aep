@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from py_aep import RayTracedRendererOptions
 from py_aep import parse as parse_aep
 from py_aep.enums import EnvironmentLightShadowResolution, ShadowMapResolution
 
@@ -83,8 +84,14 @@ class TestRendererOptionsReads:
         comp = parse_aep(
             COMPOSITION_DIR / "renderer_ray_traced.aep"
         ).project.compositions[0]
+        opts = comp.renderer_options
 
-        assert dict(comp.renderer_options) == {}
+        assert isinstance(opts, RayTracedRendererOptions)
+        assert dict(opts) == {}
+        with pytest.raises(KeyError):
+            opts["Quality"] = 1
+        with pytest.raises(AttributeError):
+            opts.quality = 1
 
 
 class TestRendererOptionsNonDefaults:
