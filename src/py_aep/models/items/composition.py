@@ -110,7 +110,7 @@ if TYPE_CHECKING:
     from ..project import Project
     from ..properties.marker import MarkerValue
     from .folder import FolderItem
-    from .renderer_options import RendererOptionsBase
+    from .renderer_options import RendererOptions
 
 # The binary prin chunk stores internal plugin match_names (e.g. ADBE Escher)
 # but ExtendScript exposes different module names (e.g. ADBE Advanced 3d).
@@ -1296,7 +1296,7 @@ class CompItem(AVItem):
 
 
     @property
-    def renderer_options(self) -> RendererOptionsBase:
+    def renderer_options(self) -> RendererOptions:
         """The active 3D renderer's options, as a mutable mapping.
 
         Keys are the labels the Render Options dialog uses, and the same
@@ -1308,9 +1308,14 @@ class CompItem(AVItem):
             comp.renderer_options.quality = 61
             ```
 
-        The concrete type follows [renderer][]: see
-        [ClassicRendererOptions][], [AdvancedRendererOptions][],
-        [Cinema4DRendererOptions][] and [RayTracedRendererOptions][].
+        The concrete type follows the composition's 3D renderer. Note
+        that [renderer][] holds the ExtendScript module name, and the
+        one for Classic 3D is (confusingly) `ADBE Advanced 3d`:
+
+        - `ADBE Advanced 3d` (Classic 3D) - [ClassicRendererOptions][]
+        - `ADBE Calder` (Advanced 3D) - [AdvancedRendererOptions][]
+        - `ADBE Ernst` (Cinema 4D) - [Cinema4DRendererOptions][]
+        - `ADBE Picasso` (Ray-traced 3D) - [RayTracedRendererOptions][]
 
         Read / Write.
         """

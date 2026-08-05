@@ -62,20 +62,11 @@ class AdvancedRendererOptions(RendererOptionsBase):
     def casting_box_size(self) -> float:
         """
         Size of the shadow casting box, in pixels, as shown in the Options
-        dialog. One dialog control drives all three stored axes.
+        dialog. One dialog control drives all three stored axes, so reads
+        report the X axis.
         Read / Write.
         """
-        axes = (
-            self._body.casting_box_size_x,
-            self._body.casting_box_size_y,
-            self._body.casting_box_size_z,
-        )
-        if len(set(axes)) != 1:
-            raise ValueError(
-                f"casting box size axes disagree ({axes}); After Effects "
-                "writes one value to all three."
-            )
-        return axes[0] * self._comp.width
+        return self._body.casting_box_size_x * self._comp.width
 
     @casting_box_size.setter
     def casting_box_size(self, value: float) -> None:

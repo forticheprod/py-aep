@@ -28,6 +28,8 @@ RendererOptions = Union[
     Cinema4DRendererOptions,
     ClassicRendererOptions,
     RayTracedRendererOptions,
+    # Unrecognised prda variants fall back to the empty base wrapper.
+    RendererOptionsBase,
 ]
 
 _WRAPPERS: dict[type, type[RendererOptionsBase]] = {
@@ -38,7 +40,7 @@ _WRAPPERS: dict[type, type[RendererOptionsBase]] = {
 }
 
 
-def renderer_options_for(body: Chunk, comp: CompItem) -> RendererOptionsBase:
+def renderer_options_for(body: Chunk, comp: CompItem) -> RendererOptions:
     """Wrapper for a comp's `prda` chunk.
 
     Falls back to an empty `RendererOptionsBase` for an unrecognised chunk,
