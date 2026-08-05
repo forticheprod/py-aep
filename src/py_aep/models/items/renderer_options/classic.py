@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING
 
 from ....enums import ShadowMapResolution
 from ...descriptors import ChunkField
-from .render_options_base import RenderOptionsBase
+from .renderer_options_base import RendererOptionsBase
 
 if TYPE_CHECKING:
     from ....binary.misc_chunks import ClassicPrdaChunk
 
-class ClassicRenderOptions(RenderOptionsBase):
+class ClassicRendererOptions(RendererOptionsBase):
     """Options for the Classic 3D renderer."""
 
     _body: ClassicPrdaChunk

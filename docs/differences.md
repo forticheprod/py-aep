@@ -266,7 +266,7 @@ not available in ExtendScript:
 | `time_scale` | Internal time scale divisor for keyframe times |
 | `essential_graphics_controllers` | List of Essential Graphics controllers in the comp |
 | `guides` | List of [Guide][py_aep.models.guide.Guide] objects (ruler guides for alignment) |
-| `render_options` | The active 3D renderer's options |
+| `renderer_options` | The active 3D renderer's options |
 
 ### Layer
 
@@ -339,22 +339,22 @@ parses these from the binary and exposes them:
 `CompItem.renderer` names the active 3D renderer, but ExtendScript exposes
 nothing about that renderer's own settings — the Options dialog beside the
 3D Renderer dropdown in Composition Settings. py_aep parses them from the
-binary and exposes them on `CompItem.render_options`:
+binary and exposes them on `CompItem.renderer_options`:
 
 === "py_aep"
 
     ```python
-    comp.render_options["Quality"] = 61     # keyed by dialog label
-    comp.render_options.quality = 61        # or as a typed attribute
+    comp.renderer_options["Quality"] = 61     # keyed by dialog label
+    comp.renderer_options.quality = 61        # or as a typed attribute
     ```
 
 The options available depend on the active renderer:
 
-- `ClassicRenderOptions` — shadow map resolution
-- `AdvancedRenderOptions` — quality, environment light shadow resolution and
+- `ClassicRendererOptions` — shadow map resolution
+- `AdvancedRendererOptions` — quality, environment light shadow resolution and
   smoothness, casting box size and centre
-- `Cinema4DRenderOptions` — quality
-- `RayTracedRenderOptions` — none; see [Known Limitations](limitations.md)
+- `Cinema4DRendererOptions` — quality
+- `RayTracedRendererOptions` — none; see [Known Limitations](limitations.md)
 
 Every option py_aep exposes is stored in the `.aep` and survives an After
 Effects preferences reset.

@@ -12,12 +12,12 @@ from ...validators import (
     validate_casting_box_size,
     validate_shadow_smoothness,
 )
-from .render_options_base import RenderOptionsBase
+from .renderer_options_base import RendererOptionsBase
 
 if TYPE_CHECKING:
     from ....binary.misc_chunks import AdvancedPrdaChunk
 
-class AdvancedRenderOptions(RenderOptionsBase):
+class AdvancedRendererOptions(RendererOptionsBase):
     """Options for the Advanced 3D renderer.
 
     Casting Box Size and Casting Box Center are stored as fractions of the

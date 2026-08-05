@@ -272,7 +272,7 @@ for EXR), and pulldown OFF.
 
 ## Ray-traced 3D Renderer Options
 
-`RayTracedRenderOptions` exposes nothing at all. The Ray-traced 3D renderer has
+`RayTracedRendererOptions` exposes nothing at all. The Ray-traced 3D renderer has
 been removed since AE 2020 (17.0). Files using the renderer can be parsed and 
 re-saved byte-exact, but there is nothing safe to expose, and no supported
 version of After Effects can author a file that uses it.

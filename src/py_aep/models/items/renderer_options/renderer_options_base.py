@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from ..composition import CompItem
 
 
-class RenderOptionsBase(SettingsView):
+class RendererOptionsBase(SettingsView):
     """
     A renderer's options, as both a mapping and a typed object.
 
@@ -19,8 +19,8 @@ class RenderOptionsBase(SettingsView):
 
     Example:
         ```python
-        comp.render_options["Quality"] = 61     # mapping
-        comp.render_options.quality = 61        # typed, validated
+        comp.renderer_options["Quality"] = 61     # mapping
+        comp.renderer_options.quality = 61        # typed, validated
         ```
 
     The [CompItem][] is held because Advanced 3D stores its Casting Box

@@ -1,4 +1,4 @@
-"""Tests for CompItem.render_options (3D renderer options)."""
+"""Tests for CompItem.renderer_options (3D renderer options)."""
 
 from __future__ import annotations
 
@@ -35,12 +35,12 @@ class TestRenderOptionEnums:
         assert EnvironmentLightShadowResolution.DOUBLE.label == "Double (128MB)"
 
 
-class TestRenderOptionsReads:
+class TestRendererOptionsReads:
     def test_classic_defaults(self) -> None:
         comp = parse_aep(
             COMPOSITION_DIR / "renderer_classic_3d.aep"
         ).project.compositions[0]
-        opts = comp.render_options
+        opts = comp.renderer_options
 
         assert opts.shadow_map_resolution is ShadowMapResolution.COMP_SIZE
         assert opts["Shadow Map Resolution"] is ShadowMapResolution.COMP_SIZE
@@ -49,7 +49,7 @@ class TestRenderOptionsReads:
         comp = parse_aep(
             COMPOSITION_DIR / "renderer_advanced_3d.aep"
         ).project.compositions[0]
-        opts = comp.render_options
+        opts = comp.renderer_options
 
         assert opts.quality == 8
         assert opts.resolution is EnvironmentLightShadowResolution.FULL
@@ -65,14 +65,14 @@ class TestRenderOptionsReads:
             COMPOSITION_DIR / "renderer_cinema_4d.aep"
         ).project.compositions[0]
 
-        assert comp.render_options.quality == 25
+        assert comp.renderer_options.quality == 25
 
     def test_is_a_mapping(self) -> None:
-        """render_options returns a Mapping."""
+        """renderer_options returns a Mapping."""
         comp = parse_aep(
             COMPOSITION_DIR / "renderer_cinema_4d.aep"
         ).project.compositions[0]
-        opts = comp.render_options
+        opts = comp.renderer_options
 
         assert dict(opts) == {"Quality": 25}
         assert list(opts.keys()) == ["Quality"]
@@ -84,35 +84,35 @@ class TestRenderOptionsReads:
             COMPOSITION_DIR / "renderer_ray_traced.aep"
         ).project.compositions[0]
 
-        assert dict(comp.render_options) == {}
+        assert dict(comp.renderer_options) == {}
 
 
-class TestRenderOptionsNonDefaults:
+class TestRendererOptionsNonDefaults:
     """Values set by hand in After Effects 26.3, on 1920x1080 comps."""
 
     def test_classic_non_default(self) -> None:
         comp = parse_aep(
-            COMPOSITION_DIR / "render_options_classic_3d.aep"
+            COMPOSITION_DIR / "renderer_options_classic_3d.aep"
         ).project.compositions[0]
 
-        assert comp.render_options.shadow_map_resolution is ShadowMapResolution.RES_750
+        assert comp.renderer_options.shadow_map_resolution is ShadowMapResolution.RES_750
 
     def test_cinema_4d_non_default(self) -> None:
         comp = parse_aep(
-            COMPOSITION_DIR / "render_options_cinema_4d.aep"
+            COMPOSITION_DIR / "renderer_options_cinema_4d.aep"
         ).project.compositions[0]
 
-        assert comp.render_options.quality == 44
+        assert comp.renderer_options.quality == 44
 
     def test_advanced_non_default(self) -> None:
         comp = parse_aep(
-            COMPOSITION_DIR / "render_options_advanced_3d.aep"
+            COMPOSITION_DIR / "renderer_options_advanced_3d.aep"
         ).project.compositions[0]
 
-        assert comp.render_options.quality == 61
-        assert comp.render_options.resolution is EnvironmentLightShadowResolution.DOUBLE
-        assert comp.render_options.smoothness == 6
-        assert comp.render_options.casting_box_size == pytest.approx(600.0)
-        assert comp.render_options.casting_box_center == pytest.approx(
+        assert comp.renderer_options.quality == 61
+        assert comp.renderer_options.resolution is EnvironmentLightShadowResolution.DOUBLE
+        assert comp.renderer_options.smoothness == 6
+        assert comp.renderer_options.casting_box_size == pytest.approx(600.0)
+        assert comp.renderer_options.casting_box_center == pytest.approx(
             [400.0, 600.0, -100.0]
         )
