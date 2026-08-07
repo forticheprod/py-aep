@@ -7,6 +7,8 @@ Submodules:
   and mask enums.
 - [property][py_aep.enums.property]: Property system enums
   (control type, value type, keyframe interpolation).
+- [renderer_options][py_aep.enums.renderer_options]: 3D renderer option enums
+  (shadow map resolution, environment light shadow resolution).
 - [render_settings][py_aep.enums.render_settings]: Render settings enums
   (quality, field render, motion blur, effects, etc.).
 - [render_queue][py_aep.enums.render_queue]: Render queue item enums
@@ -128,6 +130,10 @@ from .render_settings import (
     SoloSwitchesSetting,
     TimeSpanSource,
 )
+from .renderer_options import (
+    EnvironmentLightShadowResolution,
+    ShadowMapResolution,
+)
 from .text_document import (
     AutoKernType,
     BaselineDirection,
@@ -229,6 +235,9 @@ __all__ = [
     "KeyframeInterpolationType",
     "PropertyControlType",
     "PropertyValueType",
+    # renderer_options
+    "EnvironmentLightShadowResolution",
+    "ShadowMapResolution",
     # render_queue
     "GetSettingsFormat",
     "LogType",

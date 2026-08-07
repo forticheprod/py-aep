@@ -11,8 +11,9 @@ from helpers import (
     parse_project_fresh,
 )
 
+from py_aep import AdvancedRendererOptions
 from py_aep import parse as parse_aep
-from py_aep.enums import GuideOrientationType
+from py_aep.enums import GuideOrientationType, ShadowMapResolution
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "composition"
 LAYER_SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
@@ -65,6 +66,43 @@ class TestRoundtripRenderer:
         ).compositions[0]
         with pytest.raises(ValueError, match="must be one of"):
             comp.renderer = "Not A Renderer"
+
+    def test_renderer_change_swaps_display_name_and_options(
+        self, tmp_path: Path
+    ) -> None:
+        """A renderer change must not leave the old renderer's prda behind.
+
+        Rewriting only prin.match_name produced a file claiming one
+        renderer but storing another's options blob, which AE silently
+        misread field-by-field (a Classic Shadow Map Resolution index
+        came back as Advanced 3D's Quality).
+        """
+        project = parse_aep(SAMPLES_DIR / "renderer_options_classic_3d.aep").project
+        comp = project.compositions[0]
+        assert comp.renderer_options.shadow_map_resolution is (
+            ShadowMapResolution.RES_750
+        )
+
+        comp.renderer = "ADBE Calder"
+        out = tmp_path / "switched_renderer.aep"
+        project.save(out)
+
+        comp2 = parse_aep(out).project.compositions[0]
+        assert comp2._prin.display_name == "Advanced 3D"
+        opts = comp2.renderer_options
+        assert isinstance(opts, AdvancedRendererOptions)
+        # Advanced 3D defaults, not Classic leftovers read as Quality.
+        assert opts.quality == 8
+
+    def test_renderer_reassign_same_value_keeps_options(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "renderer_options_classic_3d.aep").project
+        comp = project.compositions[0]
+
+        comp.renderer = "ADBE Advanced 3d"  # already Classic 3D
+
+        assert comp.renderer_options.shadow_map_resolution is (
+            ShadowMapResolution.RES_750
+        )
 
 
 class TestCompItemLazyLayerParsing:

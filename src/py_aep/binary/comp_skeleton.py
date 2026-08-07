@@ -18,7 +18,7 @@ from .chunk import Chunk, ListChunk
 from .composition_chunks import CdtaChunk, CsctChunk
 from .item_chunks import IdpcChunk, IdtaChunk, IideChunk
 from .layer_chunks import LdtaChunk
-from .misc_chunks import PrdaChunk, PrinChunk
+from .misc_chunks import ClassicPrdaChunk, PrinChunk
 from .mutations import build_gide_list, build_ovg2
 from .property_chunks import (
     CdatChunk,
@@ -236,7 +236,7 @@ def build_new_comp_item(
     idta = IdtaChunk(item_type=4, item_id=item_id, label=label, flags_17=0x20)
     name_utf8 = Utf8Chunk(value=name)
     cdta = _build_cdta(width, height, pixel_aspect, duration, frame_rate)
-    prin = ListChunk(list_type="PRin", chunks=[PrinChunk(), PrdaChunk()])
+    prin = ListChunk(list_type="PRin", chunks=[PrinChunk(), ClassicPrdaChunk()])
 
     env: dict[str, float] = {
         "W2": width / 2.0,

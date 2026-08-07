@@ -23,6 +23,7 @@ nav = [
             { "Item" = "api/items/item.md" },
             { "AV Item" = "api/items/av_item.md" },
             { "Composition" = "api/items/composition.md" },
+            { "Renderer Options" = "api/items/renderer_options.md" },
             { "Footage" = "api/items/footage.md" },
             { "Folder" = "api/items/folder.md" },
         ] },

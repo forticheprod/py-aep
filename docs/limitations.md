@@ -269,3 +269,10 @@ Both inspect the actual media at runtime (edge premultiplication detection,
 3:2 pulldown cadence), which requires decoding the footage. When creating
 footage, py_aep uses fixed defaults instead: alpha mode STRAIGHT (PREMULTIPLIED
 for EXR), and pulldown OFF.
+
+## Ray-traced 3D Renderer Options
+
+`RayTracedRendererOptions` exposes nothing at all. The Ray-traced 3D renderer has
+been removed since AE 2020 (17.0). Files using the renderer can be parsed and 
+re-saved byte-exact, but there is nothing safe to expose, and no supported
+version of After Effects can author a file that uses it.

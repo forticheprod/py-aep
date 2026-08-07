@@ -501,9 +501,24 @@ def _resolve_tdum_context(
     return {}
 
 
+def _resolve_prda_context(
+    siblings: list[Chunk],
+    ctx: ReadContext,
+) -> dict[str, str]:
+    # Deferred import: misc_chunks subclasses Chunk, so a top-level import
+    # would be circular.
+    from .misc_chunks import PrinChunk
+
+    for sibling in siblings:
+        if isinstance(sibling, PrinChunk):
+            return {"renderer_match_name": sibling.match_name}
+    return {}
+
+
 _CONTEXT_RESOLVERS: dict[str, Callable[..., dict[str, Any]]] = {
     "cdat": _resolve_cdat_context,
     "ldat": _resolve_ldat_context,
+    "prda": _resolve_prda_context,
     "tdum": _resolve_tdum_context,
     "tduM": _resolve_tdum_context,
 }

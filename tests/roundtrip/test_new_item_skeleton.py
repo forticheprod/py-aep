@@ -8,13 +8,15 @@ bytes (save -> re-read) match the ground-truth structure measured from AE
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from conftest import get_comp
 
 from py_aep import parse as parse_aep
-from py_aep.binary.chunk import read_aep
+from py_aep.binary.chunk import Chunk, read_aep
+from py_aep.binary.misc_chunks import ClassicPrdaChunk
 from py_aep.binary.utils import (
     filter_by_list_type,
     find_by_list_type,
@@ -23,6 +25,9 @@ from py_aep.binary.utils import (
 )
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models"
+PRDA_CLASSIC_DEFAULT = bytes.fromhex(
+    "000000010000000000000000"
+)  # default 3D render-options blob (Classic)
 
 
 def _saved_rifx(app, tmp_path):
@@ -41,6 +46,12 @@ def _find_comp_item(rifx, comp_name):
         if utf8.value == comp_name and idta.item_type == 4:
             return ch
     pytest.fail(f"comp {comp_name!r} not found in saved file")
+
+
+def _find_prda(rifx, comp_name: str) -> Chunk:
+    item = _find_comp_item(rifx, comp_name)
+    prin = find_by_list_type(chunks=item.chunks, list_type="PRin")
+    return find_by_type(chunks=prin.chunks, chunk_type="prda")
 
 
 def _top_layer(rifx, comp_name):
@@ -208,3 +219,21 @@ class TestNewCompSkeleton:
         comp2 = next(c for c in app2.project.compositions if c.name == "RT")
         assert comp2.frame_rate == pytest.approx(30.0)
         assert [lyr.name for lyr in comp2.layers] == ["S"]
+
+
+class TestNewCompPrda:
+    def test_new_comp_prda_is_classic_variant(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        app.project.root_folder.add_comp("PrdaComp", 1280, 720, 1.0, 10.0, 30.0)
+        rifx = _saved_rifx(app, tmp_path)
+        prda = _find_prda(rifx, "PrdaComp")
+        assert isinstance(prda, ClassicPrdaChunk)
+        assert prda.shadow_map_resolution == 0
+
+    def test_new_comp_prda_bytes_match_after_effects(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        app.project.root_folder.add_comp("PrdaComp", 1280, 720, 1.0, 10.0, 30.0)
+        rifx = _saved_rifx(app, tmp_path)
+        buf = BytesIO()
+        _find_prda(rifx, "PrdaComp").write(buf)
+        assert buf.getvalue() == PRDA_CLASSIC_DEFAULT

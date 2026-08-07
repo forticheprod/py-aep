@@ -23,6 +23,7 @@ Project items represent different types of content in the project panel:
 - [Item](items/item.md) - Base class for all items
 - [AV Item](items/av_item.md) - Base class for Audio/Video items
 - [Composition](items/composition.md) - Composition items
+- [Renderer Options](items/renderer_options.md) - 3D renderer options for compositions
 - [Footage](items/footage.md) - Footage items
 - [Folder](items/folder.md) - Folder items
 

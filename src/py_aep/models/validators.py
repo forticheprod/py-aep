@@ -340,3 +340,10 @@ validate_path_exists = _validate_path(must_exist=True)
 validate_file_exists = _validate_path(must_exist=True, must_be_file=True)
 
 validate_path_does_not_exist = _validate_path(must_exist=False)
+
+# 3D renderer options validators
+validate_advanced_quality = _validate_number(min=1, max=125, integer=True)
+validate_shadow_smoothness = _validate_number(min=1, max=20, integer=True)
+validate_casting_box_size = _validate_number(min=0, max=30000)
+validate_casting_box_center = validate_sequence(length=3, min=-30000, max=30000)
+validate_cinema_4d_quality = _validate_number(min=1, max=99, integer=True)
