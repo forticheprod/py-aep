@@ -154,18 +154,40 @@ _PRIMITIVE_TYPES = (int, float, str, bool, type(None))
 
 def to_dict(obj: Any) -> Any:
     """Convert dataclass/enum to dict recursively, skipping circular reference fields."""
+    return _to_dict(obj, {})
+
+
+def _to_dict(obj: Any, memo: dict[int, tuple[Any, Any]]) -> Any:
+    """Recursive worker for `to_dict`, memoized on object identity.
+
+    The model is a DAG, not a tree: the same layer is reachable through
+    `CompItem.layers`, `av_layers`, `layers_by_id`, `file_layers`, ... and the
+    same property through several group accessors. Without `memo` every such
+    edge re-serializes the whole subtree below it, and those factors multiply
+    down the property nesting - on a production-sized project that is the
+    difference between seconds and hours (and gigabytes of duplicate dicts).
+
+    `memo` maps `id(obj)` to `(obj, result)`; it keeps the object alive so
+    CPython cannot reuse its id mid-walk, and holding `result` before
+    recursing also means a reference cycle yields the shared dict instead of
+    recursing forever.
+    """
     # Fast path for primitive types (majority of recursive calls)
     if isinstance(obj, _PRIMITIVE_TYPES):
         return obj
     if isinstance(obj, Enum):
         return obj.value
     if isinstance(obj, list):
-        return [to_dict(item) for item in obj]
+        return [_to_dict(item, memo) for item in obj]
     if isinstance(obj, dict):
-        return {k: to_dict(v) for k, v in obj.items()}
+        return {k: _to_dict(v, memo) for k, v in obj.items()}
     field_names = _get_field_names(obj)
     if field_names is not None:
-        result = {}
+        cached = memo.get(id(obj))
+        if cached is not None:
+            return cached[1]
+        result: dict[str, Any] = {}
+        memo[id(obj)] = (obj, result)
         for name in field_names:
             if name in SKIP_FIELDS:
                 continue
@@ -173,7 +195,7 @@ def to_dict(obj: Any) -> Any:
                 value = getattr(obj, name)
             except (AttributeError, KeyError):  # missing chunk or field
                 continue
-            result[name] = to_dict(value)
+            result[name] = _to_dict(value, memo)
         # Include @property attributes (non-private, non-skipped)
         for name in _get_property_names(type(obj)):
             if name in result:
@@ -182,7 +204,7 @@ def to_dict(obj: Any) -> Any:
                 value = getattr(obj, name)
             except (AttributeError, KeyError):  # missing chunk or field
                 continue
-            result[name] = to_dict(value)
+            result[name] = _to_dict(value, memo)
         return result
     return obj
 
