@@ -519,6 +519,15 @@ class Keyframe:
             return [KeyframeEase(speed=0.0, influence=e.influence) for e in raw_ease]
         if direction == "out" and self._next is None:
             return [KeyframeEase(speed=0.0, influence=e.influence) for e in raw_ease]
+        # An effect point stores speed normalized against the comp height.
+        # Applied here because the factor needs a fully constructed property,
+        # and because `_bind_property` resets ease back to the property-level
+        # factor whenever the keyframes are re-linked.
+        if self._property is not None:
+            factor = self._property._effect_point_speed_factor
+            if factor is not None:
+                for ease in raw_ease:
+                    ease._speed_factor = factor
         return raw_ease
 
     @property
