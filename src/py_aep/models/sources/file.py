@@ -979,14 +979,14 @@ class FileSource(FootageSource):
     def _resolve_name(self, raw_name: str) -> str:
         """Resolve the display name for a file-type footage item.
 
-        AE stores the full file path in the Utf8 chunk but displays only
-        the filename. Builds sequence names (e.g. `render.[0001-0700].exr`)
-        when appropriate, and `layername/filename` for layer-bound sources.
+        AE writes the item-level Utf8 chunk only when the user renames the
+        item, and then displays that name verbatim - including a name holding
+        a `/`, and including the ` 2` suffix AE appends to disambiguate two
+        imports of the same layer. An empty chunk means the name is derived
+        from the source: a sequence pattern (e.g. `render.[0001-0700].exr`),
+        `layername/filename` for a layer-bound source, else the filename.
         """
-        # Strip to basename so the item name matches AE's UI.
         item_name = raw_name
-        if item_name and ("/" in item_name or "\\" in item_name):
-            item_name = ""
 
         if not item_name:
             if self._duration != 0 and self._target_is_folder:

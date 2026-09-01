@@ -16,7 +16,7 @@ from ..preferences import default_sequence_fps, label_index
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
-from ..validators import validate_one_of, validate_positive_int
+from ..validators import validate_name, validate_one_of, validate_positive_int
 from .av_item import AVItem
 
 if TYPE_CHECKING:
@@ -161,9 +161,31 @@ class FootageItem(AVItem):
         self._main_source = main_source
         main_source._project = project
         self._view_data: list[Chunk] = []
-        # Store resolved display name in __dict__ so the ChunkField
-        # getter returns it without mutating the binary Utf8 chunk.
-        self.__dict__["name"] = main_source._resolve_name(_name_utf8.value)
+        # Cache the resolved display name rather than mutating the binary
+        # Utf8 chunk, which for a solid or placeholder AE leaves empty.
+        self._name = main_source._resolve_name(_name_utf8.value)
+
+    @property
+    def name(self) -> str:  # type: ignore[override]  # ChunkField -> property
+        """The name of the item, as shown in the Project panel.
+        Read / Write."""
+        return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        validate_name(value)
+        # A footage item always carries a Utf8 name chunk (see parse_item).
+        assert self._name_utf8 is not None
+        # The display name has to be written where `_resolve_name` reads it
+        # back from. AE keeps a solid's or placeholder's name in the source
+        # `opti` chunk and leaves the item-level Utf8 empty; only file
+        # footage is named through the item chunk.
+        if self._main_source._owns_name:
+            self._main_source._store_name(value)
+            self._name_utf8.value = ""
+        else:
+            self._name_utf8.value = value
+        self._name = value
 
     @property
     def main_source(self) -> FileSource | SolidSource | PlaceholderSource:
@@ -552,5 +574,12 @@ class FootageItem(AVItem):
         if isinstance(source, FileSource):
             self._idta._flags_17 = source._idta_flags17()
 
-        # AE updates item-level Utf8 with new source name
-        self.name = source._resolve_name("")
+        # AE only ever writes the item-level Utf8 when the user renames the
+        # item, so a replace leaves it alone: a default (source-derived) name
+        # re-derives from the new source, a user-assigned one survives.
+        # A solid or placeholder carries its name in the new `opti` chunk
+        # instead, so the Utf8 goes back to empty.
+        assert self._name_utf8 is not None
+        if source._owns_name:
+            self._name_utf8.value = ""
+        self._name = source._resolve_name(self._name_utf8.value)

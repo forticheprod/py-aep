@@ -48,6 +48,14 @@ class FootageSource:
     See: https://ae-scripting.docsforadobe.dev/sources/footagesource/
     """
 
+    _owns_name: bool = False
+    """Whether the item display name lives in this source's own `opti` chunk.
+
+    AE keeps a solid's and a placeholder's name there and leaves the
+    item-level `Utf8` chunk empty; file footage is named through that `Utf8`
+    chunk instead.
+    """
+
     alpha_mode = ChunkField.enum(
         AlphaMode,
         "_sspc",
@@ -208,6 +216,15 @@ class FootageSource:
         self._linl = _linl
         self._clrs = _clrs
         self._project: Project | None = None
+
+    def _store_name(self, value: str) -> None:
+        """Write the item display name into the source's own `opti` chunk.
+
+        The counterpart of `_resolve_name`: it must store the name where that
+        method reads it back from, or the rename is lost on save. Only called
+        for a source that owns its name (see `_owns_name`).
+        """
+        raise NotImplementedError
 
     def _icc_lib(self) -> IccProfileLibrary:
         """ICC library for Adobe-CMS profile writes - the owning project's

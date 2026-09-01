@@ -7,7 +7,7 @@ from ..validators import (
     validate_duration,
     validate_footage_dimension,
     validate_frame_rate,
-    validate_name,
+    validate_opti_name,
 )
 from .footage import FootageSource
 
@@ -41,6 +41,8 @@ class PlaceholderSource(FootageSource):
     See: https://ae-scripting.docsforadobe.dev/sources/placeholdersource/
     """
 
+    _owns_name = True
+
     def __init__(
         self,
         *,
@@ -70,7 +72,7 @@ class PlaceholderSource(FootageSource):
             frame_rate: Frame rate in fps (1.0-99.0).
             duration: Duration in seconds (> 0, <= 10800).
         """
-        validate_name(name)
+        validate_opti_name(name)
         validate_footage_dimension(width)
         validate_footage_dimension(height)
         validate_frame_rate(frame_rate)
@@ -94,3 +96,7 @@ class PlaceholderSource(FootageSource):
 
     def _resolve_name(self, raw_name: str) -> str:
         return cast("PlaceholderOptiChunk", self._opti).placeholder_name
+
+    def _store_name(self, value: str) -> None:
+        validate_opti_name(value)
+        cast("PlaceholderOptiChunk", self._opti).placeholder_name = value
