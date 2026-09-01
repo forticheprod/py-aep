@@ -6,7 +6,7 @@ from ...binary.footage_chunks import SoliOptiChunk, SspcChunk
 from ...resolvers.solid import solid_color_name
 from ..descriptors import ChunkField
 from ..validators import (
-    validate_name,
+    validate_opti_name,
     validate_pixel_aspect,
     validate_rgb_color,
     validate_solid_dimension,
@@ -39,6 +39,8 @@ class SolidSource(FootageSource):
 
     See: https://ae-scripting.docsforadobe.dev/sources/solidsource/
     """
+
+    _owns_name = True
 
     color = ChunkField[List[float]](
         "_opti",
@@ -92,7 +94,7 @@ class SolidSource(FootageSource):
             height: Height in pixels (1-30000).
             pixel_aspect: Pixel aspect ratio (0.01-100.0).
         """
-        validate_name(name)
+        validate_opti_name(name)
         validate_solid_dimension(width)
         validate_solid_dimension(height)
         validate_pixel_aspect(pixel_aspect)
@@ -118,3 +120,7 @@ class SolidSource(FootageSource):
 
     def _resolve_name(self, raw_name: str) -> str:
         return str(cast("SoliOptiChunk", self._opti).solid_name)
+
+    def _store_name(self, value: str) -> None:
+        validate_opti_name(value)
+        cast("SoliOptiChunk", self._opti).solid_name = value

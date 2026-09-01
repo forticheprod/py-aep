@@ -16,8 +16,11 @@ from helpers import (
 from py_aep import (
     AlphaMode,
     FieldSeparationType,
+    FootageItem,
     LinearLightMode,
+    Project,
     PulldownPhase,
+    SolidSource,
 )
 from py_aep import parse as parse_aep
 from py_aep.color.icc import default_icc_directories
@@ -548,3 +551,120 @@ class TestRoundtripMediaColorSpace:
         # apid is the catalogued ICC profile ID (matches AE ground truth).
         apid = next(c for c in source2._clrs.chunks if c.chunk_type == "apid")
         assert apid.data == profile_id_for_name("Apple RGB")
+
+
+class TestRoundtripFootageItemName:
+    """Roundtrip tests for `FootageItem.name`.
+
+    AE 2026 renames every footage type, but stores the display name in a
+    different place per source: a solid's and a placeholder's name live in
+    the source `opti` chunk (the item-level Utf8 stays empty), while file
+    footage is named through the item Utf8 chunk. `FootageItem.name` has to
+    write wherever `FootageSource._resolve_name` reads it back from, or the
+    rename is silently dropped on save.
+    """
+
+    @staticmethod
+    def _first_solid(project: Project) -> FootageItem:
+        return next(
+            f for f in project.footages if isinstance(f.main_source, SolidSource)
+        )
+
+    def test_rename_solid_persists(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "solid_colors.aep").project
+        solid = self._first_solid(project)
+        solid.name = "Renamed Solid Item"
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == solid.id)
+        assert reparsed.name == "Renamed Solid Item"
+
+    def test_rename_solid_stores_name_in_opti_not_item_utf8(
+        self, tmp_path: Path
+    ) -> None:
+        project = parse_aep(SAMPLES_DIR / "solid_colors.aep").project
+        solid = self._first_solid(project)
+        solid.name = "Opti Backed"
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == solid.id)
+        assert reparsed.main_source._opti.solid_name == "Opti Backed"
+        assert reparsed._name_utf8.value == ""
+
+    def test_rename_placeholder_persists(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "placeholder.aep").project
+        placeholder = get_footage(project, "placeholder_720p")
+        placeholder.name = "Renamed Placeholder"
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        reparsed = next(
+            f for f in parse_aep(out).project.footages if f.id == placeholder.id
+        )
+        assert reparsed.name == "Renamed Placeholder"
+        assert reparsed.main_source._opti.placeholder_name == "Renamed Placeholder"
+        assert reparsed._name_utf8.value == ""
+
+    def test_rename_file_footage_persists(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "footage_misc.aep").project
+        footage = get_footage(project, "loop_3")
+        footage.name = "Renamed File Item"
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        reparsed = next(
+            f for f in parse_aep(out).project.footages if f.id == footage.id
+        )
+        assert reparsed.name == "Renamed File Item"
+        assert reparsed._name_utf8.value == "Renamed File Item"
+
+    def test_rename_solid_accepts_255_utf8_bytes(self, tmp_path: Path) -> None:
+        # 85 three-byte characters exactly fill the usable part of the
+        # 256-byte NUL-padded opti field; AE 2026 caps at the same 255 bytes.
+        name = "中" * 85
+        project = parse_aep(SAMPLES_DIR / "solid_colors.aep").project
+        solid = self._first_solid(project)
+        solid.name = name
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == solid.id)
+        assert reparsed.name == name
+
+    def test_rename_solid_rejects_oversized_name(self) -> None:
+        solid = self._first_solid(parse_project_fresh(SAMPLES_DIR / "solid_colors.aep"))
+        with pytest.raises(ValueError, match="at most 255 UTF-8 bytes"):
+            solid.name = "A" * 256
+
+    def test_rename_solid_rejects_oversized_multibyte_name(self) -> None:
+        # 86 three-byte characters = 258 bytes: rejected rather than
+        # truncated mid-character by the fixed-width struct field.
+        solid = self._first_solid(parse_project_fresh(SAMPLES_DIR / "solid_colors.aep"))
+        with pytest.raises(ValueError, match="at most 255 UTF-8 bytes"):
+            solid.name = "中" * 86
+
+    def test_rename_file_footage_keeps_a_name_holding_a_separator(
+        self, tmp_path: Path
+    ) -> None:
+        # AE accepts `dir/sub.bmp` as a file-footage name and displays it
+        # verbatim, so the stored name must not be mistaken for a path and
+        # stripped back to the source's basename.
+        project = parse_aep(SAMPLES_DIR / "footage_misc.aep").project
+        footage = get_footage(project, "loop_3")
+        footage.name = "dir/sub.mov"
+
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        reparsed = next(
+            f for f in parse_aep(out).project.footages if f.id == footage.id
+        )
+        assert reparsed.name == "dir/sub.mov"
+
+    def test_rename_placeholder_rejects_oversized_name(self) -> None:
+        placeholder = get_footage(
+            parse_project_fresh(SAMPLES_DIR / "placeholder.aep"), "placeholder_720p"
+        )
+        with pytest.raises(ValueError, match="at most 255 UTF-8 bytes"):
+            placeholder.name = "B" * 256

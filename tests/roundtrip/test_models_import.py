@@ -393,6 +393,64 @@ class TestReplaceAndProxy:
         parse_aep(out).project.save(out2)
         assert out.read_bytes() == out2.read_bytes()
 
+    # AE only writes the item-level Utf8 name chunk when the user renames the
+    # item, so a replace leaves it alone: a default (source-derived) name
+    # re-derives from the new source while a user-assigned one survives. A
+    # solid or placeholder instead carries its name in the new opti chunk, so
+    # the Utf8 goes back to empty and the new source's name always wins.
+    # Every expectation below was taken from AE 2026 performing the same call.
+
+    def test_replace_keeps_user_assigned_name(self) -> None:
+        _, item = self._png_footage()
+        item.name = "Custom Name"
+        item.replace(ASSETS / "mov_480.mov")
+        assert item.name == "Custom Name"
+        assert item._name_utf8.value == "Custom Name"
+
+    def test_replace_leaves_default_name_derived(self) -> None:
+        _, item = self._png_footage()
+        item.replace(ASSETS / "mov_480.mov")
+        assert item.name == "mov_480.mov"
+        # AE derives the name from the source rather than storing it.
+        assert item._name_utf8.value == ""
+
+    def test_replace_with_sequence_keeps_user_assigned_name(self) -> None:
+        _, item = self._png_footage()
+        item.name = "Custom Name"
+        item.replace_with_sequence(ASSETS / "new_exr.0002.exr")
+        assert item.name == "Custom Name"
+
+    def test_replace_with_sequence_leaves_default_name_derived(self) -> None:
+        _, item = self._png_footage()
+        item.replace_with_sequence(ASSETS / "new_exr.0002.exr")
+        assert item.name == "new_exr.[0002-0003].exr"
+        assert item._name_utf8.value == ""
+
+    def test_replace_with_solid_overrides_user_assigned_name(self) -> None:
+        _, item = self._png_footage()
+        item.name = "Custom Name"
+        item.replace_with_solid([0.0, 1.0, 0.0], "Solid D", 50, 50)
+        assert item.name == "Solid D"
+        assert item._name_utf8.value == ""
+        assert item.main_source._opti.solid_name == "Solid D"
+
+    def test_replace_with_placeholder_overrides_user_assigned_name(self) -> None:
+        _, item = self._png_footage()
+        item.name = "Custom Name"
+        item.replace_with_placeholder("PH C", 120, 120, 25.0, 5.0)
+        assert item.name == "PH C"
+        assert item._name_utf8.value == ""
+        assert item.main_source._opti.placeholder_name == "PH C"
+
+    def test_replace_naming_survives_roundtrip(self, tmp_path: Path) -> None:
+        project, item = self._png_footage()
+        item.name = "Custom Name"
+        item.replace(ASSETS / "mov_480.mov")
+        out = tmp_path / "r.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == item.id)
+        assert reparsed.name == "Custom Name"
+
     def test_set_proxy_with_file(self, tmp_path: Path) -> None:
         _, item = self._png_footage()
         item.set_proxy(ASSETS / "new_exr.0002.exr")

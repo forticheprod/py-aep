@@ -200,6 +200,7 @@ def _validate_str(
     *,
     allow_empty: bool = True,
     max_length: int | None = None,
+    max_bytes: int | None = None,
     allow_null: bool = True,
 ) -> Callable[..., None]:
     """Return a validator that checks a string value.
@@ -207,6 +208,9 @@ def _validate_str(
     Args:
         allow_empty: When `False`, reject empty strings.
         max_length: Maximum allowed character count.
+        max_bytes: Maximum allowed UTF-8 byte count, for a value stored in a
+            fixed-width chunk field (where `struct.pack` would otherwise
+            truncate silently, mid-character for multi-byte text).
         allow_null: When `False`, reject strings containing a NUL (`\\x00`)
             character, which corrupt the COS/text blobs AE reads.
     """
@@ -222,6 +226,12 @@ def _validate_str(
             raise ValueError(
                 f"must be at most {max_length} characters, got {len(value)}"
             )
+        if max_bytes is not None:
+            encoded = len(value.encode("utf-8"))
+            if encoded > max_bytes:
+                raise ValueError(
+                    f"must be at most {max_bytes} UTF-8 bytes, got {encoded}"
+                )
 
     return _validator
 
@@ -317,6 +327,11 @@ validate_rgb_color = validate_sequence(length=3, min=0.0, max=1.0)
 validate_string = _validate_str()
 
 validate_name = _validate_str(allow_empty=False)
+
+# A solid or placeholder name lives in a 256-byte NUL-padded UTF-8 field of the
+# `opti` chunk, leaving 255 usable bytes. AE 2026 silently truncates a longer
+# name to those same 255 bytes on assignment.
+validate_opti_name = _validate_str(allow_empty=False, max_bytes=255)
 
 # Strictly positive (non-zero) size, e.g. font size or stroke width.
 validate_positive_nonzero_number = _validate_number(min=0.0, exclusive_min=True)
