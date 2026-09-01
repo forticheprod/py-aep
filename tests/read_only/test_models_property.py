@@ -1965,3 +1965,139 @@ class TestCanAddProperty:
             pytest.skip("No Root Vectors Group found")
         assert contents.can_add_property("ADBE Position") is False
         assert contents.can_add_property("ADBE Mask Atom") is False
+
+
+class TestEffectPointSpeed:
+    """Speed units for effect point properties.
+
+    AE stores an effect point's ease speed normalized against the composition
+    height and ExtendScript reports it in pixel units, so reading the ease has
+    to scale by that height. `effect_point_speed.aep` is a Gradient Ramp whose
+    Start of Ramp is animated with BEZIER keys and an explicit ease on the
+    middle key; its `.json` is the ExtendScript ground truth.
+    """
+
+    SAMPLE = SAMPLES_DIR / "effect_point_speed.aep"
+    MATCH_NAME = "ADBE Ramp-0001"
+
+    def _ramp_start(self, project: Project) -> Property:
+        comp = get_comp(project, "EffectPoint")
+        prop = comp.layers[0].effects[0].property(self.MATCH_NAME)
+        assert isinstance(prop, Property)
+        return prop
+
+    def _expected_keyframes(self) -> list[dict]:
+        expected = load_expected(SAMPLES_DIR, "effect_point_speed")
+
+        def walk(node: object) -> object:
+            if isinstance(node, dict):
+                if node.get("matchName") == self.MATCH_NAME:
+                    return node
+                for value in node.values():
+                    found = walk(value)
+                    if found is not None:
+                        return found
+            elif isinstance(node, list):
+                for value in node:
+                    found = walk(value)
+                    if found is not None:
+                        return found
+            return None
+
+        node = walk(expected)
+        assert isinstance(node, dict)
+        return node["keyframes"]
+
+    def test_speeds_match_extendscript(self) -> None:
+        prop = self._ramp_start(parse_project(self.SAMPLE))
+        expected = self._expected_keyframes()
+        assert len(prop.keyframes) == len(expected)
+        for keyframe, want in zip(prop.keyframes, expected):
+            assert keyframe.in_temporal_ease[0].speed == pytest.approx(
+                want["inTemporalEase"][0]["speed"]
+            )
+            assert keyframe.out_temporal_ease[0].speed == pytest.approx(
+                want["outTemporalEase"][0]["speed"]
+            )
+
+    def test_factor_is_comp_height_not_width(self) -> None:
+        # The comp is 400x300 and the stored speeds are 0.4 / 0.8666...;
+        # ExtendScript reports 120 / 260, i.e. exactly height (300) - the same
+        # scalar for both directions, and independent of the width.
+        prop = self._ramp_start(parse_project(self.SAMPLE))
+        assert prop._effect_scale == [400.0, 300.0]
+        assert prop._effect_point_speed_factor == 300.0
+        middle = prop.keyframes[1]
+        assert middle._ldat_item.kf_data.in_speed == pytest.approx(0.4)
+        assert middle.in_temporal_ease[0].speed == pytest.approx(120.0)
+        assert middle.out_temporal_ease[0].speed == pytest.approx(260.0)
+
+    def test_reading_effect_scale_does_not_touch_ease(self) -> None:
+        # `_effect_scale` used to push factors onto every keyframe's ease on
+        # each read, which made resolving a property's speeds quadratic in its
+        # keyframe count. It must be a pure computation. Parsed fresh: the
+        # cached project is shared, and reading ease anywhere creates it.
+        prop = self._ramp_start(parse_aep(self.SAMPLE).project)
+        assert all(
+            keyframe._in_temporal_ease is None and keyframe._out_temporal_ease is None
+            for keyframe in prop.keyframes
+        )
+        for _ in range(3):
+            assert prop._effect_scale is not None
+        assert all(
+            keyframe._in_temporal_ease is None and keyframe._out_temporal_ease is None
+            for keyframe in prop.keyframes
+        )
+
+    def test_resolving_ease_stays_linear(self) -> None:
+        # One factor lookup per resolved ease, not a rescan of every keyframe.
+        prop = self._ramp_start(parse_project(self.SAMPLE))
+        lookups = 0
+        original = type(prop)._effect_point_speed_factor
+
+        def counting(self: Property) -> float | None:
+            nonlocal lookups
+            lookups += 1
+            return original.fget(self)  # type: ignore[attr-defined]
+
+        type(prop)._effect_point_speed_factor = property(counting)  # type: ignore[method-assign]
+        try:
+            for keyframe in prop.keyframes:
+                keyframe.in_temporal_ease  # noqa: B018
+                keyframe.out_temporal_ease  # noqa: B018
+        finally:
+            type(prop)._effect_point_speed_factor = original  # type: ignore[method-assign]
+
+        assert lookups <= 2 * len(prop.keyframes)
+
+    def test_speeds_are_stable_across_repeated_reads(self) -> None:
+        prop = self._ramp_start(parse_project(self.SAMPLE))
+        first = [kf.out_temporal_ease[0].speed for kf in prop.keyframes]
+        second = [kf.out_temporal_ease[0].speed for kf in prop.keyframes]
+        assert first == second
+
+    def test_linear_effect_point_speeds_unaffected(self) -> None:
+        # A LINEAR effect point's speed is computed from the segment instead,
+        # so it must not pick up the height factor.
+        project = parse_project(BUGS_DIR / "29.97_fps_time_scale_3.125.aep")
+        for comp in project.compositions:
+            for layer in comp.layers:
+                stack: list[Property | PropertyGroup] = list(layer.properties)
+                while stack:
+                    child = stack.pop(0)
+                    if isinstance(child, PropertyGroup):
+                        stack.extend(child.properties)
+                    elif (
+                        isinstance(child, Property)
+                        and child.match_name == "ADBE Geometry2-0001"
+                        and child.keyframes
+                    ):
+                        assert child._effect_scale == [2356.0, 1002.0]
+                        assert child.keyframes[0].out_temporal_ease[
+                            0
+                        ].speed == pytest.approx(29.151890878813)
+                        assert child.keyframes[1].in_temporal_ease[
+                            0
+                        ].speed == pytest.approx(29.151890878813)
+                        return
+        pytest.fail("no keyframed ADBE Geometry2-0001 property found")

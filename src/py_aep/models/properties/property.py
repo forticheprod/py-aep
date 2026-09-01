@@ -708,6 +708,30 @@ class Property(PropertyBase):
             return 100.0
         return 1.0
 
+    @property
+    def _effect_point_speed_factor(self) -> float | None:
+        """Speed unit factor for an effect point's ease, or `None`.
+
+        AE stores an effect point's ease speed normalized against the
+        composition height, and ExtendScript reports it in pixel units. The
+        same scalar applies to both the in and out directions and is
+        independent of the width - verified in AE 2026 on 300x300, 400x300,
+        800x200 and 1920x1080 comps, which all report an identical speed for
+        identical eases. `ADBE Anchor Point` is excluded: its speed is
+        already in pixels.
+
+        Resolved when the ease is read rather than pushed onto every
+        keyframe: `_effect_scale` is unavailable while the property is still
+        being constructed, and re-deriving it per value read used to rescan
+        every keyframe, which is quadratic in the keyframe count.
+        """
+        if self.match_name == "ADBE Anchor Point":
+            return None
+        scale = self._effect_scale
+        if scale is None or not scale[1]:
+            return None
+        return float(scale[1])
+
     def _link_keyframes(self) -> None:
         """Set back-references on keyframes after construction.
 
@@ -3134,13 +3158,8 @@ class Property(PropertyBase):
           anchor in raw pixels - AE does not normalize it - so applying a
           scale (which would fall back to comp size) corrupts the value.
         - All others: `None`.
-
-        On first access for effect points, also triggers
-        `_scale_effect_point_speeds` to set speed factors on keyframe ease
-        objects.
         """
-        # Allow explicit override via __dict__ (e.g. from tests or
-        # _scale_effect_point_speeds recursion guard).
+        # Allow explicit override via __dict__ (e.g. from tests).
         if "_effect_scale" in self.__dict__:
             result: list[float] | None = self.__dict__["_effect_scale"]
             return result
@@ -3164,14 +3183,6 @@ class Property(PropertyBase):
             comp = layer.containing_comp
             scale = [float(comp.width), float(comp.height)]
 
-        if scale is not None and self.match_name != "ADBE Anchor Point":
-            # Set guard before _scale_effect_point_speeds (which accesses
-            # kf.value -> _resolve_value -> _effect_scale) to avoid recursion.
-            self.__dict__["_effect_scale"] = scale
-            try:
-                self._scale_effect_point_speeds(scale)
-            finally:
-                del self.__dict__["_effect_scale"]
         return scale
 
     @_effect_scale.setter
@@ -3181,42 +3192,6 @@ class Property(PropertyBase):
         ):
             raise ValueError("_effect_scale must be a list of at least 2 floats")
         self.__dict__["_effect_scale"] = value
-
-    def _scale_effect_point_speeds(self, scale: list[float]) -> None:
-        """Set speed factor on BEZIER ease objects for effect point properties.
-
-        The binary stores speed in normalized (0-1) units per second.
-        ExtendScript reports speed in pixel units per second.  The factor
-        depends on the direction of motion between adjacent keyframes and
-        is stored on each `KeyframeEase._speed_factor` for lazy application.
-        """
-        n = len(self.keyframes)
-        for i, kf in enumerate(self.keyframes):
-            for ease_list, other_idx in [
-                (kf._out_temporal_ease, i + 1),
-                (kf._in_temporal_ease, i - 1),
-            ]:
-                if not ease_list or other_idx < 0 or other_idx >= n:
-                    continue
-                other_kf = self.keyframes[other_idx]
-                val_a = kf.value
-                val_b = other_kf.value
-                if (
-                    not isinstance(val_a, list)
-                    or not isinstance(val_b, list)
-                    or len(val_a) < 2
-                    or len(val_b) < 2
-                ):
-                    continue
-                delta_px = [b - a for a, b in zip(val_a, val_b)]
-                delta_norm = [d / s if s else 0.0 for d, s in zip(delta_px, scale)]
-                dist_px = math.sqrt(sum(d * d for d in delta_px))
-                dist_norm = math.sqrt(sum(d * d for d in delta_norm))
-                if dist_norm == 0:
-                    continue
-                factor = dist_px / dist_norm
-                for ease in ease_list:
-                    ease._speed_factor = factor
 
 
 class _EssentialOverrideProperty(Property):
