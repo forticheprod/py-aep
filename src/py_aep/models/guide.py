@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..binary.ldat_chunks import GuideItem
 from ..enums import GuideOrientationType
 from .descriptors import ChunkField
-from .validators import validate_positive_number
+from .validators import validate_f8
 
 
 class Guide:
@@ -33,11 +33,13 @@ class Guide:
     )
     """The orientation of the guide. Read / Write."""
 
-    position = ChunkField[float](
-        "_guide_item", "position", validate=validate_positive_number
-    )
+    position = ChunkField[float]("_guide_item", "position", validate=validate_f8)
     """The position of the guide in pixels from the top (horizontal) or
-    left (vertical) edge of the composition. Read / Write."""
+    left (vertical) edge of the composition. Read / Write.
+
+    May be negative or fractional: guides sit anywhere on the ruler, and
+    After Effects accepts both (probed on AE 2026, backed by a signed f8).
+    """
 
     position_type = ChunkField[int]("_guide_item", "position_type")
     """The position type of the guide. Always 0 (pixels). Read / Write."""
@@ -46,7 +48,7 @@ class Guide:
         self._guide_item = _guide_item
 
     @classmethod
-    def _new(cls, orientation_type: int, position: int) -> Guide:
+    def _new(cls, orientation_type: int, position: float) -> Guide:
         """Create a new guide with the given orientation and position.
 
         Any `orientation_type` value other than 0 or 1 defaults to
@@ -60,7 +62,7 @@ class Guide:
             A new `Guide` instance backed by a freshly created `GuideItem`.
         """
         orientation = GuideOrientationType.from_binary(orientation_type)
-        validate_positive_number(position)
+        validate_f8(position)
         item = GuideItem(
             orientation_type=orientation.to_binary(),
             position_type=0,

@@ -230,6 +230,12 @@ def classify_property(prop: Property) -> int | None:
         # controller (menu entries included), which py_aep does not build.
         return None
     if prop.property_value_type == PropertyValueType.OneD:
+        # A slider controller is seeded from the property's current value,
+        # so a value-less 1-D property (e.g. `ADBE Layer Source Alternate`)
+        # cannot back one - reporting it addable made
+        # `add_to_motion_graphics_template` raise instead of returning False.
+        if prop.value is None:
+            return None
         return CONTROLLER_SLIDER
     return None
 

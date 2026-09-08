@@ -9,6 +9,7 @@ from ...binary.footage_chunks import (
     OptiChunk,
     PsdOptiChunk,
     SspcChunk,
+    TextOptiChunk,
     build_ai_layer_opti_data,
     build_generic_opti_data,
     build_psd_layer_opti_data,
@@ -38,6 +39,7 @@ from ...data.file_formats import (
     FileFormat,
     get_file_format,
 )
+from ...resolvers.ai_bounds import EMPTY_BOX, footage_size, read_ai_layer_bounds
 from ...resolvers.ai_layers import read_ai_color_info, read_ai_color_profile
 from ...resolvers.media_probe import probe_media
 from ...resolvers.psd_styles import has_enabled_styles
@@ -590,9 +592,9 @@ class FileSource(FootageSource):
                 `resolvers.source_layers.list_layers` order (top first, leaf
                 layers only).
             dimensions: `"document"` (default) sizes the footage to the full
-                canvas; `"layer"` to the layer's content box (PSD only:
-                computing an AI/PDF layer's artwork bounds would require
-                rendering the PDF content).
+                canvas; `"layer"` to the layer's content box - the PSD layer
+                bounds, or the AI/PDF artwork box measured by
+                `resolvers.ai_bounds.read_ai_layer_bounds`.
             layer_styles: PSD only - the Layer Options choice recorded in
                 the `sspc` kind byte: `"merge"` (default), `"ignore"`, or
                 `"editable"` (reachable only via replace's CURRENT_VALUE
@@ -601,10 +603,11 @@ class FileSource(FootageSource):
         Raises:
             ValueError: If the file is not a layered format, or `layer_index`
                 is out of range.
-            NotImplementedError: For `dimensions="layer"` on an AI/PDF file,
-                or for merge-mode dimensions="layer" on a styled PSD layer
-                (the style-expanded content box is not derivable; see
-                `docs/limitations.md`).
+            NotImplementedError: For merge-mode `dimensions="layer"` on a
+                styled PSD layer (the style-expanded content box is not
+                derivable; see `docs/limitations.md`).
+            UnsupportedAiLayersError: For `dimensions="layer"` on an AI/PDF
+                file whose page content py_aep cannot read.
         """
         validate_file_exists(file)
         path = Path(file)
@@ -654,26 +657,32 @@ class FileSource(FootageSource):
                 reserved_c8=PSD_LAYER_STYLES_C8[styles],
             )
         if suffix in AI_COMP_EXTENSIONS:
-            if dimensions == "layer":
-                raise NotImplementedError(
-                    "Layer Size dimensions for an AI/PDF layer require the "
-                    "layer's artwork bounds, which py_aep cannot compute; "
-                    "use 'document' (note: AE's own dialog defaults to "
-                    "Layer Size for AI/PDF)."
-                )
             data = path.read_bytes()
             info = probe_media(path, data)
             fmt = get_file_format(suffix)
             index, layer_name = resolve_ai_layer(path, layer_index, data)
             color_space, profile_name = read_ai_color_info(path, data)
+            artwork_bounds = None
+            width, height = info.width, info.height
+            if dimensions == "layer":
+                # The artwork box is the whole binding for a Layer Size
+                # import: After Effects derives the footage pixel size from
+                # it and does not recompute it on open.
+                bounds = read_ai_layer_bounds(path, data)[index]
+                artwork_bounds = EMPTY_BOX if bounds is None else bounds
+                width, height = footage_size(bounds)
             opti_data = build_ai_layer_opti_data(
-                info.width, info.height, layer_name, color_space
+                info.width,
+                info.height,
+                layer_name,
+                color_space,
+                artwork_bounds,
             )
             return cls._new(
                 path,
                 source_format=fmt.source_format,
-                width=info.width,
-                height=info.height,
+                width=width,
+                height=height,
                 duration=info.duration,
                 frame_rate=info.frame_rate,
                 pixel_aspect=info.pixel_aspect,
@@ -682,6 +691,7 @@ class FileSource(FootageSource):
                 audio_sample_rate=info.audio_sample_rate,
                 opti_data=opti_data,
                 embedded_profile_name=profile_name,
+                full_frame=dimensions != "layer",
                 layer_name=layer_name,
                 layer_index=index,
                 data_size=len(data),
@@ -950,11 +960,11 @@ class FileSource(FootageSource):
         psd_layer = getattr(self._opti, "psd_group_name", "")
         if psd_layer:
             return str(psd_layer)
-        # AI/EPS/PDF: raw TEXT opti with a per-layer-reference flag at 0x3D
-        # and the NUL-terminated layer name at 0x44.
-        data = self._opti.data
-        if len(data) > 0x44 and data[:4] == b"TEXT" and data[0x3D] == 1:
-            return data[0x44:].split(b"\x00", 1)[0].decode("utf-8", "replace")
+        # AI/EPS/PDF: a `TEXT` opti carries the per-layer-reference flag
+        # and the layer name as typed `TextOptiChunk` fields (0x3D, 0x44).
+        opti = self._opti
+        if isinstance(opti, TextOptiChunk) and opti.text_layer_reference:
+            return opti.text_layer_name
         return ""
 
     @property

@@ -529,7 +529,7 @@ class RenderQueueItem:
 
     @property
     def settings(self) -> SettingsView:
-        """[SettingsView][py_aep.models.settings.SettingsView] dict
+        """[SettingsView][] dict
         built live from the binary chunk, with ExtendScript-compatible keys
         matching `get_settings()` output.
 

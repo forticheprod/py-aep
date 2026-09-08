@@ -1023,7 +1023,9 @@ class Project:
                 import.
             UnsupportedAiLayersError: If a layered `.ai`/`.pdf` import is
                 requested but the file exposes no PDF Optional Content Groups
-                (e.g. saved without PDF compatibility).
+                (e.g. saved without PDF compatibility), or if
+                `layer_dimensions="layer"` is requested for one whose page
+                content py_aep cannot read (see `resolvers.ai_bounds`).
             UnsupportedPsdLayersError: If a `.psd`/`.psb` COMP import is
                 requested but the file is not a valid Photoshop document.
         """
@@ -1102,10 +1104,18 @@ class Project:
 
         if options.layer_index is not None:
             # Fill unset PSD layer-import choices from the machine's sticky
-            # import-dialog preferences, as AE's own importFile does. These
-            # prefs are PSD-only: an AI/PDF layer import keeps None (its
-            # downstream default), since a PSD "layer" dimension would wrongly
-            # trip _from_layer's Layer-Size NotImplementedError for AI/PDF.
+            # import-dialog preferences, as AE's own importFile does.
+            #
+            # AI/PDF has an equivalent "AI Dimensions Popup" preference that
+            # is deliberately NOT followed. Measured on AE 2026: a scripted
+            # importFile of an .ai produces the identical full-document
+            # footage at either index, with or without an explicit
+            # `importAs`, because a scripted import is always merged-layers
+            # and Layer Size means nothing without a chosen layer. That
+            # preference only steers the interactive dialog, so honouring it
+            # here would diverge from importFile rather than mirror it. An
+            # AI/PDF layer import therefore keeps None, its "document"
+            # downstream default.
             dimensions = options.layer_dimensions
             styles = options.layer_styles
             if suffix in PSD_COMP_EXTENSIONS:

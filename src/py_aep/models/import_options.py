@@ -122,10 +122,13 @@ class ImportOptions:
         py_aep extension: ExtendScript exposes no layer-selection API.
 
         Note:
-            `"layer"` is only supported for `.psd`/`.psb`. AE's own dialog
-            defaults to Layer Size for `.ai`/`.pdf`, but computing an AI
-            layer's artwork bounds requires rendering the PDF content, so
-            py_aep raises `NotImplementedError` there.
+            For `.ai`/`.pdf`, `"layer"` measures the layer's artwork box from
+            the page content stream (see
+            [read_ai_layer_bounds][py_aep.resolvers.ai_bounds.read_ai_layer_bounds]).
+            On a document with more than one artboard the stored box will
+            differ from After Effects', which measures the second artboard and
+            treats first-artboard layers as empty; py_aep measures the first
+            and emits a `UserWarning`.
         """
         return self._layer_dimensions
 

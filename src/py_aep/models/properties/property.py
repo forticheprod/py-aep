@@ -288,6 +288,7 @@ class Property(PropertyBase):
         "_tdb4",
         "dimensions",
         default=1,
+        read_only=True,
     )
     """The number of dimensions in the property value (1, 2, 3, or 4). Read-only."""
 
@@ -1814,6 +1815,13 @@ class Property(PropertyBase):
     @expression_enabled.setter
     def expression_enabled(self, value: bool) -> None:
         validate_bool(value)
+        if value and not self.can_set_expression:
+            # AE refuses the same write: "Can not set expression with this
+            # property, because the property or a parent property is
+            # hidden." Without the guard the write also materializes the
+            # property, which for MARKER / NO_VALUE kinds emits chunks AE
+            # rejects.
+            raise ValueError(f"property {self.match_name!r} cannot take an expression")
         self._ensure_materialized()
         self._expression_enabled = value
         self._tdb4.expression_disabled = not value

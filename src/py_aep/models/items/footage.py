@@ -416,10 +416,11 @@ class FootageItem(AVItem):
         selected (see `ImportOptions.layer_dimensions`): `"document"` (the
         full canvas) or `"layer"` (the layer's content box). `CURRENT_VALUE`
         (the default) preserves the current single-layer binding's choice.
-        Layer Size is only representable for PSD targets - AI/PDF always use
-        Document size, and `"layer"` on an AI/PDF file raises
-        `NotImplementedError`. `layer_dimensions` is ignored when
-        `layer_index` is `None` (a merged document is always document-sized).
+        For an AI/PDF target the content box is the artwork box measured from
+        the page content stream (see
+        [read_ai_layer_bounds][py_aep.resolvers.ai_bounds.read_ai_layer_bounds]).
+        `layer_dimensions` is ignored when `layer_index` is `None` (a merged
+        document is always document-sized).
 
         `layer_styles` chooses how a PSD layer's styles are treated (see
         `ImportOptions.layer_styles`): `"merge"` (bake them into the raster,
@@ -456,11 +457,13 @@ class FootageItem(AVItem):
                 not reference a single layer (or the new file has no layer at
                 the stored index).
             NotImplementedError: If After Effects requires a format-specific
-                `opti` header not implemented for this format, if
-                `layer_dimensions="layer"` is requested for an AI/PDF file,
-                or if `layer_dimensions="layer"` is combined with merge-mode
-                styles on a PSD layer that has styles (the style-expanded
-                bounds are not derivable).
+                `opti` header not implemented for this format, or if
+                `layer_dimensions="layer"` is combined with merge-mode styles
+                on a PSD layer that has styles (the style-expanded bounds are
+                not derivable).
+            UnsupportedAiLayersError: If `layer_dimensions="layer"` is
+                requested for an AI/PDF file whose page content py_aep cannot
+                read (see `resolvers.ai_bounds`).
         """
         if layer_index is None:
             self._replace_main_source(FileSource._from_file(file))
@@ -493,14 +496,10 @@ class FootageItem(AVItem):
             layer_index = layer_index_for_stored(file, current._sspc.layer_index)
         if isinstance(layer_dimensions, _CurrentValue):
             # Preserve the Document/Layer Size choice of the current binding.
-            # Layer Size is only representable for PSD targets (_from_layer
-            # raises NotImplementedError for .ai/.pdf), so fall back to
-            # Document size when switching to a format that cannot keep it.
             dimensions = None
             current = self._main_source
             if (
-                suffix in PSD_COMP_EXTENSIONS
-                and isinstance(current, FileSource)
+                isinstance(current, FileSource)
                 and current.layer_name
                 and not current._sspc.full_frame
             ):

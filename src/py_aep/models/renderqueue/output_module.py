@@ -542,7 +542,7 @@ class OutputModule:
 
     @property
     def settings(self) -> SettingsView:
-        """[SettingsView][py_aep.models.settings.SettingsView] dict with
+        """[SettingsView][] dict with
         ExtendScript-compatible keys. Includes `"Video Output"`,
         `"Audio Bit Depth"`, `"Preserve RGB"`, `"Convert to Linear Light"`,
         etc. Matches the format from
@@ -1084,7 +1084,7 @@ class OutputModule:
         (Adobe CMS mode; the 16-byte profile ID is written, no ICC bytes needed),
         or - in OCIO mode - any color space, role, alias, or `display/view` pair
         of the project's OCIO configuration (the 16-byte id is computed from the
-        config; see [ocio_output_profile_id][py_aep.color.ocio.ocio_output_profile_id]).
+        config; see `py_aep.color.ocio.ocio_output_profile_id`).
 
         Note:
             Not exposed in ExtendScript."""

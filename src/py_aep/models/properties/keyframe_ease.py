@@ -66,6 +66,34 @@ class KeyframeEase:
         obj._speed_factor = speed_factor
         return obj
 
+    def _write_from(self, other: KeyframeEase) -> None:
+        """Copy `other`'s speed and influence into this chunk-backed ease.
+
+        Bypasses the public setters' user-facing influence range (0.1-100)
+        because 0.0 is the parser's "no ease" sentinel and a user may pass
+        a `KeyframeEase()` built with it.
+        """
+        speed = other.speed
+        influence = other.influence
+        validate_number(speed)
+        _validate_number(min=0.0, max=100.0)(influence)
+        if self._kf_data is None:
+            self._speed = speed
+            self._influence = influence
+            return
+        raw_speed = speed / self._speed_factor if self._speed_factor else speed
+        raw_influence = influence / 100
+        if self._is_array():
+            getattr(self._kf_data, f"{self._direction}_speed")[
+                self._dimension_index
+            ] = raw_speed
+            getattr(self._kf_data, f"{self._direction}_influence")[
+                self._dimension_index
+            ] = raw_influence
+        else:
+            setattr(self._kf_data, f"{self._direction}_speed", raw_speed)
+            setattr(self._kf_data, f"{self._direction}_influence", raw_influence)
+
     def _is_array(self) -> bool:
         """Whether the backing kf_data stores speed/influence as arrays."""
         return isinstance(getattr(self._kf_data, f"{self._direction}_speed"), list)

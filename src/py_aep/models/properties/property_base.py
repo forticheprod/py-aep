@@ -287,7 +287,15 @@ class PropertyBase:
 
     @property
     def name(self) -> str:
-        """Display name of the property. Read / Write."""
+        """Display name of the property. Read / Write for a child of an
+        indexed group (a mask, effect, text animator or shape group);
+        read-only otherwise.
+
+        Raises:
+            ValueError: On write, if the parent is not an indexed group.
+                After Effects refuses the same write ("Can not set name
+                this property, because parent is not an INDEXED_GROUP").
+        """
         if self._name is not None:
             return self._name
         if self._name_utf8 is not None:
@@ -299,6 +307,23 @@ class PropertyBase:
     @name.setter
     def name(self, value: str) -> None:
         validate_name(value)
+        # A Layer is a PropertyBase but its name is a layer attribute, not a
+        # property name - `Layer.name` extends this setter and is always
+        # writable.
+        parent = self._parent_property
+        if not hasattr(self, "_ldta") and (
+            parent is None or parent.property_type != PropertyType.INDEXED_GROUP
+        ):
+            # Materializing a synthetic property just to hold a name AE
+            # would not accept writes a truncated LIST:tdbs (no cdat, no
+            # tdum/tduM) for MARKER and NO_VALUE properties, which makes
+            # AE reject the whole project as damaged.
+            where = "a root property" if parent is None else repr(parent.match_name)
+            raise ValueError(
+                f"Cannot set the name of {self.match_name!r}: its parent "
+                f"({where}) is not an indexed group. Only masks, effects, "
+                f"text animators and shape groups can be renamed."
+            )
 
         self._ensure_materialized()
         self._name = value

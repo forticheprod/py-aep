@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -301,6 +302,13 @@ validate_u4 = _validate_number(min=0, max=0xFFFFFFFF, integer=True)
 # range is the conservative bound that stays inside that limit. Not
 # `integer=True`: kerning/tracking accept a float and round it on write.
 validate_s4 = _validate_number(min=-(2**31), max=2**31 - 1)
+
+# Any finite double: a signed f8 field with no domain restriction of its own
+# (e.g. a guide position, which may sit outside the composition). Bounding it
+# by the field width rather than leaving it unbounded keeps the type check -
+# a bare `validate_number` deliberately lets non-numerics through for complex
+# property values.
+validate_f8 = _validate_number(min=-sys.float_info.max, max=sys.float_info.max)
 
 # A marker duration in seconds maps to a u4 600ths-of-a-second field
 # (round(seconds * 600)); cap at the field capacity and reject NaN/inf/negative.
