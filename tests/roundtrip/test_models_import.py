@@ -8,7 +8,7 @@ import warnings
 from pathlib import Path
 
 import pytest
-from helpers import parse_project_fresh
+from helpers import ai_layer_opti_boxes, parse_project_fresh
 
 from py_aep import AlphaMode, ImportAsType
 from py_aep import parse as parse_aep
@@ -1387,10 +1387,103 @@ class TestChooseLayerImport:
         with pytest.raises(ValueError, match="layered"):
             project.import_file(_layer_opts(ASSETS / "image_with_alpha.png", 0))
 
-    def test_ai_layer_size_not_implemented(self) -> None:
+    def test_ai_layer_size_reproduces_the_ae_import(self) -> None:
+        # `ai.ai`'s Calque 1 is `list_layers` index 1 (top layer first). The
+        # whole binding lives in the opti box, which AE never recomputes, so
+        # compare against AE's own bytes rather than against our own maths.
+        ae_name, ae_sspc, ae_opti, _utf8 = _footage_parts(
+            parse_aep(IMPORT_DIR / "ai_choose_layer1_size.aep").project
+        )
         project = parse_aep(BASE).project
-        with pytest.raises(NotImplementedError, match="artwork bounds"):
-            project.import_file(_layer_opts(ASSETS / "ai.ai", 0, "layer"))
+        item = project.import_file(_layer_opts(ASSETS / "ai.ai", 1, "layer"))
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        my_opti = source._opti.tobytes()
+        # The box lands within a couple of 1/65536 quanta of AE's; the
+        # derived footage dimensions and the Layer Size marker are exact.
+        ae_box = struct.unpack(">4i", ae_opti[0x10:0x20])
+        my_box = struct.unpack(">4i", my_opti[0x10:0x20])
+        assert my_box == pytest.approx(ae_box, abs=3)
+        assert (item.width, item.height) == (482, 437)
+        assert source._sspc.full_frame is False
+        # Everything outside the box is byte-identical.
+        assert my_opti[:0x10] == ae_opti[:0x10]
+        assert my_opti[0x20:] == ae_opti[0x20:]
+        assert ae_name == "Calque 1/ai.ai"
+
+    def test_ai_layer_size_empty_layer_floors_at_one_pixel(self) -> None:
+        project = parse_aep(BASE).project
+        # Calque 2 has no artwork on the page.
+        item = project.import_file(_layer_opts(ASSETS / "ai.ai", 0, "layer"))
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        box = struct.unpack(">4i", source._opti.tobytes()[0x10:0x20])
+        assert box == (0, 0, 1, 1)
+        assert (item.width, item.height) == (1, 1)
+
+    def test_ai_layer_size_survives_a_disk_roundtrip(self, tmp_path: Path) -> None:
+        # The opti is synthesized in memory; re-parsing the saved file reads
+        # the bytes that actually landed on disk.
+        project = parse_aep(BASE).project
+        project.import_file(_layer_opts(ASSETS / "ai.ai", 1, "layer"))
+        out = tmp_path / "ai_layer_size.aep"
+        project.save(out)
+        _name, _sspc, opti, _utf8 = _footage_parts(parse_project_fresh(out))
+        box = tuple(v / 65536 for v in struct.unpack(">4i", opti[0x10:0x20]))
+        assert box == pytest.approx((112.748, 239.5073, 593.931, 675.999), abs=1e-3)
+        item = next(
+            i
+            for i in parse_project_fresh(out).items.values()
+            if isinstance(i, FootageItem) and isinstance(i.main_source, FileSource)
+        )
+        assert (item.width, item.height) == (482, 437)
+
+    def test_ai_layer_size_document_default_keeps_the_full_page(self) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(_layer_opts(ASSETS / "ai.ai", 1))
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        box = tuple(
+            v / 65536 for v in struct.unpack(">4i", source._opti.tobytes()[0x10:0x20])
+        )
+        assert box == pytest.approx((0.0, 0.0, 612.0, 792.0))
+        assert (item.width, item.height) == (612, 792)
+        assert source._sspc.full_frame is True
+
+    def test_ai_layer_size_replace_keeps_the_binding(self) -> None:
+        # CURRENT_VALUE used to downgrade an AI target to Document Size
+        # because Layer Size was unrepresentable; it now round-trips.
+        project = parse_aep(BASE).project
+        item = project.import_file(_layer_opts(ASSETS / "ai.ai", 1, "layer"))
+        item.replace(
+            ASSETS / "ai.ai",
+            layer_index=CURRENT_VALUE,
+            layer_dimensions=CURRENT_VALUE,
+        )
+        source = item.main_source
+        assert isinstance(source, FileSource)
+        assert source._sspc.full_frame is False
+        assert (item.width, item.height) == (482, 437)
+
+    def test_pdf_layer_size_measures_every_construct(self) -> None:
+        # The probe PDF carries one layer per measuring rule; its AE fixture
+        # is the ground truth (see tests/read_only/test_ai_bounds.py). Here
+        # we only check the import path threads the box through end to end.
+        ae = ai_layer_opti_boxes(parse_aep(IMPORT_DIR / "ai_bounds_probe.aep").project)
+        probe = ASSETS / "ai_bounds_probe.pdf"
+        names = read_ai_layers(probe)
+        for index, name in enumerate(reversed(names)):
+            project = parse_aep(BASE).project
+            item = project.import_file(_layer_opts(probe, index, "layer"))
+            source = item.main_source
+            assert isinstance(source, FileSource)
+            box = tuple(
+                v / 65536
+                for v in struct.unpack(">4i", source._opti.tobytes()[0x10:0x20])
+            )
+            expected_box, width, height = ae[name]
+            assert box == pytest.approx(expected_box, abs=3 / 65536), name
+            assert (item.width, item.height) == (width, height), name
 
     @pytest.mark.parametrize(
         "fixture,layer,expected_box,expected_size",
@@ -1422,9 +1515,9 @@ class TestChooseLayerImport:
     ) -> None:
         # An AI Layer Size import stores the layer's artwork bounding box
         # (4x signed BE 16.16 at 0x10, page points) in place of the
-        # full-page box; py cannot compute the box (it would require
-        # rendering the PDF content), but the builder reproduces AE's opti
-        # byte-for-byte given the box, pinning the 16.16 layout.
+        # full-page box. This pins the 16.16 layout against AE's own bytes;
+        # the measuring pass that derives the box is covered by
+        # tests/read_only/test_ai_bounds.py.
         _name, sspc, ae_opti, _utf8 = _footage_parts(
             parse_aep(IMPORT_DIR / fixture).project
         )
@@ -2577,9 +2670,11 @@ class TestImportChoicePrefsWiring:
         assert source.layer_styles == "merge"
 
     def test_ai_layer_import_ignores_psd_dimensions_pref(self) -> None:
-        # The dimensions pref is PSD-only. An AI/PDF layer import must keep
-        # its document-size default: a PSD "layer" pref leaking through would
-        # trip _from_layer's Layer-Size NotImplementedError for AI.
+        # The dimensions pref is PSD-only. AI/PDF has its own sticky
+        # "AI Dimensions Popup", but AE's scripted importFile ignores it
+        # (measured on AE 2026: both indices give identical full-document
+        # footage), so py_aep does not follow it either and an AI/PDF layer
+        # import keeps its document-size default.
         project = parse_aep(BASE).project
         project._preferences.set_pref_as_number(
             self._SECTION,

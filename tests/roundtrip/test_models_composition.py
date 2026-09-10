@@ -761,12 +761,31 @@ class TestRoundtripGuides:
 class TestValidateGuidePosition:
     """Validation tests for Guide.position bounds."""
 
-    def test_position_rejects_negative(self) -> None:
+    def test_position_accepts_negative_and_fractional(self, tmp_path: Path) -> None:
+        """Guides sit anywhere on the ruler, including outside the comp.
+
+        AE 2026 accepts both through ExtendScript (probed headlessly:
+        `comp.addGuide(0, -100)` -> position -100, `addGuide(0, -0.5)` ->
+        position -0.5), and the backing field is a signed f8, so neither
+        the format nor After Effects justifies a `>= 0` bound.
+        """
+        project = parse_aep(SAMPLES_DIR / "guides.aep").project
+        comp = get_comp(project, "guides_horizontal")
+        comp.guides[0].position = -100.0
+        idx = comp.add_guide(1, -0.5)
+
+        out = tmp_path / "negative_guides.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "guides_horizontal")
+        assert comp2.guides[0].position == -100.0
+        assert comp2.guides[idx].position == -0.5
+
+    def test_position_rejects_non_numeric(self) -> None:
         comp = get_comp(
             parse_aep(SAMPLES_DIR / "guides.aep").project, "guides_horizontal"
         )
-        with pytest.raises(ValueError, match="must be >= 0"):
-            comp.guides[0].position = -1.0
+        with pytest.raises(TypeError):
+            comp.guides[0].position = "nope"  # type: ignore[assignment]
 
 
 class TestAddGuide:

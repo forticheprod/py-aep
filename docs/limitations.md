@@ -202,7 +202,7 @@ provides the path that After Effects would display for missing footage.
 `Project.import_file()` reads footage metadata (dimensions, duration, frame
 rate, alpha, audio) from the source file at import time, since After Effects
 caches those values in the project rather than re-reading the media on open
-(see [media_probe][py_aep.resolvers.media_probe]). The limitations of importing
+(see [probe_media][py_aep.resolvers.media_probe.probe_media]). The limitations of importing
 from a static file rather than through AE's live media engine:
 
 - **`PROJECT` import is not supported** - importing an `.aep`/`.aet` raises. An
@@ -211,10 +211,29 @@ from a static file rather than through AE's live media engine:
   importing an SVG as `FOOTAGE` raises. `<text>`/`<tspan>` require the
   `font-family` to be installed - an unresolved font is skipped - and raster
   `<image>` and `<textPath>` are not yet rendered.
-- **Layer-size dimensions for AI/PDF single-layer import**: an AI/PDF layer's
-  artwork bounds would require rendering the PDF content, so
-  `ImportOptions.layer_dimensions = "layer"` raises `NotImplementedError` for
-  `.ai`/`.pdf` (`.psd`/`.psb` are supported).
+- **Layer-size dimensions for AI/PDF single-layer import** measure the
+  layer's artwork box from the page content stream
+  ([read_ai_layer_bounds][py_aep.resolvers.ai_bounds.read_ai_layer_bounds]),
+  reproducing After Effects' own conservative estimate rather than the true
+  visual extent. Three gaps:
+    - **A document with more than one artboard diverges by design.** AE
+      measures the *second* page there and reports every layer whose art is on
+      the first artboard as empty (1x1); py_aep measures the first page and
+      emits a `UserWarning`, since reproducing AE would mean discarding
+      artwork.
+    - **PDFs py_aep cannot read raise** `UnsupportedAiLayersError`:
+      compressed object streams (`/ObjStm`), encryption, and content-stream
+      filters other than Flate. Illustrator never writes these; other
+      producers do.
+    - **A font with no `/Widths`** falls back to built-in standard-14
+      metrics, measured from AE 2026 itself: all fourteen faces, plus
+      `/Arial` and `/TimesNewRoman`, which AE resolves onto them. Those are
+      exact for character codes 32-126. Codes above 126 need the encoding's
+      glyph names and are not tabulated, nor is an `/Encoding` `/Differences`
+      array applied; both fall back to a nominal advance. A face outside the
+      table, and Type 3 fonts, fall back to a generic estimate.
+      Illustrator always embeds fonts with explicit widths, so this only
+      affects PDFs from other producers.
 - **`has_alpha` is a per-format heuristic**, not a full media decode. Alpha is
   inferred from the format and header - allocated for PNG/TIFF/BMP/GIF, opaque
   for JPEG, and derived from the channel list (EXR), bit depth (TGA), codec

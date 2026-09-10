@@ -423,13 +423,7 @@ class Keyframe:
 
     @in_temporal_ease.setter
     def in_temporal_ease(self, value: list[KeyframeEase]) -> None:
-        from .keyframe_ease import KeyframeEase
-
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("in_temporal_ease must be a list of KeyframeEase objects")
-        if not all(isinstance(e, KeyframeEase) for e in value):
-            raise ValueError("in_temporal_ease must be a list of KeyframeEase objects")
-        self._in_temporal_ease = value
+        self._apply_ease(value, "in")
 
     @property
     def out_temporal_ease(self) -> list[KeyframeEase]:
@@ -449,13 +443,52 @@ class Keyframe:
 
     @out_temporal_ease.setter
     def out_temporal_ease(self, value: list[KeyframeEase]) -> None:
+        self._apply_ease(value, "out")
+
+    def _apply_ease(self, value: list[KeyframeEase], direction: str) -> None:
+        """Copy `value`'s speed/influence into the chunk-backed ease objects.
+
+        A user-constructed [KeyframeEase][] is detached (it carries its own
+        `speed`/`influence` and no chunk), so assigning the list itself
+        would keep the numbers in Python only and lose them on save. The
+        binary-backed objects live in `_in_temporal_ease` / `_out_temporal_ease`;
+        the *getter* may return computed copies (LINEAR, HOLD and boundary
+        keyframes), so the write has to go through these, not through
+        whatever the getter last returned.
+        """
         from .keyframe_ease import KeyframeEase
 
+        field = f"{direction}_temporal_ease"
         if not isinstance(value, (list, tuple)):
-            raise ValueError("out_temporal_ease must be a list of KeyframeEase objects")
+            raise ValueError(f"{field} must be a list of KeyframeEase objects")
         if not all(isinstance(e, KeyframeEase) for e in value):
-            raise ValueError("out_temporal_ease must be a list of KeyframeEase objects")
-        self._out_temporal_ease = value
+            raise ValueError(f"{field} must be a list of KeyframeEase objects")
+        self._ensure_ease()
+        backing = (
+            self._in_temporal_ease if direction == "in" else self._out_temporal_ease
+        )
+        assert backing is not None
+        if not backing:
+            # Marker and other ease-less keyframe types have nowhere to
+            # store it; ExtendScript's setTemporalEaseAtKey rejects them too.
+            raise ValueError("this keyframe type has no temporal ease")
+        # A colour keyframe stores ONE shared ease but the getter resolves
+        # one per component (the LINEAR speed is computed per dimension), so
+        # accept either length - assigning back what the getter returned has
+        # to work. Extra entries have no slot to land in; the first wins,
+        # matching what the format can hold.
+        resolved = len(self._resolve_ease(backing, direction))
+        if len(value) not in (len(backing), resolved):
+            expected = (
+                str(len(backing))
+                if resolved == len(backing)
+                else f"{len(backing)} or {resolved}"
+            )
+            raise ValueError(
+                f"{field} expects {expected} KeyframeEase object(s), got {len(value)}"
+            )
+        for target, source in zip(backing, value):
+            target._write_from(source)
 
     def _resolve_ease(
         self, raw_ease: list[KeyframeEase], direction: str

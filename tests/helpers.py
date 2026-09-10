@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,6 +33,32 @@ if TYPE_CHECKING:
     from py_aep.models.renderqueue.render_queue_item import RenderQueueItem
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples"
+
+
+def ai_layer_opti_boxes(
+    project: Project,
+) -> dict[str, tuple[tuple[float, ...], int, int]]:
+    """`{layer name: (artwork box, footage width, footage height)}`.
+
+    Every AI/PDF single-layer footage item in `project`, read straight out of
+    its `TEXT` `opti`: the artwork box is four signed big-endian 16.16 values
+    at offset 0x10 and the layer name a NUL-terminated string at 0x44. Neither
+    is reachable through ExtendScript, hence the raw read.
+    """
+    out: dict[str, tuple[tuple[float, ...], int, int]] = {}
+    for item in project.items.values():
+        source = getattr(item, "main_source", None)
+        opti = getattr(source, "_opti", None)
+        if opti is None:
+            continue
+        body = opti.tobytes()
+        if len(body) < 0x250 or body[:4] != b"TEXT":
+            continue
+        box = tuple(v / 65536 for v in struct.unpack_from(">4i", body, 0x10))
+        end = body.index(bytes([0]), 0x44)
+        name = body[0x44:end].decode("utf-8")
+        out[name] = (box, item.width, item.height)
+    return out
 
 
 @lru_cache(maxsize=None)

@@ -216,7 +216,7 @@ class Item:
         return self._guides
 
     @requires_version(16)
-    def add_guide(self, orientation_type: int, position: int) -> int:
+    def add_guide(self, orientation_type: int, position: float) -> int:
         """Adds a new guide to the item.
 
         Any `orientation_type` value other than 0 (horizontal) or 1 (vertical)
@@ -224,7 +224,9 @@ class Item:
 
         Args:
             orientation_type: 0 for horizontal, 1 for vertical.
-            position: The pixel position of the guide.
+            position: The pixel position of the guide. May be negative or
+                fractional - guides sit anywhere on the ruler, inside the
+                composition bounds or outside them.
 
         Returns:
             The index of the new guide.

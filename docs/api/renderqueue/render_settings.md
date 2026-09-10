@@ -134,3 +134,9 @@ Render settings are accessed via `RenderQueueItem.settings`, a [SettingsView][py
 | `LENGTH_OF_COMP` | 0 | `"Length of Comp"` |
 | `WORK_AREA_ONLY` | 1 | `"Work Area Only"` |
 | `CUSTOM` | 2 | `"Custom"` |
+
+## The settings view
+
+::: py_aep.models.renderqueue.settings.SettingsView
+    options:
+      heading_level: 3
