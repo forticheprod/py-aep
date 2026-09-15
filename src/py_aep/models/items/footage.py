@@ -14,6 +14,7 @@ from ..import_options import CURRENT_VALUE, _CurrentValue
 from ..naming import auto_name
 from ..preferences import default_sequence_fps, label_index
 from ..sources.file import FileSource
+from ..sources.footage import FootageSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
 from ..validators import validate_name, validate_one_of, validate_positive_int
@@ -560,7 +561,35 @@ class FootageItem(AVItem):
     def _replace_main_source(
         self, source: FileSource | PlaceholderSource | SolidSource
     ) -> None:
-        """Replace the first LIST:Pin in _item_list with a new source."""
+        """Replace the first LIST:Pin in _item_list with a new source.
+
+        Preserves interpretation parameters from the previous main source,
+        matching After Effects' ReplaceWithSequence / Replace behaviour
+        (conform_frame_rate, alpha_mode, etc. would otherwise reset to
+        defaults when the pin is swapped).
+        """
+        old = self._main_source
+        if isinstance(old, FootageSource) and isinstance(source, FootageSource):
+            # Wire project so color-management setters can resolve ICC/OCIO.
+            source._project = self._project
+            for attr in (
+                "alpha_mode",
+                "invert_alpha",
+                "premul_color",
+                "field_separation_type",
+                "remove_pulldown",
+                "loop",
+                "conform_frame_rate",
+                "high_quality_field_separation",
+                "interpret_as_linear_light",
+                "preserve_rgb",
+                "media_color_space",
+            ):
+                try:
+                    setattr(source, attr, getattr(old, attr))
+                except Exception:
+                    continue
+
         is_solid = isinstance(source, SolidSource)
         self._replace_pin(0, AVItem._pin_for_source(source))
 
