@@ -151,6 +151,17 @@ class TestRoundtripRovingTriggers:
         assert after[0] == before[0]
         assert after[3] == before[3]
 
+    def test_spatial_tangent_retimes_the_run(self) -> None:
+        prop = _position("keyframe_roving.aep")
+        before = _times(prop)
+        # Adding a curve to the first segment changes the arc length,
+        # which shifts where the roving keyframes land.
+        prop.keyframes[0].out_spatial_tangent = [100.0, 0.0, 0.0]
+        after = _times(prop)
+        assert after[1:3] != before[1:3]
+        assert after[0] == before[0]
+        assert after[3] == before[3]
+
     def test_clearing_roving_pins_that_keyframe(self) -> None:
         prop = _position("keyframe_roving.aep")
         pinned = _times(prop)[2]

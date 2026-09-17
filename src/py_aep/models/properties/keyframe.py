@@ -384,6 +384,8 @@ class Keyframe:
         kf_data = self._ldat_item.kf_data
         if hasattr(kf_data, "in_spatial_tangents"):
             kf_data.in_spatial_tangents = self._rescale_tangent(value, invert=True)
+            if self._property is not None:
+                self._property._redistribute_roving_keyframes()
 
     @property
     def out_spatial_tangent(self) -> list[float] | None:
@@ -415,6 +417,8 @@ class Keyframe:
         kf_data = self._ldat_item.kf_data
         if value is not None and hasattr(kf_data, "out_spatial_tangents"):
             kf_data.out_spatial_tangents = self._rescale_tangent(value, invert=True)
+            if self._property is not None:
+                self._property._redistribute_roving_keyframes()
 
     def _neighbour_window(self) -> tuple[list[Keyframe], int]:
         """This keyframe plus its immediate neighbours, and its own index.
