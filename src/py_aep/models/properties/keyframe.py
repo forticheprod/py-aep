@@ -9,7 +9,6 @@ from ...resolvers.interpolation import (
     _DEFAULT_INFLUENCE,
     auto_spatial_tangents,
     auto_temporal_speeds,
-    roving_keyframe_times,
 )
 from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
@@ -149,6 +148,16 @@ class Keyframe:
     """
     `True` if the keyframe is roving. The first and last keyframe in
     a property cannot rove. Read / Write.
+
+    Setting this on a spatial property re-times the run of roving
+    keyframes so the speed the bounding keyframes ask for is held
+    across the whole span.  Editing a spatial keyframe's
+    [value][Keyframe.value] or [time][Keyframe.time] re-times the
+    adjacent runs automatically.
+
+    Raises:
+        ValueError: When the property is not spatial, or the keyframe
+            is the first or last in its property.
     """
 
     temporal_auto_bezier = ChunkField.bool(
@@ -195,37 +204,9 @@ class Keyframe:
         self._value: _ValueType | object = _VALUE_FROM_CHUNK
 
     def _on_roving_set(self) -> None:
-        """Re-space the property's roving keyframes after the flag changed.
-
-        A roving keyframe's time is derived from the spatial path, so
-        flipping the flag either way changes the anchor set and moves the
-        remaining roving keys. AE applies this immediately, which is why
-        toggling roving off does not restore the original time - the
-        redistribution already happened.
-
-        Note this is a snapshot: AE also re-derives these times whenever the
-        path itself changes (a value edit, a tangent edit, or reparenting).
-        py-aep does not yet hook those, so a later path change leaves the
-        times stale until roving is set again.
-        """
-        prop = self._property
-        if prop is None:
-            return
-        targets = [
-            (prop.keyframes[index], time)
-            for index, time in roving_keyframe_times(prop.keyframes).items()
-        ]
-        offset = prop._start_time_offset
-        for keyframe, time in targets:
-            units = round((time - offset) * keyframe._timebase)
-            if units == keyframe.time_units:
-                continue
-            # A degenerate path (coincident keyframes) can map two keys onto
-            # one unit; leave those where they are rather than raising out of
-            # a flag write.
-            if any(k is not keyframe and k.time_units == units for k in prop.keyframes):
-                continue
-            keyframe._set_time_units(units)
+        """Re-space the property's roving keyframes after the flag changed."""
+        if self._property is not None:
+            self._property._redistribute_roving_keyframes()
 
     def _force_bezier_both_sides(self) -> None:
         """Set both interpolation types to BEZIER, skipping no-op writes."""
@@ -559,6 +540,7 @@ class Keyframe:
             )
             self._write_kf_value(raw)
             self._value = raw
+            prop._redistribute_roving_keyframes()
         else:
             self._value = value
 
@@ -877,6 +859,7 @@ class Keyframe:
         self._ldat_item.time_units = units
         if prop is not None:
             prop._reposition_keyframe(self)
+            prop._redistribute_roving_keyframes()
 
     @property
     def frame_time(self) -> int:
