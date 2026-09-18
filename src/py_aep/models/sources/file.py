@@ -11,6 +11,7 @@ from ...binary.footage_chunks import (
     SspcChunk,
     TextOptiChunk,
     build_ai_layer_opti_data,
+    build_dpx_opti_data,
     build_generic_opti_data,
     build_psd_layer_opti_data,
     build_psd_opti_data,
@@ -101,6 +102,8 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
         )
     if fmt.opti == "hdr":
         return build_rhdr_opti_data()
+    if fmt.opti == "dpx":
+        return build_dpx_opti_data()
     if fmt.opti == "text":
         return build_text_opti_data(info.width, info.height)
     if fmt.opti == "empty" and not sequence:

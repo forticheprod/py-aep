@@ -32,6 +32,8 @@ class FileFormat(NamedTuple):
     - `"psd"`: AE itself writes an empty opti for PSD (AE 2026 measured);
       py-aep generates a `PsdOptiChunk` with layer metadata, which AE
       accepts on re-open. The 602-byte body is produced by `build_psd_opti_data`.
+    - `"dpx"`: AE needs the 48-byte DPX/Cineon format-options header (see
+      `build_dpx_opti_data`).
     - `"unsupported"`: AE requires a format-specific `opti` not yet
       reverse-engineered; import is refused rather than crashing AE."""
 
@@ -44,10 +46,18 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     ".mov": FileFormat("MOoV", False, "generic"),
     ".m4v": FileFormat("MOoV", False, "generic"),
     ".aiff": FileFormat("AIFC", False, "generic"),
+    # AIFF alias; verified: AE 2026 imports aif.aif as AIFC footage
+    # (media_gap_formats.aep fixture).
+    ".aif": FileFormat("AIFC", False, "generic"),
     ".wav": FileFormat("WAVE", False, "generic"),
     ".png": FileFormat("png!", False, "empty"),
     ".tif": FileFormat("TIF ", False, "tiff"),
     ".tiff": FileFormat("TIF ", False, "tiff"),
+    # DPX and Cineon still frames and sequences; verified: AE 2026 imports
+    # both as sDPX footage with a 48-byte format-options header
+    # (media_gap_formats.aep fixture).
+    ".dpx": FileFormat("sDPX", False, "dpx"),
+    ".cin": FileFormat("sDPX", False, "dpx"),
     ".jpg": FileFormat("ZPEG", False, "generic"),
     ".jpeg": FileFormat("ZPEG", False, "generic"),
     ".tga": FileFormat("TPIC", False, "generic"),
@@ -126,6 +136,8 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".jpeg": frozenset({_FOOTAGE}),  # alias of .jpg
     ".tif": frozenset({_FOOTAGE}),
     ".tiff": frozenset({_FOOTAGE}),  # alias of .tif
+    ".dpx": frozenset({_FOOTAGE}),
+    ".cin": frozenset({_FOOTAGE}),
     ".tga": frozenset({_FOOTAGE}),
     ".bmp": frozenset({_FOOTAGE}),
     ".gif": frozenset({_FOOTAGE}),
@@ -136,6 +148,7 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".wmv": frozenset({_FOOTAGE}),
     # Audio - footage only (m4a may also carry an AE project).
     ".aiff": frozenset({_FOOTAGE}),
+    ".aif": frozenset({_FOOTAGE}),
     ".wav": frozenset({_FOOTAGE}),
     ".m4a": frozenset({_FOOTAGE, _PROJECT}),
     # AE still reports these importable as footage.

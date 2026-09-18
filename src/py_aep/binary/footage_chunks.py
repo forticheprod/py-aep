@@ -492,6 +492,18 @@ def build_psd_layer_opti_data(
     return chunk.tobytes()
 
 
+def build_dpx_opti_data() -> bytes:
+    """Build the 48-byte `opti` asset-info body for a DPX / Cineon file or sequence.
+
+    AE writes an `sDPX` format-options header identical to the `CineonRoptChunk`
+    render-options layout. Verified: AE 2026 media_gap_formats.aep fixture
+    writes this exact 48-byte body for every DPX and Cineon item.
+    """
+    from .render_chunks import CineonRoptChunk
+
+    return CineonRoptChunk(ten_bit_black_point=0).tobytes()
+
+
 def build_rhdr_opti_data() -> bytes:
     """Build the 30-byte Radiance HDR (`RHDR`) `opti` asset-info body.
 

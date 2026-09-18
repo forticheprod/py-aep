@@ -1141,6 +1141,74 @@ def _probe_wmv(fp: IO[bytes]) -> MediaInfo:
     return MediaInfo(width=width, height=height, duration=duration)
 
 
+def _probe_dpx_cineon(fp: IO[bytes]) -> MediaInfo:
+    """Probe a DPX (SMPTE 268M) or Cineon (SMPTE V4.5) file header.
+
+    Handles both byte orders for each format: DPX big-endian (`SDPX`) and
+    little-endian (`XPDS`), Cineon big-endian (``0x802A5FD7``) and
+    little-endian (``0xD75F2A80``).
+
+    Args:
+        fp: Readable binary stream positioned at the start of the file.
+
+    Returns:
+        A `MediaInfo` with width, height, bit_depth, and has_alpha filled in.
+        Duration is 0 (still frame); pixel_aspect defaults to 1.0.
+
+    Raises:
+        ValueError: If the file is too short or has an unrecognised magic number.
+    """
+    header = fp.read(1024)
+    if len(header) < 1024:
+        raise ValueError("Not a valid DPX/Cineon file (header too short)")
+
+    magic = header[:4]
+
+    # --- DPX (SMPTE 268M) ---
+    if magic in (b"SDPX", b"XPDS"):
+        endian = ">" if magic == b"SDPX" else "<"
+        n_elem = struct.unpack(endian + "H", header[770:772])[0]
+        width, height = struct.unpack(endian + "II", header[772:780])
+        has_alpha = False
+        bit_depth = 8
+        for i in range(min(n_elem, 8)):
+            offset = 780 + i * 72
+            if offset + 24 > len(header):
+                break
+            desc, _, _, bits = struct.unpack("BBBB", header[offset + 20 : offset + 24])
+            if i == 0:
+                bit_depth = bits
+            # Descriptor 4 = alpha-only, 51 = RGBA, 52 = ABGR.
+            if desc in (4, 51, 52):
+                has_alpha = True
+        return MediaInfo(
+            width=width, height=height, bit_depth=bit_depth, has_alpha=has_alpha
+        )
+
+    # --- Cineon (SMPTE V4.5) ---
+    if magic in (b"\x80\x2a\x5f\xd7", b"\xd7\x5f\x2a\x80"):
+        endian = ">" if magic == b"\x80\x2a\x5f\xd7" else "<"
+        # Byte 192 = orientation (u1), byte 193 = number_of_elements (u1).
+        n_elem = header[193]
+        has_alpha = n_elem > 3
+        bit_depth = 8
+        width, height = 0, 0
+        for i in range(min(n_elem, 8)):
+            offset = 196 + i * 28
+            if offset + 12 > len(header):
+                break
+            _, _, bits, _ = struct.unpack("BBBB", header[offset : offset + 4])
+            w, h = struct.unpack(endian + "II", header[offset + 4 : offset + 12])
+            if i == 0:
+                bit_depth = bits
+                width, height = w, h
+        return MediaInfo(
+            width=width, height=height, bit_depth=bit_depth, has_alpha=has_alpha
+        )
+
+    raise ValueError("Not a valid DPX/Cineon file (bad magic number)")
+
+
 _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".png": _probe_png,
     ".mov": _probe_mov,
@@ -1162,6 +1230,7 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".pdf": _probe_text,
     ".wmv": _probe_wmv,
     ".aiff": _probe_aiff,
+    ".aif": _probe_aiff,
     ".wav": _probe_wav,
     ".exr": _probe_exr,
     ".tif": _probe_tiff,
@@ -1173,4 +1242,6 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".gif": _probe_gif,
     ".psd": _probe_psd,
     ".psb": _probe_psd,
+    ".dpx": _probe_dpx_cineon,
+    ".cin": _probe_dpx_cineon,
 }

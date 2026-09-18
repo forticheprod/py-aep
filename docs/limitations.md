@@ -237,7 +237,8 @@ from a static file rather than through AE's live media engine:
 - **`has_alpha` is a per-format heuristic**, not a full media decode. Alpha is
   inferred from the format and header - allocated for PNG/TIFF/BMP/GIF, opaque
   for JPEG, and derived from the channel list (EXR), bit depth (TGA), codec
-  depth (MOV), or layer transparency/channel count (PSD/PSB). These match AE's
+  depth (MOV), descriptor (DPX) or channel count (Cineon), or layer
+  transparency/channel count (PSD/PSB). These match AE's
   import for the tested samples but are not a guaranteed media-accurate decode.
 
 ### PSD layer styles (ImportOptions.layer_styles)

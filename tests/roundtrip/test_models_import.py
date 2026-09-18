@@ -164,6 +164,22 @@ class TestImportFileSingle:
         assert item.main_source.is_still is False
         assert item.duration == pytest.approx(0.1274376, abs=1e-5)
 
+    def test_import_dpx(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "dpx_8bit_rgb.dpx"))
+        assert isinstance(item.main_source, FileSource)
+        assert item.main_source.is_still is True
+        assert item.main_source._sspc.source_format_type == "sDPX"
+        assert len(item.main_source._opti.data) == 48
+
+    def test_import_cin(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "cin.cin"))
+        assert isinstance(item.main_source, FileSource)
+        assert item.main_source.is_still is True
+        assert item.main_source._sspc.source_format_type == "sDPX"
+        assert len(item.main_source._opti.data) == 48
+
     def test_roundtrip_m4v_aiff(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
         for name in ("m4v.m4v", "click.aiff"):
@@ -264,6 +280,16 @@ class TestImportFileSequence:
         item = project.import_file(opts)
         assert item.name == "sequence_[001-003].gif"
         assert item.main_source.is_still is False
+
+    def test_import_dpx_sequence(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(ASSETS / "dpx_seq.0001.dpx")
+        opts.sequence = True
+        item = project.import_file(opts)
+        assert item.name == "dpx_seq.[0001-0003].dpx"
+        assert item.main_source.is_still is False
+        assert item.main_source._sspc.source_format_type == "sDPX"
+        assert len(item.main_source._opti.data) == 48
 
     def test_item_labels_by_kind(self, tmp_path: Path) -> None:
         # AE 2026 probed: still=5, audio=7, video=3 (Label Preference
@@ -505,6 +531,13 @@ class TestImportGapFormats:
             ("eps.eps", "TEXT", 1921, 2881),
             ("pdf.pdf", "TEXT", 595, 842),
             ("wmv.wmv", "WMED", 640, 360),
+            ("aif.aif", "AIFC", 0, 0),
+            ("cin.cin", "sDPX", 16, 16),
+            ("dpx_8bit_rgb.dpx", "sDPX", 16, 16),
+            ("dpx_8bit_rgba.dpx", "sDPX", 16, 16),
+            ("dpx_10bit_be.dpx", "sDPX", 16, 16),
+            ("dpx_12bit_be.dpx", "sDPX", 16, 16),
+            ("dpx_16bit_rgba_be.dpx", "sDPX", 16, 16),
         ],
     )
     def test_import_source_format_and_dims(
@@ -571,6 +604,50 @@ class TestImportGapFormats:
         out2 = tmp_path / "g2.aep"
         parse_aep(out).project.save(out2)
         assert out.read_bytes() == out2.read_bytes()
+
+    def test_dpx_cineon_roundtrip_is_byte_identical(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        project.import_file(ImportOptions(ASSETS / "dpx_8bit_rgb.dpx"))
+        opts = ImportOptions(ASSETS / "dpx_seq.0001.dpx")
+        opts.sequence = True
+        project.import_file(opts)
+        out = tmp_path / "dpx_test.aep"
+        project.save(out)
+        out2 = tmp_path / "dpx_test2.aep"
+        parse_aep(out).project.save(out2)
+        assert out.read_bytes() == out2.read_bytes()
+
+    def test_media_gap_formats_matches_ae_fixture(self) -> None:
+        truth_project = parse_aep(IMPORT_DIR / "media_gap_formats.aep").project
+        truth_items = {f.name: f for f in truth_project.footages}
+
+        project = parse_aep(BASE).project
+        for filename, seq in [
+            ("aif.aif", False),
+            ("cin.cin", False),
+            ("dpx_8bit_rgb.dpx", False),
+            ("dpx_8bit_rgba.dpx", False),
+            ("dpx_10bit_be.dpx", False),
+            ("dpx_12bit_be.dpx", False),
+            ("dpx_16bit_rgba_be.dpx", False),
+            ("dpx_seq.0001.dpx", True),
+        ]:
+            opts = ImportOptions(ASSETS / filename)
+            opts.sequence = seq
+            item = project.import_file(opts)
+            truth = truth_items[item.name]
+            assert (item.width, item.height) == (truth.width, truth.height)
+            assert abs(item.duration - truth.duration) < 1e-5
+            assert abs(item.frame_rate - truth.frame_rate) < 1e-5
+            assert (
+                item.main_source._sspc.source_format_type
+                == truth.main_source._sspc.source_format_type
+            )
+            assert len(item.main_source._opti.data) == len(truth.main_source._opti.data)
+            if item.main_source._sspc.source_format_type == "sDPX":
+                assert item.main_source._opti.data == truth.main_source._opti.data
+            assert item.main_source.has_alpha == truth.main_source.has_alpha
+            assert item._idta.label == truth._idta.label
 
 
 class TestImportAiComp:
