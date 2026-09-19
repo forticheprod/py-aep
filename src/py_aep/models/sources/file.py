@@ -5,6 +5,7 @@ import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, cast
 
+from ...binary.bin_utils import to_dividend_divisor
 from ...binary.footage_chunks import (
     OptiChunk,
     PsdOptiChunk,
@@ -584,17 +585,12 @@ class FileSource(FootageSource):
             sspc._reserved_a8 = b"\x00\x00\x00\x02"
             sspc._reserved_b8 = b"\x01"
             sspc._reserved_ba = b"\x01\x01"
-            sspc._reserved_6f = b"\x00\x00\x00\x00\x08"
-            # Sequence-specific sspc fields AE writes and does NOT recompute
-            # on open (proven necessary by an AE open+resave diff: AE
-            # preserves py's value rather than normalizing it). full_frame is
-            # False for a sequence and the 0xC8 kind bytes are 0x0000 (not
-            # the 0x0002 raster-media default). The other sequence-import
-            # diffs (duration divisor reduction and _reserved_3e) are
-            # cosmetic: AE recomputes them on open, so py leaves them at
-            # their defaults.
-            sspc.full_frame = False
-            sspc._reserved_c8 = b"\x00\x00"
+            # AE stores a sequence duration as frame_count / frame_rate,
+            # unreduced (3/30, not 1/10): every AE-authored sequence fixture.
+            fps_num, fps_den = to_dividend_divisor(frame_rate)
+            frame_count = round(duration * frame_rate)
+            sspc.duration_dividend = frame_count * fps_den
+            sspc.duration_divisor = fps_num
 
         # Route through variant dispatch so a recognized asset type (e.g.
         # 8BPS -> PsdOptiChunk) is stored as its typed subclass and exposes

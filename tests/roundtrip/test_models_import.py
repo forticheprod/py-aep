@@ -424,18 +424,16 @@ class TestImportFileSequence:
         assert "new_exr.[0002-0003].exr" in names
 
     def test_sequence_sspc_necessary_fields(self, tmp_path: Path) -> None:
-        # AE writes these three sspc fields for image sequences and does NOT
-        # recompute them on open (proven necessary by an AE open+resave
-        # diff, 2026-07-14): full_frame False, 0xC8 kind bytes 0x0000, and
-        # byte 5 of the field-separation block 0x01. Verified byte-identical
-        # to AE-native PNG/EXR/GIF sequence imports.
+        # Sequence sspc fields AE writes and does not recompute on open:
+        # full_frame True, 0xC8 kept at the still-import 0x0002, from_file
+        # set (every AE-authored sequence fixture: STIL, oEXR, sDPX).
         project = parse_aep(BASE).project
         opts = ImportOptions(ASSETS / "new_exr.0002.exr")
         opts.sequence = True
         item = project.import_file(opts)
         sspc = item.main_source._sspc
-        assert sspc.full_frame is False
-        assert sspc._reserved_c8 == b"\x00\x00"
+        assert sspc.full_frame is True
+        assert sspc._reserved_c8 == b"\x00\x02"
         assert sspc.from_file is True
 
 
