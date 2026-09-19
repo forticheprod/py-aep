@@ -61,6 +61,8 @@ class TestImportOptions:
         ".gif": {ImportAsType.FOOTAGE},
         ".dpx": {ImportAsType.FOOTAGE},
         ".cin": {ImportAsType.FOOTAGE},
+        ".heic": {ImportAsType.FOOTAGE},
+        ".heif": {ImportAsType.FOOTAGE},
         ".mp3": {ImportAsType.FOOTAGE},
         ".aif": {ImportAsType.FOOTAGE},
         ".wav": {ImportAsType.FOOTAGE},

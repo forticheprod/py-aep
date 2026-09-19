@@ -26,7 +26,7 @@ class FileFormat(NamedTuple):
 
     - `"empty"`: AE re-reads the located file (PNG, EXR); an empty `opti` works.
     - `"generic"`: AE's generic media importer needs the 58-byte `opti` header
-      (JPEG, BMP, GIF, TGA, MOV, WAV).
+      (JPEG, TGA, MOV, WAV, HEIC).
     - `"tiff"`: AE needs the 602-byte TIFF-specific header (see
       `build_tiff_opti_data`).
     - `"psd"`: AE itself writes an empty opti for PSD (AE 2026 measured);
@@ -62,6 +62,8 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     # (media_gap_formats.aep fixture).
     ".dpx": FileFormat("sDPX", False, "dpx"),
     ".cin": FileFormat("sDPX", False, "dpx"),
+    ".heic": FileFormat("AIDE", False, "generic"),
+    ".heif": FileFormat("AIDE", False, "generic"),
     ".jpg": FileFormat("ZPEG", False, "generic"),
     ".jpeg": FileFormat("ZPEG", False, "generic"),
     ".tga": FileFormat("TPIC", False, "generic"),
@@ -142,6 +144,8 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".tiff": frozenset({_FOOTAGE}),  # alias of .tif
     ".dpx": frozenset({_FOOTAGE}),
     ".cin": frozenset({_FOOTAGE}),
+    ".heic": frozenset({_FOOTAGE}),
+    ".heif": frozenset({_FOOTAGE}),
     ".tga": frozenset({_FOOTAGE}),
     ".bmp": frozenset({_FOOTAGE}),
     ".gif": frozenset({_FOOTAGE}),

@@ -209,6 +209,24 @@ class TestImportFileSingle:
         assert item.main_source._sspc.source_format_type == "sDPX"
         assert len(item.main_source._opti.data) == 48
 
+    def test_import_heic(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "heic.heic"))
+        assert isinstance(item.main_source, FileSource)
+        assert item.main_source.is_still is True
+        assert item.main_source._sspc.source_format_type == "AIDE"
+        assert len(item.main_source._opti.data) == 58
+        assert item.main_source.has_alpha is False
+
+    def test_import_heic_alpha(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "heic_alpha.heic"))
+        assert isinstance(item.main_source, FileSource)
+        assert item.main_source.is_still is True
+        assert item.main_source._sspc.source_format_type == "AIDE"
+        assert item.main_source.has_alpha is True
+        assert item.main_source.alpha_mode == AlphaMode.STRAIGHT
+
     def test_roundtrip_m4v_aiff(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
         for name in (
@@ -680,6 +698,8 @@ class TestImportGapFormats:
             ("dpx_10bit_be.dpx", "sDPX", 16, 16),
             ("dpx_12bit_be.dpx", "sDPX", 16, 16),
             ("dpx_16bit_rgba_be.dpx", "sDPX", 16, 16),
+            ("heic.heic", "AIDE", 16, 16),
+            ("heic_alpha.heic", "AIDE", 16, 16),
         ],
     )
     def test_import_source_format_and_dims(
@@ -746,6 +766,43 @@ class TestImportGapFormats:
         out2 = tmp_path / "g2.aep"
         parse_aep(out).project.save(out2)
         assert out.read_bytes() == out2.read_bytes()
+
+    def test_heic_roundtrip_is_byte_identical(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        project.import_file(ImportOptions(ASSETS / "heic.heic"))
+        project.import_file(ImportOptions(ASSETS / "heic_alpha.heic"))
+        out = tmp_path / "heic_test.aep"
+        project.save(out)
+        out2 = tmp_path / "heic_test2.aep"
+        parse_aep(out).project.save(out2)
+        assert out.read_bytes() == out2.read_bytes()
+
+    def test_heic_matches_ae_fixture(self) -> None:
+        fixture_dir = (
+            Path(__file__).parent.parent.parent
+            / "samples"
+            / "models"
+            / "format_options"
+            / "heic"
+        )
+        truth_project = parse_aep(fixture_dir / "base.aep").project
+        truth_items = {f.name: f for f in truth_project.footages}
+
+        project = parse_aep(BASE).project
+        for filename in ("heic.heic", "heic_alpha.heic"):
+            item = project.import_file(ImportOptions(ASSETS / filename))
+            truth = truth_items[item.name]
+            assert (item.width, item.height) == (truth.width, truth.height)
+            assert (
+                item.main_source._sspc.source_format_type
+                == truth.main_source._sspc.source_format_type
+            )
+            assert len(item.main_source._opti.data) == len(truth.main_source._opti.data)
+            assert item.main_source.has_alpha == truth.main_source.has_alpha
+            assert (
+                item.main_source._sspc.alpha_mode_raw
+                == truth.main_source._sspc.alpha_mode_raw
+            )
 
     def test_dpx_cineon_roundtrip_is_byte_identical(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project

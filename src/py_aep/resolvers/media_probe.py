@@ -1864,6 +1864,65 @@ def _probe_dpx_cineon(fp: IO[bytes]) -> MediaInfo:
     raise ValueError("Not a valid DPX/Cineon file (bad magic number)")
 
 
+def _probe_heif(fp: IO[bytes]) -> MediaInfo:
+    """Probe a HEIF/HEIC (ISO/IEC 23008-12) still image.
+
+    Walks the ISOBMFF box tree (`meta` -> `iprp` -> `ipco`) for `ispe`
+    (dimensions), `pixi` (bit depth) and an `auxC` alpha item. Accepts any
+    `ftyp` whose major or compatible brands include `heic`, `heix`, `mif1`
+    or `heif`.
+
+    Raises:
+        ValueError: If the file is too short, has no HEIF brand, or no `ispe`.
+    """
+    data = fp.read()
+    if len(data) < 12:
+        raise ValueError("Not a valid HEIF file (too short)")
+
+    ftyp_size = _u(data, 0, 4)
+    if data[4:8] != b"ftyp" or ftyp_size < 16 or ftyp_size > len(data):
+        raise ValueError("Not a valid HEIF file (missing ftyp box)")
+    heif_brands = {b"heic", b"heix", b"mif1", b"heif"}
+    major = data[8:12]
+    compat = {data[i : i + 4] for i in range(16, ftyp_size, 4)}
+    if major not in heif_brands and not (compat & heif_brands):
+        raise ValueError("Not a valid HEIF file (no HEIF brand in ftyp)")
+
+    width = height = 0
+    bit_depth = 8
+    has_alpha = False
+    for a1, b1, e1 in _atoms(data, 0, len(data)):
+        if a1 != b"meta":
+            continue
+        # meta is a full box: version(1) + flags(3) precede its children.
+        for a2, b2, e2 in _atoms(data, b1 + 4, e1):
+            if a2 != b"iprp":
+                continue
+            for a3, b3, e3 in _atoms(data, b2, e2):
+                if a3 != b"ipco":
+                    continue
+                for a4, b4, e4 in _atoms(data, b3, e3):
+                    if a4 == b"ispe" and width == 0:
+                        # ispe is a full box: version(4) + width(4) + height(4).
+                        width = _u(data, b4 + 4, 4)
+                        height = _u(data, b4 + 8, 4)
+                    elif a4 == b"pixi" and bit_depth == 8:
+                        nc = data[b4 + 4] if b4 + 5 <= e4 else 0
+                        if nc and b4 + 5 + nc <= e4:
+                            bit_depth = data[b4 + 5]
+                    elif a4 == b"auxC":
+                        # Null-terminated URN after version+flags; the alpha
+                        # plane's is urn:mpeg:hevc:2015:auxid:1.
+                        urn = data[b4 + 4 : e4].split(b"\x00", 1)[0]
+                        if b"auxid" in urn:
+                            has_alpha = True
+    if width == 0:
+        raise ValueError("Not a valid HEIF file (no ispe box found)")
+    return MediaInfo(
+        width=width, height=height, bit_depth=bit_depth, has_alpha=has_alpha
+    )
+
+
 _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".png": _probe_png,
     ".mov": _probe_mov,
@@ -1900,4 +1959,6 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".psb": _probe_psd,
     ".dpx": _probe_dpx_cineon,
     ".cin": _probe_dpx_cineon,
+    ".heic": _probe_heif,
+    ".heif": _probe_heif,
 }

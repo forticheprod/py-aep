@@ -39,6 +39,8 @@ class TestMediaProbe:
             ("dpx_10bit_be.dpx", 16, 16, False),
             ("dpx_12bit_be.dpx", 16, 16, False),
             ("dpx_16bit_rgba_be.dpx", 16, 16, True),
+            ("heic.heic", 16, 16, False),
+            ("heic_alpha.heic", 16, 16, True),
         ],
     )
     def test_still_image(
@@ -217,6 +219,22 @@ class TestProbeFormatVariants:
 
         with pytest.raises(ValueError, match="too short"):
             _probe_dpx_cineon(BytesIO(b"SDPX\x00\x00\x08\x00"))
+
+    def test_heif_bad_ftyp_raises(self) -> None:
+        from io import BytesIO
+
+        from py_aep.resolvers.media_probe import _probe_heif
+
+        with pytest.raises(ValueError, match="HEIF"):
+            _probe_heif(BytesIO(b"\x00\x00\x00\x14ftypmp41\x00\x00\x00\x00mp41"))
+
+    def test_heif_truncated_raises(self) -> None:
+        from io import BytesIO
+
+        from py_aep.resolvers.media_probe import _probe_heif
+
+        with pytest.raises(ValueError, match="too short"):
+            _probe_heif(BytesIO(b"\x00\x00\x00\x08"))
 
     def test_bmp_os2_core_header(self) -> None:
         """Legacy OS/2 BITMAPCOREHEADER (size 12) stores dims as u2."""
