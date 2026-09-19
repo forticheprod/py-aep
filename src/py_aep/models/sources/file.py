@@ -47,6 +47,7 @@ from ...data.file_formats import (
     PSD_COMP_EXTENSIONS,
     FileFormat,
     get_file_format,
+    sequence_source_format,
 )
 from ...enums import LinearLightMode
 from ...resolvers.ai_bounds import EMPTY_BOX, footage_size, read_ai_layer_bounds
@@ -117,7 +118,7 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
         return build_text_opti_data(info.width, info.height)
     if fmt.opti == "empty" and not sequence:
         return b""
-    return build_generic_opti_data(fmt.source_format)
+    return build_generic_opti_data(fmt.source_format, sequence=sequence)
 
 
 #: The profile AE falls back to for media that carries none of its own.
@@ -125,9 +126,10 @@ _DEFAULT_PROFILE = "sRGB IEC61966-2.1"
 
 #: What AE assigns instead to video it decodes itself - an animated GIF, an
 #: MPEG, a SWF or a WMV. A still or an image sequence of the same format
-#: keeps the default, and QuickTime/MP4 name their space instead.
+#: keeps the default, and QuickTime/MP4 name their space instead. STIL and
+#: IMIO are BMP/GIF on Windows and macOS (see `GENERIC_STILL_FORMATS`).
 _VIDEO_PROFILE = "Rec.709 Gamma 2.4"
-_VIDEO_DECODED_FORMATS = frozenset({"STIL", "SWF ", "MPEO", "WMED"})
+_VIDEO_DECODED_FORMATS = frozenset({"STIL", "IMIO", "SWF ", "MPEO", "WMED"})
 
 #: Formats whose importer embeds After Effects' own catalogued copy of the
 #: profile rather than the file's bytes, and treats an untagged file as
@@ -147,7 +149,7 @@ _VIDEO_CONTAINER_FORMATS = frozenset({"MOoV", "XCEX"})
 #: importers. An audio-only QuickTime and any image sequence keep the
 #: default. The setting is inert below 32 bpc either way.
 _LINEAR_LIGHT_OFF_FORMATS = frozenset(
-    {"ZPEG", "STIL", "SWF ", "MPEO", "WMED", "MOoV", "XCEX"}
+    {"ZPEG", "STIL", "IMIO", "SWF ", "MPEO", "WMED", "MOoV", "XCEX"}
 )
 
 
@@ -900,6 +902,13 @@ class FileSource(FootageSource):
             raise ValueError("a sequence range start requires a range end")
         if has_range and range_end < range_start:
             raise ValueError("Range end cannot be less than range start")
+
+        # BMP/GIF sequences take the folder path's platform importer code.
+        fmt = fmt._replace(
+            source_format=sequence_source_format(
+                fmt, windows=isinstance(file, PureWindowsPath)
+            )
+        )
 
         frame_re = re.compile(re.escape(prefix) + r"(\d+)$")
         frames: list[tuple[int, str]] = []

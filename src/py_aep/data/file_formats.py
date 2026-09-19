@@ -41,6 +41,27 @@ class FileFormat(NamedTuple):
 #: `sspc.source_format_type` of a 3D model scene (`.fbx`).
 FORMAT_3D_MODEL_SCENE = "LDOM"
 
+#: BMP/GIF have no dedicated importer; AE tags them with the platform's
+#: generic still importer. Measured in AE 2026 on both platforms: an IMIO
+#: still opens on either, but an IMIO sequence never opens on Windows and
+#: a STIL sequence never opens on macOS, so sequences follow the path's
+#: platform (imio_*.aep vs media_replacement.aep fixtures).
+GENERIC_STILL_FORMATS = {"macos": "IMIO", "windows": "STIL"}
+
+
+def sequence_source_format(fmt: FileFormat, *, windows: bool) -> str:
+    """The `sspc` code for an image sequence of `fmt`.
+
+    Args:
+        fmt: The frame file's format.
+        windows: `True` for a Windows-style sequence folder path (see
+            `GENERIC_STILL_FORMATS`).
+    """
+    if windows and fmt.source_format == GENERIC_STILL_FORMATS["macos"]:
+        return GENERIC_STILL_FORMATS["windows"]
+    return fmt.source_format
+
+
 _FILE_FORMATS: dict[str, FileFormat] = {
     ".exr": FileFormat("oEXR", True, "empty"),
     ".mov": FileFormat("MOoV", False, "generic"),
@@ -67,8 +88,9 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     ".jpg": FileFormat("ZPEG", False, "generic"),
     ".jpeg": FileFormat("ZPEG", False, "generic"),
     ".tga": FileFormat("TPIC", False, "generic"),
-    ".bmp": FileFormat("STIL", False, "generic"),
-    ".gif": FileFormat("STIL", False, "generic"),
+    # Platform-specific generic still importer; see GENERIC_STILL_FORMATS.
+    ".bmp": FileFormat(GENERIC_STILL_FORMATS["macos"], False, "generic"),
+    ".gif": FileFormat(GENERIC_STILL_FORMATS["macos"], False, "generic"),
     ".psd": FileFormat("8BPS", False, "psd"),
     ".psb": FileFormat("8BPS", False, "psd"),
     # Video/audio containers (generic opti; codec bytes re-derived by AE).

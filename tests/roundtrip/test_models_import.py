@@ -814,6 +814,58 @@ class TestImportGapFormats:
         parse_aep(out).project.save(out2)
         assert out.read_bytes() == out2.read_bytes()
 
+    def test_generic_still_imports_match_ae_fixtures(self) -> None:
+        # AE 2026 macOS tags BMP/GIF stills and sequences IMIO
+        # (imio_stills.aep, imio_sequence.aep). Windows opens IMIO stills but
+        # not IMIO sequences; macOS opens no STIL item (the former default).
+        truth_items = {}
+        for fixture in ("imio_stills.aep", "imio_sequence.aep"):
+            for f in parse_aep(IMPORT_DIR / fixture).project.footages:
+                truth_items[f.name] = f
+
+        project = parse_aep(BASE).project
+        for filename, seq in [
+            ("bmp.bmp", False),
+            ("sequence_001.gif", False),
+            ("sequence_001.gif", True),
+        ]:
+            opts = ImportOptions(ASSETS / filename)
+            opts.sequence = seq
+            item = project.import_file(opts)
+            truth = truth_items[item.name]
+            ours, ae = item.main_source, truth.main_source
+            assert (
+                ours._sspc.source_format_type == ae._sspc.source_format_type == "IMIO"
+            )
+            assert (item.width, item.height) == (truth.width, truth.height)
+            assert len(ours._opti.data) == len(ae._opti.data) == 58
+            if seq:
+                # Sequence opti is byte-exact; a sequence duration is stored
+                # as frames / fps unreduced, as AE writes it.
+                assert ours._opti.data == ae._opti.data
+                assert (
+                    (ours._sspc.duration_dividend, ours._sspc.duration_divisor)
+                    == (
+                        ae._sspc.duration_dividend,
+                        ae._sspc.duration_divisor,
+                    )
+                    == (3, 30)
+                )
+
+    def test_generic_still_sequence_code_follows_path_platform(self) -> None:
+        # A Windows-style sequence folder takes the Windows importer (STIL,
+        # as in media_replacement.aep); stills stay IMIO on both platforms.
+        from py_aep.data.file_formats import get_file_format, sequence_source_format
+
+        for ext in (".bmp", ".gif"):
+            fmt = get_file_format(ext)
+            assert fmt.source_format == "IMIO"
+            assert sequence_source_format(fmt, windows=False) == "IMIO"
+            assert sequence_source_format(fmt, windows=True) == "STIL"
+        # Only the generic still importer is platform-specific.
+        png = get_file_format(".png")
+        assert sequence_source_format(png, windows=True) == "png!"
+
     def test_media_gap_formats_matches_ae_fixture(self) -> None:
         truth_project = parse_aep(IMPORT_DIR / "media_gap_formats.aep").project
         truth_items = {f.name: f for f in truth_project.footages}

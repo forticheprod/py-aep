@@ -343,28 +343,36 @@ class SspcChunk(Chunk):
 # ---------------------------------------------------------------------------
 
 
-def build_generic_opti_data(source_format: str) -> bytes:
+def build_generic_opti_data(source_format: str, *, sequence: bool = False) -> bytes:
     """Build the 58-byte generic `opti` asset-info body for a file source.
 
     AE accepts an empty `opti` for single still images (it re-reads the
     located file), but requires this header to recognize non-TIFF/PSD
     image sequences and audio/video. The layout is the format 4-char code,
-    a version word, the chunk length, the reversed code, and importer
-    markers - matching what AE writes for WAV/MOV/etc.
+    a version word, the chunk length, then a 16-byte importer block: the
+    reversed code, an ``0xFFFFFFFF`` marker, and codec bytes AE re-derives
+    on open. AE zeroes the block for a BMP/GIF sequence through its generic
+    still importer (``IMIO`` on macOS, ``STIL`` on Windows; imio_sequence.aep
+    and media_replacement.aep are byte-exact).
 
     Note: TIFF sequences use `build_tiff_opti_data` instead (AE 2026
     measured); PSD sequences use an empty opti via `PsdOptiChunk`.
+
+    Args:
+        source_format: 4-char `sspc` source-format code.
+        sequence: `True` for an image sequence.
     """
     code = source_format.encode("ascii")[:4].ljust(4, b" ")
+    if sequence and source_format in ("IMIO", "STIL"):
+        block = b"\x00" * 16
+    else:
+        block = code[::-1] + b"\xff\xff\xff\xff" + b"\x00" * 4 + b"\x01\x00\x00\x00"
     return (
         code
         + b"\x00\x05"
         + b"\x00\x00\x00\x3a"  # 58 = total length
         + b"\x00" * 20
-        + code[::-1]
-        + b"\xff\xff\xff\xff"
-        + b"\x00\x00\x00\x00"  # codec fourcc (unknown / not needed)
-        + b"\x01\x00\x00\x00"
+        + block
         + b"\x01"
         + b"\x00" * 11
     )
