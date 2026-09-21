@@ -11,7 +11,11 @@ from py_aep import parse as parse_aep
 from py_aep.binary.chunk import ListChunk
 from py_aep.binary.scalar_chunks import Utf8Chunk
 from py_aep.binary.utils import find_by_type
-from py_aep.color.icc import default_icc_library, icc_profile_id
+from py_aep.color.icc import (
+    ColorProfileNotFoundError,
+    default_icc_library,
+    icc_profile_id,
+)
 from py_aep.models.import_options import ImportOptions
 from py_aep.models.sources.file import UNDEFINED_FRAME, FileSource
 from py_aep.resolvers.media_probe import probe_media
@@ -227,6 +231,20 @@ class TestSourceModifiedStamp:
         assert source._sspc.source_modified == 0
 
 
+def _require_profile(name: str) -> None:
+    """Skip unless the named profile is discoverable on this machine.
+
+    An assigned media profile is written by embedding the ICC bytes AE
+    itself would embed, discovered from the installed Adobe Color dirs. With
+    no ICC store (a CI runner, any machine without AE) the import records no
+    profile at all, by design - see `_media_profile_records`.
+    """
+    try:
+        default_icc_library().bytes_for(name)
+    except ColorProfileNotFoundError:
+        pytest.skip(f"ICC profile {name!r} not installed")
+
+
 class TestMediaColorProfileRecord:
     """AE records the profile a file embeds, and assigns sRGB when it embeds
     none (AE 2026, measured across PNG, JPEG, TIFF, PSD, EXR, HDR, TGA and
@@ -251,6 +269,8 @@ class TestMediaColorProfileRecord:
         ],
     )
     def test_media_color_space(self, filename: str, expected: str) -> None:
+        if expected != "Embedded":
+            _require_profile(expected)
         assert self._import(filename).media_color_space == expected
 
     def test_embedded_profile_is_recorded_by_id(self) -> None:
@@ -290,11 +310,13 @@ class TestMediaColorProfileRecord:
     def test_video_gets_rec709(self, filename: str, expected: str) -> None:
         """AE assigns Rec.709 to the video it decodes itself, and sRGB to a
         still or an image sequence of the same format."""
+        _require_profile(expected)
         assert self._import(filename).media_color_space == expected
 
     def test_tiff_and_psd_embed_the_catalogued_copy(self) -> None:
         """Their importers embed AE's own copy of the profile, not the
         file's bytes - the two differ in the advisory rendering intent."""
+        _require_profile("sRGB IEC61966-2.1")
         source = self._import("8bits.tif")
         blob = probe_media(SAMPLES.parent / "assets" / "8bits.tif").icc_profile
         assert blob is not None
