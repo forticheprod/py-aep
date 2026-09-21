@@ -868,6 +868,12 @@ class Property(PropertyBase):
         keyframes = self.keyframes
         if len(keyframes) < 3:
             return
+        # This runs on every value, time and tangent write, so a property
+        # with no roving keyframes must not pay for a full pass. The flag is
+        # read off the chunk rather than through the `roving` descriptor:
+        # that hop was four fifths of the cost.
+        if not any(kf._ldat_item.roving for kf in keyframes):
+            return
         targets = roving_keyframe_times(keyframes)
         if not targets:
             return

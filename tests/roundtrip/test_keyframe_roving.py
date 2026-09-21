@@ -274,3 +274,63 @@ class TestOrientationInert:
         prop._redistribute_roving_keyframes()
         assert [k._ldat_item.time_units for k in keyframes] == before
         assert keyframes[1].roving is True
+
+
+class TestRoundtripRovingTimeIsDerived:
+    """A roving keyframe has no time of its own.
+
+    Every time write is followed by a redistribution that re-derives it from
+    the path, so accepting one would silently discard the caller's value.
+    """
+
+    def test_setting_time_on_a_roving_keyframe_raises(self) -> None:
+        prop = _position("keyframe_roving.aep")
+        before = _times(prop)
+        with pytest.raises(ValueError, match="derived from the spatial path"):
+            prop.keyframes[1].time = 0.25
+        assert _times(prop) == before
+
+    def test_setting_frame_time_on_a_roving_keyframe_raises(self) -> None:
+        prop = _position("keyframe_roving.aep")
+        before = _times(prop)
+        with pytest.raises(ValueError, match="derived from the spatial path"):
+            prop.keyframes[1].frame_time = 6
+        assert _times(prop) == before
+
+    def test_an_anchor_still_moves_and_retimes_the_run(self) -> None:
+        prop = _position("keyframe_roving.aep")
+        before = _times(prop)
+        prop.keyframes[-1].time = prop.keyframes[-1].time + 1.0
+        after = _times(prop)
+        assert after[-1] > before[-1]
+        assert after[1:3] != before[1:3]
+
+    def test_clearing_roving_makes_the_time_writable_again(self) -> None:
+        prop = _position("keyframe_roving.aep")
+        prop.keyframes[1].roving = False
+        prop.keyframes[1].time = 0.25
+        assert prop.keyframes[1].time == pytest.approx(0.25)
+
+
+class TestRoundtripRovingEarlyOut:
+    """Redistribution runs on every value, time and tangent write, so a
+    property carrying no roving keyframe must be left completely alone."""
+
+    def test_value_write_leaves_a_non_roving_run_untouched(self) -> None:
+        prop = _position("keyframe_roving.aep")
+        for kf in prop.keyframes:
+            if kf.roving:
+                kf.roving = False
+        before = _times(prop)
+
+        prop.keyframes[0].value = [-400.0, 150.0, 0.0]
+        prop.keyframes[2].out_spatial_tangent = [80.0, 0.0, 0.0]
+
+        assert _times(prop) == before
+
+    def test_roving_run_still_retimes_after_the_early_out(self) -> None:
+        prop = _position("keyframe_roving.aep")
+        assert any(kf.roving for kf in prop.keyframes), "sample must carry a run"
+        before = _times(prop)
+        prop.keyframes[0].value = [-400.0, 150.0, 0.0]
+        assert _times(prop) != before

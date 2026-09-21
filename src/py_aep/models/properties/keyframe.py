@@ -908,9 +908,13 @@ class Keyframe:
         tangents are left as-is, like dragging a keyframe in AE's
         timeline.
 
+        A roving keyframe has no time of its own - it is derived from the
+        spatial path - so it cannot be assigned one. Clear
+        [roving][Keyframe.roving] first.
+
         Raises:
             ValueError: When another keyframe already sits at the target
-                time.
+                time, or when this keyframe is roving.
         """
         seconds = self._layer_time
         prop = self._property
@@ -923,6 +927,14 @@ class Keyframe:
     @time.setter
     def time(self, value: float) -> None:
         validate_number(value)
+        if self.roving:
+            # The redistribution that follows every time write would
+            # immediately re-derive this keyframe's time from the path, so
+            # accepting the value would silently discard it.
+            raise ValueError(
+                "a roving keyframe's time is derived from the spatial path; "
+                "set roving to False before moving it"
+            )
         prop = self._property
         offset = prop._start_time_offset if prop is not None else 0.0
         stretch = prop._time_stretch if prop is not None else 1.0
