@@ -205,6 +205,14 @@ class AVLayer(Layer):
         Read-only."""
         return self.three_d_layer
 
+    @property
+    def _pixel_size(self) -> tuple[float, float] | None:
+        """The layer's pixel dimensions, or `None` when either is zero."""
+        width, height = self.width, self.height
+        if width and height:
+            return float(width), float(height)
+        return None
+
     three_d_per_char = ChunkField.bool(
         "_ldta",
         "three_d_per_char",
@@ -317,8 +325,15 @@ class AVLayer(Layer):
             self._ldta.three_d_layer = True
 
     def _on_three_d_layer_set(self) -> None:
+        # Circular: synthesis.core imports the layer classes it synthesizes for.
+        from ...synthesis.core import apply_dimensionality_naming  # noqa: PLC0415
+
         if self._ldta.three_d_layer:
             self._ldta.environment_layer = False
+        # AE renames "Rotation" <-> "Z Rotation" the moment the 3-D switch is
+        # toggled, and normalizes a 2-D layer's dead Scale Z to 100 in the
+        # chunk on either side of it - so the setter always writes through.
+        apply_dimensionality_naming(self, reset_scale_z=True)
 
     @property
     def _matte_layer_id(self) -> int:
@@ -990,6 +1005,38 @@ class AVLayer(Layer):
         if old_matte is not None:
             self._re_enable_matte(old_matte)
 
+    def _refresh_former_null_defaults(self) -> None:
+        """Re-derive the transform defaults a null layer had.
+
+        Synthesis gives a null the origin as its Anchor Point and forces its
+        Opacity to 0; with a real source both come from the source instead.
+        Only touches a property AE never wrote - once the user has set one,
+        the value is theirs and a source swap must not move it.
+        """
+        transform = self.transform
+        if transform is None:
+            return
+        size = self._pixel_size
+
+        def synthesized(match_name: str) -> Property | None:
+            prop = transform.property(match_name)
+            if not isinstance(prop, Property) or prop.keyframes:
+                return None
+            if prop._tdbs is None or not prop._tdbs.synthetic:
+                return None
+            return prop
+
+        anchor = synthesized("ADBE Anchor Point")
+        if anchor is not None and size is not None:
+            default = [size[0] / 2.0, size[1] / 2.0, 0.0]
+            anchor.default_value = default
+            anchor._cache_value(default)
+
+        opacity = synthesized("ADBE Opacity")
+        if opacity is not None and opacity.value == 0.0:
+            opacity.default_value = 100.0
+            opacity._cache_value(100.0)
+
     def replace_source(self, new_source: AVItem, fix_expressions: bool = False) -> None:
         """Replace the source item for this layer.
 
@@ -1050,3 +1097,7 @@ class AVLayer(Layer):
 
         if self.null_layer:
             self._ldta.null_layer = False
+            # A null's Anchor Point default is the origin; with a source it is
+            # the source's centre. Refresh the cached default so the model
+            # reports what a re-parse of this file will.
+            self._refresh_former_null_defaults()

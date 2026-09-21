@@ -63,6 +63,13 @@ class _ParseContext(NamedTuple):
     effect_param_defs: dict[str, dict[str, dict[str, Any]]]
     composition: CompItem
 
+    layer_size: tuple[float, float] | None = None
+    """Pixel size of the layer these properties belong to.
+
+    Effect point parameters normalize against the layer, not the
+    composition, so the size has to travel with the parse. `None` where
+    there is no layer in scope (e.g. re-parsing a single mask path)."""
+
     @property
     def tdmn(self) -> TdmnChunk:
         """The group's first match-name chunk."""
@@ -91,12 +98,12 @@ def _property_parser(
     return decorator
 
 
-@_suppress_materialization()
 def parse_properties(
     match_name_runs: list[tuple[str, list[Chunk]]],
     child_depth: int,
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
+    layer_size: tuple[float, float] | None = None,
 ) -> list[Property | PropertyGroup]:
     """Dispatch sub-property chunks into parsed Property/PropertyGroup items.
 
@@ -109,6 +116,8 @@ def parse_properties(
         child_depth: The property depth for parsed child properties.
         effect_param_defs: Project-level effect parameter definitions.
         composition: The parent composition.
+        layer_size: Pixel size of the owning layer, for effect point
+            denormalization.
 
     Returns:
         Ordered list of parsed properties and property groups.
@@ -137,6 +146,7 @@ def parse_properties(
                         child_depth=child_depth,
                         effect_param_defs=effect_param_defs,
                         composition=composition,
+                        layer_size=layer_size,
                     )
                 )
             )
@@ -166,6 +176,7 @@ def _dispatch_sspc(ctx: _ParseContext) -> list[Property | PropertyGroup]:
             effect_param_defs=ctx.effect_param_defs,
             composition=ctx.composition,
             tdmn=tdmn,
+            layer_size=ctx.layer_size,
         )
         results.append(effect)
     return results
@@ -192,6 +203,7 @@ def _dispatch_tdgp(ctx: _ParseContext) -> list[Property | PropertyGroup]:
                 effect_param_defs=ctx.effect_param_defs,
                 composition=ctx.composition,
                 tdmn=tdmn,
+                layer_size=ctx.layer_size,
             )
             mask._auto_name = f"Mask {i}"
             masks.append(mask)
@@ -206,6 +218,7 @@ def _dispatch_tdgp(ctx: _ParseContext) -> list[Property | PropertyGroup]:
             effect_param_defs=ctx.effect_param_defs,
             composition=ctx.composition,
             tdmn=tdmn,
+            layer_size=ctx.layer_size,
         )
         results.append(group)
     return results
@@ -330,6 +343,7 @@ def _dispatch_ovg2(ctx: _ParseContext) -> list[Property | PropertyGroup]:
         effect_param_defs=ctx.effect_param_defs,
         composition=ctx.composition,
         tdmn=ctx.tdmn,
+        layer_size=ctx.layer_size,
     )
     _reclass_override_leaves(group)
     return [group]
@@ -356,6 +370,7 @@ def parse_property_group(
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
     tdmn: TdmnChunk,
+    layer_size: tuple[float, float] | None = None,
 ) -> PropertyGroup:
     """
     Parse a property group.
@@ -382,6 +397,7 @@ def parse_property_group(
         child_depth=property_depth + 1,
         effect_param_defs=effect_param_defs,
         composition=composition,
+        layer_size=layer_size,
     )
 
     # Try to read the group-level tdsb chunk.
@@ -423,6 +439,7 @@ def _parse_mask_atom(
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
     tdmn: TdmnChunk,
+    layer_size: tuple[float, float] | None = None,
 ) -> MaskPropertyGroup:
     """Parse a mask atom into a MaskPropertyGroup.
 
@@ -446,6 +463,7 @@ def _parse_mask_atom(
         effect_param_defs=effect_param_defs,
         composition=composition,
         tdmn=tdmn,
+        layer_size=layer_size,
     )
 
     # Extract the mask shape's tdsb for the roto_bezier descriptor.

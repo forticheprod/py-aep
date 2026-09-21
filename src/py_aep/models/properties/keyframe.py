@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, cast
 from py_aep.enums import KeyframeInterpolationType, Label
 
 from ...resolvers.interpolation import (
+    _DEFAULT_INFLUENCE,
     auto_spatial_tangents,
     auto_temporal_speeds,
-    roving_keyframe_times,
 )
 from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
@@ -29,8 +29,6 @@ if TYPE_CHECKING:
         list[float], float, Gradient, MarkerValue, Shape, TextDocument, None
     ]
 
-
-_DEFAULT_INFLUENCE = 100.0 / 6.0
 
 _VALUE_FROM_CHUNK = object()  # sentinel: read value from _ldat_item
 
@@ -82,7 +80,7 @@ def _validate_roving(value: bool, keyframe: Keyframe) -> None:
     prop = keyframe._property
     if prop is None:
         return
-    if not prop.is_spatial:
+    if not prop._has_motion_path:
         raise ValueError(
             f"roving can only be set on a spatial property, not {prop.match_name!r}"
         )
@@ -150,6 +148,16 @@ class Keyframe:
     """
     `True` if the keyframe is roving. The first and last keyframe in
     a property cannot rove. Read / Write.
+
+    Setting this on a spatial property re-times the run of roving
+    keyframes so the speed the bounding keyframes ask for is held
+    across the whole span.  Editing a spatial keyframe's
+    [value][Keyframe.value] or [time][Keyframe.time] re-times the
+    adjacent runs automatically.
+
+    Raises:
+        ValueError: When the property is not spatial, or the keyframe
+            is the first or last in its property.
     """
 
     temporal_auto_bezier = ChunkField.bool(
@@ -196,37 +204,9 @@ class Keyframe:
         self._value: _ValueType | object = _VALUE_FROM_CHUNK
 
     def _on_roving_set(self) -> None:
-        """Re-space the property's roving keyframes after the flag changed.
-
-        A roving keyframe's time is derived from the spatial path, so
-        flipping the flag either way changes the anchor set and moves the
-        remaining roving keys. AE applies this immediately, which is why
-        toggling roving off does not restore the original time - the
-        redistribution already happened.
-
-        Note this is a snapshot: AE also re-derives these times whenever the
-        path itself changes (a value edit, a tangent edit, or reparenting).
-        py-aep does not yet hook those, so a later path change leaves the
-        times stale until roving is set again.
-        """
-        prop = self._property
-        if prop is None:
-            return
-        targets = [
-            (prop.keyframes[index], time)
-            for index, time in roving_keyframe_times(prop.keyframes).items()
-        ]
-        offset = prop._start_time_offset
-        for keyframe, time in targets:
-            units = round((time - offset) * keyframe._timebase)
-            if units == keyframe.time_units:
-                continue
-            # A degenerate path (coincident keyframes) can map two keys onto
-            # one unit; leave those where they are rather than raising out of
-            # a flag write.
-            if any(k is not keyframe and k.time_units == units for k in prop.keyframes):
-                continue
-            keyframe._set_time_units(units)
+        """Re-space the property's roving keyframes after the flag changed."""
+        if self._property is not None:
+            self._property._redistribute_roving_keyframes()
 
     def _force_bezier_both_sides(self) -> None:
         """Set both interpolation types to BEZIER, skipping no-op writes."""
@@ -256,10 +236,10 @@ class Keyframe:
         if speeds is None:
             return
         self._ensure_ease()
-        for direction, values in (("in", speeds[0]), ("out", speeds[1])):
-            backing = (
-                self._in_temporal_ease if direction == "in" else self._out_temporal_ease
-            )
+        for direction, values, backing in (
+            ("in", speeds[0], self._in_temporal_ease),
+            ("out", speeds[1], self._out_temporal_ease),
+        ):
             if backing is None or len(backing) != len(values):
                 continue
             self._apply_ease(
@@ -304,17 +284,9 @@ class Keyframe:
         `invert` divides instead, for the write path.
         """
         prop = self._property
-        scale = prop._effect_scale if prop is not None else None
-        if scale is None:
+        if prop is None:
             return list(tangent)
-        result = []
-        for index, component in enumerate(tangent):
-            factor = scale[index] if index < len(scale) else None
-            if factor is None or (invert and not factor):
-                result.append(component)
-            else:
-                result.append(component / factor if invert else component * factor)
-        return result
+        return prop._apply_effect_scale(tangent, invert=invert)
 
     def _bind_property(self, prop: Property) -> None:
         """Set the owning property and propagate speed factor to ease."""
@@ -412,6 +384,8 @@ class Keyframe:
         kf_data = self._ldat_item.kf_data
         if hasattr(kf_data, "in_spatial_tangents"):
             kf_data.in_spatial_tangents = self._rescale_tangent(value, invert=True)
+            if self._property is not None:
+                self._property._redistribute_roving_keyframes()
 
     @property
     def out_spatial_tangent(self) -> list[float] | None:
@@ -443,6 +417,18 @@ class Keyframe:
         kf_data = self._ldat_item.kf_data
         if value is not None and hasattr(kf_data, "out_spatial_tangents"):
             kf_data.out_spatial_tangents = self._rescale_tangent(value, invert=True)
+            if self._property is not None:
+                self._property._redistribute_roving_keyframes()
+
+    def _neighbour_window(self) -> tuple[list[Keyframe], int]:
+        """This keyframe plus its immediate neighbours, and its own index.
+
+        One to three keyframes. The interpolation resolvers clamp at the
+        ends themselves, so a boundary keyframe simply yields a shorter
+        window rather than a special case here.
+        """
+        window = [kf for kf in (self._prev, self, self._next) if kf is not None]
+        return window, 1 if self._prev is not None else 0
 
     def _auto_spatial_tangents(self) -> tuple[list[float], list[float]] | None:
         """AE's derived tangents for a spatial auto-bezier keyframe.
@@ -455,28 +441,10 @@ class Keyframe:
         Derived in the raw chunk space, matching what these accessors
         return. Returns `None` when the keyframe carries no spatial data.
         """
-        kf_data = self._ldat_item.kf_data
-        if not hasattr(kf_data, "in_spatial_tangents"):
+        if not hasattr(self._ldat_item.kf_data, "in_spatial_tangents"):
             return None
-        current = list(kf_data.value)
-        previous, following = self._prev, self._next
-        if previous is None and following is None:
-            zero = [0.0] * len(current)
-            return zero, list(zero)
-        if previous is None:
-            assert following is not None
-            values = [current, list(following._ldat_item.kf_data.value)]
-            index = 0
-        elif following is None:
-            values = [list(previous._ldat_item.kf_data.value), current]
-            index = 1
-        else:
-            values = [
-                list(previous._ldat_item.kf_data.value),
-                current,
-                list(following._ldat_item.kf_data.value),
-            ]
-            index = 1
+        window, index = self._neighbour_window()
+        values = [list(kf._ldat_item.kf_data.value) for kf in window]
         return auto_spatial_tangents(values, index)
 
     def _auto_temporal_speeds(self) -> tuple[list[float], list[float]] | None:
@@ -497,34 +465,12 @@ class Keyframe:
                 return [float(component) for component in value]
             return None
 
-        current = as_vector(self)
-        if current is None:
+        window, index = self._neighbour_window()
+        values = [as_vector(kf) for kf in window]
+        if any(value is None for value in values):
             return None
-        previous, following = self._prev, self._next
-        if previous is None and following is None:
-            zero = [0.0] * len(current)
-            return zero, list(zero)
-        if previous is None:
-            assert following is not None
-            neighbour = as_vector(following)
-            if neighbour is None:
-                return None
-            return auto_temporal_speeds(
-                [current, neighbour], [self.time, following.time], 0
-            )
-        if following is None:
-            neighbour = as_vector(previous)
-            if neighbour is None:
-                return None
-            return auto_temporal_speeds(
-                [neighbour, current], [previous.time, self.time], 1
-            )
-        low, high = as_vector(previous), as_vector(following)
-        if low is None or high is None:
-            return None
-        return auto_temporal_speeds(
-            [low, current, high], [previous.time, self.time, following.time], 1
-        )
+        times = [kf._layer_time for kf in window]
+        return auto_temporal_speeds(cast("list[list[float]]", values), times, index)
 
     @property
     def value(
@@ -598,6 +544,7 @@ class Keyframe:
             )
             self._write_kf_value(raw)
             self._value = raw
+            prop._redistribute_roving_keyframes()
         else:
             self._value = value
 
@@ -798,7 +745,7 @@ class Keyframe:
             speeds = _segment_speed(
                 self if direction == "out" else other,
                 other if direction == "out" else self,
-                self._property.is_spatial if self._property else False,
+                self._property._has_motion_path if self._property else False,
             )
             return [KeyframeEase(speed=s, influence=_DEFAULT_INFLUENCE) for s in speeds]
 
@@ -880,8 +827,32 @@ class Keyframe:
 
     @property
     def _timebase(self) -> float:
-        """Keyframe units per second, from this keyframe's cached rates."""
+        """Keyframe units per second, in the owning LAYER's own time.
+
+        A time-stretched layer counts its ticks against a stretched base
+        (`cdta.internal_timebase * max(1, |stretch| / 100)`), so the comp's
+        own base only applies at 100 %. Falls back to the cached comp rates
+        when the keyframe has no property yet (construction).
+        """
+        prop = self._property
+        if prop is not None:
+            base = prop._layer_timebase
+            if base:
+                return base
         return _timebase_units(self._time_scale, self._frame_rate)
+
+    @property
+    def _layer_time(self) -> float:
+        """Time of the keyframe in the owning LAYER's own seconds.
+
+        The binary stores ticks against the layer's timebase, so this is
+        what the stored value means before any stretch is applied. Every
+        interpolation runs here rather than in composition time: After
+        Effects evaluates the temporal bezier in layer time, its ease
+        speeds are per layer second, and a negatively stretched layer's
+        keys only ascend on this axis (see [time][]).
+        """
+        return self._ldat_item.time_units / self._timebase
 
     @property
     def time_units(self) -> int:
@@ -905,6 +876,7 @@ class Keyframe:
         self._ldat_item.time_units = units
         if prop is not None:
             prop._reposition_keyframe(self)
+            prop._redistribute_roving_keyframes()
 
     @property
     def frame_time(self) -> int:
@@ -936,22 +908,37 @@ class Keyframe:
         tangents are left as-is, like dragging a keyframe in AE's
         timeline.
 
+        A roving keyframe has no time of its own - it is derived from the
+        spatial path - so it cannot be assigned one. Clear
+        [roving][Keyframe.roving] first.
+
         Raises:
             ValueError: When another keyframe already sits at the target
-                time.
+                time, or when this keyframe is roving.
         """
-        seconds = self._ldat_item.time_units / self._timebase
+        seconds = self._layer_time
         prop = self._property
         if prop is not None:
-            seconds += prop._start_time_offset
+            # Ticks are layer time; a stretched layer maps them onto the
+            # composition timeline by its stretch factor.
+            seconds = seconds * prop._time_stretch + prop._start_time_offset
         return seconds
 
     @time.setter
     def time(self, value: float) -> None:
         validate_number(value)
+        if self.roving:
+            # The redistribution that follows every time write would
+            # immediately re-derive this keyframe's time from the path, so
+            # accepting the value would silently discard it.
+            raise ValueError(
+                "a roving keyframe's time is derived from the spatial path; "
+                "set roving to False before moving it"
+            )
         prop = self._property
         offset = prop._start_time_offset if prop is not None else 0.0
-        self._set_time_units(round((value - offset) * self._timebase))
+        stretch = prop._time_stretch if prop is not None else 1.0
+        self._set_time_units(round((value - offset) / stretch * self._timebase))
 
 
 def _segment_speed(
@@ -968,8 +955,10 @@ def _segment_speed(
     """
     # Seconds rather than whole frames: two keyframes can sit inside the
     # same frame at different sub-frame times, and rounding them together
-    # would report a zero-length segment.
-    time_seconds = kf_b.time - kf_a.time
+    # would report a zero-length segment. LAYER seconds, because AE stores
+    # ease speeds per layer second - a 150 % layer whose keys are 3 comp
+    # seconds apart reports 25 %/s where the comp-time span gives 16.667.
+    time_seconds = kf_b._layer_time - kf_a._layer_time
     if time_seconds == 0:
         return [0.0]
     val_a = kf_a.value

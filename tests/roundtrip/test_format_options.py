@@ -205,7 +205,7 @@ class TestRoundtripCineonFormatOptions:
     @pytest.mark.parametrize("value", [-100, 0x10000, 10**12])
     def test_validate_highlight_expansion_rejects_out_of_u2(self, value: int) -> None:
         # Backed by a u2 field: an unbounded value overflowed `struct` and
-        # crashed save() mid-write, leaving a partial .aep (fuzz finding).
+        # crashed save() mid-write, leaving a partial .aep.
         _, opts = _parse_fresh(FORMAT_DIR / "cineon" / "base.aep")
         assert isinstance(opts, CineonFormatOptions)
         with pytest.raises(ValueError):

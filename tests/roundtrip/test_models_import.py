@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from helpers import ai_layer_opti_boxes, parse_project_fresh
 
-from py_aep import AlphaMode, ImportAsType
+from py_aep import AlphaMode, FieldSeparationType, ImportAsType, PulldownPhase
 from py_aep import parse as parse_aep
 from py_aep.binary.footage_chunks import (
     build_ai_layer_opti_data,
@@ -156,6 +156,35 @@ class TestImportFileSingle:
         assert item.has_audio is False
         assert item.frame_rate == pytest.approx(29.97, abs=1e-3)
 
+    def test_import_mp4(self, tmp_path: Path) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "mp4_5s-360p.mp4"))
+        assert isinstance(item.main_source, FileSource)
+        assert item.name == "mp4_5s-360p.mp4"
+        assert (item.width, item.height) == (640, 360)
+        assert item.has_video is True
+        assert item.has_audio is True
+        assert item.frame_rate == pytest.approx(30.0, abs=1e-3)
+        # AE 2026 routes .mp4 through its Media Core importer, not QuickTime.
+        assert item.main_source._sspc.source_format_type == "XCEX"
+
+    def test_import_mp4_undecodable_codec(self, tmp_path: Path) -> None:
+        # AE imports an mp4 whose video codec it cannot decode as audio only;
+        # claiming the video makes AE report the footage missing on open.
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "mp4_av1_with_audio.mp4"))
+        assert (item.width, item.height) == (0, 0)
+        assert item.has_video is False
+        assert item.has_audio is True
+        assert item.duration == pytest.approx(1.0, abs=1e-3)
+
+    def test_import_mp4_with_nothing_decodable_raises(self, tmp_path: Path) -> None:
+        # With no audio to fall back on AE refuses the file itself, so import
+        # must raise rather than write a footage item AE would call missing.
+        project = parse_aep(BASE).project
+        with pytest.raises(ValueError, match="no video track"):
+            project.import_file(ImportOptions(ASSETS / "mp4_vp9_no_audio.mp4"))
+
     def test_import_aiff(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
         item = project.import_file(ImportOptions(ASSETS / "click.aiff"))
@@ -182,7 +211,12 @@ class TestImportFileSingle:
 
     def test_roundtrip_m4v_aiff(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
-        for name in ("m4v.m4v", "click.aiff"):
+        for name in (
+            "m4v.m4v",
+            "click.aiff",
+            "mp4_5s-360p.mp4",
+            "mp4_av1_with_audio.mp4",
+        ):
             project.import_file(ImportOptions(ASSETS / name))
         out1 = tmp_path / "a.aep"
         project.save(out1)
@@ -384,7 +418,7 @@ class TestImportFileSequence:
         sspc = item.main_source._sspc
         assert sspc.full_frame is False
         assert sspc._reserved_c8 == b"\x00\x00"
-        assert sspc._reserved_4a == b"\x00\x00\x00\x00\x00\x01\x00\x00\x00"
+        assert sspc.from_file is True
 
 
 class TestReplaceAndProxy:
@@ -402,6 +436,25 @@ class TestReplaceAndProxy:
         assert item.name == "mov_480.mov"
         assert (item.width, item.height) == (480, 270)
         assert item.has_audio is True
+
+    def test_replace_with_mp4(self, tmp_path: Path) -> None:
+        _, item = self._png_footage()
+        item.replace(ASSETS / "mp4_640x360.mp4")
+        assert isinstance(item.main_source, FileSource)
+        assert item.name == "mp4_640x360.mp4"
+        assert (item.width, item.height) == (640, 360)
+        assert item.has_audio is False
+        assert item.frame_rate == pytest.approx(29.97, abs=1e-3)
+        assert item.main_source._sspc.source_format_type == "XCEX"
+
+    def test_replace_with_undecodable_mp4_raises_and_keeps_source(self) -> None:
+        # The new FileSource is built before it is swapped in, so a refused
+        # replace must leave the existing source untouched.
+        _, item = self._png_footage()
+        with pytest.raises(ValueError, match="no video track"):
+            item.replace(ASSETS / "mp4_vp9_no_audio.mp4")
+        assert item.name == "image_with_alpha.png"
+        assert (item.width, item.height) == (640, 346)
 
     def test_replace_with_sequence(self, tmp_path: Path) -> None:
         _, item = self._png_footage()
@@ -505,6 +558,95 @@ class TestReplaceAndProxy:
         assert item.name == "8bits.psd"
         assert (item.width, item.height) == (25, 26)
         assert item.main_source.file_attributes["psd_layer_index"] == 0xFFFFFFFF
+
+
+class TestReplaceKeepsInterpretation:
+    """A replace keeps the Interpret Footage settings (issue #223).
+
+    Expected values are AE 2026 ground truth: AE carries the settings the
+    user chose and takes the measured facts - dimensions, duration, native
+    rate, alpha - from the new file.
+    """
+
+    def _interpreted_movie(self):
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "mov_480.mov"))
+        source = item.main_source
+        source.conform_frame_rate = 25.0
+        source.field_separation_type = FieldSeparationType.UPPER_FIELD_FIRST
+        source.high_quality_field_separation = True
+        source.remove_pulldown = PulldownPhase.WSSWW
+        source.loop = 3
+        source._sspc.pixel_aspect = 2.0  # AVItem.pixel_aspect is read-only
+        return project, item
+
+    def test_replace_keeps_interpretation(self) -> None:
+        _, item = self._interpreted_movie()
+        item.replace(ASSETS / "mov_23_976.mov")
+        source = item.main_source
+        assert source.conform_frame_rate == 25.0
+        assert source.field_separation_type == FieldSeparationType.UPPER_FIELD_FIRST
+        assert source.high_quality_field_separation is True
+        assert source.remove_pulldown == PulldownPhase.WSSWW
+        assert source.loop == 3
+        assert item.pixel_aspect == 2.0
+
+    def test_replace_takes_alpha_from_the_new_file(self) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "image_with_alpha.png"))
+        item.main_source.alpha_mode = AlphaMode.PREMULTIPLIED
+        item.main_source.invert_alpha = True
+        item.replace(ASSETS / "mov_480.mov")
+        # The movie has no alpha channel, so neither has the item.
+        assert item.main_source.has_alpha is False
+        assert item.main_source.invert_alpha is False
+
+    def _sequence_assumed_25(self):
+        """A sequence assumed to run at 25 fps, stored the way AE stores it.
+
+        A sequence of stills has no rate of its own, so AE keeps the assumed
+        one in the native slot and leaves the conform slot at 0.
+        """
+        project = parse_aep(BASE).project
+        opts = ImportOptions(ASSETS / "new_exr.0002.exr")
+        opts.sequence = True
+        item = project.import_file(opts)
+        item.main_source.conform_frame_rate = 25.0
+        return project, item
+
+    def test_replace_with_sequence_keeps_the_assumed_frame_rate(self) -> None:
+        """The reported bug: a sequence's rate reset to the preference."""
+        _, item = self._sequence_assumed_25()
+        item.replace_with_sequence(ASSETS / "sequence_001.gif")
+        # A sequence has no rate of its own: AE keeps the assumed one as the
+        # native rate, and the stored duration follows it.
+        assert item.main_source.native_frame_rate == 25.0
+        assert item.frame_rate == 25.0
+        assert item.main_source._sspc.duration == pytest.approx(3 / 25)
+
+    def test_sequence_rate_does_not_carry_to_a_movie(self) -> None:
+        """An assumed rate is not a conform - a movie keeps its own rate."""
+        _, item = self._sequence_assumed_25()
+        item.replace(ASSETS / "mov_480.mov")
+        assert item.main_source.conform_frame_rate == 0.0
+        assert item.frame_rate == 30.0
+
+    def test_replace_with_solid_keeps_nothing(self) -> None:
+        _, item = self._interpreted_movie()
+        item.replace_with_solid([1.0, 0.0, 0.0], "Solid", 40, 40)
+        assert item.main_source.loop == 1
+        assert item.main_source.field_separation_type == FieldSeparationType.OFF
+
+    def test_interpretation_survives_a_roundtrip(self, tmp_path: Path) -> None:
+        project, item = self._interpreted_movie()
+        item.replace(ASSETS / "mov_23_976.mov")
+        out = tmp_path / "interpretation.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == item.id)
+        source = reparsed.main_source
+        assert source.conform_frame_rate == 25.0
+        assert source.remove_pulldown == PulldownPhase.WSSWW
+        assert source.loop == 3
 
 
 class TestImportGapFormats:

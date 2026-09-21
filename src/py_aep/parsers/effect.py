@@ -17,6 +17,7 @@ from ..binary.utils import (
     find_by_type,
 )
 from ..data.match_names import MATCH_NAME_TO_AUTO_NAME
+from ..data.spatial_flags import EFFECT_PARAM_SPATIAL_FLAGS
 from ..enums import (
     PropertyControlType,
     PropertyType,
@@ -81,6 +82,7 @@ def _param_def_to_spec(
         integer=control_type == PropertyControlType.INTEGER,
         default_value=default_value,
         can_vary_over_time=control_type != PropertyControlType.MASK,
+        spatial_flags=EFFECT_PARAM_SPATIAL_FLAGS.get(control_type),
     )
 
 
@@ -93,7 +95,7 @@ def _resolve_effect_value(
 
     Returns pre-rescale values - 2D point coordinate scaling from parT's
     0-512 range to pixel coordinates is handled separately by
-    `_scale_2d_point`.
+    `_scale_point_to_pixels`.
 
     Args:
         match_name: The property's match name.
@@ -171,28 +173,46 @@ def _apply_param_def_metadata(
         prop._expressions_disabled = True
 
 
-def _scale_2d_point(prop: Property, width: int, height: int) -> None:
-    """Scale a synthesized 2D point from parT's 0-512 range to pixel coordinates.
+def _point_default_pixels(
+    prop: Property, raw: Any, size: tuple[float, float] | None = None
+) -> list[float] | None:
+    """A point parameter's parT default, converted to pixel coordinates.
 
-    parT stores 2D point defaults in a normalized 0-512 range.  This
-    converts both value and default_value to composition pixel coordinates
-    so they match parsed (cdat-backed) values.
+    parT stores 2D/3D point defaults in a 0-512 range normalized against
+    the LAYER, the same reference the instance `cdat` uses - so the
+    conversion is `raw / 512 * layer_size`, with a 3D point's Z sharing
+    the height divisor (`Property._effect_scale`).
 
-    Args:
-        prop: A 2D point Property whose value/default_value are in 0-512 range.
-        width: The composition width in pixels.
-        height: The composition height in pixels.
+    Measured in AE 2026: an untouched Gradient Ramp `End of Ramp` (parT
+    default 256, 512) reports [100, 100] on a 200x100 layer in an 800x600
+    comp, and [128, 256] on a 256x256 layer in a 512x512 comp. Only the
+    layer reproduces both; normalizing against the composition gives
+    [400, 600] and [128, 256] - right only when layer and comp match,
+    which is why this went unnoticed.
+
+    Returns `None` when the value is not a point or the layer has no
+    pixel size.
     """
-    if isinstance(prop._value, list) and len(prop._value) >= 2:
-        prop._value = [
-            prop._value[0] / 512.0 * width,
-            prop._value[1] / 512.0 * height,
-        ]
-    if isinstance(prop.default_value, list) and len(prop.default_value) >= 2:
-        prop.default_value = [
-            prop.default_value[0] / 512.0 * width,
-            prop.default_value[1] / 512.0 * height,
-        ]
+    if size is not None:
+        scale = [size[0], size[1], size[1]]
+    else:
+        # `size` comes from the parse path, which has the layer in hand but
+        # not yet a property attached to it. An already-attached effect
+        # leaves it None and lets `_effect_scale` resolve the layer itself.
+        scale = prop._effect_scale or []
+    if not scale or not isinstance(raw, list) or len(raw) < 2:
+        return None
+    return [v / 512.0 * factor for v, factor in zip(raw, scale)]
+
+
+def _scale_point_to_pixels(prop: Property, size: tuple[float, float]) -> None:
+    """Convert a synthesized point property's value and default in place."""
+    value = _point_default_pixels(prop, prop._value, size)
+    if value is not None:
+        prop._value = value
+    default = _point_default_pixels(prop, prop.default_value, size)
+    if default is not None:
+        prop.default_value = default
 
 
 def parse_effect_param_defs(
@@ -245,6 +265,16 @@ def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
         static_default = param_def.get("default")
     if static_default is not None:
         prop.default_value = static_default
+    elif param_def["property_control_type"] in (
+        PropertyControlType.TWO_D,
+        PropertyControlType.THREE_D,
+    ):
+        # A point pard carries no `default` field, and the parT `last_value`
+        # is the instance's own coordinate, not a plugin default - claiming
+        # it here would make every unedited-looking point report
+        # is_modified=False. `_reset_to_default_values` reads `last_value`
+        # directly for the one case that needs it (a cloned EfdG effect).
+        prop.default_value = None
     elif param_def["property_control_type"] != PropertyControlType.LAYER:
         prop.default_value = param_def.get("default_value")
     _apply_param_def_metadata(prop, param_def)
@@ -310,6 +340,7 @@ def _parse_effect_properties(
     composition: CompItem,
     parent_property: PropertyGroup,
     group_match_name: str = "",
+    layer_size: tuple[float, float] | None = None,
 ) -> list[Property | PropertyGroup]:
     """Parse effect properties and merge with parameter definitions.
 
@@ -330,6 +361,12 @@ def _parse_effect_properties(
     """
     from .property import parse_properties
 
+    # Point parameters normalize against the LAYER. The layer is only
+    # reachable once the effect is attached, so callers that already know
+    # it pass its size; during the initial parse it is unknown and the
+    # composition stands in (what py_aep has always used).
+    point_size = layer_size or (float(composition.width), float(composition.height))
+
     # Skip index-0 internal parameters (not exposed in ExtendScript).
     property_runs = [
         (name, chunks)
@@ -342,6 +379,7 @@ def _parse_effect_properties(
         child_depth=child_depth,
         effect_param_defs={},
         composition=composition,
+        layer_size=layer_size,
     )
 
     # Index parsed children by match_name for O(1) lookup.
@@ -368,11 +406,11 @@ def _parse_effect_properties(
                 child_depth,
                 parent_property=parent_property,
             )
-            if (
-                isinstance(synth, Property)
-                and synth._property_control_type == PropertyControlType.TWO_D
+            if isinstance(synth, Property) and synth._property_control_type in (
+                PropertyControlType.TWO_D,
+                PropertyControlType.THREE_D,
             ):
-                _scale_2d_point(synth, composition.width, composition.height)
+                _scale_point_to_pixels(synth, point_size)
             ordered.append(synth)
 
     # Append tail children not in param_defs (e.g. ADBE Effect Built In
@@ -405,6 +443,7 @@ def parse_effect(
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
     tdmn: TdmnChunk,
+    layer_size: tuple[float, float] | None = None,
 ) -> PropertyGroup:
     """
     Parse an effect.
@@ -424,6 +463,10 @@ def parse_effect(
         effect_param_defs: Project-level effect parameter definitions, used as
             fallback when layer-level parT chunks are missing.
         composition: The parent composition.
+        layer_size: Pixel size of the layer the effect belongs to, used to
+            denormalize point parameters. Optional: during the initial
+            parse the layer does not exist yet and the composition stands
+            in.
     """
     sspc_child_chunks = sspc_chunk.chunks
     fnam_chunk = cast(
@@ -473,7 +516,13 @@ def parse_effect(
         properties=[],
     )
     effect_group._is_effect = True
-    effect_group._property_type = PropertyType.INDEXED_GROUP
+    # An effect group is a NAMED group in After Effects: its parameter list is
+    # fixed, so AE rejects duplicate/remove/moveTo on a param ("parent is not
+    # an INDEXED_GROUP") while accepting them on the effect itself, whose
+    # parent is the indexed Effect Parade. Measured on AE 2026:
+    # `effect.propertyType === PropertyType.INDEXED_GROUP` is false, the
+    # parade's is true.
+    effect_group._property_type = PropertyType.NAMED_GROUP
 
     properties = _parse_effect_properties(
         tdgp_chunk,
@@ -482,6 +531,7 @@ def parse_effect(
         composition=composition,
         parent_property=effect_group,
         group_match_name=group_match_name,
+        layer_size=layer_size,
     )
     effect_group._properties = properties
     for child in properties:

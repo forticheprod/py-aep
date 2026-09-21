@@ -129,6 +129,19 @@ class _BezierEasing:
             return 1.0
         return _calc_bezier(self._get_t_for_x(x), self._cy1, self._cy2)
 
+    def parameter_at(self, x: float) -> float:
+        """The curve parameter `u` whose x-coordinate is `x`.
+
+        Callers that place their control points in absolute value space
+        (rather than the normalized 0-1 y used by `get`) need the parameter
+        itself: only the TIME axis is normalized there.
+        """
+        if x <= 0.0:
+            return 0.0
+        if x >= 1.0:
+            return 1.0
+        return self._get_t_for_x(x)
+
     def _get_t_for_x(self, x: float) -> float:
         """Find t parameter for a given x value."""
         # Find the sample interval
@@ -200,8 +213,6 @@ def _ease_to_bezier_1d(
     v1: float,
     out_ease: KeyframeEase,
     in_ease: KeyframeEase,
-    out_override: tuple[float, float] | None = None,
-    in_override: tuple[float, float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Convert AEP speed/influence ease to normalized bezier control points.
 
@@ -210,14 +221,8 @@ def _ease_to_bezier_1d(
     dt = t1 - t0
     dv = v1 - v0
 
-    if out_override is not None:
-        o_spd, o_inf = out_override
-    else:
-        o_spd, o_inf = out_ease.speed, out_ease.influence
-    if in_override is not None:
-        i_spd, i_inf = in_override
-    else:
-        i_spd, i_inf = in_ease.speed, in_ease.influence
+    o_spd, o_inf = out_ease.speed, out_ease.influence
+    i_spd, i_inf = in_ease.speed, in_ease.influence
 
     # Normalized influence (x-axis control points)
     cx1 = o_inf / 100.0
@@ -235,6 +240,125 @@ def _ease_to_bezier_1d(
         cy2 = cx2
 
     return cx1, cy1, cx2, cy2
+
+
+def _ease_value_handles(
+    t0: float,
+    t1: float,
+    v0: float,
+    v1: float,
+    out_ease: KeyframeEase,
+    in_ease: KeyframeEase,
+) -> tuple[float, float]:
+    """The two value-space control points of a temporal bezier segment.
+
+    After Effects places the ease handles absolutely - `v0 + speed_out * io
+    * dt` and `v1 - speed_in * ii * dt`, with `io`/`ii` the influence
+    fractions - not as a fraction of `v1 - v0`. The two formulations agree
+    whenever the keys differ in value, and only the absolute one keeps the
+    curve bowing when they do not (issue #225: a 1-D BEZIER segment whose
+    keys both hold 50 peaks at 99.5 in AE, not 50).
+    """
+    dt = t1 - t0
+    io = out_ease.influence / 100.0
+    ii = in_ease.influence / 100.0
+    return (
+        v0 + out_ease.speed * io * dt,
+        v1 - in_ease.speed * ii * dt,
+    )
+
+
+def segment_value_slope(
+    t0: float,
+    t1: float,
+    v0: float,
+    v1: float,
+    out_ease: KeyframeEase,
+    in_ease: KeyframeEase,
+    t: float,
+) -> float:
+    """`dv/dt` on the temporal bezier segment at time `t`.
+
+    The instantaneous speed a keyframe inserted at `t` has to carry for the
+    curve to come through unchanged.
+    """
+    dt = t1 - t0
+    if dt <= 0:
+        return 0.0
+    cx1, _cy1, cx2, _cy2 = _ease_to_bezier_1d(t0, t1, v0, v1, out_ease, in_ease)
+    easing = _get_bezier_easing(cx1, _cy1, cx2, _cy2)
+    u = easing.parameter_at((t - t0) / dt)
+    y1, y2 = _ease_value_handles(t0, t1, v0, v1, out_ease, in_ease)
+    mu = 1.0 - u
+    dy_du = 3.0 * (mu * mu * (y1 - v0) + 2.0 * mu * u * (y2 - y1) + u * u * (v1 - y2))
+    dx_du = 3.0 * (mu * mu * cx1 + 2.0 * mu * u * (cx2 - cx1) + u * u * (1.0 - cx2))
+    if abs(dx_du) < 1e-12:
+        return 0.0
+    return dy_du / (dx_du * dt)
+
+
+def split_segment_influences(
+    t0: float,
+    t1: float,
+    v0: float,
+    v1: float,
+    out_ease: KeyframeEase,
+    in_ease: KeyframeEase,
+    t: float,
+) -> tuple[float, float, float, float]:
+    """Influences after splitting a BEZIER segment at `t`, as percentages.
+
+    De Casteljau subdivision of the segment's time handles, which is what
+    keeps the curve identical. Returns
+    `(left_out, new_in, new_out, right_in)`; measured on AE 2026, splitting
+    a 5 s 0->100 segment eased 0/75 on both sides at 2.5 s gives
+    `(75, 12.5, 12.5, 75)`.
+    """
+    dt = t1 - t0
+    if dt <= 0:
+        return (
+            out_ease.influence,
+            _DEFAULT_INFLUENCE,
+            _DEFAULT_INFLUENCE,
+            in_ease.influence,
+        )
+    cx1, cy1, cx2, cy2 = _ease_to_bezier_1d(t0, t1, v0, v1, out_ease, in_ease)
+    easing = _get_bezier_easing(cx1, cy1, cx2, cy2)
+    u = easing.parameter_at((t - t0) / dt)
+
+    def lerp(a: float, b: float) -> float:
+        return a + (b - a) * u
+
+    a = lerp(0.0, cx1)
+    b = lerp(cx1, cx2)
+    c = lerp(cx2, 1.0)
+    d = lerp(a, b)
+    e = lerp(b, c)
+    xs = lerp(d, e)
+
+    left_span = xs
+    right_span = 1.0 - xs
+    if left_span <= 1e-12 or right_span <= 1e-12:
+        return (
+            out_ease.influence,
+            _DEFAULT_INFLUENCE,
+            _DEFAULT_INFLUENCE,
+            in_ease.influence,
+        )
+    # An influence is a percentage of its own sub-span, and a long handle on
+    # a short half can exceed 100 - which AE cannot represent either. Clamp
+    # to the storable range; the curve then bends by whatever the clamp cost.
+    return (
+        _clamp_influence(a / left_span * 100.0),
+        _clamp_influence((xs - d) / left_span * 100.0),
+        _clamp_influence((e - xs) / right_span * 100.0),
+        _clamp_influence((1.0 - c) / right_span * 100.0),
+    )
+
+
+def _clamp_influence(value: float) -> float:
+    """Keep an influence inside the 0.1-100 % range AE stores."""
+    return min(max(value, 0.1), 100.0)
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +515,66 @@ class _BezierPathData:
         self.segment_length = total_length
 
 
+def path_parameter_at_progress(data: _BezierPathData, progress: float) -> float:
+    """The curve parameter `u` at an arc-length fraction of the path.
+
+    `_BezierPathData` samples uniformly in `u`, so the sample index carries
+    the parameter; this walks the same partial-length table
+    `_get_point_on_path` walks and interpolates within the hit segment.
+    """
+    n_pts = len(data.points)
+    if n_pts < 2 or progress <= 0.0:
+        return 0.0
+    if progress >= 1.0:
+        return 1.0
+    distance = data.segment_length * progress
+    added = 0.0
+    for j in range(n_pts - 1):
+        added += data.partial_lengths[j]
+        nxt = data.partial_lengths[j + 1]
+        if added <= distance < added + nxt:
+            local = (distance - added) / nxt if nxt else 0.0
+            return (j + local) / (n_pts - 1)
+    return 1.0
+
+
+def split_spatial_path(
+    v0: list[float],
+    v1: list[float],
+    out_tangent: list[float],
+    in_tangent: list[float],
+    u: float,
+) -> tuple[list[float], list[float], list[float], list[float], list[float]]:
+    """De Casteljau split of a spatial segment at parameter `u`.
+
+    Returns `(left_out, new_in, split_point, new_out, right_in)` - the four
+    tangents the two halves need, plus the point they meet at. Splitting the
+    path is what lets a keyframe be inserted without moving the motion path.
+    """
+    ndim = len(v0)
+    p0 = list(v0)
+    p1 = [v0[d] + out_tangent[d] for d in range(ndim)]
+    p2 = [v1[d] + in_tangent[d] for d in range(ndim)]
+    p3 = list(v1)
+
+    def lerp(a: list[float], b: list[float]) -> list[float]:
+        return [a[d] + (b[d] - a[d]) * u for d in range(ndim)]
+
+    a = lerp(p0, p1)
+    b = lerp(p1, p2)
+    c = lerp(p2, p3)
+    d = lerp(a, b)
+    e = lerp(b, c)
+    split = lerp(d, e)
+    return (
+        [a[i] - p0[i] for i in range(ndim)],
+        [d[i] - split[i] for i in range(ndim)],
+        split,
+        [e[i] - split[i] for i in range(ndim)],
+        [c[i] - p3[i] for i in range(ndim)],
+    )
+
+
 def _get_point_on_path(
     bezier_data: _BezierPathData,
     eased_perc: float,
@@ -511,6 +695,74 @@ def auto_temporal_speeds(
     return through, list(through)
 
 
+def _spatial_progress_easing(
+    dt: float,
+    arc_length: float,
+    out_ease: KeyframeEase | None,
+    in_ease: KeyframeEase | None,
+    *,
+    out_linear: bool = False,
+    in_linear: bool = False,
+) -> _BezierEasing | None:
+    """Ease curve mapping a time fraction to an arc-length fraction.
+
+    A spatial ease carries a speed in units per second, which becomes
+    progress per second once divided by the path's own arc length - one
+    divisor for the whole segment. `None` means "no explicit ease", i.e.
+    constant progress.
+    """
+    if out_ease is None or in_ease is None:
+        return None
+    if out_ease.influence <= 0 and in_ease.influence <= 0:
+        return None
+
+    out_inf_frac = out_ease.influence / 100.0
+    in_inf_frac = in_ease.influence / 100.0
+    ds_dt = 1.0 / arc_length if arc_length > 1e-12 else 0.0
+
+    cx1 = out_inf_frac
+    cy1 = out_ease.speed * ds_dt * out_inf_frac * dt
+    cx2 = 1.0 - in_inf_frac
+    cy2 = 1.0 - in_ease.speed * ds_dt * in_inf_frac * dt
+
+    # A LINEAR side carries no ease: its handle sits on the diagonal, so
+    # progress advances at a constant rate on that side. The side's
+    # interpolation type governs the EASE only - the path itself always
+    # follows the spatial tangents (AE 2026).
+    if out_linear:
+        cy1 = cx1
+    if in_linear:
+        cy2 = cx2
+
+    # A handle that reaches past the unit square is shortened ALONG ITS OWN
+    # SLOPE, which keeps the speed the user asked for and spends influence
+    # instead. Clamping y alone would silently change the speed (AE 2026:
+    # clamping is 0.15 out on the measured overshoot fixture, shortening
+    # 3e-5).
+    if cy1 > 1.0:
+        cx1, cy1 = cx1 / cy1, 1.0
+    elif cy1 < 0.0:
+        cy1 = 0.0
+    if cy2 < 0.0:
+        cx2, cy2 = 1.0 - (1.0 - cx2) / (1.0 - cy2), 0.0
+    elif cy2 > 1.0:
+        cy2 = 1.0
+
+    return _get_bezier_easing(cx1, cy1, cx2, cy2)
+
+
+def _time_fraction_for_progress(easing: _BezierEasing, progress: float) -> float:
+    """Invert `easing`: the time fraction at which it reaches `progress`."""
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        mid = (lo + hi) * 0.5
+        if easing.get(mid) < progress:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) * 0.5
+
+
 def roving_keyframe_times(keyframes: list[Keyframe]) -> dict[int, float]:
     """Times for every roving keyframe, spaced by arc length.
 
@@ -525,8 +777,9 @@ def roving_keyframe_times(keyframes: list[Keyframe]) -> dict[int, float]:
     times to the exact timebase unit for both that case and a flattened one.
 
     Returns:
-        A `{keyframe index: time in seconds}` mapping covering only the
-        roving keyframes that sit between two anchors.
+        A `{keyframe index: time in LAYER seconds}` mapping covering only
+        the roving keyframes that sit between two anchors - the same axis
+        the ticks count, so a stretched layer needs no further conversion.
     """
     result: dict[int, float] = {}
     anchors = [i for i, kf in enumerate(keyframes) if not kf.roving]
@@ -550,11 +803,36 @@ def roving_keyframe_times(keyframes: list[Keyframe]) -> dict[int, float]:
         total = sum(lengths)
         if not lengths or total <= 0:
             continue
-        span_start, span_end = keyframes[start].time, keyframes[end].time
+        span_start = keyframes[start]._layer_time
+        span_end = keyframes[end]._layer_time
+        span = span_end - span_start
+        # The enclosing anchors' ease applies ONCE across the whole roving
+        # run, and the keys are spaced along that single eased span - not
+        # eased per sub-segment. Measured on AE 2026: a 4-point run over 8 s
+        # with 0/80 ease on both anchors puts the two roving keys at 3.54484
+        # and 4.308594, which this reproduces to 7e-6 s (AE's own timebase
+        # unit is 4e-5 s at 24 fps).
+        easing = _spatial_progress_easing(
+            span,
+            total,
+            keyframes[start].out_temporal_ease[0]
+            if keyframes[start].out_temporal_ease
+            else None,
+            keyframes[end].in_temporal_ease[0]
+            if keyframes[end].in_temporal_ease
+            else None,
+            out_linear=keyframes[start].out_interpolation_type
+            == KeyframeInterpolationType.LINEAR,
+            in_linear=keyframes[end].in_interpolation_type
+            == KeyframeInterpolationType.LINEAR,
+        )
         travelled = 0.0
         for offset, index in enumerate(range(start + 1, end)):
             travelled += lengths[offset]
-            result[index] = span_start + (span_end - span_start) * travelled / total
+            progress = travelled / total
+            if easing is not None:
+                progress = _time_fraction_for_progress(easing, progress)
+            result[index] = span_start + span * progress
     return result
 
 
@@ -582,72 +860,6 @@ def _compute_auto_spatial_tangents(
     return result
 
 
-def _compute_auto_temporal_ease(
-    keyframes: list[Keyframe],
-) -> list[tuple[float, float, float, float]]:
-    """Compute temporal ease for keyframes with `temporal_auto_bezier`.
-
-    Returns (out_speed, out_influence, in_speed, in_influence) per keyframe.
-    """
-    n = len(keyframes)
-    result: list[tuple[float, float, float, float]] = []
-
-    for i in range(n):
-        kf = keyframes[i]
-        is_auto = kf.temporal_auto_bezier
-        out_e = kf.out_temporal_ease[0] if kf.out_temporal_ease else None
-        in_e = kf.in_temporal_ease[0] if kf.in_temporal_ease else None
-
-        out_spd = out_e.speed if out_e else 0.0
-        out_inf = out_e.influence if out_e else 0.0
-        in_spd = in_e.speed if in_e else 0.0
-        in_inf = in_e.influence if in_e else 0.0
-
-        if not is_auto or (out_inf > 0.0 or in_inf > 0.0):
-            result.append((out_spd, out_inf, in_spd, in_inf))
-            continue
-
-        v = kf.value
-        v_scalar = v if isinstance(v, (int, float)) else None
-
-        if v_scalar is None:
-            result.append((out_spd, out_inf, in_spd, in_inf))
-            continue
-
-        if i == 0 and n > 1:
-            nv = keyframes[1].value
-            dt = keyframes[1].time - kf.time
-            if isinstance(nv, (int, float)) and dt > 0:
-                out_spd = (float(nv) - float(v_scalar)) / dt
-            out_inf = _DEFAULT_INFLUENCE
-            in_inf = _DEFAULT_INFLUENCE
-        elif i == n - 1 and n > 1:
-            pv = keyframes[i - 1].value
-            dt = kf.time - keyframes[i - 1].time
-            if isinstance(pv, (int, float)) and dt > 0:
-                in_spd = (float(v_scalar) - float(pv)) / dt
-            in_inf = _DEFAULT_INFLUENCE
-            out_inf = _DEFAULT_INFLUENCE
-        else:
-            pv = keyframes[i - 1].value
-            nv = keyframes[i + 1].value
-            dt_total = keyframes[i + 1].time - keyframes[i - 1].time
-            if (
-                isinstance(pv, (int, float))
-                and isinstance(nv, (int, float))
-                and dt_total > 0
-            ):
-                slope = (float(nv) - float(pv)) / dt_total
-                out_spd = slope
-                in_spd = slope
-            out_inf = _DEFAULT_INFLUENCE
-            in_inf = _DEFAULT_INFLUENCE
-
-        result.append((out_spd, out_inf, in_spd, in_inf))
-
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Segment interpolation - lottie-web approach
 # ---------------------------------------------------------------------------
@@ -661,8 +873,6 @@ def _interpolate_bezier_1d(
     v1: float,
     out_ease: KeyframeEase,
     in_ease: KeyframeEase,
-    out_override: tuple[float, float] | None = None,
-    in_override: tuple[float, float] | None = None,
 ) -> float:
     """Interpolate 1D using lottie-web's BezierEasing approach.
 
@@ -673,22 +883,27 @@ def _interpolate_bezier_1d(
     if dt == 0:
         return v0
 
-    # Convert AEP ease to normalized bezier control points
-    cx1, cy1, cx2, cy2 = _ease_to_bezier_1d(
-        t0, t1, v0, v1, out_ease, in_ease, out_override, in_override
-    )
+    # Convert AEP ease to normalized bezier control points. Only the x
+    # (time) axis is used to find the curve parameter; the value axis is
+    # evaluated from absolute control points so a segment whose keys hold
+    # the same value still bows (see `_ease_value_handles`).
+    cx1, cy1, cx2, cy2 = _ease_to_bezier_1d(t0, t1, v0, v1, out_ease, in_ease)
 
     # Get easing function (cached)
     easing = _get_bezier_easing(cx1, cy1, cx2, cy2)
 
     # Normalized time fraction
     x = (t - t0) / dt
+    u = easing.parameter_at(x)
 
-    # Eased progress
-    perc = easing.get(x)
-
-    # Linear interpolation in value space
-    return v0 + (v1 - v0) * perc
+    y1, y2 = _ease_value_handles(t0, t1, v0, v1, out_ease, in_ease)
+    mu = 1.0 - u
+    return (
+        mu * mu * mu * v0
+        + 3.0 * mu * mu * u * y1
+        + 3.0 * mu * u * u * y2
+        + u * u * u * v1
+    )
 
 
 def _interpolate_spatial_bezier(
@@ -735,58 +950,40 @@ def _interpolate_spatial_bezier(
         and (out_ease.influence > 0 or in_ease.influence > 0)
     )
 
-    if has_explicit_ease:
-        assert out_ease is not None and in_ease is not None
-
-        # For spatial properties, we convert speed/influence to normalized
-        # bezier control points using the segment distance
-        if straight_path:
-            seg_dist = math.sqrt(sum((v1[d] - v0[d]) ** 2 for d in range(ndim)))
-            path_deriv_mag_0 = seg_dist
-            path_deriv_mag_1 = seg_dist
-        else:
-            p1 = [v0[d] + out_tan[d] for d in range(ndim)]
-            p2 = [v1[d] + in_tan[d] for d in range(ndim)]
-            path_deriv_mag_0 = 3.0 * math.sqrt(
-                sum((p1[d] - v0[d]) ** 2 for d in range(ndim))
-            )
-            path_deriv_mag_1 = 3.0 * math.sqrt(
-                sum((v1[d] - p2[d]) ** 2 for d in range(ndim))
-            )
-
-        # Convert to normalized speed (progress/sec -> progress fraction)
-        out_inf_frac = out_ease.influence / 100.0
-        in_inf_frac = in_ease.influence / 100.0
-
-        ds_dt_0 = out_ease.speed / path_deriv_mag_0 if path_deriv_mag_0 > 1e-12 else 0.0
-        ds_dt_1 = in_ease.speed / path_deriv_mag_1 if path_deriv_mag_1 > 1e-12 else 0.0
-
-        # Bezier control points in normalized (time_frac, progress) space
-        cx1 = out_inf_frac
-        cy1 = ds_dt_0 * out_inf_frac * dt
-
-        cx2 = 1.0 - in_inf_frac
-        cy2 = 1.0 - ds_dt_1 * in_inf_frac * dt
-
-        cy1 = max(0.0, min(1.0, cy1))
-        cy2 = max(0.0, min(1.0, cy2))
-
-        easing = _get_bezier_easing(cx1, cy1, cx2, cy2)
-        x = (t - t0) / dt
-        perc = easing.get(x)
+    # `perc` is consumed as a fraction of ARC LENGTH along the path, so the
+    # speed an ease carries (pixels per second) converts to progress per
+    # second by dividing by the path's own length - one number for the whole
+    # segment, not one per end. Measured on AE 2026: a 700 px segment eased
+    # at 900 px/s reproduces AE's sampled positions to 3e-5 of progress with
+    # this divisor, and is 0.086 out with `3 * |tangent|`.
+    bezier_data = None if straight_path else _BezierPathData(v0, v1, out_tan, in_tan)
+    if straight_path:
+        arc_length = math.sqrt(sum((v1[d] - v0[d]) ** 2 for d in range(ndim)))
     else:
-        perc = (t - t0) / dt
+        assert bezier_data is not None
+        arc_length = bezier_data.segment_length
+
+    easing = (
+        _spatial_progress_easing(
+            dt,
+            arc_length,
+            out_ease,
+            in_ease,
+            out_linear=kf0.out_interpolation_type == KeyframeInterpolationType.LINEAR,
+            in_linear=kf1.in_interpolation_type == KeyframeInterpolationType.LINEAR,
+        )
+        if has_explicit_ease
+        else None
+    )
+    x = (t - t0) / dt
+    perc = easing.get(x) if easing is not None else x
 
     # For straight paths, just lerp
     if straight_path:
         return [v0[d] + (v1[d] - v0[d]) * perc for d in range(ndim)]
 
-    # Build spatial bezier path data (polyline approximation)
-    # In a full implementation this would be cached; for correctness
-    # comparison we build it each time.
-    bezier_data = _BezierPathData(v0, v1, out_tan, in_tan)
-
     # Walk the path to get the position at the eased arc-length fraction
+    assert bezier_data is not None
     return _get_point_on_path(bezier_data, perc)
 
 
@@ -795,10 +992,69 @@ def _interpolate_spatial_bezier(
 # ---------------------------------------------------------------------------
 
 
+def _interpolate_roving_run(
+    t: float,
+    keyframes: list[Keyframe],
+    start: int,
+    end: int,
+) -> list[float] | None:
+    """Position inside a roving run, eased once across the whole span.
+
+    A roving keyframe has no time of its own to ease against: AE applies the
+    enclosing anchors' ease ONCE over the run and reads the position at that
+    single progress along the concatenated path. Easing each sub-segment on
+    its own instead (with the per-segment speeds AE leaves on the roving
+    keys) is 99 px out on the measured 4-point fixture.
+    """
+    values = [keyframes[i].value for i in range(start, end + 1)]
+    if not all(isinstance(v, list) for v in values):
+        return None
+    datas: list[_BezierPathData] = []
+    for i in range(start, end):
+        first = cast("list[float]", keyframes[i].value)
+        second = cast("list[float]", keyframes[i + 1].value)
+        out_tangent = keyframes[i].out_spatial_tangent or [0.0] * len(first)
+        in_tangent = keyframes[i + 1].in_spatial_tangent or [0.0] * len(second)
+        datas.append(_BezierPathData(first, second, out_tangent, in_tangent))
+    total = sum(d.segment_length for d in datas)
+    if total <= 0:
+        return None
+
+    span_start = keyframes[start]._layer_time
+    span = keyframes[end]._layer_time - span_start
+    if span <= 0:
+        return list(cast("list[float]", keyframes[start].value))
+
+    easing = _spatial_progress_easing(
+        span,
+        total,
+        keyframes[start].out_temporal_ease[0]
+        if keyframes[start].out_temporal_ease
+        else None,
+        keyframes[end].in_temporal_ease[0] if keyframes[end].in_temporal_ease else None,
+        out_linear=keyframes[start].out_interpolation_type
+        == KeyframeInterpolationType.LINEAR,
+        in_linear=keyframes[end].in_interpolation_type
+        == KeyframeInterpolationType.LINEAR,
+    )
+    x = (t - span_start) / span
+    progress = easing.get(x) if easing is not None else x
+
+    target = progress * total
+    travelled = 0.0
+    for data in datas:
+        if travelled + data.segment_length >= target or data is datas[-1]:
+            local = (target - travelled) / data.segment_length
+            return _get_point_on_path(data, min(max(local, 0.0), 1.0))
+        travelled += data.segment_length
+    return None
+
+
 def interpolate_keyframes(
     time: float,
     keyframes: list[Keyframe],
     is_spatial: bool,
+    inert_dimensions: frozenset[int] = frozenset(),
 ) -> list[float] | float | None:
     """Compute the interpolated value at `time` from a keyframe list.
 
@@ -808,9 +1064,17 @@ def interpolate_keyframes(
     - Linear arc-length interpolation along sampled path
 
     Args:
-        time: Time in seconds.
-        keyframes: Sorted list of keyframes.
+        time: Time in the owning LAYER's seconds, not composition seconds.
+            AE evaluates the temporal bezier in layer time - its ease
+            speeds are per layer second, and a negatively stretched layer's
+            keyframes only ascend on this axis.
+            [Property.value_at_time][py_aep.Property.value_at_time]
+            converts before calling.
+        keyframes: Keyframes in stored (layer time ascending) order.
         is_spatial: Whether the property is spatial.
+        inert_dimensions: Indices the layer ignores, held at the left
+            keyframe's value instead of interpolated - the Z of a 2-D
+            layer's Scale, which AE never moves.
 
     Returns:
         Interpolated value, or `None` if no keyframes.
@@ -821,17 +1085,17 @@ def interpolate_keyframes(
     n = len(keyframes)
 
     # Before first keyframe or single keyframe
-    if n == 1 or time <= keyframes[0].time:
+    if n == 1 or time <= keyframes[0]._layer_time:
         return cast("list[float] | float | None", keyframes[0].value)
 
     # After last keyframe
-    if time >= keyframes[-1].time:
+    if time >= keyframes[-1]._layer_time:
         return cast("list[float] | float | None", keyframes[-1].value)
 
     # Find the segment
     right_idx = 0
     for i in range(1, n):
-        if keyframes[i].time >= time:
+        if keyframes[i]._layer_time >= time:
             right_idx = i
             break
 
@@ -839,14 +1103,29 @@ def interpolate_keyframes(
     kf_left = keyframes[left_idx]
     kf_right = keyframes[right_idx]
 
-    t0 = kf_left.time
-    t1 = kf_right.time
+    t0 = kf_left._layer_time
+    t1 = kf_right._layer_time
 
     # At exactly a keyframe time
     if abs(time - t0) < 1e-12:
         return cast("list[float] | float | None", kf_left.value)
     if abs(time - t1) < 1e-12:
         return cast("list[float] | float | None", kf_right.value)
+
+    # A roving keyframe is not an ease boundary: the whole run between its
+    # enclosing anchors is eased as one span.
+    if is_spatial and (kf_left.roving or kf_right.roving):
+        anchor_start = left_idx
+        while anchor_start > 0 and keyframes[anchor_start].roving:
+            anchor_start -= 1
+        anchor_end = right_idx
+        while anchor_end < n - 1 and keyframes[anchor_end].roving:
+            anchor_end += 1
+        roving_value = _interpolate_roving_run(
+            time, keyframes, anchor_start, anchor_end
+        )
+        if roving_value is not None:
+            return roving_value
 
     # Determine interpolation type
     out_type = kf_left.out_interpolation_type
@@ -863,27 +1142,43 @@ def interpolate_keyframes(
 
     # LINEAR
     if out_type == KeyframeInterpolationType.LINEAR:
-        ratio = (time - t0) / (t1 - t0)
-        if isinstance(v0, list) and isinstance(v1, list):
+        if isinstance(v0, list) and isinstance(v1, list) and is_spatial:
+            if not (
+                _tangents_are_zero(kf_left.out_spatial_tangent)
+                and _tangents_are_zero(kf_right.in_spatial_tangent)
+            ):
+                # A LINEAR key still carries spatial tangents, and AE follows
+                # the cubic they define - measured on AE 2026: a LINEAR/LINEAR
+                # segment from (50,50) to (350,50) with tangents
+                # (100,200)/(-100,200) passes through (200,200), not the
+                # straight line's (200,50). Only the EASE is linear.
+                return _interpolate_spatial_bezier(time, t0, t1, kf_left, kf_right)
+            ratio = (time - t0) / (t1 - t0)
             return [v0[d] + (v1[d] - v0[d]) * ratio for d in range(len(v0))]
-        if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
-            return float(v0) + (float(v1) - float(v0)) * ratio
-        return cast("list[float] | float | None", v0)
+        # Non-spatial: AE stores a LINEAR side as a diagonal handle - speed
+        # equal to the chord slope, influence 100/6 - so the ordinary bezier
+        # path below reproduces it exactly, including the case AE cares
+        # about: a LINEAR out side facing an EASED in side still gets that
+        # ease (measured on AE 2026: Opacity 0->100 over 2 s with a LINEAR
+        # out and a 90 % influence in side reaches 87.5 at t=1, where a lerp
+        # gives 50). Fall through rather than lerping.
 
-    # Pre-compute auto-bezier tangents/ease
+    # Pre-compute auto-bezier tangents. Temporal ease needs no equivalent:
+    # `Keyframe.in/out_temporal_ease` already derives the auto-bezier speeds
+    # per dimension, and a single scalar override applied across dimensions
+    # would drive every dimension at dimension 0's speed.
     auto_tangents: list[tuple[list[float] | None, list[float] | None]] | None
-    auto_ease: list[tuple[float, float, float, float]] | None
 
     has_auto_spatial = is_spatial and any(kf.spatial_auto_bezier for kf in keyframes)
     auto_tangents = (
         _compute_auto_spatial_tangents(keyframes) if has_auto_spatial else None
     )
 
-    has_auto_temporal = any(kf.temporal_auto_bezier for kf in keyframes)
-    auto_ease = _compute_auto_temporal_ease(keyframes) if has_auto_temporal else None
-
-    # BEZIER
-    if out_type == KeyframeInterpolationType.BEZIER:
+    # BEZIER (and the non-spatial LINEAR sides that fell through above)
+    if out_type in (
+        KeyframeInterpolationType.BEZIER,
+        KeyframeInterpolationType.LINEAR,
+    ):
         if is_spatial and isinstance(v0, list) and isinstance(v1, list):
             out_tan_ov: list[float] | None = None
             in_tan_ov: list[float] | None = None
@@ -901,17 +1196,37 @@ def interpolate_keyframes(
             )
 
         # Non-spatial: per-dimension 1D bezier
-        out_ov: tuple[float, float] | None = None
-        in_ov: tuple[float, float] | None = None
-        if auto_ease:
-            ae_left = auto_ease[left_idx]
-            ae_right = auto_ease[right_idx]
-            out_ov = (ae_left[0], ae_left[1])
-            in_ov = (ae_right[2], ae_right[3])
-
         if isinstance(v0, list) and isinstance(v1, list):
+            # One stored ease for a multi-dimensional value means AE drives
+            # the whole value with a single progress rather than a bezier per
+            # dimension - a colour, whose speed has no per-channel meaning.
+            # Measured on AE 2026: the progress follows the INFLUENCES alone
+            # (handles at `(out/100, 0)` and `(1 - in/100, 1)`), reproducing
+            # five sampled colour segments to 4e-4, and the stored speed does
+            # not shape it. Interpolating per channel instead drove the
+            # unchanged channels out of gamut.
+            # `min`, not both: AE stores exactly one ease per side on a
+            # colour, but py's own key insertion can leave one side holding a
+            # per-channel list, and a single ease on either side still means
+            # one progress.
+            if min(len(kf_left.out_temporal_ease), len(kf_right.in_temporal_ease)) == 1:
+                progress = _get_bezier_easing(
+                    kf_left.out_temporal_ease[0].influence / 100.0,
+                    0.0,
+                    1.0 - kf_right.in_temporal_ease[0].influence / 100.0,
+                    1.0,
+                ).get((time - t0) / (t1 - t0))
+                return [v0[d] + (v1[d] - v0[d]) * progress for d in range(len(v0))]
+
             result: list[float] = []
             for d in range(len(v0)):
+                if d in inert_dimensions:
+                    # AE leaves an inert dimension alone: a 2-D layer's Scale
+                    # Z reads exactly 100 across a segment whose live X and Y
+                    # bow. (AE also refuses to STORE any other Z there, so the
+                    # two keyframes always agree.)
+                    result.append(v0[d])
+                    continue
                 out_e = (
                     kf_left.out_temporal_ease[d]
                     if d < len(kf_left.out_temporal_ease)
@@ -931,8 +1246,6 @@ def interpolate_keyframes(
                         v1[d],
                         out_e,
                         in_e,
-                        out_override=out_ov,
-                        in_override=in_ov,
                     )
                 )
             return result
@@ -953,8 +1266,6 @@ def interpolate_keyframes(
                     float(v1),
                     out_e_1d,
                     in_e_1d,
-                    out_override=out_ov,
-                    in_override=in_ov,
                 )
             ratio = (time - t0) / (t1 - t0)
             return float(v0) + (float(v1) - float(v0)) * ratio

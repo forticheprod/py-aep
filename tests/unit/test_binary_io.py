@@ -757,8 +757,26 @@ class TestTdsbChunk:
         assert isinstance(chunk, TdsbChunk)
         assert chunk.roto_bezier == 0
         assert chunk.locked_ratio is True
-        assert chunk.dimensions_separated is True
+        # Separation is lock-byte bit 3; enable-byte bit 1 is the cosmetic
+        # group-collapse flag (AE sets it on a collapsed but UNSEPARATED
+        # position, e.g. an ambient light).
+        assert chunk.dimensions_separated is False
+        assert chunk.collapsed is True
         assert chunk.enabled is True
+        out = BytesIO()
+        chunk.write(out)
+        assert out.getvalue() == raw
+
+    def test_separated_bit(self) -> None:
+        from py_aep.binary.property_chunks import TdsbChunk
+
+        # What AE writes for a separated position: lock 0x08, enable 0x03.
+        raw = b"\x00\x00\x08\x03"
+        chunk = TdsbChunk.read(BytesIO(raw), 4, chunk_type="tdsb")
+        assert isinstance(chunk, TdsbChunk)
+        assert chunk.dimensions_separated is True
+        assert chunk.locked_ratio is False
+        assert chunk.collapsed is True
         out = BytesIO()
         chunk.write(out)
         assert out.getvalue() == raw
@@ -782,10 +800,15 @@ class TestTdsbChunk:
 
         chunk = TdsbChunk(chunk_type="tdsb")
         chunk.enabled = True
-        chunk.dimensions_separated = True
+        chunk.collapsed = True
         assert chunk._enable_flags == 0x03
         chunk.enabled = False
         assert chunk._enable_flags == 0x02
+
+        chunk.dimensions_separated = True
+        assert chunk._lock_flags == 0x08
+        chunk.dimensions_separated = False
+        assert chunk._lock_flags == 0x00
 
 
 # -----------------------------------------------------------------------

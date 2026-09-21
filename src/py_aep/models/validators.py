@@ -326,6 +326,10 @@ validate_duration = _validate_number(min=1.0 / 99.0, max=10800.0)
 
 validate_frame_rate = _validate_number(min=1.0, max=99.0)
 
+# 0 means "use the footage's own rate"; the upper bound is the `sspc` field's
+# (a u2 of whole frames per second).
+validate_conform_frame_rate = _validate_number(min=0.0, max=999.0)
+
 validate_vector2 = validate_sequence(length=2)
 
 validate_vector3 = validate_sequence(length=3)

@@ -528,11 +528,11 @@ class TestMasks:
             assert mask.is_mask is True
 
     def test_no_masks(self) -> None:
-        """Layer without masks has masks=None."""
+        """Layer without masks has an empty (falsy) mask parade."""
         layer = get_layer(
             parse_project(SAMPLES_DIR / "property_types.aep"), "property_1D_opacity"
         )
-        assert layer.masks is None
+        assert not layer.masks
 
     def test_mask_parent_property(self) -> None:
         """Mask children have parent_property pointing to mask parade."""
@@ -2101,3 +2101,54 @@ class TestEffectPointSpeed:
                         ].speed == pytest.approx(29.151890878813)
                         return
         pytest.fail("no keyframed ADBE Geometry2-0001 property found")
+
+
+class TestEffectPointNormalization:
+    """Effect point parameters normalize against the LAYER, not the
+    composition - including the parT defaults of parameters AE omits from
+    binary because they sit at their default.
+
+    Measured in AE 2026 across three comp/layer size pairs: an untouched
+    Gradient Ramp `End of Ramp` (parT default 256, 512) reports [100, 100]
+    on a 200x100 layer in an 800x600 comp and [128, 256] on a 256x256
+    layer in a 512x512 comp. Only the layer reproduces both, which is why
+    the layer size is threaded through `_ParseContext`.
+    """
+
+    def test_synthesized_point_uses_layer_not_comp(self) -> None:
+        project = parse_aep(LAYER_SAMPLES_DIR / "geometry_probe.aep").project
+        comp = get_comp(project, "PROBE_MAIN")
+        layer = next(lay for lay in comp.layers if lay.name == "solid_default")
+        assert (comp.width, comp.height) == (1920, 1080)
+        assert (layer.width, layer.height) == (200, 100)
+
+        point = next(
+            child
+            for effect in layer.effects.properties
+            if effect.name == "Point Control"
+            for child in effect.properties
+            if child.name == "Point"
+        )
+        assert not point._is_live()
+        # AE's default is the layer centre; the composition centre would be
+        # [960, 540] - what py_aep reported before the layer was threaded in.
+        assert point.value == [100.0, 50.0]
+
+    def test_synthesized_3d_point_z_uses_height(self) -> None:
+        """A 3D point's Z shares the height divisor (AE 2026: [100, 50, 7]
+        on a 200x100 layer stores [0.5, 0.5, 0.07])."""
+        project = parse_aep(LAYER_SAMPLES_DIR / "geometry_probe.aep").project
+        comp = get_comp(project, "PROBE_MAIN")
+        layer = next(lay for lay in comp.layers if lay.name == "solid_default")
+        point = next(
+            child
+            for effect in layer.effects.properties
+            if effect.name == "3D Point Control"
+            for child in effect.properties
+            if child.name == "3D Point"
+        )
+        assert point.value == [100.0, 50.0, 0.0]
+        # The fixture's Z is 0, which every divisor reproduces, so assert the
+        # divisor itself: [width, height, height], not [width, height, 1] or
+        # the comp size.
+        assert point._effect_scale == [200.0, 100.0, 100.0]

@@ -634,6 +634,26 @@ class Project:
         selected. Read-only."""
         return self._active_item
 
+    def _clear_active_item(self, removed: Item) -> None:
+        """Drop the active-item reference when `removed` is the active item.
+
+        The active item is stored as an item id in the root `fcid` chunk.
+        Leaving a removed item's id there makes the file reference an item
+        that no longer exists: After Effects tolerates it (it shows nothing
+        selected), but `parse()` cannot resolve the id. AE itself writes
+        `fcid = 0` once the active item is deleted.
+        """
+        if self._active_item is not removed:
+            return
+        self._active_item = None
+        try:
+            fcid = cast(
+                "U4Chunk", find_by_type(chunks=self._root_chunks, chunk_type="fcid")
+            )
+            fcid.value = 0
+        except ChunkNotFoundError:
+            pass
+
     @property
     def root_folder(self) -> FolderItem:
         """The root folder. This is a virtual folder that contains all items
@@ -1015,8 +1035,10 @@ class Project:
             The newly created [FootageItem][] or [CompItem][].
 
         Raises:
-            ValueError: If `import_as` is unsupported for the file, or the
-                file extension is not a supported format.
+            ValueError: If `import_as` is unsupported for the file, if the
+                file extension is not a supported format, or if the file has
+                no track After Effects can decode (e.g. an AV1-only `.mp4`,
+                which AE itself refuses to import).
             NotImplementedError: If media-header probing is not implemented
                 for the file's format.
             UnsupportedSVGError: If the SVG uses features py_aep cannot
@@ -1299,6 +1321,7 @@ class Project:
                 duration=0.0,
                 frame_rate=0.0,
                 pixel_aspect=info.pixel_aspect,
+                icc_profile=info.icc_profile,
                 has_alpha=info.has_alpha,
                 opti_data=spec.opti_data,
                 embedded_profile_name=embedded_profile_name,
@@ -1787,16 +1810,9 @@ class Project:
         old_single = f"'{old_text}'"
         new_single = f"'{new_text}'"
 
-        def walk(group: PropertyGroup) -> Iterator[Property]:
-            for child in group:
-                if isinstance(child, PropertyGroup):
-                    yield from walk(child)
-                elif isinstance(child, Property):
-                    yield child
-
         for comp in self.compositions:
             for layer in comp.layers:
-                for prop in walk(layer):
+                for prop in layer._leaf_properties():
                     expression = prop.expression
                     if not expression or not prop.expression_enabled:
                         continue

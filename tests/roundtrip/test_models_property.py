@@ -12,6 +12,7 @@ from helpers import (
     parse_project_fresh,
 )
 
+from py_aep import new as py_aep_new
 from py_aep import parse as parse_aep
 from py_aep.enums import (
     KeyframeInterpolationType,
@@ -19,6 +20,7 @@ from py_aep.enums import (
     MaskFeatherFalloff,
     MaskMode,
     MaskMotionBlur,
+    PropertyControlType,
     PropertyType,
 )
 from py_aep.models import Keyframe, Layer, MaskPropertyGroup, Property, PropertyGroup
@@ -822,8 +824,9 @@ class TestPropertyRemove:
         effects.properties[1].remove()
         effects.properties[0].remove()
         assert len(effects.properties) == 0
-        # layer.effects returns None when parade is empty
-        assert layer.effects is None
+        # The parade stays reachable but empty (and falsy)
+        assert layer.effects is effects
+        assert not layer.effects
 
     def test_remove_all_roundtrip(self, tmp_path: Path) -> None:
         """Remove all effects, save, reload and verify."""
@@ -837,8 +840,9 @@ class TestPropertyRemove:
         app.project.save(out)
         app2 = parse_aep(out)
         layer2 = app2.project.compositions[0].layers[0]
-        # After removing all, effects returns None (empty parade)
-        assert layer2.effects is None
+        # After removing all, the parade is still reachable but empty
+        assert layer2.effects is not None
+        assert len(layer2.effects) == 0
 
 
 class TestPropertyMoveTo:
@@ -1206,7 +1210,7 @@ class TestAddProperty:
         parade at the canonical position (before Transform Group)."""
         app = parse_aep(self.NO_MASK_AEP)
         layer = app.project.compositions[0].layers[0]
-        assert layer.masks is None
+        assert not layer.masks
         parade = layer["ADBE Mask Parade"]
         assert isinstance(parade, PropertyGroup)
         assert not parade._is_live()
@@ -1571,7 +1575,9 @@ class TestAddEffect:
         assert fx.is_effect
         assert fx.name == "Slider Control"
         assert fx.match_name == "ADBE Slider Control"
-        assert fx.property_type == PropertyType.INDEXED_GROUP
+        # An effect is a NAMED group in AE (its parameter list is fixed); the
+        # Effect Parade that holds it is the indexed one.
+        assert fx.property_type == PropertyType.NAMED_GROUP
         assert len(layer.effects.properties) == 3
         assert layer.effects.properties[2] is fx
 
@@ -1614,7 +1620,7 @@ class TestAddEffect:
         """The synthetic parade materializes at the canonical position."""
         app = parse_aep(self.NO_FX_AEP)
         layer = app.project.compositions[0].layers[0]
-        assert layer.effects is None
+        assert not layer.effects
         parade = layer["ADBE Effect Parade"]
         assert isinstance(parade, PropertyGroup)
         assert not parade._is_live()
@@ -1755,6 +1761,178 @@ class TestAddEffect:
         assert guids[0] == guids[1]  # deterministic, not a random GUID
 
 
+class TestBakedBuiltinEffects:
+    """`add_property` of a built-in effect the project has never used,
+    cloned from `data/builtin_effects.py` instead of the project's EfdG
+    (issue #215)."""
+
+    def test_add_to_project_with_no_effect_definitions(self, tmp_path: Path) -> None:
+        app = py_aep_new()
+        assert app.project._effect_param_defs == {}
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        layer = comp.add_null()
+        parade = layer["ADBE Effect Parade"]
+
+        assert parade.can_add_property("ADBE Geometry2") is True
+        assert parade.can_add_property("Transform") is True  # display name
+        assert parade.can_add_property("ADBE Gaussian Blur 2") is False
+
+        effect = parade.add_property("ADBE Geometry2")
+        assert isinstance(effect, PropertyGroup)
+        assert effect.match_name == "ADBE Geometry2"
+        assert effect.name == "Transform"
+        names = [child.name for child in effect.properties]
+        assert "Position" in names
+        assert "Anchor Point" in names
+        assert effect["Scale Height"].value == 100.0
+        assert effect["Rotation"].value == 0.0
+
+        # A second instance gets AE's numbered name.
+        assert parade.add_property("Transform").name == "Transform 2"
+
+        effect["Position"].set_values_at_times([0.0, 1.0], [[0.0, 0.0], [10.0, 5.0]])
+        effect["Anchor Point"].value = [0.0, 0.0]
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        reparsed = parse_aep(out).project.compositions[0].layers[0]
+        written = reparsed.effects.properties[0]
+        assert written.match_name == "ADBE Geometry2"
+        assert len(written["Position"].keyframes) == 2
+        assert written["Anchor Point"].value == [0.0, 0.0]
+
+    def test_project_definition_wins_over_baked(self) -> None:
+        """A project that already defines the effect keeps using its own
+        template, so an existing file's instances stay self-consistent."""
+        from py_aep.models.properties.property_group import _baked_effect_def
+
+        app = parse_aep(SAMPLES_DIR / "effects.aep")
+        layer = get_layer(app.project, "effect_2dPoint")
+        parade = layer["ADBE Effect Parade"]
+        resolved = parade._installed_effect_def("ADBE Lens Flare")
+        assert resolved is not None
+        assert _baked_effect_def("ADBE Lens Flare") is None
+        assert resolved[2] is not None
+
+
+class TestSynthesizedEffectParamWrites:
+    """A synthesized effect parameter (one AE omits from binary because it
+    sits at its default) must become a parameter AE actually reads once a
+    value is written to it.
+
+    AE gates that on `tdb4._spatial_static_flags` bit 1: without it the
+    written `tdbs` is ignored and AE falls back to the `parT` default,
+    silently discarding the value. Bisected one bit at a time against AE
+    2026; the flag values per control type were measured by setting one
+    parameter of each type in AE and decoding the result.
+    """
+
+    AEP = SAMPLES_DIR / "effects.aep"
+
+    def test_synthesized_flags_match_ae(self) -> None:
+        """Multi-dimensional effect params carry AE's flags; 1-D keep 1."""
+        app = parse_aep(self.AEP)
+        seen = {}
+        for comp in app.project.compositions:
+            for layer in comp.layers:
+                if not layer.effects:
+                    continue
+                for effect in layer.effects.properties:
+                    for prop in effect.properties:
+                        tdb4 = getattr(prop, "_tdb4", None)
+                        control = getattr(prop, "_property_control_type", None)
+                        if tdb4 is None or control is None:
+                            continue
+                        seen.setdefault(control, set()).add(tdb4._spatial_static_flags)
+        assert seen[PropertyControlType.TWO_D] == {0x0F}
+        assert seen[PropertyControlType.COLOR] == {0x07}
+        for control, flags in seen.items():
+            if control in (
+                PropertyControlType.TWO_D,
+                PropertyControlType.THREE_D,
+                PropertyControlType.COLOR,
+            ):
+                continue
+            assert flags <= {0x00, 0x01}, (control, flags)
+
+    def test_point_write_survives_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(self.AEP)
+        layer = get_layer(app.project, "effect_2dPoint")
+        prop = layer.effects.properties[0]["Flare Center"]
+        assert not prop._is_live()
+        prop.value = [10.0, 20.0]
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        reloaded = get_layer(parse_aep(out).project, "effect_2dPoint")
+        written = reloaded.effects.properties[0]["Flare Center"]
+        assert written._is_live()
+        assert written.value == [10.0, 20.0]
+        # Bit 1 is what makes AE read the value instead of the parT default.
+        assert written._tdb4._spatial_static_flags & 0x02
+
+    def test_color_write_survives_roundtrip(self, tmp_path: Path) -> None:
+        app = parse_aep(self.AEP)
+        layer = get_layer(app.project, "effect_3dPoint")
+        effect = next(e for e in layer.effects.properties if e.name == "CC Sphere")
+        prop = effect["Light Color"]
+        assert not prop._is_live()
+        prop.value = [1.0, 0.0, 0.0, 1.0]
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        reloaded = get_layer(parse_aep(out).project, "effect_3dPoint")
+        written = next(e for e in reloaded.effects.properties if e.name == "CC Sphere")[
+            "Light Color"
+        ]
+        assert written._is_live()
+        assert written.value == [1.0, 0.0, 0.0, 1.0]
+        assert written._tdb4._spatial_static_flags & 0x02
+
+    def test_color_reports_spatial_like_extendscript(self) -> None:
+        """AE leaves the tdb4 spatial bit clear on colors (flags 0x07) but
+        ExtendScript reports them as spatial."""
+        app = parse_aep(self.AEP)
+        layer = get_layer(app.project, "effect_3dPoint")
+        effect = next(e for e in layer.effects.properties if e.name == "CC Sphere")
+        prop = effect["Light Color"]
+        assert prop._tdb4._spatial_static_flags == 0x07
+        assert prop.is_spatial is True
+
+    def test_deanimating_a_color_effect_param_writes_aes_static_byte(
+        self, tmp_path: Path
+    ) -> None:
+        """Clearing a colour effect param's keyframes must land on 0x07.
+
+        Verified against AE 2026: opening `all_animated.aep`, removing the
+        Fill colour's keys and saving gives `_spatial_static_flags` 0x07.
+        The generic static template writes the layer-property byte (6),
+        leaving bit 0 (`static`) clear.
+        """
+        project = parse_project_fresh(SAMPLES_DIR / "all_animated.aep")
+        prop = next(
+            p
+            for layer in project.compositions[0].layers
+            for p in layer._leaf_properties()
+            if p._is_in_effect()
+            and p._property_control_type == PropertyControlType.COLOR
+            and p.keyframes
+        )
+        prop.remove_all_keys()
+        assert prop._tdb4._spatial_static_flags == 0x07
+
+        out = tmp_path / "deanimated.aep"
+        project.save(out)
+        written = next(
+            p
+            for layer in parse_aep(out).project.compositions[0].layers
+            for p in layer._leaf_properties()
+            if p._is_in_effect()
+            and p._property_control_type == PropertyControlType.COLOR
+        )
+        assert written._tdb4._spatial_static_flags == 0x07
+
+
 class TestAddInstalledEffect:
     """Tests for add_property() of effects already defined in the
     project's EfdG (cloned from the stored definition)."""
@@ -1776,6 +1954,65 @@ class TestAddInstalledEffect:
         # Expression controls are unaffected.
         assert fx.can_add_property("ADBE Slider Control") is True
 
+    def test_clone_resets_point_params_to_default(self) -> None:
+        """A cloned effect's 2D/3D points reset like every other value type.
+
+        A point `pard` has no `default` field; its plugin default is the
+        `last_value` AE stamps into the `parT`, in a 0-512 range relative
+        to the LAYER. Before that was resolved, a cloned point silently
+        inherited the source instance's edited coordinates.
+        """
+        app = parse_aep(SAMPLES_DIR / "effects.aep")
+        source = get_layer(app.project, "effect_2dPoint")
+        flare = source.effects.properties[0]
+        origin = flare["Flare Center"]
+        assert origin.default_value is not None
+        origin.value = [1.0, 2.0]
+
+        comp = source.containing_comp
+        target = comp.add_solid([0.5, 0.5, 0.5], "target")
+        clone = target["ADBE Effect Parade"].add_property("ADBE Lens Flare")
+        assert isinstance(clone, PropertyGroup)
+        point = clone["Flare Center"]
+        assert point.default_value is not None
+        assert point.value == point.default_value
+        assert point.value != [1.0, 2.0]
+
+    def test_clone_restamps_timebase_of_target_comp(self, tmp_path: Path) -> None:
+        """An EfdG definition mirrors the timebase of the comp its first
+        instance lived in. Cloning it into a comp with a different frame
+        rate must restamp every stamped tdb4, or the parameter's keyframe
+        times are read against the source comp's base."""
+        app = parse_aep(SAMPLES_DIR / "2_gaussian_20_30.aep")
+        source_comp = app.project.compositions[0]
+        assert source_comp.frame_rate == 24.0
+
+        target = app.project.root_folder.add_comp("60fps", 640, 480, 1.0, 5.0, 60.0)
+        target_base = target._cdta.internal_timebase
+        assert target_base != source_comp._cdta.internal_timebase
+        layer = target.add_solid([0.5, 0.5, 0.5], "s")
+
+        effect = layer["ADBE Effect Parade"].add_property("ADBE Gaussian Blur 2")
+        assert isinstance(effect, PropertyGroup)
+        stamped = [
+            child
+            for child in effect.properties
+            if getattr(child, "_tdb4", None) is not None and child._tdb4._time_base
+        ]
+        assert stamped, "expected at least one stamped tdb4 in the clone"
+        for child in stamped:
+            assert child._tdb4._time_base == target_base
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        reparsed = parse_aep(out)
+        comp2 = next(c for c in reparsed.project.compositions if c.name == "60fps")
+        effect2 = comp2.layers[0].effects.properties[0]
+        for child in effect2.properties:
+            tdb4 = getattr(child, "_tdb4", None)
+            if tdb4 is not None and tdb4._time_base:
+                assert tdb4._time_base == target_base
+
     def test_can_add_installed_effect_only_on_effect_parade(self) -> None:
         """A non-Effect-Parade group never reports installed effects."""
         app = parse_aep(SAMPLES_DIR / "effects.aep")
@@ -1793,7 +2030,7 @@ class TestAddInstalledEffect:
         assert isinstance(added, PropertyGroup)
         assert added.is_effect
         assert added.match_name == "ADBE Lens Flare"
-        assert added.property_type == PropertyType.INDEXED_GROUP
+        assert added.property_type == PropertyType.NAMED_GROUP
         assert len(fx.properties) == before + 1
         assert fx.properties[-1] is added
         # Second instance of an existing effect is numbered.
@@ -2559,21 +2796,34 @@ class TestRoundtripProxyBody:
         with pytest.raises(AttributeError):
             blur.enabled = False
 
-    def test_modify_synthesized_name(self, tmp_path: Path) -> None:
-        """Modify the name of a synthesized effect property."""
+    def test_synthesized_effect_param_name_rejected(self) -> None:
+        """An effect parameter cannot be renamed: its parent is a NAMED group.
+
+        AE 2026: `param.name = "x"` throws "Can not 'set name' this property,
+        because parent is not an INDEXED_GROUP" for a Gaussian Blur param and
+        for a Slider Control param alike; only the effect itself, whose parent
+        is the indexed Effect Parade, can be renamed.
+        """
         project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
         layer = get_first_layer(project)
         blur = self._find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
-        blur.name = "Custom Blur Name"
+        with pytest.raises(ValueError, match="not an indexed group"):
+            blur.name = "Custom Blur Name"
+
+    def test_effect_group_name_is_writable(self, tmp_path: Path) -> None:
+        """The effect itself renames and round-trips."""
+        project = parse_aep(SAMPLES_DIR / "2_gaussian.aep").project
+        layer = get_first_layer(project)
+        assert layer.effects is not None
+        effect = layer.effects.properties[0]
+        effect.name = "Custom Blur Name"
         out = tmp_path / "proxy_name.aep"
         project.save(out)
 
         project2 = parse_aep(out).project
         layer2 = get_first_layer(project2)
-        blur2 = self._find_synthesized_effect_prop(
-            layer2, 0, "ADBE Gaussian Blur 2-0001"
-        )
-        assert blur2.name == "Custom Blur Name"
+        assert layer2.effects is not None
+        assert layer2.effects.properties[0].name == "Custom Blur Name"
 
 
 class TestValueValidation:

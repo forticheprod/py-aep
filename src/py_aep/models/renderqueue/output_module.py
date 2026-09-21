@@ -1501,11 +1501,11 @@ class OutputModule:
         """Remove this output module from the render queue item.
 
         Raises:
-            RuntimeError: If this is the last output module (AE requires
+            ValueError: If this is the last output module (AE requires
                 at least one).
         """
         if len(self._parent_rqi._output_modules) <= 1:
-            raise RuntimeError("Cannot remove the last output module")
+            raise ValueError("Cannot remove the last output module")
 
         rqi = self._parent_rqi
         om_idx = rqi._output_modules.index(self)

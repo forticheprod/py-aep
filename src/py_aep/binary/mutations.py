@@ -6,7 +6,7 @@ import base64
 import struct
 import uuid
 from io import BytesIO
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from ..data.dropdown_control import DROPDOWN_CONTROL
 from .chunk import Chunk, ContainerChunk, ListChunk, read_chunks, write_chunk
@@ -50,6 +50,7 @@ from .property_chunks import (
 )
 from .render_chunks import RoutItem
 from .scalar_chunks import F8Chunk, S4Chunk, U4Chunk, Utf8Chunk
+from .utils import recursive_find
 
 if TYPE_CHECKING:
     from typing import Any, Callable
@@ -145,6 +146,104 @@ def rewrite_owner_tdpi(chunk: Chunk, layer_id: int) -> None:
                     cast("S4Chunk", inner).value = layer_id
         elif isinstance(c, ListChunk):
             rewrite_owner_tdpi(c, layer_id)
+
+
+def collect_layer_ref_tdpi_ids(chunk: Chunk, out: set[int] | None = None) -> set[int]:
+    """Every layer id referenced by a LAYER parameter under `chunk`.
+
+    The hidden `-0000` owner params are excluded: those name the owning
+    layer, not a reference (see `rewrite_owner_tdpi`).
+    """
+    if out is None:
+        out = set()
+    if not isinstance(chunk, ListChunk):
+        return out
+    chunks = chunk.chunks
+    for i, c in enumerate(chunks):
+        if (
+            c.chunk_type == "tdmn"
+            and i + 1 < len(chunks)
+            and isinstance(chunks[i + 1], ListChunk)
+            and not cast("TdmnChunk", c).value.endswith("-0000")
+        ):
+            for inner in cast("ListChunk", chunks[i + 1]).chunks:
+                if inner.chunk_type == "tdpi" and cast("S4Chunk", inner).value:
+                    out.add(cast("S4Chunk", inner).value)
+        if isinstance(c, ListChunk):
+            collect_layer_ref_tdpi_ids(c, out)
+    return out
+
+
+def remap_layer_ref_tdpi(chunk: Chunk, id_map: dict[int, int]) -> None:
+    """Retarget every layer-reference `tdpi` in `chunk` through `id_map`.
+
+    A LAYER parameter (Set Matte's "Take Matte From Layer", CC Sphere's
+    light layer, Layer Control, ...) stores the referenced layer's id in a
+    `tdpi`. Moving the owning layer to another composition leaves that id
+    naming a layer the new comp does not contain, and After Effects then
+    refuses the whole file: "Can't find layer ID=N in composition X".
+
+    Ids absent from `id_map` are cleared to 0 (no layer), which is what AE
+    writes for a copy whose reference did not travel with it. The hidden
+    `-0000` owner params are skipped - `rewrite_owner_tdpi` owns those.
+    """
+    if not isinstance(chunk, ListChunk):
+        return
+    chunks = chunk.chunks
+    for i, c in enumerate(chunks):
+        if (
+            c.chunk_type == "tdmn"
+            and i + 1 < len(chunks)
+            and isinstance(chunks[i + 1], ListChunk)
+        ):
+            if cast("TdmnChunk", c).value.endswith("-0000"):
+                continue
+            for inner in cast("ListChunk", chunks[i + 1]).chunks:
+                if inner.chunk_type != "tdpi":
+                    continue
+                tdpi = cast("S4Chunk", inner)
+                if tdpi.value:
+                    tdpi.value = id_map.get(tdpi.value, 0)
+        if isinstance(c, ListChunk):
+            remap_layer_ref_tdpi(c, id_map)
+
+
+def rewrite_time_base(chunk: Chunk, time_base: int) -> None:
+    """Restamp every non-zero `tdb4` timebase in `chunk` to `time_base`.
+
+    A `tdb4` carries the timebase of the composition it was written in
+    (`cdta.internal_timebase`). Cloning a subtree into another comp - a
+    different frame rate, or another project entirely - therefore carries
+    a foreign timebase on every parameter AE had already stamped, which
+    misreads that parameter's keyframe times.
+
+    Parameters AE never stamped keep their `0`: the field is written
+    lazily (see `Property._ensure_time_base`), and a zero there is the
+    "not yet stamped" state, not a 0 fps timebase.
+    """
+    for found in recursive_find([chunk], chunk_type="tdb4"):
+        tdb4 = cast("Tdb4Chunk", found)
+        if tdb4._time_base:
+            tdb4._time_base = time_base
+
+
+def strip_synthetic(chunk: Chunk) -> None:
+    """Drop every synthetic chunk under `chunk`, in place.
+
+    `write_aep` skips synthetic chunks, so a subtree that is MOVED rather
+    than serialized carries them along - and a re-parse then reads them as
+    though they came from the file. The parser has no way to tell that a
+    synthesized cdat holds a default in whatever units its synthesizer used
+    (user units for a transform, `parT` 0-512 for an effect point, ARGB
+    0-255 for a colour), so it resolves them as real values and the model
+    disagrees with the file it just wrote. Removing them lets synthesis run
+    again on the far side, exactly as it does when the file is re-opened.
+    """
+    if not isinstance(chunk, ListChunk):
+        return
+    chunk.chunks[:] = [c for c in chunk.chunks if not c.synthetic]
+    for child in chunk.chunks:
+        strip_synthetic(child)
 
 
 def clone_chunk_tree(chunk: Chunk) -> Chunk:
@@ -537,6 +636,16 @@ def build_media_cctl(
     return _build_cctl(name, uuid_str, 14, value_chunks, comp_id, layer_id, path_json)
 
 
+class ColorProfileRecord(NamedTuple):
+    """An ICC profile as `LIST:CLRS` records it."""
+
+    profile_id: bytes
+    """The profile's 16-byte ICC profile ID (`epid` or `apid`)."""
+
+    envelope: str
+    """The JSON envelope carrying the profile's bytes and name."""
+
+
 def build_pin_list(
     sspc: Chunk,
     opti: Chunk,
@@ -544,6 +653,9 @@ def build_pin_list(
     is_solid: bool = False,
     path_chunks: list[Chunk] | None = None,
     embedded_profile_name: str | None = None,
+    embedded_profile: ColorProfileRecord | None = None,
+    assigned_profile: ColorProfileRecord | None = None,
+    color_managed: bool = False,
     layer_name: str = "",
 ) -> ListChunk:
     """Build a complete `LIST:Pin` with required companion chunks.
@@ -558,11 +670,43 @@ def build_pin_list(
     layered file (chosen-layer or comp import), and leaves it empty
     otherwise.
 
-    When `embedded_profile_name` is given, the source's embedded color
-    profile is recorded in `LIST:CLRS` as an `empd` flag plus a `Utf8`
-    name (matching AE); pass `None` for sources with no embedded profile.
+    The `LIST:CLRS` record of the media's own color space takes one of
+    three shapes, each measured from an AE 2026 import:
+
+    - `embedded_profile` (the profile a PNG/JPEG/TIFF/PSD embeds): `epid`
+      holds the profile's ID and an `mcsp` pair carries the profile itself.
+      Interpret Footage shows "Embedded".
+    - `assigned_profile` (the profile AE assigns when the media embeds none
+      - sRGB for every format measured): `apid` holds its ID and `ocsp`
+      carries its bytes.
+    - `embedded_profile_name` (a media color space that is named rather than
+      embedded, e.g. an `.ai` document's): an `empd` flag plus a `Utf8` name.
+
+    `color_managed` records that the media has a color space of its own even
+    when none of the three is given - AE writes exactly that for a JPEG with
+    no profile. Without it the source falls back to the working space, which
+    is what AE writes for a solid.
     """
-    clrs_chunks: list[Chunk] = [EpidChunk(), ApidChunk()]
+    epid = EpidChunk()
+    apid = ApidChunk()
+    ipws = IpwsChunk(value=0 if color_managed else 1)
+    media_chunks: list[Chunk] = []
+    embedded_envelope = ""
+    assigned_envelope = ""
+    if embedded_profile is not None:
+        epid.data = embedded_profile.profile_id
+        embedded_envelope = embedded_profile.envelope
+        # AE stores the embedded profile twice: once behind a lowercase
+        # `mcsp` marker and again behind the `Mcsp` flag below.
+        media_chunks = [
+            Chunk(chunk_type="mcsp", data=b"\x01"),
+            Utf8Chunk(value=embedded_envelope),
+        ]
+    elif assigned_profile is not None:
+        apid.data = assigned_profile.profile_id
+        assigned_envelope = assigned_profile.envelope
+
+    clrs_chunks: list[Chunk] = [epid, apid]
     if embedded_profile_name is not None:
         clrs_chunks.append(EmpdChunk())
         clrs_chunks.append(Utf8Chunk(value=embedded_profile_name))
@@ -570,7 +714,8 @@ def build_pin_list(
         [
             LinlChunk(),
             EmbpChunk(),
-            IpwsChunk(),
+            ipws,
+            *media_chunks,
         ]
     )
     if is_solid:
@@ -579,9 +724,9 @@ def build_pin_list(
     clrs_chunks.extend(
         [
             McspChunk(),
-            Utf8Chunk(),
+            Utf8Chunk(value=embedded_envelope),
             OcspChunk(),
-            Utf8Chunk(),
+            Utf8Chunk(value=assigned_envelope),
             HdrmChunk(),
             Utf8Chunk(value="{}"),
         ]

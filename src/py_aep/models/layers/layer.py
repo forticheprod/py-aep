@@ -7,7 +7,13 @@ from py_aep.enums import AutoOrientType, Label, LayerType
 
 from ...binary.chunk import ListChunk
 from ...binary.item_chunks import CmtaChunk
-from ...binary.mutations import build_gide_list, clone_chunk_tree, rewrite_owner_tdpi
+from ...binary.mutations import (
+    build_gide_list,
+    clone_chunk_tree,
+    remap_layer_ref_tdpi,
+    rewrite_owner_tdpi,
+    rewrite_time_base,
+)
 from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import find_by_type, index_by_identity
@@ -127,10 +133,48 @@ class Layer(PropertyGroup):
     """The start time of the layer, expressed in composition time (seconds).
     Read / Write."""
 
-    stretch = ChunkField[float]("_ldta", "stretch")
-    """The layer's time stretch, expressed as a percentage. A value of 100
-    means no stretch. Values between 0 and 1 are set to 1, and values
-    between -1 and 0 (not including 0) are set to -1. Read / Write."""
+    _stretch = ChunkField[float]("_ldta", "stretch")
+
+    @property
+    def stretch(self) -> float:
+        """The layer's time stretch, expressed as a percentage. A value of 100
+        means no stretch. Values between 0 and 1 are set to 1, and values
+        between -1 and 0 (not including 0) are set to -1. Read / Write.
+
+        Writing also rescales every keyframe on the layer. A layer counts its
+        keyframe ticks against its own timebase,
+        `comp internal_timebase * max(1, |stretch| / 100)`, so stretching it
+        while leaving the counts alone would halve or double each keyframe's
+        position in LAYER time. After Effects keeps them fixed there and
+        rescales the counts (measured on AE 2026: a key at layer-second 1 on
+        a 24 fps comp holds 24576 ticks, and 49152 after the layer is
+        stretched to 200 %, where its composition time becomes 2 s).
+        """
+        return cast("float", self._ldta.stretch)
+
+    @stretch.setter
+    def stretch(self, value: float) -> None:
+        validate_number(value)
+        old = self._layer_timebase()
+        self._stretch = value
+        self._retime_to_layer_timebase(old, self._layer_timebase())
+
+    def _layer_timebase(self) -> int:
+        """Keyframe units per second of this layer's own time."""
+        base = self.containing_comp._cdta.internal_timebase
+        stretch = abs(float(self._ldta.stretch or 100.0)) / 100.0
+        return int(base * max(1.0, stretch))
+
+    def _retime_to_layer_timebase(self, old: int, new: int) -> None:
+        """Hold every keyframe at the same LAYER time across a stretch change."""
+        if new == old or old <= 0:
+            return
+        for prop in self._leaf_properties():
+            if prop._is_live():
+                prop._ensure_time_base()
+            for keyframe in prop.keyframes:
+                item = keyframe._ldat_item
+                item.time_units = round(item.time_units * new / old)
 
     auto_orient = ChunkField.enum(
         AutoOrientType,
@@ -238,6 +282,7 @@ class Layer(PropertyGroup):
             child_depth=1,
             effect_param_defs=effect_param_defs or {},
             composition=containing_comp,
+            layer_size=layer._pixel_size,
         )
         layer._properties = props
         for child in props:
@@ -329,6 +374,16 @@ class Layer(PropertyGroup):
         this. Read-only.
         """
         return False
+
+    @property
+    def _pixel_size(self) -> tuple[float, float] | None:
+        """The layer's pixel dimensions, for denormalizing effect points.
+
+        `None` on the base [Layer][]: `width` / `height` live on
+        [AVLayer][], and a camera or light has neither, so nothing
+        normalized against a layer sits on one.
+        """
+        return None
 
     @property
     def _stretch_factor(self) -> float:
@@ -499,16 +554,17 @@ class Layer(PropertyGroup):
 
         This is the Effects `PropertyGroup` (match name `ADBE Effect Parade`).
         Each child in [properties][PropertyGroup.properties] is itself a
-        [PropertyGroup][] representing one effect. `None` when the layer has no
-        effects.
+        [PropertyGroup][] representing one effect.
+
+        Like ExtendScript's `layer.property("Effects")`, the group is
+        returned even when it is empty, so the first effect can be added
+        with `layer.effects.add_property(...)`. An empty group is falsy,
+        so `if layer.effects:` still means "has effects".
+
+        `None` on [CameraLayer][] and [LightLayer][], the only layer kinds
+        AE gives no Effects group; every other layer kind always has one.
         """
-        try:
-            group = self["ADBE Effect Parade"]
-        except KeyError:
-            return None
-        if not isinstance(group, PropertyGroup) or not group.properties:
-            return None
-        return group
+        return self._optional_group("ADBE Effect Parade")
 
     @property
     def masks(self) -> PropertyGroup | None:
@@ -517,27 +573,41 @@ class Layer(PropertyGroup):
 
         This is the Masks `PropertyGroup` (match name `ADBE Mask Parade`).
         Each child in [properties][PropertyGroup.properties] is itself a
-        [PropertyGroup][] representing one mask. `None` when the layer has no
-        masks.
+        [PropertyGroup][] representing one mask.
+
+        Like [effects][], the group is returned even when it is empty (an
+        empty group is falsy), and is `None` only on [CameraLayer][] and
+        [LightLayer][], which AE gives no Masks group.
         """
-        try:
-            group = self["ADBE Mask Parade"]
-        except KeyError:
-            return None
-        if not isinstance(group, PropertyGroup) or not group.properties:
-            return None
-        return group
+        return self._optional_group("ADBE Mask Parade")
 
     @property
     def text(self) -> PropertyGroup | None:
-        """Contains a layer's text properties (if any)."""
+        """
+        Contains a layer's text properties.
+
+        This is the Text `PropertyGroup` (match name `ADBE Text Properties`),
+        holding Source Text, Path Options, More Options and the Animators.
+
+        `None` on every layer that is not a [TextLayer][]: unlike
+        [effects][] and [masks][], this group is never synthesized for
+        other layer kinds because AE does not expose it on them.
+        """
+        return self._optional_group("ADBE Text Properties")
+
+    def _optional_group(self, match_name: str) -> PropertyGroup | None:
+        """The child `PropertyGroup` for `match_name`, or `None` when this
+        layer kind does not have it.
+
+        Missing top-level groups are synthesized per layer kind by
+        `synthesize_layer_properties`, so a `None` here means the kind has
+        no such group at all, not that the `.aep` merely omitted an empty
+        one (AE writes the Effect / Mask Parade only once it has content)."""
         try:
-            group = self["ADBE Text Properties"]
+            group = self[match_name]
         except KeyError:
             return None
-        if isinstance(group, PropertyGroup):
-            return group
-        return None
+        return group if isinstance(group, PropertyGroup) else None
 
     def _validate_parent(self, new_parent: Layer | None) -> None:
         """Reject parent assignments ExtendScript refuses: a layer from
@@ -608,7 +678,11 @@ class Layer(PropertyGroup):
 
         self._parent_id = value.id if value is not None else 0
 
-        new_local = new_parent_world.inverse() @ child_world
+        new_parent_inverse = new_parent_world.inverse()
+        new_local = new_parent_inverse @ child_world
+        # Maps a point from the old parent's space into the new one; used by
+        # both keyframed-Position branches below.
+        parent_remap = new_parent_inverse @ old_parent_world
 
         # Decompose into AE transform components, keeping anchor fixed.
         anchor = cast(
@@ -657,17 +731,18 @@ class Layer(PropertyGroup):
             keyframe is remapped through the leader's composed position at
             its own time, because the transform mixes the axes.
             """
-            remap = new_parent_world.inverse() @ old_parent_world
+            remap = parent_remap
             # Collected first, applied after: every sample has to see the
             # pre-remap followers, and a component write would move them.
             updates: list[tuple[Keyframe, float]] = []
             remapped: dict[float, list[float]] = {}
             for dimension, follower in enumerate(followers):
                 for keyframe in follower.keyframes:
-                    point = remapped.get(keyframe.time)
+                    time = keyframe.time
+                    point = remapped.get(time)
                     if point is None:
-                        point = remapped[keyframe.time] = remap.transform_point(
-                            cast("list[float]", leader.value_at_time(keyframe.time))
+                        point = remapped[time] = remap.transform_point(
+                            cast("list[float]", leader.value_at_time(time))
                         )
                     updates.append((keyframe, point[dimension]))
             for keyframe, component in updates:
@@ -712,7 +787,7 @@ class Layer(PropertyGroup):
             else:
                 pos._set_separated_value(new_pos, separated)
         elif pos.keyframes:
-            remap = new_parent_world.inverse() @ old_parent_world
+            remap = parent_remap
             for kf in pos.keyframes:
                 kf_value = cast("list[float]", kf.value)
                 dims = len(kf_value)
@@ -943,6 +1018,23 @@ class Layer(PropertyGroup):
             # Clear parent/matte when copying across compositions
             cloned_ldta.parent_id = 0
             cloned_ldta.matte_layer_id = 0
+            # A LAYER parameter (Set Matte, Layer Control, CC Sphere's light
+            # layer, ...) names a layer of the SOURCE comp; left as-is the
+            # destination comp cannot resolve it and AE refuses the whole file
+            # ("Can't find layer ID=N in composition X"). AE 2026 writes 0 -
+            # "no layer" - into the copy's parameter.
+            remap_layer_ref_tdpi(cloned_list, {})
+            # tdb4 carries the comp the property was written in; AE restamps
+            # the copy to the destination comp (measured: copyToComp from a
+            # 25 fps comp into a 24 fps one writes 24576, not 25600). The
+            # layer's own stretch scales it, exactly as `_layer_timebase`
+            # derives it - a 200 % layer counts ticks against twice the
+            # comp's base.
+            stretch = abs(float(self.stretch or 100.0)) / 100.0
+            rewrite_time_base(
+                cloned_list,
+                int(into_comp._cdta.internal_timebase * max(1.0, stretch)),
+            )
             model_idx = 0
             if into_comp.layers:
                 chunk_idx = index_by_identity(
@@ -957,6 +1049,9 @@ class Layer(PropertyGroup):
         new_layer = parse_layer(cloned_list, into_comp, effect_defs)
 
         into_comp._layers.insert(model_idx, new_layer)
+
+        if not same_comp:
+            self._carry_comp_relative_transform(new_layer)
 
         # Increment user-defined name
         if new_layer.is_name_set:
@@ -973,6 +1068,47 @@ class Layer(PropertyGroup):
             new_source._used_in.add(into_comp)
 
         return new_layer
+
+    #: Transform properties whose synthesized default is derived from the
+    #: containing composition, so a copy into a different-sized comp would
+    #: silently re-centre unless the value is carried over.
+    _COMP_RELATIVE_TRANSFORM: tuple[str, ...] = (
+        "ADBE Anchor Point",
+        "ADBE Position",
+        "ADBE Position_0",
+        "ADBE Position_1",
+    )
+
+    def _carry_comp_relative_transform(self, copy: Layer) -> None:
+        """Keep `copy`'s comp-relative transform equal to this layer's.
+
+        A transform property AE never wrote is synthesized from the comp's
+        size, so a copy into a different-sized composition would land on the
+        new comp's centre instead of where the original sits. AE 2026 keeps
+        the absolute value and materializes the chunk to hold it (measured: a
+        400x300 solid at position 400,300 copied into a 200x100 comp still
+        reads 400,300, with `ADBE Position` now a real cdat).
+        """
+        src_transform = self.transform
+        dst_transform = copy.transform
+        if src_transform is None or dst_transform is None:
+            return
+        for match_name in self._COMP_RELATIVE_TRANSFORM:
+            try:
+                src_prop = src_transform.property(match_name)
+                dst_prop = dst_transform.property(match_name)
+            except (KeyError, ValueError):
+                continue
+            if not isinstance(src_prop, Property) or not isinstance(dst_prop, Property):
+                continue
+            # An animated property carries real chunks that the clone copied
+            # verbatim, so there is nothing to carry over.
+            if src_prop.keyframes or dst_prop.keyframes:
+                continue
+            value = src_prop.value
+            if value is None or value == dst_prop.value:
+                continue
+            dst_prop.value = value
 
     def move_after(self, layer: Layer) -> None:
         """Moves this layer to a position immediately after (below)

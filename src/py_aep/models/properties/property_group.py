@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
+from py_aep.data.builtin_effects import BUILTIN_EFFECTS
 from py_aep.data.effect_controls import EXPRESSION_CONTROLS
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
-from py_aep.enums import PropertyType
+from py_aep.enums import PropertyControlType, PropertyType
 from py_aep.resolvers.can_add_property import AddableKind, resolve_addable
 from py_aep.resolvers.can_add_property import (
     can_add_property as _can_add_property,
 )
 
 from ...ae_version import get_ae_version_major, requires_version
-from ...binary.chunk import ListChunk
+from ...binary.chunk import ListChunk, read_chunks
 from ...binary.mutations import (
     build_dropdown_control,
     build_expression_control,
@@ -20,6 +22,7 @@ from ...binary.mutations import (
     build_vector_element,
     clone_chunk_tree,
     rewrite_owner_tdpi,
+    rewrite_time_base,
 )
 from ...binary.property_chunks import (
     TDSN_SENTINEL,
@@ -94,6 +97,36 @@ _TEXT_SELECTOR_NAMES: dict[str, str] = {
 }
 
 
+def _baked_effect_def(name: str) -> tuple[str, str, ListChunk] | None:
+    """Resolve `name` against the baked built-in effect templates.
+
+    Matches the effect match name first, then the display name, the same
+    order `match_effect_definition` uses for the project's own EfdG. The
+    stored blob is deserialized fresh on every call, so the caller owns
+    the returned chunks and the table stays pristine.
+    """
+    entry = BUILTIN_EFFECTS.get(name)
+    if entry is not None:
+        match_name = name
+    else:
+        found = next(
+            (
+                (candidate, value)
+                for candidate, value in BUILTIN_EFFECTS.items()
+                if value[0] == name
+            ),
+            None,
+        )
+        if found is None:
+            return None
+        match_name, entry = found
+    display, blob = entry
+    raw = bytes.fromhex(blob)
+    sspc = read_chunks(BytesIO(raw), len(raw))[0]
+    assert isinstance(sspc, ListChunk)
+    return match_name, display, sspc
+
+
 def _insert_before_group_end(tdgp: ListChunk, chunk: Any) -> None:
     """Insert *chunk* before the 'ADBE Group End' tdmn in *tdgp*.
 
@@ -137,31 +170,35 @@ def _reset_to_default_values(group: PropertyGroup) -> None:
     default are reset. Leaves with no known default keep their value but
     are still de-animated / de-expressioned.
 
-    Known limitation: 2D/3D point value params (e.g. a Lens Flare's
-    Flare Center, a Point Control) carry no canonical default in the
-    `pard` - AE's effect plugin defines it and it is not stored in the
-    file - so their static value cannot be reset and is inherited from
-    the source instance. Scalar/slider/angle/color/enum params all carry
-    a stored default and reset correctly.
+    2D/3D point params carry no `default` field in their `pard`, so their
+    reset target is the `last_value` AE stamps into the `parT` (in the
+    same 0-512 layer-relative range a synthesized point uses). It is read
+    here rather than published as `default_value`, because on a parsed
+    project that number is the instance's own coordinate, not a default.
     """
+    from ...parsers.effect import _point_default_pixels  # noqa: PLC0415
+
     for child in group.properties:
         if isinstance(child, PropertyGroup):
             _reset_to_default_values(child)
             continue
-        # Removing the last keyframe reverts the leaf to a static value,
-        # so the value setter (which rejects keyframed properties) can run.
-        while child.keyframes:
-            child.remove_key(0)
+        # Clearing the keyframes reverts the leaf to a static value, so
+        # the value setter (which rejects keyframed properties) can run.
+        child.remove_all_keys()
         child._clear_expression()
-        if child.default_value is not None and not _values_equal(
-            child.value, child.default_value
+        default = child.default_value
+        if default is None and child._property_control_type in (
+            PropertyControlType.TWO_D,
+            PropertyControlType.THREE_D,
         ):
+            default = _point_default_pixels(child, child.last_value)
+        if default is not None and not _values_equal(child.value, default):
             # Use the parse-path writer, not the public `value` setter: an
             # enum/popup leaf's stored default can sit below its own pard min
             # (e.g. a no-selection 0 with min=1), which the validating setter
             # would reject - here we are restoring AE's own default, not taking
             # user input, so validation must not run.
-            child._cache_value(child.default_value)
+            child._cache_value(default)
 
 
 def _reorder_and_fill(
@@ -345,6 +382,15 @@ class PropertyGroup(PropertyBase):
     """
 
     _properties: list[Property | PropertyGroup]
+    """The child list as stored, WITHOUT running deferred child synthesis.
+
+    Read it directly only where skipping synthesis is the point - during
+    construction, inside `_run_deferred_synthesis` itself, or when
+    materializing chunks (`_materialize_layer`), where forcing synthesis
+    would write children AE omits. Everywhere else use `properties`, which
+    synthesizes first; reading the raw list from a public method silently
+    sees an unsynthesized group.
+    """
 
     @classmethod
     def _new(
@@ -572,6 +618,14 @@ class PropertyGroup(PropertyBase):
         """Return the number of child properties in this group."""
         return len(self.properties)
 
+    def _leaf_properties(self) -> Iterator[Property]:
+        """Every leaf `Property` under this group, depth-first."""
+        for child in self:
+            if isinstance(child, PropertyGroup):
+                yield from child._leaf_properties()
+            elif isinstance(child, Property):
+                yield child
+
     def __getattr__(self, name: str) -> Property | PropertyGroup:
         """Look up a child property by attribute access.
 
@@ -589,6 +643,18 @@ class PropertyGroup(PropertyBase):
             failed, so class attributes and `@property` descriptors
             always take priority.
         """
+        # A child property is never named with a leading underscore, so a
+        # private name here is always a miss on an internal attribute
+        # (`_ldta`, `_chunk`, ...). Answering it without the child scan
+        # keeps parent-chain probes like `hasattr(node, "_ldta")` O(1)
+        # instead of deriving every sibling's display name.
+        # A child property is never named with a leading underscore, so a
+        # private name here is always a miss on an internal attribute
+        # (`_ldta`, `_chunk`, ...). Answering it without the child scan
+        # keeps parent-chain probes like `hasattr(node, "_ldta")` O(1)
+        # instead of deriving every sibling's display name.
+        if name.startswith("_"):
+            raise AttributeError(name)
         # Avoid infinite recursion during __init__ (before
         # `properties` has been set on the instance).
         try:
@@ -681,7 +747,7 @@ class PropertyGroup(PropertyBase):
         animated property reverts to a static value; see
         `Property.remove_all_keys`.
         """
-        for child in self._properties:
+        for child in self.properties:
             child.remove_all_keys()
 
     def can_add_property(self, name: str) -> bool:
@@ -771,7 +837,7 @@ class PropertyGroup(PropertyBase):
             )
 
         slots = [
-            p for p in self._properties if isinstance(p, Property) and p._is_vf_axis
+            p for p in self.properties if isinstance(p, Property) and p._is_vf_axis
         ]
         for p in slots:
             if p.axis_tag == axis_tag:
@@ -956,18 +1022,26 @@ class PropertyGroup(PropertyBase):
         return self._attach_effect(tdmn, sspc, tdmn.value)
 
     def _installed_effect_def(self, name: str) -> tuple[str, str, ListChunk] | None:
-        """Resolve `name` to an effect defined in the project's EfdG.
+        """Resolve `name` to an effect template.
 
-        Only the Effect Parade can host installed effects. Returns
-        `(match_name, display_name, def_sspc)` for a project-defined
-        effect, else `None`.
+        Only the Effect Parade can host installed effects. The project's
+        own `LIST:EfdG` wins: its definition was written by whichever AE
+        release saved the project, so cloning it keeps the instance
+        consistent with the rest of the file. A built-in absent from the
+        project falls back to the baked table, which is what lets an
+        effect be added to a project that has never used it.
+
+        Returns `(match_name, display_name, def_sspc)`, else `None`.
         """
         from ...parsers.effect import match_effect_definition  # noqa: PLC0415
 
         if self.match_name != "ADBE Effect Parade":
             return None
         project = self._containing_layer.containing_comp._project
-        return match_effect_definition(project._effect_definitions(), name)
+        found = match_effect_definition(project._effect_definitions(), name)
+        if found is not None:
+            return found
+        return _baked_effect_def(name)
 
     def _add_installed_effect(
         self, match_name: str, display: str, def_sspc: ListChunk
@@ -982,11 +1056,19 @@ class PropertyGroup(PropertyBase):
         value parameters are de-animated and reset to their `pard`
         defaults to match `addProperty`'s static, default-valued
         semantics.
+
+        The definition also mirrors that instance's `tdb4` timebases, so
+        the clone is restamped with this composition's: an effect first
+        applied in a 24 fps comp otherwise carries 24576 into a 60 fps
+        one, and the parameter's keyframe times are then read against the
+        wrong base.
         """
         self._ensure_materialized()
         sspc = clone_chunk_tree(def_sspc)
         assert isinstance(sspc, ListChunk)
         rewrite_owner_tdpi(sspc, layer_id=self._containing_layer.id)
+        comp = self._containing_layer.containing_comp
+        rewrite_time_base(sspc, comp._cdta.internal_timebase)
 
         # Name the instance: the first uses the unnamed tdsn sentinel
         # (so it shows the effect's fnam name); later ones get "Name N".
@@ -1023,6 +1105,7 @@ class PropertyGroup(PropertyBase):
             effect_param_defs=effect_param_defs,
             composition=comp,
             tdmn=tdmn,
+            layer_size=layer._pixel_size,
         )
         effect._parent_property = self
         effect._deferred_ae_major = get_ae_version_major(layer)

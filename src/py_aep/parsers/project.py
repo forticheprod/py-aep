@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 from typing import TYPE_CHECKING, cast
 
 from ..binary.item_chunks import HeadChunk, NhedChunk, NnhdChunk
@@ -82,11 +81,13 @@ def parse_project(
 
     # Expression engine: LIST:ExEn > Utf8
     exen_utf8 = None
-    with contextlib.suppress(ChunkNotFoundError):
+    try:
         exen_chunk = find_by_list_type(chunks=root_chunks, list_type="ExEn")
         exen_utf8 = cast(
             "Utf8Chunk", find_by_type(chunks=exen_chunk.chunks, chunk_type="Utf8")
         )
+    except ChunkNotFoundError:
+        pass
 
     # CMS settings JSON
     cms_utf8: Utf8Chunk | None = None
@@ -144,10 +145,16 @@ def parse_project(
 
     project._render_queue = parse_render_queue(root_chunks, project)
 
-    with contextlib.suppress(ChunkNotFoundError):
+    try:
         fcid_chunk = cast(
             "U1Chunk", find_by_type(chunks=root_chunks, chunk_type="fcid")
         )
-        project._active_item = project.items[fcid_chunk.value]
+        # `fcid` can name an item that no longer exists (After Effects leaves
+        # the id behind when the active item is deleted outside its own
+        # bookkeeping, and opens such a file with nothing selected). Treat a
+        # dangling id as "no active item" rather than failing the parse.
+        project._active_item = project.items.get(fcid_chunk.value)
+    except ChunkNotFoundError:
+        pass
 
     return project

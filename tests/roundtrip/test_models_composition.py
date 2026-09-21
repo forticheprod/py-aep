@@ -20,6 +20,12 @@ from py_aep.models.properties.property import Property
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "composition"
 LAYER_SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
+PROPERTY_SAMPLES_DIR = (
+    Path(__file__).parent.parent.parent / "samples" / "models" / "property"
+)
+MARKER_SAMPLES_DIR = (
+    Path(__file__).parent.parent.parent / "samples" / "models" / "marker"
+)
 FOOTAGE_SAMPLES_DIR = (
     Path(__file__).parent.parent.parent / "samples" / "models" / "footage"
 )
@@ -1118,13 +1124,6 @@ class TestRoundtripFrameRateRetiming:
     was measured on AE 2026.
     """
 
-    PROPERTY_SAMPLES_DIR = (
-        Path(__file__).parent.parent.parent / "samples" / "models" / "property"
-    )
-    MARKER_SAMPLES_DIR = (
-        Path(__file__).parent.parent.parent / "samples" / "models" / "marker"
-    )
-
     @staticmethod
     def _keyed(comp: CompItem) -> Iterator[Property]:
         return (prop for prop in comp._walk_properties() if prop.keyframes)
@@ -1142,7 +1141,7 @@ class TestRoundtripFrameRateRetiming:
         """24 -> 30 fps must not move any keyframe. Before the fix these
         drifted to [0, 2.4, 4.8, 7.2]: the frame indices were preserved
         instead of the times."""
-        project = parse_project_fresh(self.PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
+        project = parse_project_fresh(PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
         comp = project.compositions[0]
         before = {
             p.match_name: [k.time for k in p.keyframes] for p in self._keyed(comp)
@@ -1163,9 +1162,7 @@ class TestRoundtripFrameRateRetiming:
     def test_time_units_rescale_by_timebase_ratio(self, tmp_path: Path) -> None:
         """25 -> 30 moves internal_timebase 25600 -> 30720, so every stored
         unit count scales by 1.2."""
-        project = parse_project_fresh(
-            self.PROPERTY_SAMPLES_DIR / "effect_point_speed.aep"
-        )
+        project = parse_project_fresh(PROPERTY_SAMPLES_DIR / "effect_point_speed.aep")
         comp = project.compositions[0]
         assert comp.frame_rate == 25.0
         assert comp._cdta.internal_timebase == 25600
@@ -1188,7 +1185,7 @@ class TestRoundtripFrameRateRetiming:
         """30 -> 60 keeps internal_timebase at 30720 and halves time_scale, so
         the stored unit counts must NOT change. The seconds must not drift
         either, which needs the cached conversion factors refreshed."""
-        project = parse_project_fresh(self.PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
+        project = parse_project_fresh(PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
         comp = project.compositions[0]
         comp.frame_rate = 30.0
         units_at_30 = {
@@ -1216,7 +1213,7 @@ class TestRoundtripFrameRateRetiming:
     def test_tdb4_time_base_is_restamped(self, tmp_path: Path) -> None:
         """AE writes cdta.internal_timebase into every property tdb4 and
         rejects the file when the copy is wrong."""
-        project = parse_project_fresh(self.PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
+        project = parse_project_fresh(PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
         comp = project.compositions[0]
         comp.frame_rate = 30.0
         out = tmp_path / "modified.aep"
@@ -1235,7 +1232,7 @@ class TestRoundtripFrameRateRetiming:
     def test_duration_requantizes_by_rounding(self, tmp_path: Path) -> None:
         """A 253-frame 24 fps comp is 263.54 frames at 25 fps. AE rounds to
         264 (10.56 s); truncating would give 263 (10.52 s)."""
-        project = parse_project_fresh(self.PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
+        project = parse_project_fresh(PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
         comp = project.compositions[0]
         comp.duration = 253.0 / 24.0
 
@@ -1252,7 +1249,7 @@ class TestRoundtripFrameRateRetiming:
         """Markers are keyframes on a marker property, so they ride the same
         rescale, on the comp and on the layer alike."""
         on_comp = sample.startswith("comp")
-        project = parse_project_fresh(self.MARKER_SAMPLES_DIR / sample)
+        project = parse_project_fresh(MARKER_SAMPLES_DIR / sample)
         comp = project.compositions[0]
         marker = comp.marker_property if on_comp else self._layer_marker(comp)
         assert marker is not None
@@ -1290,7 +1287,7 @@ class TestRoundtripFrameRateRetiming:
         """Writing the frame rate a comp already has must not retime it, or
         tooling that echoes values back would requantize timings that are
         legitimately off-grid."""
-        project = parse_project_fresh(self.PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
+        project = parse_project_fresh(PROPERTY_SAMPLES_DIR / "keyframe_misc.aep")
         comp = project.compositions[0]
         comp.duration = 253.0 / 24.0
         before_duration = comp.duration

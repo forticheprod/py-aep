@@ -7,6 +7,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
+from py_aep.data.spatial_flags import EFFECT_PARAM_SPATIAL_FLAGS
 from py_aep.enums import (
     KeyframeInterpolationType,
     LayerType,
@@ -15,7 +16,17 @@ from py_aep.enums import (
     PropertyValueType,
 )
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
-from py_aep.resolvers.interpolation import interpolate_keyframes
+from py_aep.resolvers.interpolation import (
+    _DEFAULT_INFLUENCE,
+    _BezierPathData,
+    _tangents_are_zero,
+    interpolate_keyframes,
+    path_parameter_at_progress,
+    roving_keyframe_times,
+    segment_value_slope,
+    split_segment_influences,
+    split_spatial_path,
+)
 
 from ...binary.chunk import ContainerChunk, ListChunk
 from ...binary.ldat_chunks import (
@@ -68,7 +79,7 @@ from ..validators import (
     validate_string,
 )
 from .gradient import Gradient
-from .keyframe import _DEFAULT_INFLUENCE, Keyframe, _timebase_units
+from .keyframe import Keyframe, _timebase_units
 from .keyframe_ease import KeyframeEase
 from .marker import MarkerValue
 from .overrides import (
@@ -336,7 +347,24 @@ class Property(PropertyBase):
         override = _ISSPATIAL_OVERRIDES.get(self.match_name)
         if override is not None:
             return override
+        if self._color:
+            # ExtendScript reports every color property as spatial, but AE
+            # leaves the tdb4 spatial bit clear on them (an edited effect
+            # color writes `_spatial_static_flags` 0x07, measured in AE
+            # 2026), so the raw bit would say otherwise.
+            return True
         return bool(self._is_spatial_raw)
+
+    @property
+    def _has_motion_path(self) -> bool:
+        """Whether the property interpolates along a spatial motion path.
+
+        `is_spatial` also reports `True` for colors, to match what
+        ExtendScript says; a color has no motion path, so the keyframe
+        binary (`temporal_flags`, ldat item layout), the speed math and
+        the roving guard ask this instead.
+        """
+        return self.is_spatial and not self._color
 
     @property
     def name(self) -> str:
@@ -449,7 +477,10 @@ class Property(PropertyBase):
                 )
                 _tdb4._value_hint_flag = 0xFF
         else:
-            _tdb4.is_spatial = spec.is_spatial
+            if spec.spatial_flags is not None:
+                _tdb4._spatial_static_flags = spec.spatial_flags
+            else:
+                _tdb4.is_spatial = spec.is_spatial
             _tdb4.no_value = no_value
             _tdb4.color = spec.color
             _tdb4.integer = spec.integer
@@ -819,6 +850,53 @@ class Property(PropertyBase):
                 td._propagate_cos()
         self._link_keyframes()
 
+    def _redistribute_roving_keyframes(self) -> None:
+        """Re-derive every roving keyframe's time from the spatial path.
+
+        Called after any mutation that can reshape a roving run: a value
+        edit (the path changed), a bounding keyframe's time moving (the
+        span changed), or a roving flag flip. Writes directly to the
+        backing time field to avoid recursion through `_set_time_units`.
+        """
+        if not self._has_motion_path:
+            return
+        # Orientation is spatial-valued but inert under roving: AE's
+        # menu accepts the command (26.3x87) yet the keyframe keeps its
+        # time and ease unchanged.
+        if self.match_name == "ADBE Orientation":
+            return
+        keyframes = self.keyframes
+        if len(keyframes) < 3:
+            return
+        # This runs on every value, time and tangent write, so a property
+        # with no roving keyframes must not pay for a full pass. The flag is
+        # read off the chunk rather than through the `roving` descriptor:
+        # that hop was four fifths of the cost.
+        if not any(kf._ldat_item.roving for kf in keyframes):
+            return
+        targets = roving_keyframe_times(keyframes)
+        if not targets:
+            return
+        occupied = {kf.time_units for kf in keyframes}
+        for index, time in targets.items():
+            kf = keyframes[index]
+            # `roving_keyframe_times` works in layer time, which is what the
+            # ticks count, so there is no composition-time offset or stretch
+            # to undo here. Converting scaled the run by the stretch factor
+            # and displaced it by the layer's start time, pushing roving keys
+            # outside their own anchors (AE 2026: a run bounded at comp 2 and
+            # 8 on a 200 % layer put a roving key at -0.017).
+            units = round(time * kf._timebase)
+            if units == kf.time_units:
+                continue
+            # A degenerate path (coincident keyframes) can map two keys
+            # onto the same unit; leave those where they are.
+            if units in occupied:
+                continue
+            occupied.discard(kf.time_units)
+            occupied.add(units)
+            kf._ldat_item.time_units = units
+
     def _ensure_materialized(self) -> None:
         """Flip synthetic flags so backing chunks become visible to write_aep().
 
@@ -888,16 +966,13 @@ class Property(PropertyBase):
         """
         if self._tdb4 is None:
             return
-        comp = self._composition
-        if comp is None:
-            node = self.parent_property
-            while node is not None:
-                comp = getattr(node, "_containing_comp", None)
-                if comp is not None:
-                    break
-                node = node.parent_property
+        comp = self._owning_comp()
         if comp is not None:
-            self._tdb4._time_base = comp._cdta.internal_timebase
+            # The layer's own base, not the comp's: a stretched layer counts
+            # its keyframe ticks against `internal_timebase * |stretch|`.
+            self._tdb4._time_base = int(
+                self._layer_timebase or comp._cdta.internal_timebase
+            )
             if (
                 self._tdb4._spatial_marker
                 and not self._tdb4.color
@@ -1248,7 +1323,7 @@ class Property(PropertyBase):
         # 3. Effect point (0-1 fraction -> pixel coordinates)
         if self._effect_scale is not None:
             if isinstance(raw, list) and len(raw) >= 2:
-                raw = [v * s for v, s in zip(raw, self._effect_scale)]
+                raw = self._apply_effect_scale(raw)
         return raw
 
     def _unresolve_value(self, value: _ValueType) -> _ValueType:
@@ -1273,7 +1348,7 @@ class Property(PropertyBase):
         # 3. Reverse effect point (pixel coordinates -> 0-1 fraction)
         if self._effect_scale is not None:
             if isinstance(value, list) and len(value) >= 2:
-                value = [v / s if s else 0.0 for v, s in zip(value, self._effect_scale)]
+                value = self._apply_effect_scale(value, invert=True)
         # 2. Reverse color (RGBA 0-1 -> ARGB 0-255)
         if self._color:
             if isinstance(value, list) and len(value) == 4:
@@ -1341,18 +1416,10 @@ class Property(PropertyBase):
         """
         if not self.is_separation_leader or not self.dimensions_separated:
             return None
-        followers: list[Property] = []
-        for dimension in range(3):
-            try:
-                follower = self.get_separation_follower(dimension)
-            except KeyError:
-                # `get_separation_follower` reaches `PropertyGroup.__getitem__`,
-                # which raises rather than returning None for a missing child.
-                return None
-            if follower is None:
-                return None
-            followers.append(follower)
-        return followers
+        followers = [self.get_separation_follower(dim) for dim in range(3)]
+        if any(follower is None for follower in followers):
+            return None
+        return cast("list[Property]", followers)
 
     @property
     def value(self) -> _ValueType:
@@ -1840,13 +1907,10 @@ class Property(PropertyBase):
         if self._dimensions_separated is not None:
             return self._dimensions_separated
         if self.match_name == "ADBE Position":
-            # Light and Camera layers always have 3D position but do not
-            # expose dimensionsSeparated in ExtendScript.
-            if self._containing_layer._ldta.layer_type in (
-                1,  # light
-                2,  # camera
-            ):
-                return False
+            # Camera and Light positions separate like any other 3-D layer's:
+            # AE 2026 reports `dimensionsSeparated` false on a fresh one,
+            # accepts the write, and reads back true with the position intact.
+            #
             assert self._tdsb is not None
             return bool(self._tdsb.dimensions_separated)
         return False
@@ -1867,13 +1931,8 @@ class Property(PropertyBase):
             # already reset to its default, destroying the separated values.
             return
 
-        try:
-            followers = [self.get_separation_follower(dim) for dim in range(3)]
-        except KeyError:
-            # `get_separation_follower` reaches `PropertyGroup.__getitem__`,
-            # which raises rather than returning None for a missing child.
-            followers = []
-        if not followers or any(follower is None for follower in followers):
+        followers = [self.get_separation_follower(dim) for dim in range(3)]
+        if any(follower is None for follower in followers):
             raise ValueError(
                 f"{self.match_name!r} has no separation followers to transfer to"
             )
@@ -1903,6 +1962,9 @@ class Property(PropertyBase):
         self._ensure_materialized()
         assert self._tdsb is not None
         self._tdsb.dimensions_separated = True
+        # AE writes the group collapsed alongside it (enable byte 0x3,
+        # lock byte 0x8 on every separated position it authored).
+        self._tdsb.collapsed = True
         self._dimensions_separated = True
         three_d = self._containing_layer.is_3d
         for dimension, follower in enumerate(followers):
@@ -1926,7 +1988,7 @@ class Property(PropertyBase):
         self._dimensions_separated = False
         self.value = composed
         for follower in followers:
-            follower._revert_to_synthetic()
+            _deactivate_follower(follower)
 
     @staticmethod
     def _segment_spans(times: list[float]) -> tuple[list[float], list[float]]:
@@ -1961,11 +2023,13 @@ class Property(PropertyBase):
         ]
         incoming, outgoing = self._segment_spans(times)
 
-        while self.keyframes:
-            self.remove_key(0)
+        self.remove_all_keys()
         self._ensure_materialized()
         assert self._tdsb is not None
         self._tdsb.dimensions_separated = True
+        # AE writes the group collapsed alongside it (enable byte 0x3,
+        # lock byte 0x8 on every separated position it authored).
+        self._tdsb.collapsed = True
         self._dimensions_separated = True
         self._set_own_value(list(cast("list[float]", self.default_value)))
 
@@ -2082,9 +2146,7 @@ class Property(PropertyBase):
                     )
 
         for follower in followers:
-            while follower.keyframes:
-                follower.remove_key(0)
-            follower._revert_to_synthetic()
+            _deactivate_follower(follower)
 
         self._ensure_materialized()
         assert self._tdsb is not None
@@ -2361,7 +2423,13 @@ class Property(PropertyBase):
                 f"dim must be in range [0, {len(_SEPARATION_FOLLOWERS) - 1}], got {dim}"
             )
         match_name = _SEPARATION_FOLLOWERS[dim]
-        return cast("Property | None", parent.property(match_name))
+        try:
+            return cast("Property | None", parent.property(match_name))
+        except KeyError:
+            # `property()` reaches `PropertyGroup.__getitem__`, which
+            # raises rather than returning None. A separated leader on a
+            # 2D layer genuinely has no Z follower.
+            return None
 
     def nearest_key_index(self, time: float) -> int:
         """
@@ -2612,6 +2680,7 @@ class Property(PropertyBase):
                 the parser).
 
         Raises:
+            ValueError: If `time` is NaN.
             NotImplementedError: If `pre_expression` is `False`,
                 because the parser cannot evaluate expressions.
         """
@@ -2619,13 +2688,47 @@ class Property(PropertyBase):
             raise NotImplementedError(
                 "Expression evaluation is not supported by the parser."
             )
+        if isinstance(time, float) and math.isnan(time):
+            # AE 2026: "Unable to call valueAtTime because of parameter 1.
+            # NaN is not a number." Infinity IS accepted (it evaluates to the
+            # last keyframe's value), so only NaN is rejected here.
+            raise ValueError("time must be a number, got NaN")
         if not self.keyframes:
             separated = self._separated_value(time)
             if separated is not None:
                 return separated
             return self.value
 
-        return interpolate_keyframes(time, self.keyframes, self.is_spatial)
+        return interpolate_keyframes(
+            self._layer_time_from_comp(time),
+            self.keyframes,
+            self._has_motion_path,
+            self._inert_dimensions(),
+        )
+
+    def _layer_time_from_comp(self, time: float) -> float:
+        """Composition seconds to the owning layer's own seconds.
+
+        The inverse of the mapping [Keyframe.time][py_aep.Keyframe.time]
+        applies. Interpolation runs on this axis because AE's ease speeds
+        are per layer second and a negatively stretched layer's keyframes
+        only ascend here.
+        """
+        return (time - self._start_time_offset) / self._time_stretch
+
+    def _inert_dimensions(self) -> frozenset[int]:
+        """Value indices the owning layer ignores.
+
+        A 2-D layer's Scale still carries a Z component, and AE holds it
+        flat across a segment whose X and Y bow - it will not even store a
+        Z other than 100 there.
+        """
+        if self.match_name != "ADBE Scale":
+            return frozenset()
+        layer = self._containing_layer
+        if layer is None or getattr(layer, "three_d_layer", False):
+            return frozenset()
+        return frozenset((2,))
 
     def is_interpolation_type_valid(
         self, type: int | KeyframeInterpolationType
@@ -2774,7 +2877,7 @@ class Property(PropertyBase):
             else None
         )
         tdb4_apply_animated_template(
-            t, color=bool(self._color), spatial=self.is_spatial
+            t, color=bool(self._color), spatial=self._has_motion_path
         )
         # The template cannot know the comp's timebase or pixel aspect.
         # `_ensure_materialized` stamps them, but only for a synthesized
@@ -2819,17 +2922,17 @@ class Property(PropertyBase):
         sub-frame keyframes inside one frame stay distinct.
         """
         for i, kf in enumerate(self.keyframes):
-            if kf.time_units == time_units:
+            units = kf.time_units
+            if units == time_units:
                 return i, True
-        idx = 0
-        while idx < len(self.keyframes) and self.keyframes[idx].time_units < time_units:
-            idx += 1
-        return idx, False
+            if units > time_units:
+                return i, False
+        return len(self.keyframes), False
 
     def _keyframe_units_at(self, time: float) -> int:
         """Layer-relative keyframe units for a composition `time` in seconds."""
-        timebase = _timebase_units(*self._time_units())
-        return round((time - self._start_time_offset) * timebase)
+        timebase = self._layer_timebase or _timebase_units(*self._time_units())
+        return round((time - self._start_time_offset) / self._time_stretch * timebase)
 
     def can_add_to_motion_graphics_template(self, comp: CompItem) -> bool:
         """Test whether this property can be added to `comp`'s Essential
@@ -2920,7 +3023,7 @@ class Property(PropertyBase):
 
         item_type = self._keyframe_item_type()
         kf_data = build_kf_data(item_type, self.dimensions)
-        ldat_item = build_ldat_item(kf_data, spatial=self.is_spatial)
+        ldat_item = build_ldat_item(kf_data, spatial=self._has_motion_path)
 
         kf = Keyframe(
             _ldat_item=ldat_item,
@@ -2938,6 +3041,7 @@ class Property(PropertyBase):
         set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         kf.value = new_value
         self._link_inserted_key(idx)
+        self._preserve_curve_on_insert(idx)
         # The static value is now dead: `value` reads the keyframes, but its
         # cache short-circuits ahead of that check, so animating a property
         # that had been read (or written) statically kept reporting the old
@@ -2946,6 +3050,151 @@ class Property(PropertyBase):
         if isinstance(self._value, (int, float, list)):
             self._value = None
         return idx
+
+    def _preserve_curve_on_insert(self, idx: int) -> None:
+        """Give a freshly inserted keyframe the interpolation AE gives it.
+
+        `addKey` must not change the animation: AE inserts the key with the
+        surrounding segment's interpolation type and the ease that keeps the
+        curve identical (measured on AE 2026 - every sampled `valueAtTime`
+        is unchanged across BEZIER, LINEAR and HOLD segments). Without this
+        the key lands LINEAR with a default ease and silently reshapes the
+        animation.
+
+        Rules, one per segment type:
+
+        - BEZIER: the new key takes the curve's slope at that time, and the
+          influences come from a De Casteljau split of the time handles
+          (a 5 s 0->100 segment eased 0/75 both sides, split at 2.5 s, gives
+          speed 80 and influences 75 / 12.5 / 12.5 / 75).
+        - LINEAR: the new key and both facing neighbour handles take the
+          segment's slope with AE's default influence.
+        - HOLD: speed 0 with the default influence; the value is held either
+          way.
+        """
+        if idx <= 0 or idx >= len(self.keyframes) - 1:
+            # Outside the keyed range there is no segment to preserve.
+            return
+        kf = self.keyframes[idx]
+        prev_kf = self.keyframes[idx - 1]
+        next_kf = self.keyframes[idx + 1]
+
+        components = _segment_components(prev_kf, next_kf)
+        if components is None:
+            return
+        pairs, dims = components
+
+        out_type = prev_kf.out_interpolation_type
+        in_type = next_kf.in_interpolation_type
+        # Either side holding makes the whole segment hold, so the inserted
+        # key has to hold on both sides to leave the value where it was.
+        if KeyframeInterpolationType.HOLD in (out_type, in_type):
+            out_type = in_type = KeyframeInterpolationType.HOLD
+        kf.in_interpolation_type = out_type
+        kf.out_interpolation_type = in_type
+
+        # Layer time: the speeds synthesized below are stored per layer
+        # second, and on a reversed layer only this axis ascends.
+        t0, t1, t = prev_kf._layer_time, next_kf._layer_time, kf._layer_time
+        if not t0 < t < t1:
+            return
+
+        prev_out = list(prev_kf.out_temporal_ease)
+        next_in = list(next_kf.in_temporal_ease)
+        new_in: list[KeyframeEase] = []
+        new_out: list[KeyframeEase] = []
+        left_out: list[KeyframeEase] = []
+        right_in: list[KeyframeEase] = []
+
+        # A spatial property stores ONE ease for the whole vector (its speed
+        # is along the path), where a plain vector stores one per dimension.
+        n_ease = min(len(prev_out), len(next_in)) or 1
+        spatial = n_ease == 1 and dims > 1
+        if spatial:
+            # A spatial ease's speed is measured along the PATH, so the split
+            # runs once over the segment's arc length - the chord would be
+            # short wherever the tangents bow the curve.
+            pairs = [(0.0, self._segment_arc_length(prev_kf, next_kf))]
+
+        for d in range(n_ease):
+            v0, v1 = pairs[d] if d < len(pairs) else pairs[0]
+            o_ease = prev_out[d] if d < len(prev_out) else prev_out[0]
+            i_ease = next_in[d] if d < len(next_in) else next_in[0]
+            if out_type == KeyframeInterpolationType.HOLD:
+                slope = 0.0
+                infl = (o_ease.influence, _DEFAULT_INFLUENCE, _DEFAULT_INFLUENCE)
+                infl_next = i_ease.influence
+                o_speed, i_speed = o_ease.speed, i_ease.speed
+            elif out_type == KeyframeInterpolationType.LINEAR:
+                slope = (v1 - v0) / (t1 - t0)
+                infl = (_DEFAULT_INFLUENCE, _DEFAULT_INFLUENCE, _DEFAULT_INFLUENCE)
+                infl_next = _DEFAULT_INFLUENCE
+                o_speed = i_speed = slope
+            else:
+                slope = segment_value_slope(t0, t1, v0, v1, o_ease, i_ease, t)
+                lo, ni, no, ri = split_segment_influences(
+                    t0, t1, v0, v1, o_ease, i_ease, t
+                )
+                infl = (lo, ni, no)
+                infl_next = ri
+                o_speed, i_speed = o_ease.speed, i_ease.speed
+            left_out.append(KeyframeEase(o_speed, infl[0]))
+            new_in.append(KeyframeEase(slope, infl[1]))
+            new_out.append(KeyframeEase(slope, infl[2]))
+            right_in.append(KeyframeEase(i_speed, infl_next))
+
+        kf.in_temporal_ease = new_in
+        kf.out_temporal_ease = new_out
+        prev_kf.out_temporal_ease = left_out
+        next_kf.in_temporal_ease = right_in
+
+        if spatial:
+            self._split_motion_path(prev_kf, kf, next_kf)
+
+    def _segment_arc_length(self, prev_kf: Keyframe, next_kf: Keyframe) -> float:
+        """Arc length of the motion path between two keyframes."""
+        v0 = prev_kf.value
+        v1 = next_kf.value
+        if not isinstance(v0, list) or not isinstance(v1, list):
+            return 0.0
+        ndim = len(v0)
+        out_tangent = prev_kf.out_spatial_tangent or [0.0] * ndim
+        in_tangent = next_kf.in_spatial_tangent or [0.0] * ndim
+        if _tangents_are_zero(out_tangent) and _tangents_are_zero(in_tangent):
+            return math.sqrt(sum((v1[d] - v0[d]) ** 2 for d in range(ndim)))
+        return _BezierPathData(v0, v1, out_tangent, in_tangent).segment_length
+
+    def _split_motion_path(
+        self, prev_kf: Keyframe, kf: Keyframe, next_kf: Keyframe
+    ) -> None:
+        """Split the motion path so the inserted key does not reshape it.
+
+        Without this the new keyframe carries no spatial tangents and the
+        single curve becomes two straight-ish halves.
+        """
+        v0 = prev_kf.value
+        v1 = next_kf.value
+        if not isinstance(v0, list) or not isinstance(v1, list):
+            return
+        ndim = len(v0)
+        out_tangent = prev_kf.out_spatial_tangent or [0.0] * ndim
+        in_tangent = next_kf.in_spatial_tangent or [0.0] * ndim
+        if _tangents_are_zero(out_tangent) and _tangents_are_zero(in_tangent):
+            return
+        data = _BezierPathData(v0, v1, out_tangent, in_tangent)
+        if data.segment_length <= 0:
+            return
+        # The split sits where the key landed: the arc-length fraction of the
+        # path that the new keyframe's value corresponds to.
+        progress = _progress_of_point(data, cast("list[float]", kf.value))
+        u = path_parameter_at_progress(data, progress)
+        left_out, new_in, _split, new_out, right_in = split_spatial_path(
+            v0, v1, out_tangent, in_tangent, u
+        )
+        prev_kf.out_spatial_tangent = left_out
+        kf.in_spatial_tangent = new_in
+        kf.out_spatial_tangent = new_out
+        next_kf.in_spatial_tangent = right_in
 
     def remove_key(self, key_index: int) -> None:
         """Remove the keyframe at `key_index` (0-based).
@@ -3031,7 +3280,19 @@ class Property(PropertyBase):
             if self._is_vf_axis
             else None
         )
-        tdb4_apply_static_template(t, color=bool(self._color), spatial=self.is_spatial)
+        tdb4_apply_static_template(
+            t, color=bool(self._color), spatial=self._has_motion_path
+        )
+        control_type = self._property_control_type
+        if control_type is not None and self._is_in_effect():
+            # `tdb4_apply_static_template` wrote the LAYER-property byte (9
+            # for spatial, 6 for colour). An effect parameter needs the
+            # instance-value bits on top, without which AE ignores the tdbs
+            # and falls back to the parT default - so the same AE-measured
+            # table the parse path synthesizes from decides the byte here.
+            effect_flags = EFFECT_PARAM_SPATIAL_FLAGS.get(control_type)
+            if effect_flags is not None:
+                t._spatial_static_flags = effect_flags
         if preserved is not None:
             t._value_hint_flag, t._cvot_flags, t._time_base = preserved
 
@@ -3549,7 +3810,93 @@ class Property(PropertyBase):
         conversion - AE leaves a layer start off the frame grid after a
         frame-rate change, which a rounded offset would then quantize.
         """
-        return self._containing_layer.start_time
+        stretch = self._time_stretch
+        if stretch >= 0:
+            return self._containing_layer.start_time
+        # A reversed layer starts a hair before its nominal start: AE offsets
+        # it by `|stretch| / 100 / 3000` seconds. Measured on AE 2026 at
+        # -50 / -100 / -150 / -200 % and 24 / 25 / 30 fps - twelve readings,
+        # all matching, and frame-rate independent (so it is a layer-time
+        # constant of 1/3000 s, not a frame or tick).
+        return self._containing_layer.start_time - abs(stretch) / 3000.0
+
+    @property
+    def _time_stretch(self) -> float:
+        """Composition seconds per second of the owning layer's own time.
+
+        `layer.stretch / 100`, signed: a negative stretch plays the layer
+        backwards, so its keyframes run down the composition timeline.
+        """
+        try:
+            stretch = self._containing_layer.stretch
+        except (ValueError, AttributeError):
+            return 1.0
+        if not stretch:
+            return 1.0
+        return float(stretch) / 100.0
+
+    @property
+    def _layer_timebase(self) -> float:
+        """Keyframe time units per second of the owning LAYER's time.
+
+        AE stores `floor(cdta.internal_timebase * max(1, |stretch| / 100))`
+        in every `tdb4` and counts keyframe ticks against it, so a stretched
+        layer's ticks stay in its own time (measured on AE 2026: a 150 %
+        layer at 24 fps stores 36864 and a key at layer-second 1 holds
+        36864 ticks, which AE reports at composition second 1.5). Derived
+        rather than read back so the read and write paths cannot disagree.
+        """
+        comp = self._owning_comp()
+        if comp is None:
+            return 0.0
+        base = comp._cdta.internal_timebase
+        if not base:
+            return 0.0
+        return float(math.floor(base * max(1.0, abs(self._time_stretch))))
+
+    def _owning_comp(self) -> CompItem | None:
+        """The composition this property belongs to.
+
+        `_composition` is unset on a freshly synthesized property, whose
+        comp is only reachable by walking up to the layer.
+        """
+        comp = self._composition
+        if comp is not None:
+            return comp
+        node = self.parent_property
+        while node is not None:
+            comp = getattr(node, "_containing_comp", None)
+            if comp is not None:
+                return cast("CompItem", comp)
+            node = node.parent_property
+        return None
+
+    def _apply_effect_scale(
+        self, values: list[float], *, invert: bool = False
+    ) -> list[float]:
+        """Move a normalized vector into the space values are reported in.
+
+        An effect point (and a footage layer's Anchor Point) stores its
+        value and its spatial tangents normalized against the layer, while
+        ExtendScript reports both in pixels. `invert` divides instead, for
+        the write path.
+
+        A component with no matching scale factor passes through, so the
+        vector keeps its length rather than being truncated to the scale's.
+        """
+        scale = self._effect_scale
+        if scale is None:
+            return list(values)
+        result = []
+        for index, component in enumerate(values):
+            factor = scale[index] if index < len(scale) else None
+            if factor is None:
+                result.append(component)
+            elif invert:
+                result.append(component / factor if factor else 0.0)
+            else:
+                result.append(component * factor)
+        return result
 
     @property
     def _effect_scale(self) -> list[float] | None:
@@ -3580,7 +3927,8 @@ class Property(PropertyBase):
                 if size is not None:
                     scale = [size[0], size[1], 1.0]
         elif (
-            self._property_control_type == PropertyControlType.TWO_D
+            self._property_control_type
+            in (PropertyControlType.TWO_D, PropertyControlType.THREE_D)
             and self._is_in_effect()
         ):
             # An effect point is stored normalized against the LAYER, not
@@ -3589,9 +3937,16 @@ class Property(PropertyBase):
             # only 100/200 produces - comp normalization would store 0.125.
             # `Layer.width` already falls back to the comp for source-less
             # layers, which is what AE uses there.
+            #
+            # A 3D point's Z shares the HEIGHT divisor: a Point3D Control set
+            # to [100, 50, 7] on a 200x100 layer stores [0.5, 0.5, 0.07], and
+            # only 7/100 gives 0.07 (probed in AE 2026 across three
+            # comp/layer size pairs).
             size = self._layer_pixel_size()
             if size is not None:
                 scale = list(size)
+                if self._property_control_type == PropertyControlType.THREE_D:
+                    scale.append(size[1])
 
         return scale
 
@@ -3606,15 +3961,58 @@ class Property(PropertyBase):
     def _layer_pixel_size(self) -> tuple[float, float] | None:
         """The containing layer's pixel dimensions, or `None`.
 
-        `width` / `height` live on [AVLayer][]; a camera or light layer has
-        neither, and nothing normalized against a layer sits on one.
+        `None` while the property has no layer at all - an effect
+        definition parsed out of `LIST:EfdG` is a free-standing template,
+        so there is nothing to normalize against yet.
         """
-        layer = self._containing_layer
-        width = getattr(layer, "width", 0)
-        height = getattr(layer, "height", 0)
-        if width and height:
-            return float(width), float(height)
-        return None
+        try:
+            return self._containing_layer._pixel_size
+        except ValueError:
+            return None
+
+
+def _deactivate_follower(follower: Property) -> None:
+    """Revert a separation follower to its dead, unserialized state.
+
+    Its chunks stop being written and its value goes back to the 0 AE reports
+    for an inactive follower (measured: AE's own export of a never-separated
+    layer gives X / Y / Z = 0 even for a position of [960, 540, 0]). Without
+    the value reset the model keeps reporting the separated numbers while the
+    file - and any re-parse of it - reads 0.
+    """
+    follower.remove_all_keys()
+    follower._revert_to_synthetic()
+    follower._value = 0.0
+
+
+def _progress_of_point(data: _BezierPathData, point: list[float]) -> float:
+    """Arc-length fraction of the sampled path nearest to `point`."""
+    best_index = 0
+    best_dist = float("inf")
+    for i, sample in enumerate(data.points):
+        dist = sum((sample[d] - point[d]) ** 2 for d in range(len(point)))
+        if dist < best_dist:
+            best_dist = dist
+            best_index = i
+    travelled = sum(data.partial_lengths[: best_index + 1])
+    if data.segment_length <= 0:
+        return 0.0
+    return min(max(travelled / data.segment_length, 0.0), 1.0)
+
+
+def _segment_components(
+    prev_kf: Keyframe, next_kf: Keyframe
+) -> tuple[list[tuple[float, float]], int] | None:
+    """Per-dimension `(v0, v1)` pairs for the segment, or `None` if not numeric."""
+    v0 = prev_kf.value
+    v1 = next_kf.value
+    if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
+        return [(float(v0), float(v1))], 1
+    if isinstance(v0, list) and isinstance(v1, list) and len(v0) == len(v1):
+        if not all(isinstance(x, (int, float)) for x in [*v0, *v1]):
+            return None
+        return [(float(a), float(b)) for a, b in zip(v0, v1)], len(v0)
+    return None
 
 
 class _EssentialOverrideProperty(Property):

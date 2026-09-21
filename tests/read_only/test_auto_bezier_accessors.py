@@ -16,7 +16,6 @@ from helpers import load_expected
 
 from py_aep import parse as parse_aep
 from py_aep.models.properties.property import Property
-from py_aep.models.properties.property_group import PropertyGroup
 
 VERSIONS_DIR = Path(__file__).parent.parent.parent / "samples" / "versions"
 
@@ -24,15 +23,9 @@ VERSIONS_DIR = Path(__file__).parent.parent.parent / "samples" / "versions"
 def _keyed(comp: Any) -> Iterator[tuple[str, Property]]:
     """Every keyframed property in `comp`, paired with its layer's name."""
     for layer in comp.layers:
-        stack: list[Any] = [layer]
-        while stack:
-            node = stack.pop()
-            for child in node:
-                if isinstance(child, Property):
-                    if child.keyframes:
-                        yield layer.name, child
-                elif isinstance(child, PropertyGroup):
-                    stack.append(child)
+        for prop in layer._leaf_properties():
+            if prop.keyframes:
+                yield layer.name, prop
 
 
 def _json_properties(document: dict) -> Iterator[tuple[str, str, dict]]:

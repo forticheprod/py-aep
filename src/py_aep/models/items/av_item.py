@@ -57,22 +57,22 @@ class AVItem(Item):
     """
 
     duration: float
-    """The duration of the item in seconds. Still footages have a duration of 0. Read-only."""
+    """The duration of the item in seconds. Still footages have a duration of 0. Read-only for a `FootageItem`, otherwise Read / Write."""
 
     frame_duration: int
-    """The duration of the item in frames. Still footages have a duration of 0. Read-only."""
+    """The duration of the item in frames. Still footages have a duration of 0. Read-only for a `FootageItem`, otherwise Read / Write."""
 
     frame_rate: float
-    """The frame rate of the item in frames-per-second. Read-only."""
+    """The frame rate of the item in frames-per-second. Read-only for a `FootageItem`, otherwise Read / Write."""
 
     height: int
-    """The height of the item in pixels. Read-only."""
+    """The height of the item in pixels. Read / Write."""
 
     pixel_aspect: float
-    """The pixel aspect ratio of the item (1.0 is square). Read-only."""
+    """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
 
     width: int
-    """The width of the item in pixels. Read-only."""
+    """The width of the item in pixels. Read / Write."""
 
     use_proxy = ChunkField.bool(
         "_idta",

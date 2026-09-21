@@ -253,31 +253,7 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
             opacity.default_value = 0.0
 
     # --- Phase 3: context-dependent naming ----------------------------------
-    # ExtendScript displays "ADBE Rotate Z" as "Rotation" on 2-D layers
-    # and "Z Rotation" on 3-D layers.  Camera and Light layers are always 3-D.
-    if layer.is_3d:
-        # _reorder_and_fill set _auto_name="Rotation" from the spec;
-        # undo it so the sentinel _name_utf8 falls through to
-        # MATCH_NAME_TO_AUTO_NAME -> "Z Rotation".
-        rotate_z = transform.property("ADBE Rotate Z")
-        if rotate_z is not None:
-            rotate_z._auto_name = None
-    else:
-        # ExtendScript always reports Scale Z = 100 for 2-D layers,
-        # regardless of the binary value.
-        scale_prop = transform.property("ADBE Scale")
-        if isinstance(scale_prop, Property):
-            # For parsed properties (cdat path), _resolve_value applies
-            # the override; for synthesized properties (_value path),
-            # fix the user-facing value directly.
-            scale_prop._scale_z_override = 100.0
-            if isinstance(scale_prop._value, list) and len(scale_prop._value) >= 3:
-                scale_prop._value[2] = 100.0
-            for kf in scale_prop.keyframes:
-                raw = kf._extract_raw_value()
-                if isinstance(raw, list) and len(raw) >= 3:
-                    kf._value = raw
-                    kf._value[2] = 1.0
+    apply_dimensionality_naming(layer)
 
     # Camera and Light layers show "Point of Interest" instead of
     # "Anchor Point" in the Transform group.
@@ -295,6 +271,85 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+
+def _flatten_scale_z(scale_prop: Property) -> None:
+    """Write Scale Z = 100 through to the chunks, static value and keyframes.
+
+    A 2-D layer's Z is dead data; AE normalizes it to 100 whenever it touches
+    the layer rather than leaving a stale number behind.
+    """
+    if scale_prop.keyframes:
+        for kf in scale_prop.keyframes:
+            value = kf.value
+            if isinstance(value, list) and len(value) >= 3:
+                kf.value = [value[0], value[1], 100.0]
+        return
+    current = scale_prop.value
+    if isinstance(current, list) and len(current) >= 3:
+        scale_prop.value = [current[0], current[1], 100.0]
+
+
+def apply_dimensionality_naming(layer: Layer, *, reset_scale_z: bool = False) -> None:
+    """Apply the transform state that depends on the layer's dimensionality.
+
+    ExtendScript displays `ADBE Rotate Z` as "Rotation" on a 2-D layer and
+    "Z Rotation" on a 3-D one, and always reports Scale Z as 100 for a 2-D
+    layer whatever the binary holds. Camera and Light layers are always 3-D.
+
+    Called from synthesis and again whenever `three_d_layer` is written -
+    AE 2026 renames in both directions the moment the switch is toggled.
+
+    `reset_scale_z` additionally writes the 100 into the chunk. A 2-D layer's
+    Scale Z is not masked but DEAD, and AE normalizes it away the moment it
+    touches the layer, in both directions (measured on AE 2026: a file whose
+    chunk held Z = 0.4 while 2-D came back holding 1.0 once the layer was
+    switched to 3-D, and every keyframe's Z with it; a Z of 40 set while 3-D
+    reads 100 once the layer is 2-D and still reads 100 on the way back).
+    Only the setter passes it - synthesis must not touch the bytes it is
+    describing.
+    """
+    transform = layer.transform
+    if transform is None:
+        return
+    rotate_z = transform.property("ADBE Rotate Z")
+    scale_prop = transform.property("ADBE Scale")
+    if layer.is_3d:
+        # _reorder_and_fill set _auto_name="Rotation" from the spec;
+        # undo it so the sentinel _name_utf8 falls through to
+        # MATCH_NAME_TO_AUTO_NAME -> "Z Rotation".
+        if rotate_z is not None:
+            rotate_z._auto_name = None
+        if (
+            reset_scale_z
+            and isinstance(scale_prop, Property)
+            and scale_prop._scale_z_override is not None
+        ):
+            # The layer is arriving from 2-D, where its Z was dead. AE writes
+            # the 100 it was showing into the chunk, so there is nothing left
+            # to mask - and a later write to Z then actually sticks. Drop the
+            # override FIRST or the write reads back its own 100 and no-ops.
+            scale_prop._scale_z_override = None
+            _flatten_scale_z(scale_prop)
+        return
+    if rotate_z is not None:
+        rotate_z._auto_name = "Rotation"
+    if isinstance(scale_prop, Property):
+        if reset_scale_z:
+            # Leaving 3-D discards the Z outright, keyframes included.
+            scale_prop._scale_z_override = None
+            _flatten_scale_z(scale_prop)
+        # For parsed properties (cdat path), _resolve_value applies
+        # the override; for synthesized properties (_value path),
+        # fix the user-facing value directly.
+        scale_prop._scale_z_override = 100.0
+        if isinstance(scale_prop._value, list) and len(scale_prop._value) >= 3:
+            scale_prop._value[2] = 100.0
+        for kf in scale_prop.keyframes:
+            raw = kf._extract_raw_value()
+            if isinstance(raw, list) and len(raw) >= 3:
+                kf._value = raw
+                kf._value[2] = 1.0
 
 
 def synthesize_layer_properties(layer: Layer) -> None:

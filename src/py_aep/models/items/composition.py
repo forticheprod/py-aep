@@ -28,7 +28,10 @@ from ...binary.mutations import (
     build_source_alternate_extras,
     build_text_cctl,
     clone_chunk_tree,
+    collect_layer_ref_tdpi_ids,
+    remap_layer_ref_tdpi,
     rewrite_owner_tdpi,
+    strip_synthetic,
 )
 from ...binary.property_chunks import (
     TDSN_SENTINEL,
@@ -168,6 +171,10 @@ def _materialize_layer(layer: Layer) -> None:
     def _materialize_tree(group: PropertyGroup) -> None:
         group._ensure_materialized()
         in_transform = group.match_name == "ADBE Transform Group"
+        # Deliberately the raw list, NOT `group.properties`: the public
+        # accessor would run the group's deferred child synthesis, and this
+        # walk would then materialize children AE leaves out. Measured on a
+        # five-layer new project: 60 extra tdb4 chunks, +23 KB.
         for child in group._properties:
             if isinstance(child, PropertyGroup):
                 if child.match_name in _OMITTED_EMPTY_GROUPS and not child.properties:
@@ -201,6 +208,43 @@ def _materialize_layer(layer: Layer) -> None:
             break
 
     _insert_layer_skeleton_extras(layer)
+
+
+def _drop_essential_overrides(layer: Layer) -> None:
+    """Empty the layer's Essential Graphics overrides.
+
+    Each override names a property inside the layer's source composition,
+    so swapping that source leaves every one of them pointing at nothing.
+    AE 2026 drops the overrides outright in that situation (a layer with
+    three overrides precomposed with `moveAllAttributes=false` comes back
+    with zero), which is what this reproduces: the `LIST:OvG2` is replaced
+    by the empty one AE writes for a layer that has never had an override.
+    """
+    root = layer._tdgp
+    if root is None:
+        return
+    chunks = root.chunks
+    for i, ch in enumerate(chunks):
+        if (
+            isinstance(ch, TdmnChunk)
+            and ch.value == "ADBE Layer Overrides"
+            and i + 1 < len(chunks)
+            and getattr(chunks[i + 1], "list_type", None) == "OvG2"
+        ):
+            # The group is two chunks: the OvG2 holds one CPrp per override
+            # (CprC counts them), the tdgp that follows holds their values.
+            chunks[i + 1] = build_ovg2()
+            values = chunks[i + 2] if i + 2 < len(chunks) else None
+            if getattr(values, "list_type", None) == "tdgp":
+                inner = cast("ListChunk", values).chunks
+                keep = [c for c in inner if c.chunk_type in ("tdsb", "tdsn")]
+                inner[:] = [*keep, TdmnChunk(value="ADBE Group End")]
+            break
+    layer.essential_property_uuids.clear()
+    for child in layer.properties:
+        if child.match_name == "ADBE Layer Overrides":
+            cast("PropertyGroup", child)._properties.clear()
+            break
 
 
 def _insert_layer_skeleton_extras(layer: Layer) -> None:
@@ -478,15 +522,8 @@ class CompItem(AVItem):
         alone (measured on AE 2026).
         """
 
-        def walk(group: PropertyGroup) -> Iterator[Property]:
-            for child in group:
-                if isinstance(child, PropertyGroup):
-                    yield from walk(child)
-                elif isinstance(child, Property):
-                    yield child
-
         for layer in self.layers:
-            yield from walk(layer)
+            yield from layer._leaf_properties()
         if self._marker_property is not None:
             yield self._marker_property
 
@@ -2059,6 +2096,7 @@ class CompItem(AVItem):
         new_comp = self._create_precomp_item(name, source.width, source.height)
         new_comp.add(source)
         layer.replace_source(new_comp)
+        _drop_essential_overrides(layer)
         return new_comp
 
     def _precompose_move(self, indices: list[int], name: str) -> CompItem:
@@ -2096,13 +2134,20 @@ class CompItem(AVItem):
 
         # A moved layer whose track matte stays behind gets a verbatim
         # COPY of the matte layer directly below it in the new comp; the
-        # original matte layer stays untouched in this comp (AE 2026).
+        # original matte layer stays untouched in this comp (AE 2026). A
+        # layer REFERENCE held by an effect parameter (Set Matte, Layer
+        # Control, CC Sphere's light layer, ...) follows the same rule -
+        # AE brings the referenced layer along rather than leaving an id
+        # the new comp cannot resolve, which it refuses to open.
         matte_map: dict[int, int] = {}
         final_blocks: list[list[Chunk]] = []
         for ly, block in zip(moved, blocks):
             final_blocks.append(block)
-            matte_id = ly._ldta.matte_layer_id or 0
-            if matte_id and matte_id not in id_map and matte_id not in matte_map:
+            referenced = [ly._ldta.matte_layer_id or 0]
+            referenced += sorted(collect_layer_ref_tdpi_ids(ly._layer_list))
+            for matte_id in referenced:
+                if not matte_id or matte_id in id_map or matte_id in matte_map:
+                    continue
                 matte_layer = self.layers_by_id.get(matte_id)
                 if matte_layer is not None:
                     m_start, m_end = self._layer_block_slice(matte_layer)
@@ -2138,6 +2183,19 @@ class CompItem(AVItem):
             matte_id = ldta.matte_layer_id or 0
             if matte_id:
                 ldta.matte_layer_id = id_map.get(matte_id) or matte_map.get(matte_id, 0)
+
+        # Layer-reference effect params follow the same map, for the copied
+        # blocks too: a reference that moved (or was copied in above) is
+        # retargeted, one that did not is cleared to "no layer".
+        ref_map = dict(id_map)
+        ref_map.update(matte_map)
+        for block in final_blocks:
+            remap_layer_ref_tdpi(block[0], ref_map)
+            # The block is MOVED, not serialized, so it still carries the
+            # synthetic chunks synthesis added. Re-parsing them on the far
+            # side would read a synthesizer's default as a real value; drop
+            # them and let synthesis run again, as a re-open does.
+            strip_synthetic(block[0])
 
         # Insert the blocks and re-parse each layer in the new comp's
         # context (the old Layer models go stale, like ExtendScript).

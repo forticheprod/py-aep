@@ -3,7 +3,6 @@
 After Effects 2026 rejects (or crashes on) files whose new layers / comps
 lack the chunk skeleton it writes itself. These tests assert the WRITTEN
 bytes (save -> re-read) match the ground-truth structure measured from AE
-(see scripts/dev/apifuzz/FINDINGS.md).
 """
 
 from __future__ import annotations

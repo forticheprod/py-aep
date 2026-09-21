@@ -658,6 +658,7 @@ class PropertyBase:
                 effect_param_defs=effect_param_defs,
                 composition=comp,
                 tdmn=tdmn,
+                layer_size=layer._pixel_size,
             )
         elif list_chunk.list_type == "tdgp":
             result = parse_property_group(

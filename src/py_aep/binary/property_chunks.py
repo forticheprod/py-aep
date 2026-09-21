@@ -49,8 +49,17 @@ class TdsbChunk(Chunk):
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
     locked_ratio = BitField("_lock_flags", 4)
-    dimensions_separated = BitField("_enable_flags", 1)
+    dimensions_separated = BitField("_lock_flags", 3)
+    """Whether a separation leader's dimensions are split.
+
+    Bit 3 of the lock byte, NOT bit 1 of the enable byte: that one is the
+    cosmetic group-collapse flag, and it is set on a collapsed but
+    UNSEPARATED position (an ambient light, an environment light). Checked
+    against every AE-exported `dimensionsSeparated` in the sample corpus -
+    the lock bit agrees 288/288, the enable bit 285/288."""
     enabled = BitField("_enable_flags", 0)
+    collapsed = BitField("_enable_flags", 1)
+    """Cosmetic: the property group is collapsed in the Timeline panel."""
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +117,13 @@ class Tdb4Chunk(Chunk):
     _value_hint_type: int = u2_field(repr=False)
     _value_hint_flag: int = u1_field(repr=False)
     _cvot_flags: int = u1_field(repr=False)
-    _pad3a: int = u2_field(repr=False)
-    _time_base: int = u2_field(repr=False)
+    _time_base: int = u4_field(repr=False)
+    """Keyframe time units per second for the OWNING LAYER.
+
+    `floor(cdta.internal_timebase * max(1, |layer.stretch| / 100))` - a full
+    32-bit field, not a 16-bit one: a 300 % stretched layer at 24 fps stores
+    73728 (0x00012000), which does not fit in two bytes (measured on AE 2026
+    across 50 / 101 / 150 / 300 / -150 % stretch)."""
     _unknown_float_0: float = f8_field(default=0.0001, repr=False)
     pixel_aspect: float = f8_field(default=1.0, repr=False)
     """The containing comp's pixel aspect ratio (AE writes it into

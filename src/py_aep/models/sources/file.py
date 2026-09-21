@@ -20,7 +20,7 @@ from ...binary.footage_chunks import (
     build_tiff_opti_data,
 )
 from ...binary.misc_chunks import EmpdChunk
-from ...binary.mutations import build_pin_list
+from ...binary.mutations import ColorProfileRecord, build_pin_list
 from ...binary.scalar_chunks import Utf8Chunk
 from ...binary.utils import (
     UNDEFINED_FRAME,
@@ -33,6 +33,13 @@ from ...binary.utils import (
     index_by_identity,
     parse_alas_data,
 )
+from ...color.envelope import build_icc_envelope
+from ...color.icc import (
+    ColorProfileNotFoundError,
+    default_icc_library,
+    icc_profile_description,
+    icc_profile_id,
+)
 from ...data.file_formats import (
     AI_COMP_EXTENSIONS,
     FORMAT_3D_MODEL_SCENE,
@@ -40,6 +47,7 @@ from ...data.file_formats import (
     FileFormat,
     get_file_format,
 )
+from ...enums import LinearLightMode
 from ...resolvers.ai_bounds import EMPTY_BOX, footage_size, read_ai_layer_bounds
 from ...resolvers.ai_layers import read_ai_color_profile
 from ...resolvers.media_probe import probe_media
@@ -109,6 +117,107 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
     if fmt.opti == "empty" and not sequence:
         return b""
     return build_generic_opti_data(fmt.source_format)
+
+
+#: The profile AE falls back to for media that carries none of its own.
+_DEFAULT_PROFILE = "sRGB IEC61966-2.1"
+
+#: What AE assigns instead to video it decodes itself - an animated GIF, an
+#: MPEG, a SWF or a WMV. A still or an image sequence of the same format
+#: keeps the default, and QuickTime/MP4 name their space instead.
+_VIDEO_PROFILE = "Rec.709 Gamma 2.4"
+_VIDEO_DECODED_FORMATS = frozenset({"STIL", "SWF ", "MPEO", "WMED"})
+
+#: Formats whose importer embeds After Effects' own catalogued copy of the
+#: profile rather than the file's bytes, and treats an untagged file as
+#: carrying sRGB (the Photoshop convention). The two copies differ only in
+#: the advisory rendering-intent field, so the profile ID still matches.
+_CATALOGUED_PROFILE_FORMATS = frozenset({"TIF ", "8BPS"})
+
+#: Formats AE leaves without any profile record when the file carries none:
+#: JPEG, and the QuickTime/MP4 containers, whose color space AE names
+#: (`empd` + e.g. "Rec. 709") from data py_aep cannot read yet. The record
+#: still counts as managed - AE fills the name in when it opens the project.
+_UNRECORDED_PROFILE_FORMATS = frozenset({"ZPEG"})
+_VIDEO_CONTAINER_FORMATS = frozenset({"MOoV", "XCEX"})
+
+#: Formats AE imports with Interpret As Linear Light off rather than the
+#: "on for 32-bpc files" default: the ones it decodes through its media
+#: importers. An audio-only QuickTime and any image sequence keep the
+#: default. The setting is inert below 32 bpc either way.
+_LINEAR_LIGHT_OFF_FORMATS = frozenset(
+    {"ZPEG", "STIL", "SWF ", "MPEO", "WMED", "MOoV", "XCEX"}
+)
+
+
+def _catalogued_profile(name: str) -> bytes | None:
+    """After Effects' own copy of the named profile, if it is installed."""
+    try:
+        return default_icc_library().bytes_for(name)
+    except ColorProfileNotFoundError:
+        return None
+
+
+def _profile_record(blob: bytes) -> ColorProfileRecord:
+    name = icc_profile_description(blob) or ""
+    return ColorProfileRecord(icc_profile_id(blob), build_icc_envelope(name, blob))
+
+
+def _media_profile_records(
+    icc_profile: bytes | None,
+    source_format: str,
+    has_video: bool,
+    is_video: bool,
+    embedded_profile_name: str | None,
+) -> tuple[ColorProfileRecord | None, ColorProfileRecord | None]:
+    """The `(embedded, assigned)` CLRS profile records for a source file.
+
+    AE records the profile the file carries and assigns one to media that
+    carries none, with the per-format exceptions in
+    `_CATALOGUED_PROFILE_FORMATS`, `_UNRECORDED_PROFILE_FORMATS`,
+    `_VIDEO_CONTAINER_FORMATS` and `_VIDEO_DECODED_FORMATS`. Measured across
+    every format py_aep imports (AE 2026), plus untagged JPEG/TIFF/PSB
+    variants.
+
+    Args:
+        icc_profile: The profile the media file embeds, if any (see
+            [MediaInfo.icc_profile][py_aep.resolvers.media_probe.MediaInfo]).
+        source_format: Its `sspc` 4-char format code.
+        has_video: Whether the media has picture at all (audio-only
+            QuickTime is recorded like any other audio file).
+        is_video: Whether the picture is time-based rather than a still or
+            an image sequence.
+        embedded_profile_name: A named media color space, for the formats
+            that carry one (`.ai` and friends).
+    """
+    if embedded_profile_name is not None:
+        return None, None  # an .ai/.eps/.pdf names its space instead
+    blob = icc_profile
+    if blob is None and source_format in _CATALOGUED_PROFILE_FORMATS:
+        blob = _catalogued_profile(_DEFAULT_PROFILE)
+    elif blob is not None and source_format in _CATALOGUED_PROFILE_FORMATS:
+        catalogued = _catalogued_profile(icc_profile_description(blob) or "")
+        if catalogued is not None and icc_profile_id(catalogued) == icc_profile_id(
+            blob
+        ):
+            blob = catalogued
+    if blob is not None:
+        return _profile_record(blob), None
+    if source_format in _UNRECORDED_PROFILE_FORMATS or (
+        has_video and source_format in _VIDEO_CONTAINER_FORMATS
+    ):
+        return None, None
+    name = (
+        _VIDEO_PROFILE
+        if is_video and source_format in _VIDEO_DECODED_FORMATS
+        else _DEFAULT_PROFILE
+    )
+    assigned = _catalogued_profile(name)
+    if assigned is None:
+        # Nothing to assign without the profile's bytes; the record stays
+        # empty so the import still works with no ICC store on the machine.
+        return None, None
+    return None, _profile_record(assigned)
 
 
 def _alpha_mode_raw(has_alpha: bool, premultiplied: bool) -> int:
@@ -181,6 +290,10 @@ class FileSource(FootageSource):
         return self._target_is_folder
 
     @property
+    def _is_sequence(self) -> bool:  # type: ignore[override]  # property over property
+        return self._target_is_folder
+
+    @property
     def _is_3d_model_scene(self) -> bool:
         """`True` for an imported 3D model scene (e.g. an `.fbx`)."""
         return self._sspc.source_format_type == FORMAT_3D_MODEL_SCENE
@@ -223,6 +336,29 @@ class FileSource(FootageSource):
         """
         return self._file_attributes
 
+    @property
+    def _start_frame(self) -> int:  # type: ignore[override]  # ChunkField -> property
+        """First frame of an image sequence.
+
+        AE leaves the `sspc` field undefined for some sequences (every
+        pre-2019 file in the fixtures); the number is then the last digit
+        group of the first `StVc` filename (`render.0101.exr` > 101).
+        Derived on read rather than written back, so a parse/save
+        round-trip stays byte-identical.
+        """
+        return self._derived_frame(self._sspc.start_frame, 0)
+
+    @property
+    def _end_frame(self) -> int:  # type: ignore[override]  # ChunkField -> property
+        """Last frame of an image sequence. See `_start_frame`."""
+        return self._derived_frame(self._sspc.end_frame, -1)
+
+    def _derived_frame(self, stored: int, index: int) -> int:
+        if stored != UNDEFINED_FRAME or not self._file_names:
+            return stored
+        match = re.search(r"(\d+)\D*$", self._file_names[index])
+        return int(match.group(1)) if match is not None else stored
+
     def __init__(
         self,
         *,
@@ -256,18 +392,6 @@ class FileSource(FootageSource):
             )
         else:
             self._file = alas_data.get("fullpath", "")
-
-        # Resolve undefined start/end frames from StVc filenames.
-        # The frame number is the last digit group in each filename
-        # (e.g. "render.0101.exr" > 101).
-        if _sspc.start_frame == UNDEFINED_FRAME and self._file_names:
-            first_match = re.search(r"(\d+)\D*$", self._file_names[0])
-            if first_match is not None:
-                _sspc.start_frame = int(first_match.group(1))
-        if _sspc.end_frame == UNDEFINED_FRAME and self._file_names:
-            last_match = re.search(r"(\d+)\D*$", self._file_names[-1])
-            if last_match is not None:
-                _sspc.end_frame = int(last_match.group(1))
 
         # Old-format AE files lack the StVc LIST that stores per-frame
         # filenames for image sequences.  Construct the first-frame path
@@ -334,6 +458,7 @@ class FileSource(FootageSource):
         frame_padding: int = 0,
         opti_data: bytes = b"",
         embedded_profile_name: str | None = None,
+        icc_profile: bytes | None = None,
         full_frame: bool = True,
         layer_name: str = "",
         layer_id: int | None = None,
@@ -375,6 +500,10 @@ class FileSource(FootageSource):
             embedded_profile_name: Name of the source's embedded color
                 profile, recorded in `LIST:CLRS` (matching AE). `None` for
                 sources with no embedded profile.
+            icc_profile: The ICC profile the media file embeds (see
+                [MediaInfo.icc_profile][py_aep.resolvers.media_probe.MediaInfo]).
+                `None` selects the profile AE assigns to media that carries
+                none - see `_media_profile_records`.
             full_frame: When `True` (default, every standard import), the
                 footage spans its full source frame. Set `False` for a layer
                 cropped to its content box (`COMP_CROPPED_LAYERS`, or a
@@ -424,6 +553,21 @@ class FileSource(FootageSource):
         sspc.duration = duration
         sspc.pixel_aspect = pixel_aspect
         sspc.audio_sample_rate = audio_sample_rate
+        # AE stamps the source's last-modified time and re-reads the media
+        # whenever it does not match, taking the dimensions from the format
+        # plugin instead of the ones cached here. For an OpenEXR frame whose
+        # data window differs from its display window that is a different
+        # answer (the plugin reports the data window, AE's importer records
+        # the display window), so an unstamped sequence silently changes size
+        # when AE opens the project. AE stamps a sequence with its folder.
+        sspc.from_file = True
+        # Media that is not on this machine stays unstamped, which is the
+        # "re-read me" state AE itself writes for missing footage.
+        stamp_target = path.parent if is_sequence else path
+        try:
+            sspc.source_modified = int(stamp_target.stat().st_mtime)
+        except OSError:
+            pass
         if source_format == FORMAT_3D_MODEL_SCENE:
             # AE 2026 sets the premultiplied-alpha flag for an imported FBX
             # scene even though `alpha_mode_raw` stays 0 (the 3D scene renders
@@ -444,15 +588,13 @@ class FileSource(FootageSource):
             # Sequence-specific sspc fields AE writes and does NOT recompute
             # on open (proven necessary by an AE open+resave diff: AE
             # preserves py's value rather than normalizing it). full_frame is
-            # False for a sequence, the 0xC8 kind bytes are 0x0000 (not the
-            # 0x0002 raster-media default), and byte 5 of the field-separation
-            # block is 0x01. The other sequence-import diffs (duration
-            # divisor reduction, _reserved_3e, the _reserved_74 filesystem
-            # fingerprint, and the cached data_size) are cosmetic: AE
-            # recomputes them on open, so py leaves them at their defaults.
+            # False for a sequence and the 0xC8 kind bytes are 0x0000 (not
+            # the 0x0002 raster-media default). The other sequence-import
+            # diffs (duration divisor reduction and _reserved_3e) are
+            # cosmetic: AE recomputes them on open, so py leaves them at
+            # their defaults.
             sspc.full_frame = False
             sspc._reserved_c8 = b"\x00\x00"
-            sspc._reserved_4a = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00"
 
         # Route through variant dispatch so a recognized asset type (e.g.
         # 8BPS -> PsdOptiChunk) is stored as its typed subclass and exposes
@@ -472,15 +614,30 @@ class FileSource(FootageSource):
             path_chunks.append(Utf8Chunk(value=sequence_prefix or ""))
             path_chunks.append(Utf8Chunk(value=sequence_ext or ""))
 
+        embedded, assigned = _media_profile_records(
+            icc_profile,
+            source_format,
+            width > 0,
+            width > 0 and duration > 0 and not is_sequence,
+            embedded_profile_name,
+        )
         pin = build_pin_list(
             sspc,
             opti,
             path_chunks=path_chunks,
             embedded_profile_name=embedded_profile_name,
+            embedded_profile=embedded,
+            assigned_profile=assigned,
+            # AE color-manages every file it imports; only the formats that
+            # name their space instead (.ai and friends) keep the working
+            # space, and so does a solid.
+            color_managed=embedded_profile_name is None,
             layer_name=layer_name,
         )
         clrs = find_by_list_type(chunks=pin.chunks, list_type="CLRS")
         linl = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
+        if source_format in _LINEAR_LIGHT_OFF_FORMATS and width > 0 and not is_sequence:
+            linl.value = int(LinearLightMode.OFF)
 
         return cls(_pin=pin, _sspc=sspc, _opti=opti, _linl=linl, _clrs=clrs)
 
@@ -516,7 +673,8 @@ class FileSource(FootageSource):
 
         Raises:
             ValueError: If the extension is not a supported footage format,
-                or the frame range is invalid.
+                if the frame range is invalid, or if the file has no track
+                After Effects can decode (e.g. an AV1-only `.mp4`).
             NotImplementedError: If After Effects requires a format-specific
                 `opti` header that is not implemented yet, or header probing
                 is unavailable for the format.
@@ -562,6 +720,7 @@ class FileSource(FootageSource):
             height=info.height,
             duration=info.duration,
             frame_rate=info.frame_rate,
+            icc_profile=info.icc_profile,
             pixel_aspect=info.pixel_aspect,
             has_alpha=info.has_alpha,
             alpha_premultiplied=fmt.alpha_premultiplied,
@@ -647,6 +806,7 @@ class FileSource(FootageSource):
                 height=height,
                 duration=info.duration,
                 frame_rate=info.frame_rate,
+                icc_profile=info.icc_profile,
                 pixel_aspect=info.pixel_aspect,
                 has_alpha=info.has_alpha,
                 alpha_premultiplied=fmt.alpha_premultiplied,
@@ -690,6 +850,7 @@ class FileSource(FootageSource):
                 height=height,
                 duration=info.duration,
                 frame_rate=info.frame_rate,
+                icc_profile=info.icc_profile,
                 pixel_aspect=info.pixel_aspect,
                 has_alpha=info.has_alpha,
                 alpha_premultiplied=fmt.alpha_premultiplied,
@@ -791,6 +952,7 @@ class FileSource(FootageSource):
             has_alpha=info.has_alpha,
             alpha_premultiplied=fmt.alpha_premultiplied,
             audio_sample_rate=0.0,
+            icc_profile=info.icc_profile,
             sequence_prefix=prefix,
             sequence_ext=ext,
             start_frame=start_frame,
@@ -858,7 +1020,7 @@ class FileSource(FootageSource):
             # while the marker still claimed a range. The range bounds are
             # the stored start/end frames.
             if sspc.frame_range_set:
-                range_start, range_end = sspc.start_frame, sspc.end_frame
+                range_start, range_end = self._start_frame, self._end_frame
             else:
                 range_start, range_end = 0, 0
             fresh = FileSource._build_sequence(
@@ -1028,8 +1190,8 @@ class FileSource(FootageSource):
         stored as two consecutive Utf8 chunks immediately before the opti
         chunk inside the Pin LIST.
         """
-        start_frame = self._sspc.start_frame
-        end_frame = self._sspc.end_frame
+        start_frame = self._start_frame
+        end_frame = self._end_frame
         if UNDEFINED_FRAME in (start_frame, end_frame):
             return ""
 

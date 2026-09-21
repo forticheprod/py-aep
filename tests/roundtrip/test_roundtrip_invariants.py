@@ -145,20 +145,26 @@ class TestMaterializationLifecycle:
         assert blur.enabled is True
 
     def test_materialize_on_name_write(self, tmp_path: Path) -> None:
-        """Setting name materializes the property into the chunk tree."""
+        """Setting name materializes the property into the chunk tree.
+
+        Renaming is only legal where AE allows it - the parent must be an
+        INDEXED_GROUP - so the effect itself stands in for the parameter this
+        used to rename (AE 2026 throws on an effect parameter).
+        """
         app = parse_aep(PROPERTY_DIR / "2_gaussian.aep")
         layer = get_first_layer(app.project)
-        blur = _find_synthesized_effect_prop(layer, 0, "ADBE Gaussian Blur 2-0001")
+        assert layer.effects is not None
+        effect = layer.effects.properties[0]
 
-        blur.name = "Custom Blur Name"
+        effect.name = "Custom Blur Name"
 
         out = tmp_path / "materialized.aep"
         app.project.save(out)
 
         app2 = parse_aep(out)
         layer2 = get_first_layer(app2.project)
-        blur2 = _find_synthesized_effect_prop(layer2, 0, "ADBE Gaussian Blur 2-0001")
-        assert blur2.name == "Custom Blur Name"
+        assert layer2.effects is not None
+        assert layer2.effects.properties[0].name == "Custom Blur Name"
 
 
 class TestParseTimeWriteGuard:

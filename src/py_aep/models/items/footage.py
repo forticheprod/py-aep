@@ -16,7 +16,12 @@ from ..preferences import default_sequence_fps, label_index
 from ..sources.file import FileSource
 from ..sources.placeholder import PlaceholderSource
 from ..sources.solid import SolidSource
-from ..validators import validate_name, validate_one_of, validate_positive_int
+from ..validators import (
+    validate_name,
+    validate_one_of,
+    validate_pixel_aspect,
+    validate_positive_int,
+)
 from .av_item import AVItem
 
 if TYPE_CHECKING:
@@ -78,8 +83,19 @@ class FootageItem(AVItem):
 
     @property
     def pixel_aspect(self) -> float:  # type: ignore[override]
-        """The pixel aspect ratio of the item (1.0 is square). Read-only."""
+        """The pixel aspect ratio of the item (1.0 is square). Read / Write.
+
+        Note:
+            Unlike After Effects, which snaps a written value to the nearest
+            preset ratio (1.09 becomes the 1.0940 of D1/DV PAL), the value
+            is stored as given.
+        """
         return self._main_source._pixel_aspect
+
+    @pixel_aspect.setter
+    def pixel_aspect(self, value: float) -> None:
+        validate_pixel_aspect(value)
+        self._main_source._sspc.pixel_aspect = value
 
     @property
     def footage_missing(self) -> bool:
@@ -448,7 +464,9 @@ class FootageItem(AVItem):
 
         Raises:
             ValueError: If the extension is not a supported footage format,
-                if `layer_index` is passed for a non-layered file, if
+                if the file has no track After Effects can decode (e.g. an
+                AV1-only `.mp4`), if `layer_index` is passed for a
+                non-layered file, if
                 `layer_index` is out of range for the new file, if
                 `layer_dimensions` is not `"document"`/`"layer"`/`CURRENT_VALUE`,
                 if `layer_styles` is not `"merge"`/`"ignore"`/`CURRENT_VALUE`
@@ -562,6 +580,10 @@ class FootageItem(AVItem):
     ) -> None:
         """Replace the first LIST:Pin in _item_list with a new source."""
         is_solid = isinstance(source, SolidSource)
+        if not is_solid:
+            # AE keeps the Interpret Footage settings across a replace; only
+            # a solid starts from scratch (see `_carry_interpretation_to`).
+            self._main_source._carry_interpretation_to(source)
         self._replace_pin(0, AVItem._pin_for_source(source))
 
         self._main_source = source

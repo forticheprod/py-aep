@@ -35,6 +35,10 @@ from .registry import register
 if TYPE_CHECKING:
     from typing import IO, Any
 
+#: Seconds between the Mac epoch (1904-01-01) AE stamps source times with and
+#: the Unix epoch.
+_MAC_EPOCH_OFFSET = 2082844800
+
 # ---------------------------------------------------------------------------
 # sspc - source footage settings (184+ bytes)
 # ---------------------------------------------------------------------------
@@ -88,7 +92,16 @@ class SspcChunk(Chunk):
     """Alpha interpretation mode. 3 = no alpha channel."""
 
     # -- Field separation (bytes 74-87) ------------------------------------
-    _reserved_4a: bytes = bytes_field(9, repr=False)
+    _reserved_4a: bytes = bytes_field(5, repr=False)
+    """Bytes 0x4A-0x4E: source field information. AE fills the first four
+    with the QuickTime `FIEL` tag for media that declares field handling and
+    leaves them zero otherwise."""
+
+    from_file: bool = bool_field()
+    """Byte 0x4F: set on every source read from a file, and left clear on a
+    solid or a placeholder (AE 2026, across 527 sample footage items)."""
+
+    _reserved_50: bytes = bytes_field(3, repr=False)
     field_separation_type_raw: int = u1_field()
     """0 = OFF, 1 = enabled (check field_order for upper/lower)."""
 
@@ -104,7 +117,11 @@ class SspcChunk(Chunk):
     footage_missing_at_save: bool = bool_field()
     """0 = found, 1 = missing or placeholder."""
 
-    _reserved_74: bytes = bytes_field(9, repr=False)
+    _source_stamp: bytes = bytes_field(9, repr=False)
+    """Bytes 0x74-0x7C: the source's last-modified stamp (see
+    `source_modified`). AE compares it against the file on open to decide
+    whether the cached asset info in this chunk is still current."""
+
     _depth_flag: int = u1_field(default=0x0C, repr=False)
 
     # -- Loop / pixel ratio (bytes 126-146) --------------------------------
@@ -211,6 +228,24 @@ class SspcChunk(Chunk):
         self.conform_frame_rate_integer = int(value)
         self.conform_frame_rate_fractional = round((value - int(value)) * 65536)
         self._update_display_frame_rate()
+
+    @property
+    def source_modified(self) -> int:
+        """Last-modified time AE cached for the source, as a Unix timestamp.
+
+        `0` when unstamped. AE re-reads the media whenever this does not
+        match the file on disk, and then takes the dimensions from the
+        format plugin rather than from this chunk - which is not always the
+        same answer (an OpenEXR plugin reports the data window, while the
+        importer records the display window).
+        """
+        stamp = int.from_bytes(self._source_stamp[2:6], "big")
+        return stamp - _MAC_EPOCH_OFFSET if stamp else 0
+
+    @source_modified.setter
+    def source_modified(self, value: int) -> None:
+        stamp = int(value) + _MAC_EPOCH_OFFSET if value else 0
+        self._source_stamp = b"\x00\x00" + stamp.to_bytes(4, "big") + b"\x00" * 3
 
     @property
     def duration(self) -> float:

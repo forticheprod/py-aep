@@ -1,7 +1,6 @@
-"""Guards added after the 2026-06 API fuzz campaign.
-
+"""
 Each test pins a validation that prevents writing a .aep After Effects
-cannot open (see scripts/dev/apifuzz/FINDINGS.md).
+cannot open.
 """
 
 from __future__ import annotations
@@ -340,7 +339,7 @@ class TestTextRangeNumericValidation:
     valid COS syntax: on re-parse the TextDocument came back `None` - py_aep
     could not read its own output. Out-of-enum ints wrote a value that read
     back as undefined. Both are now rejected at the API boundary, at the
-    range level and document-wide. See scripts/dev/apifuzz/FINDINGS.md."""
+    range level and document-wide."""
 
     SAMPLE = SAMPLES_DIR / "text" / "text_ranges.aep"
 
@@ -417,7 +416,7 @@ class TestTextRangeNumericValidation:
     def test_kerning_rejects_out_of_s4_range(self, value: int) -> None:
         # AE 2026 rejects the whole text layer for kerning/tracking beyond
         # the signed-32-bit range ("Error reading the text layer"; probed
-        # 2**31 OK / 10**10 fails). See scripts/dev/apifuzz/FINDINGS.md.
+        # 2**31 OK / 10**10 fails).
         rng = self._doc(parse_aep(self.SAMPLE), "RangesKernLead").character_range(1, 4)
         with pytest.raises(ValueError, match="must be"):
             rng.kerning = value

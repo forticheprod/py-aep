@@ -325,6 +325,7 @@ class Item:
         assert self._parent_folder is not None
         self._parent_folder.items.remove(self)
         del self._project.items[self.id]
+        self._project._clear_active_item(self)
 
     #: list_types that mark the start of the next item block.
     _ITEM_BOUNDARY_LIST_TYPES: frozenset[str] = frozenset({"Item"})

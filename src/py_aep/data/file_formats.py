@@ -45,6 +45,10 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     ".exr": FileFormat("oEXR", True, "empty"),
     ".mov": FileFormat("MOoV", False, "generic"),
     ".m4v": FileFormat("MOoV", False, "generic"),
+    # AE 2026 imports .mp4 through its Media Core importer, which stamps
+    # "XCEX" rather than the QuickTime family's "MOoV" (older AE releases
+    # wrote "MPEG"/"MOoV" for the same files).
+    ".mp4": FileFormat("XCEX", False, "generic"),
     ".aiff": FileFormat("AIFC", False, "generic"),
     # AIFF alias; verified: AE 2026 imports aif.aif as AIFC footage
     # (media_gap_formats.aep fixture).
@@ -145,6 +149,7 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     # Video - footage or project.
     ".mov": frozenset({_FOOTAGE, _PROJECT}),
     ".m4v": frozenset({_FOOTAGE}),
+    ".mp4": frozenset({_FOOTAGE}),
     ".wmv": frozenset({_FOOTAGE}),
     # Audio - footage only (m4a may also carry an AE project).
     ".aiff": frozenset({_FOOTAGE}),

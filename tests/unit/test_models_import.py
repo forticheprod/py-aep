@@ -117,6 +117,55 @@ class TestMediaProbe:
         assert info.audio_sample_rate == 44100.0
         assert info.duration == pytest.approx(0.5, abs=1e-5)
 
+    def test_mp4_h264(self) -> None:
+        # avc1 video + AAC audio, moov ahead of mdat. Values are AE 2026's.
+        info = probe_media(ASSETS / "mp4_5s-360p.mp4")
+        assert (info.width, info.height) == (640, 360)
+        assert info.frame_rate == pytest.approx(30.0, abs=1e-3)
+        # The video track's duration wins over the longer mvhd/audio duration.
+        assert info.duration == pytest.approx(5.7, abs=1e-4)
+        assert info.has_audio is True
+        assert info.audio_sample_rate == 44100.0
+
+    def test_mp4_moov_after_mdat(self) -> None:
+        # This file stores moov at the end, so the probe must scan past mdat.
+        info = probe_media(ASSETS / "mp4_640x360.mp4")
+        assert (info.width, info.height) == (640, 360)
+        assert info.frame_rate == pytest.approx(29.97, abs=1e-3)
+        assert info.duration == pytest.approx(13.3467, abs=1e-3)
+        assert info.has_audio is False
+
+    def test_mp4_undecodable_codec_reports_audio_only(self) -> None:
+        # AE 2026 decodes neither AV1 nor VP9 in MP4: it drops the video track
+        # and imports whatever is left. An .aep that claims the real video
+        # track instead makes AE report the footage MISSING on open
+        # (measured), so the probe must drop it exactly as AE does.
+        info = probe_media(ASSETS / "mp4_av1_with_audio.mp4")
+        assert (info.width, info.height) == (0, 0)
+        assert info.frame_rate == 0.0
+        assert info.has_audio is True
+        # Audio-only duration comes from the edit list, matching AE's 1.0.
+        assert info.duration == pytest.approx(1.0, abs=1e-3)
+
+    def test_mp4_undecodable_codec_with_nothing_left_is_refused(self) -> None:
+        # Whether AE refuses turns on what survives, not on the codec: with no
+        # audio to keep, AE refuses the file itself ("The source compression
+        # type is not supported"), so there is no import to reproduce and
+        # probing must raise. Both halves measured in AE 2026 (see _probe_mp4).
+        with pytest.raises(ValueError, match="no video track"):
+            probe_media(ASSETS / "mp4_vp9_no_audio.mp4")
+
+    def test_undecodable_codec_gate_is_mp4_only(self) -> None:
+        # The gate is codec policy, not a parse failure, and .mov/.m4v go
+        # through AE's QuickTime importer, which decodes a wider set - so the
+        # ungated probe must still read both files' real video track.
+        from py_aep.resolvers.media_probe import _probe_mov
+
+        for name in ("mp4_av1_with_audio.mp4", "mp4_vp9_no_audio.mp4"):
+            with (ASSETS / name).open("rb") as fp:
+                info = _probe_mov(fp)
+            assert (info.width, info.height) == (64, 64), name
+
     def test_aiff(self) -> None:
         info = probe_media(ASSETS / "click.aiff")
         assert info.width == 0 and info.height == 0

@@ -969,13 +969,7 @@ class TestRoundtripSubFrameKeyframeTime:
     a keyframe by up to half a frame and moved it on the next write.
     """
 
-    SAMPLE = (
-        Path(__file__).parent.parent.parent
-        / "samples"
-        / "models"
-        / "property"
-        / "effect_point_speed.aep"
-    )
+    SAMPLE = SAMPLES / "effect_point_speed.aep"
 
     def test_off_grid_time_is_exact(self, tmp_path: Path) -> None:
         """1.5 s in a 25 fps comp is frame 37.5. Before the fix this read
@@ -1063,13 +1057,7 @@ class TestRoundtripRoving:
     tangents - a case where chord length would predict 0.667 s.
     """
 
-    SAMPLE = (
-        Path(__file__).parent.parent.parent
-        / "samples"
-        / "models"
-        / "property"
-        / "effect_point_speed.aep"
-    )
+    SAMPLE = SAMPLES / "effect_point_speed.aep"
 
     def _bowed_path(self, bow: float) -> Property:
         project = parse_project_fresh(self.SAMPLE)
@@ -1142,13 +1130,7 @@ class TestRoundtripRoving:
     def test_non_spatial_property_is_rejected(self) -> None:
         """AE raises here: "This property does not have a spatial
         PropertyValueType"."""
-        project = parse_project_fresh(
-            Path(__file__).parent.parent.parent
-            / "samples"
-            / "models"
-            / "property"
-            / "keyframe_misc.aep"
-        )
+        project = parse_project_fresh(SAMPLES / "keyframe_misc.aep")
         prop = project.compositions[0].layers[0].transform["ADBE Scale"]
         assert not prop.is_spatial
         with pytest.raises(ValueError, match="spatial property"):
@@ -1173,14 +1155,10 @@ class TestRoundtripAutoBezierWrites:
     measurements.
     """
 
-    PROPERTY_DIR = (
-        Path(__file__).parent.parent.parent / "samples" / "models" / "property"
-    )
-
     def _uneven_position(self) -> Property:
         """t = 0 / 1 / 4 with x = 0 / 100 / 600 - uneven in time, so a
         time-weighted tangent rule would disagree with AE's chord/6."""
-        project = parse_project_fresh(self.PROPERTY_DIR / "effect_point_speed.aep")
+        project = parse_project_fresh(SAMPLES / "effect_point_speed.aep")
         prop = project.compositions[0].layers[0].transform["ADBE Position"]
         while prop.keyframes:
             prop.remove_key(0)
@@ -1225,7 +1203,7 @@ class TestRoundtripAutoBezierWrites:
     def test_temporal_auto_bezier_is_per_dimension(self, tmp_path: Path) -> None:
         """2-D Scale 100->200->400 and 100->120->150 over 2 s gives per
         dimension speeds 150 and 25, not one shared scalar."""
-        project = parse_project_fresh(self.PROPERTY_DIR / "keyframe_misc.aep")
+        project = parse_project_fresh(SAMPLES / "keyframe_misc.aep")
         prop = project.compositions[0].layers[0].transform["ADBE Scale"]
         while prop.keyframes:
             prop.remove_key(0)
@@ -1250,6 +1228,46 @@ class TestRoundtripAutoBezierWrites:
         influences = [ease.influence for ease in prop2.keyframes[1].in_temporal_ease]
         assert influences == pytest.approx([100.0 / 6.0] * 3)
 
+    def test_temporal_auto_bezier_samples_each_dimension_at_its_own_speed(
+        self,
+    ) -> None:
+        """Sampling a multi-dimensional auto-bezier property must give each
+        dimension the curve it would have on its own.
+
+        A single scalar ease applied across every dimension drove them all at
+        dimension 0's speed, so y here read 131.875 at t=1.5 instead of
+        134.6875 - visible on any Scale/Position whose axes move unequally.
+        """
+        curves = [(100.0, 200.0, 400.0), (100.0, 120.0, 150.0)]
+        times = (0.0, 1.0, 2.0)
+
+        project = parse_project_fresh(SAMPLES / "keyframe_misc.aep")
+        transform = project.compositions[0].layers[0].transform
+        scale = transform["ADBE Scale"]
+        scale.remove_all_keys()
+        for index, time in enumerate(times):
+            scale.set_value_at_time(time, [curves[0][index], curves[1][index], 100.0])
+
+        references = []
+        for curve in curves:
+            reference = parse_project_fresh(SAMPLES / "keyframe_misc.aep")
+            rotation = reference.compositions[0].layers[0].transform["ADBE Rotate Z"]
+            rotation.remove_all_keys()
+            for index, time in enumerate(times):
+                rotation.set_value_at_time(time, curve[index])
+            references.append(rotation)
+
+        for prop in [scale, *references]:
+            for keyframe in prop.keyframes:
+                keyframe.in_interpolation_type = KeyframeInterpolationType.BEZIER
+                keyframe.out_interpolation_type = KeyframeInterpolationType.BEZIER
+                keyframe.temporal_auto_bezier = True
+
+        for sample in (1.25, 1.5, 1.75):
+            composed = scale.value_at_time(sample)
+            expected = [reference.value_at_time(sample) for reference in references]
+            assert composed[:2] == pytest.approx(expected)
+
     def test_temporal_auto_bezier_forces_continuity_and_bezier(self) -> None:
         prop = self._uneven_position()
         keyframe = prop.keyframes[1]
@@ -1266,9 +1284,7 @@ class TestRoundtripAutoBezierWrites:
     def test_temporal_continuous_ties_the_out_speed_to_the_in_speed(self) -> None:
         """AE turns (10, 75) / (90, 25) into (10, 75) / (10, 25): the speeds
         are tied, both influences survive."""
-        project = parse_project_fresh(
-            self.PROPERTY_DIR / "keyframe_bezier_nonzero_speed.aep"
-        )
+        project = parse_project_fresh(SAMPLES / "keyframe_bezier_nonzero_speed.aep")
         prop = next(
             g
             for layer in project.compositions[0].layers
@@ -1330,7 +1346,7 @@ class TestRoundtripAutoBezierWrites:
         numbers AE never writes and destroyed the ease it gives back.
         """
         project = parse_project_fresh(
-            self.PROPERTY_DIR / "keyframe_bezier_asymmetric_ease_1D.aep"
+            SAMPLES / "keyframe_bezier_asymmetric_ease_1D.aep"
         )
         prop = next(
             g

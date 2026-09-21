@@ -298,12 +298,6 @@ class TestResetStyles:
 
 
 class TestFuzzRegressions:
-    """Bugs found by the v6 API fuzz campaign (scripts/dev/apifuzz/gen_v6.py).
-
-    Neither was visible to the "AE opens the file" oracle: one crashed a
-    read-only getter on a committed sample, the other silently skipped work.
-    """
-
     BOX_MATRIX = SAMPLES_DIR / "box_matrix.aep"
     WRITES = SAMPLES_DIR / "text_writes.aep"
 

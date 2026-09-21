@@ -1306,7 +1306,7 @@ class TestOMRemove:
         rqi = rq.items[0]
         assert len(rqi.output_modules) == 1
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ValueError, match="last output module"):
             rqi.output_modules[0].remove()
 
 

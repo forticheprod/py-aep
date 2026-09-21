@@ -45,6 +45,11 @@ class MediaInfo(NamedTuple):
     """Number of layers (PSD/PSB only; 0 for a flattened document)."""
     channels: int = 0
     """Channel count from the file header (PSD/PSB only; 3 for RGB, 4 RGBA)."""
+    icc_profile: bytes | None = None
+    """The ICC color profile the file embeds, for the formats that can carry
+    one (PNG, JPEG, TIFF, PSD/PSB). After Effects records it in the footage
+    `LIST:CLRS` and shows it as "Embedded"; `None` means the file carries
+    none, and AE assigns a profile instead."""
 
 
 def probe_media(file: Path, data: bytes | None = None) -> MediaInfo:
@@ -92,7 +97,55 @@ def _probe_png(fp: IO[bytes]) -> MediaInfo:
     color_type = fp.read(1)[0]
     # color_type bit 2 (value 4) means an alpha channel (types 4 and 6).
     has_alpha = bool(color_type & 4)
-    return MediaInfo(width=width, height=height, has_alpha=has_alpha)
+    fp.seek(7, 1)  # rest of IHDR (compression/filter/interlace) + its CRC
+    has_trns, icc_profile = _png_color_chunks(fp)
+    return MediaInfo(
+        width=width,
+        height=height,
+        has_alpha=has_alpha or has_trns,
+        icc_profile=icc_profile,
+    )
+
+
+def _png_color_chunks(fp: IO[bytes]) -> tuple[bool, bytes | None]:
+    """The `tRNS` presence and `iCCP` profile of a PNG, if any.
+
+    AE reports alpha for a `tRNS`-carrying PNG of colour type 0, 2 and 3 alike:
+    the chunk names a transparent colour, or per-palette-entry alpha, for the
+    types that have no alpha channel of their own. `fp` must be positioned at
+    the first chunk after IHDR. Both chunks precede the image data, so the
+    scan stops there.
+    """
+    has_trns = False
+    icc_profile = None
+    while True:
+        header = fp.read(8)
+        if len(header) < 8:
+            break
+        length, chunk_type = struct.unpack(">I4s", header)
+        if chunk_type in (b"IDAT", b"IEND"):
+            break
+        if chunk_type == b"tRNS":
+            has_trns = True
+        elif chunk_type == b"iCCP":
+            icc_profile = _png_iccp(fp.read(length))
+            fp.seek(4, 1)  # CRC
+            continue
+        fp.seek(length + 4, 1)  # chunk body + CRC
+    return has_trns, icc_profile
+
+
+def _png_iccp(body: bytes) -> bytes | None:
+    """The profile in an `iCCP` chunk: a name, NUL, compression method, then
+    the deflated profile. An unreadable one counts as absent, the way AE
+    treats it."""
+    split = body.find(b"\x00")
+    if split < 0 or body[split + 1 : split + 2] != b"\x00":  # 0 = deflate
+        return None
+    try:
+        return zlib.decompress(body[split + 2 :])
+    except zlib.error:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -100,15 +153,25 @@ def _probe_png(fp: IO[bytes]) -> MediaInfo:
 # ---------------------------------------------------------------------------
 
 
+#: `RF64` and `BW64` carry the same WAVE payload as `RIFF` but move the 64-bit
+#: sizes into a `ds64` chunk, which lets them exceed 4 GB. AE imports both.
+_WAV_RIFF_IDS = (b"RIFF", b"RF64", b"BW64")
+
+
 def _probe_wav(fp: IO[bytes]) -> MediaInfo:
-    if fp.read(4) != b"RIFF":
+    riff_id = fp.read(4)
+    if riff_id not in _WAV_RIFF_IDS:
         raise ValueError("Not a valid WAV file (missing RIFF)")
-    fp.read(4)  # RIFF chunk size
+    fp.read(4)  # RIFF chunk size (0xFFFFFFFF for RF64; the real one is in ds64)
     if fp.read(4) != b"WAVE":
         raise ValueError("Not a valid WAV file (missing WAVE)")
+    fp.seek(0, 2)
+    file_size = fp.tell()
+    fp.seek(12)
     sample_rate = 0
     byte_rate = 0
     data_size = 0
+    ds64_data_size = 0
     while True:
         header = fp.read(8)
         if len(header) < 8:
@@ -118,8 +181,20 @@ def _probe_wav(fp: IO[bytes]) -> MediaInfo:
             fmt = fp.read(chunk_size)
             # audio_format(2) channels(2) sample_rate(4) byte_rate(4) ...
             sample_rate, byte_rate = struct.unpack("<II", fmt[4:12])
+        elif chunk_id == b"ds64":
+            # riffSize(8) dataSize(8) sampleCount(8) tableLength(4) ...
+            body = fp.read(chunk_size)
+            if len(body) >= 16:
+                ds64_data_size = struct.unpack("<Q", body[8:16])[0]
         elif chunk_id == b"data":
-            data_size = chunk_size
+            data_size = ds64_data_size or chunk_size
+            # A writer streaming to a pipe cannot seek back to patch the size,
+            # so it leaves 0xFFFFFFFF behind. Trust the bytes that are actually
+            # present instead - AE takes the declared size at face value and
+            # reports a 6-hour duration, which is not worth reproducing.
+            start = fp.tell()
+            if data_size == 0xFFFFFFFF or start + data_size > file_size:
+                data_size = file_size - start
             break
         else:
             fp.seek(chunk_size + (chunk_size & 1), 1)  # chunks are word-aligned
@@ -248,18 +323,88 @@ def _exr_channels_have_alpha(value: bytes) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Colour channels per TIFF PhotometricInterpretation; a sample beyond them is
+# alpha. Modes: 0/1 bilevel+greyscale, 2 RGB, 3 palette, 5 CMYK, 6 YCbCr.
+_TIFF_BASE_CHANNELS = {0: 1, 1: 1, 2: 3, 3: 1, 5: 4, 6: 3}
+
+# Struct codes for the IFD value types BigTIFF stores dimensions in.
+_BIGTIFF_VALUE_FMT = {3: "H", 4: "I", 16: "Q"}
+
+
+#: TIFF tag 34675: the embedded ICC profile.
+_TIFF_ICC_TAG = 0x8773
+
+
+def _probe_bigtiff(fp: IO[bytes], en: str) -> MediaInfo:
+    """Probe a BigTIFF (magic 43): 8-byte offsets and 20-byte IFD entries.
+
+    AE reads BigTIFF, so returning 0x0 would write an unusable footage item.
+    Unlike AE's classic-TIFF path, which always reports an alpha channel, the
+    BigTIFF path honours SamplesPerPixel: a 3-sample RGB BigTIFF imports opaque
+    and a 4-sample one imports with alpha.
+    """
+    if struct.unpack(en + "H", fp.read(2))[0] != 8:
+        raise ValueError("Unsupported BigTIFF offset size (expected 8)")
+    fp.read(2)  # reserved, always 0
+    fp.seek(struct.unpack(en + "Q", fp.read(8))[0])
+    width = height = samples = 0
+    photometric = 2
+    icc_span: tuple[int, int] | None = None
+    for _ in range(struct.unpack(en + "Q", fp.read(8))[0]):
+        entry = fp.read(20)
+        if len(entry) < 20:
+            break
+        tag, typ = struct.unpack(en + "HH", entry[:4])
+        if tag == _TIFF_ICC_TAG:
+            length = struct.unpack_from(en + "Q", entry, 4)[0]
+            if length > 8:  # values this long are stored by offset
+                icc_span = (struct.unpack_from(en + "Q", entry, 12)[0], length)
+            continue
+        fmt = _BIGTIFF_VALUE_FMT.get(typ)
+        if fmt is None:
+            continue
+        # A value of 8 bytes or fewer is stored inline in the value field.
+        val = struct.unpack_from(en + fmt, entry, 12)[0]
+        if tag == 0x0100:
+            width = val
+        elif tag == 0x0101:
+            height = val
+        elif tag == 0x0106:
+            photometric = val
+        elif tag == 0x0115:
+            samples = val
+    icc_profile = None
+    if icc_span is not None:
+        fp.seek(icc_span[0])
+        icc_profile = fp.read(icc_span[1])
+    base = _TIFF_BASE_CHANNELS.get(photometric, 3)
+    return MediaInfo(
+        width=width,
+        height=height,
+        has_alpha=samples > base,
+        icc_profile=icc_profile,
+    )
+
+
 def _probe_tiff(fp: IO[bytes]) -> MediaInfo:
     bo = fp.read(2)
+    if bo not in (b"II", b"MM"):
+        raise ValueError(f"Not a valid TIFF file (bad byte order {bo!r})")
     en = "<" if bo == b"II" else ">"
-    if struct.unpack(en + "H", fp.read(2))[0] != 42:
-        return MediaInfo()  # BigTIFF (magic 43) or not a classic TIFF
+    version = struct.unpack(en + "H", fp.read(2))[0]
+    if version == 43:
+        return _probe_bigtiff(fp, en)
+    if version != 42:
+        raise ValueError(f"Not a valid TIFF file (bad magic {version})")
     ifd_offset = struct.unpack(en + "I", fp.read(4))[0]
     fp.seek(ifd_offset)
     count = struct.unpack(en + "H", fp.read(2))[0]
     width = height = 0
+    icc_span: tuple[int, int] | None = None
     for _ in range(count):
         entry = fp.read(12)
         tag, typ = struct.unpack(en + "HH", entry[:4])
+        length = struct.unpack(en + "I", entry[4:8])[0]
         val = (
             struct.unpack(en + "H", entry[8:10])[0]
             if typ == 3
@@ -269,8 +414,16 @@ def _probe_tiff(fp: IO[bytes]) -> MediaInfo:
             width = val
         elif tag == 0x0101:
             height = val
+        elif tag == _TIFF_ICC_TAG and length > 4:
+            icc_span = (val, length)  # values this long are stored by offset
+    icc_profile = None
+    if icc_span is not None:
+        fp.seek(icc_span[0])
+        icc_profile = fp.read(icc_span[1])
     # AE allocates an alpha channel for TIFF regardless of SamplesPerPixel.
-    return MediaInfo(width=width, height=height, has_alpha=True)
+    return MediaInfo(
+        width=width, height=height, has_alpha=True, icc_profile=icc_profile
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +433,10 @@ def _probe_tiff(fp: IO[bytes]) -> MediaInfo:
 
 def _probe_jpeg(fp: IO[bytes]) -> MediaInfo:
     fp.read(2)  # SOI
+    width = height = 0
+    # An ICC profile too large for one segment is split over numbered APP2
+    # chunks that have to be concatenated in order.
+    icc_chunks: dict[int, bytes] = {}
     while True:
         b = fp.read(1)
         if not b:
@@ -290,14 +447,24 @@ def _probe_jpeg(fp: IO[bytes]) -> MediaInfo:
         while marker == b"\xff":  # skip fill bytes
             marker = fp.read(1)
         m = marker[0]
+        if m == 0xDA:  # start of scan: no metadata past here
+            break
         # SOF0..SOF15 carry the frame size, except DHT(C4)/JPG(C8)/DAC(CC).
         if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
             fp.read(3)  # length(2) + precision(1)
             height, width = struct.unpack(">HH", fp.read(4))
-            return MediaInfo(width=width, height=height, has_alpha=False)
+            continue
         length = struct.unpack(">H", fp.read(2))[0]
+        if m == 0xE2:  # APP2, where an ICC profile lives
+            body = fp.read(length - 2)
+            if body.startswith(b"ICC_PROFILE\x00"):
+                icc_chunks[body[12]] = body[14:]
+            continue
         fp.seek(length - 2, 1)
-    return MediaInfo(has_alpha=False)
+    icc_profile = b"".join(icc_chunks[key] for key in sorted(icc_chunks)) or None
+    return MediaInfo(
+        width=width, height=height, has_alpha=False, icc_profile=icc_profile
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -338,12 +505,76 @@ def _probe_bmp(fp: IO[bytes]) -> MediaInfo:
 # ---------------------------------------------------------------------------
 
 
+def _skip_gif_sub_blocks(fp: IO[bytes]) -> None:
+    """Seek past a chain of GIF data sub-blocks, up to its 0-length terminator."""
+    while True:
+        size = fp.read(1)
+        if not size or size == b"\x00":
+            return
+        fp.seek(size[0], 1)
+
+
+def _gif_frame_timing(fp: IO[bytes]) -> tuple[int, int]:
+    """Return `(image count, summed delay in hundredths of a second)`.
+
+    `fp` must be positioned after the logical screen descriptor and any global
+    colour table. AE plays an animated GIF at the rate the Graphic Control
+    Extension delays imply, so they decide both duration and frame rate.
+    """
+    frames = delay = 0
+    while True:
+        block = fp.read(1)
+        if not block or block == b"\x3b":  # trailer
+            return frames, delay
+        if block == b"\x21":  # extension
+            if fp.read(1) == b"\xf9":  # graphic control
+                size = fp.read(1)
+                if not size:
+                    return frames, delay
+                body = fp.read(size[0])
+                if len(body) >= 3:
+                    delay += struct.unpack_from("<H", body, 1)[0]
+            _skip_gif_sub_blocks(fp)
+        elif block == b"\x2c":  # image descriptor
+            frames += 1
+            fp.seek(8, 1)  # left, top, width, height
+            packed = fp.read(1)
+            if not packed:
+                return frames, delay
+            if packed[0] & 0x80:  # local colour table
+                fp.seek(3 * (1 << ((packed[0] & 0x07) + 1)), 1)
+            fp.read(1)  # LZW minimum code size
+            _skip_gif_sub_blocks(fp)
+        else:  # not a block introducer: the stream is not walkable
+            return frames, delay
+
+
 def _probe_gif(fp: IO[bytes]) -> MediaInfo:
     sig = fp.read(6)
     if sig[:3] != b"GIF" or sig[3:] not in (b"87a", b"89a"):
         raise ValueError("Not a valid GIF file (bad signature)")
     width, height = struct.unpack("<HH", fp.read(4))
-    return MediaInfo(width=width, height=height, has_alpha=True)
+    packed = fp.read(1)[0]
+    fp.read(2)  # background colour index + pixel aspect ratio
+    if packed & 0x80:  # global colour table
+        fp.seek(3 * (1 << ((packed & 0x07) + 1)), 1)
+    frames, delay = _gif_frame_timing(fp)
+    if frames < 2:
+        return MediaInfo(width=width, height=height, has_alpha=True)  # a still
+    if delay == 0:
+        # Nothing in the file says how fast an all-zero-delay GIF should run.
+        # AE stretches it to roughly two seconds, giving every frame the same
+        # floor(200 / frames) hundredths - measured at 3, 5, 7, 9 and 14
+        # frames. (ffmpeg instead substitutes a flat 10 hundredths.)
+        delay = frames * max(1, 200 // frames)
+    duration = delay / 100.0
+    return MediaInfo(
+        width=width,
+        height=height,
+        duration=duration,
+        frame_rate=round(frames / duration, 3),
+        has_alpha=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -470,8 +701,9 @@ def iter_image_resources(fp: IO[bytes]) -> Iterator[tuple[int, bytes]]:
         pos += 4 + size + (size & 1)
 
 
-def _psd_pixel_aspect(fp: IO[bytes]) -> float:
-    """The document pixel aspect from image resource 1064 (1.0 when absent).
+def _psd_image_resources(fp: IO[bytes]) -> tuple[float, bytes | None]:
+    """The document pixel aspect (resource 1064, 1.0 when absent) and the
+    embedded ICC profile (resource 1039, `None` when absent).
 
     `fp` must be positioned right after the 26-byte header; the position is
     restored before returning. Photoshop stores the ratio as a truncated
@@ -481,16 +713,18 @@ def _psd_pixel_aspect(fp: IO[bytes]) -> float:
     """
     start = fp.tell()
     ratio = 1.0
+    icc_profile = None
     for resource_id, body in iter_image_resources(fp):
         if resource_id == 1064 and len(body) >= 12:
             # u4 version + f8 ratio (x/y of a pixel).
             ratio = struct.unpack(">d", body[4:12])[0]
-            break
+        elif resource_id == 1039:
+            icc_profile = body
     fp.seek(start)
     # A corrupt resource can decode to NaN/inf, which Fraction() rejects.
     if ratio <= 0 or not math.isfinite(ratio):
-        return 1.0
-    return float(Fraction(ratio).limit_denominator(100))
+        return 1.0, icc_profile
+    return float(Fraction(ratio).limit_denominator(100)), icc_profile
 
 
 def _probe_psd(fp: IO[bytes]) -> MediaInfo:
@@ -502,7 +736,7 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
     height, width = struct.unpack(">II", fp.read(8))
     bit_depth = struct.unpack(">H", fp.read(2))[0]
     color_mode = struct.unpack(">H", fp.read(2))[0]
-    pixel_aspect = _psd_pixel_aspect(fp)
+    pixel_aspect, icc_profile = _psd_image_resources(fp)
     layer_count, _ = psd_layer_record_count(fp, version == 2)
     # AE composites a layered PSD to RGBA (alpha from layer transparency),
     # but treats a flattened document as opaque unless it carries an alpha
@@ -516,6 +750,7 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
         layer_count=layer_count,
         channels=channels,
         pixel_aspect=pixel_aspect,
+        icc_profile=icc_profile,
     )
 
 
@@ -546,11 +781,15 @@ def _u(data: bytes, off: int, n: int) -> int:
     return int.from_bytes(data[off : off + n], "big")
 
 
-def _read_moov(fp: IO[bytes]) -> bytes:
-    """Return the body of the top-level `moov` atom, or `b""` if absent.
+def _s(data: bytes, off: int, n: int) -> int:
+    return int.from_bytes(data[off : off + n], "big", signed=True)
 
-    Walks top-level atom headers and seeks past their bodies so the bulk
-    of the file (`mdat`, often gigabytes) is never read into memory.
+
+def _top_level_atoms(fp: IO[bytes], wanted: bytes) -> Iterator[bytes]:
+    """Yield the body of each top-level atom of type `wanted`.
+
+    Other bodies are seeked over, so the bulk of the file (`mdat`, often
+    gigabytes) is never read into memory.
     """
     fp.seek(0, 2)
     file_end = fp.tell()
@@ -559,7 +798,7 @@ def _read_moov(fp: IO[bytes]) -> bytes:
     while pos + 8 <= file_end:
         header = fp.read(8)
         if len(header) < 8:
-            return b""
+            return
         size = int.from_bytes(header[:4], "big")
         atype = header[4:8]
         body = pos + 8
@@ -569,15 +808,119 @@ def _read_moov(fp: IO[bytes]) -> bytes:
         elif size == 0:  # extends to end
             size = file_end - pos
         if size < 8 or pos + size > file_end:
-            return b""
-        if atype == b"moov":
-            return fp.read(pos + size - body)
+            return
+        if atype == wanted:
+            yield fp.read(pos + size - body)
         pos += size
         fp.seek(pos)
-    return b""
 
 
-def _probe_mov(fp: IO[bytes]) -> MediaInfo:
+def _read_moov(fp: IO[bytes]) -> bytes:
+    """Return the body of the top-level `moov` atom, or `b""` if absent."""
+    return next(_top_level_atoms(fp, b"moov"), b"")
+
+
+def _tkhd_axes_swapped(data: bytes, end: int) -> bool:
+    """Whether the `tkhd` display matrix turns the track a quarter turn.
+
+    AE honours the matrix: a 640x360 track carrying a 90-degree rotation
+    imports as 360x640. The 3x3 matrix sits immediately before the 16.16
+    width/height pair, so it ends 8 bytes before the atom does (which holds
+    for both `tkhd` versions). Only the a/b/c/d terms decide whether x maps
+    onto y; a half turn leaves them on the diagonal and needs no swap.
+    """
+    matrix = end - 44
+    if matrix < 0:
+        return False
+    a, b = _s(data, matrix, 4), _s(data, matrix + 4, 4)
+    c, d = _s(data, matrix + 12, 4), _s(data, matrix + 16, 4)
+    return abs(b) > abs(a) and abs(c) > abs(d)
+
+
+def _stts_totals(data: bytes, body: int, end: int) -> tuple[int, int]:
+    """Return `(sample_count, total_ticks)` summed over every `stts` run.
+
+    AE follows these sums rather than the `mdhd` duration - a rotated fixture
+    whose `mdhd` claimed one frame too many imported at the `stts` length.
+    Reading only the first run also reports the wrong rate for variable frame
+    rate media, where the runs alternate.
+    """
+    samples = ticks = 0
+    for i in range(_u(data, body + 4, 4)):
+        off = body + 8 + 8 * i
+        if off + 8 > end:
+            break
+        count = _u(data, off, 4)
+        samples += count
+        ticks += count * _u(data, off + 4, 4)
+    return samples, ticks
+
+
+#: `tfhd` / `trun` flag bits naming the fields that are actually present.
+_TFHD_BASE_OFFSET = 0x000001
+_TFHD_SAMPLE_DESC = 0x000002
+_TFHD_DEFAULT_DURATION = 0x000008
+_TRUN_DATA_OFFSET = 0x000001
+_TRUN_FIRST_SAMPLE_FLAGS = 0x000004
+#: Per-sample `trun` fields, in the order they are stored.
+_TRUN_SAMPLE_FIELDS = (0x000100, 0x000200, 0x000400, 0x000800)
+
+
+def _fragment_totals(fp: IO[bytes], track_id: int) -> tuple[int, int]:
+    """Return `(sample_count, total_ticks)` from one track's movie fragments.
+
+    A fragmented file (an `empty_moov` stream) carries no `stts`; each sample's
+    duration lives in its `traf`, either as the `tfhd` default or per sample in
+    the `trun`. AE reads these, so a fragmented `.mp4` that py_aep reported as
+    0 s / 0 fps imports in AE with its real duration and rate.
+    """
+    samples = ticks = 0
+    for moof in _top_level_atoms(fp, b"moof"):
+        for a1, b1, e1 in _atoms(moof, 0, len(moof)):
+            if a1 != b"traf":
+                continue
+            default_duration = 0
+            traf_track = -1
+            for a2, b2, e2 in _atoms(moof, b1, e1):
+                if a2 == b"tfhd":
+                    flags = _u(moof, b2 + 1, 3)
+                    traf_track = _u(moof, b2 + 4, 4)
+                    off = b2 + 8
+                    if flags & _TFHD_BASE_OFFSET:
+                        off += 8
+                    if flags & _TFHD_SAMPLE_DESC:
+                        off += 4
+                    if flags & _TFHD_DEFAULT_DURATION and off + 4 <= e2:
+                        default_duration = _u(moof, off, 4)
+                elif a2 == b"trun" and traf_track == track_id:
+                    flags = _u(moof, b2 + 1, 3)
+                    count = _u(moof, b2 + 4, 4)
+                    samples += count
+                    off = b2 + 8
+                    if flags & _TRUN_DATA_OFFSET:
+                        off += 4
+                    if flags & _TRUN_FIRST_SAMPLE_FLAGS:
+                        off += 4
+                    row = 4 * sum(1 for f in _TRUN_SAMPLE_FIELDS if flags & f)
+                    if flags & _TRUN_SAMPLE_FIELDS[0]:
+                        for i in range(count):
+                            if off + row * i + 4 > e2:
+                                break
+                            ticks += _u(moof, off + row * i, 4)
+                    else:
+                        ticks += count * default_duration
+    return samples, ticks
+
+
+def _probe_mov(fp: IO[bytes], undecodable: frozenset[bytes] = frozenset()) -> MediaInfo:
+    """Probe a QuickTime-family container (`.mov`, `.m4v`, `.m4a`, `.mp4`).
+
+    Args:
+        fp: The open media file.
+        undecodable: Video sample-entry codes whose track AE's importer
+            cannot decode, so it must be reported as absent (see
+            `_MP4_UNDECODABLE_CODECS`).
+    """
     data = _read_moov(fp)
     width = height = 0
     duration = frame_rate = 0.0
@@ -597,15 +940,20 @@ def _probe_mov(fp: IO[bytes]) -> MediaInfo:
         elif a2 == b"trak":
             handler = b""
             tw = th = 0
-            mts = mdur = sample_delta = 0
+            track_id = 0
+            swap_axes = False
+            mts = mdur = 0
+            samples = ticks = 0
             elst_seg_dur = 0
             elst_sentinel = 0xFFFFFFFF
-            depth = 0
-            track_pa = 0.0
+            entry = _VideoSampleEntry()
             for a3, b3, e3 in _atoms(data, b2, e2):
                 if a3 == b"tkhd":
+                    v = data[b3]
+                    track_id = _u(data, b3 + (20 if v == 1 else 12), 4)
                     tw = _u(data, e3 - 8, 4) >> 16
                     th = _u(data, e3 - 4, 4) >> 16
+                    swap_axes = _tkhd_axes_swapped(data, e3)
                 elif a3 == b"edts":
                     for ae, be, ee in _atoms(data, b3, e3):
                         if ae == b"elst" and ee - be >= 16:
@@ -631,20 +979,35 @@ def _probe_mov(fp: IO[bytes]) -> MediaInfo:
                                     continue
                                 for a6, b6, e6 in _atoms(data, b5, e5):
                                     if a6 == b"stsd":
-                                        depth, track_pa = _parse_stsd(data, b6, e6)
+                                        entry = _parse_stsd(data, b6, e6)
                                     elif a6 == b"stts" and e6 - b6 >= 16:
-                                        sample_delta = _u(data, b6 + 12, 4)
-            if handler == b"vide":
-                width, height = tw, th
+                                        samples, ticks = _stts_totals(data, b6, e6)
+            if handler == b"vide" and entry.codec not in undecodable:
+                # AE sizes footage by the stsd coded dimensions, not tkhd:
+                # tkhd holds the *display* size (coded width x pixel aspect),
+                # so trusting it counts an anamorphic file's aspect twice.
+                width = entry.width or tw
+                height = entry.height or th
+                if swap_axes:
+                    width, height = height, width
                 # depth and pixel aspect are only meaningful for a visual
                 # sample entry (reading them from an audio stsd gives garbage).
-                if depth == 32:
+                if entry.depth == 32:
                     has_alpha = True
-                if track_pa:
-                    pixel_aspect = track_pa
-                if mts and sample_delta:
-                    frame_rate = round(mts / sample_delta, 3)
-                if mts and mdur:  # AE uses the video track's duration
+                if entry.pixel_aspect:
+                    # A quarter turn maps x onto y, so the sample aspect
+                    # turns with the axes.
+                    pixel_aspect = (
+                        round(1 / entry.pixel_aspect, 5)
+                        if swap_axes
+                        else entry.pixel_aspect
+                    )
+                if not samples:  # fragmented: the durations live in the moofs
+                    samples, ticks = _fragment_totals(fp, track_id)
+                if mts and ticks:
+                    frame_rate = round(mts * samples / ticks, 3)
+                    duration = ticks / mts  # AE uses the video track's duration
+                elif mts and mdur:
                     duration = mdur / mts
             elif handler == b"soun":
                 has_audio = True
@@ -671,12 +1034,27 @@ def _probe_mov(fp: IO[bytes]) -> MediaInfo:
     )
 
 
-def _parse_stsd(data: bytes, body: int, end: int) -> tuple[int, float]:
-    """Return (depth, pixel_aspect) from a video sample description."""
+class _VideoSampleEntry(NamedTuple):
+    """The fields a video `stsd` sample entry contributes to `MediaInfo`."""
+
+    codec: bytes = b""
+    width: int = 0
+    height: int = 0
+    depth: int = 0
+    pixel_aspect: float = 0.0
+
+
+def _parse_stsd(data: bytes, body: int, end: int) -> _VideoSampleEntry:
+    """Decode the first sample description as a video sample entry."""
     entry = body + 8  # skip version/flags(4) + entry_count(4)
     if entry + 16 > end:
-        return 0, 0.0
+        return _VideoSampleEntry()
     entry_size = _u(data, entry, 4)
+    codec = data[entry + 4 : entry + 8]
+    # The visual sample entry is 86 bytes: a 16-byte base, then 16 bytes of
+    # version/vendor/quality, then the coded width/height pair at +32.
+    width = _u(data, entry + 32, 2) if entry + 36 <= end else 0
+    height = _u(data, entry + 34, 2) if entry + 36 <= end else 0
     depth = _u(data, entry + 82, 2) if entry + 84 <= end else 0
     pixel_aspect = 0.0
     # pasp extension atom lives after the 86-byte base video sample entry.
@@ -686,7 +1064,57 @@ def _parse_stsd(data: bytes, body: int, end: int) -> tuple[int, float]:
             v_spacing = _u(data, b + 4, 4)
             if v_spacing:
                 pixel_aspect = round(h_spacing / v_spacing, 5)
-    return depth, pixel_aspect
+    return _VideoSampleEntry(codec, width, height, depth, pixel_aspect)
+
+
+#: Video sample-entry codes AE 2026's Media Core `.mp4` importer cannot
+#: decode. AE drops such a track and imports whatever is left, so an `.aep`
+#: that claims the real video track instead makes AE report the footage
+#: MISSING on open - the track must be reported as absent. Codecs are listed
+#: only once verified, since under-claiming a codec AE *can* decode breaks
+#: the footage too (AE warns and renders nothing).
+_MP4_UNDECODABLE_CODECS = frozenset({b"vp09", b"av01"})
+
+
+def _probe_mp4(fp: IO[bytes]) -> MediaInfo:
+    """Probe an `.mp4`.
+
+    MP4 shares the QuickTime atom tree, but AE routes `.mp4` through its
+    Media Core importer, which decodes fewer video codecs than the
+    QuickTime importer used for `.mov`/`.m4v`.
+
+    Raises:
+        ValueError: If the file has no track AE can decode. AE refuses such a
+            file outright ("The source compression type is not supported"),
+            so there is no import for py-aep to reproduce.
+
+    Whether AE refuses depends on what survives dropping the undecodable
+    video, not on which codec it was. All four cells were measured in AE
+    2026; the two kept fixtures cover one codec and one outcome each:
+
+    | video | audio | AE 2026            | fixture                   |
+    |-------|-------|--------------------|---------------------------|
+    | av01  | AAC   | imports audio only | `mp4_av1_with_audio.mp4`  |
+    | vp09  | none  | refused            | `mp4_vp9_no_audio.mp4`    |
+    | vp09  | AAC   | imports audio only | (measured, file not kept) |
+    | av01  | none  | refused            | (measured, file not kept) |
+    """
+    info = _probe_mov(fp, undecodable=_MP4_UNDECODABLE_CODECS)
+    if info.width or info.has_audio:
+        return info
+    # Nothing survived. Re-probe ungated to tell an undecodable codec (AE
+    # refuses the file) from a file whose atom tree we simply could not read,
+    # so the error names the right problem.
+    if _probe_mov(fp).width == 0:
+        raise ValueError(
+            "Could not read a video or audio track from this .mp4 (no "
+            "readable moov atom)."
+        )
+    raise ValueError(
+        "After Effects cannot import this .mp4: it has no video track in "
+        "a codec AE decodes, and no audio track either. AE refuses the "
+        'file with "The source compression type is not supported".'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -780,17 +1208,69 @@ _MP3_BR_M2_L3 = (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0
 def _skip_id3v2(raw: bytes) -> int:
     """Byte offset of the audio data after a leading ID3v2 tag (0 if absent).
 
-    The tag length is a 28-bit syncsafe integer in header bytes 6-9.
+    The tag length is a 28-bit syncsafe integer in header bytes 6-9, and it
+    covers neither the 10-byte header nor the optional 10-byte ID3v2.4 footer
+    that flag bit 4 announces.
     """
     if raw[:3] == b"ID3" and len(raw) >= 10:
         s = raw[6:10]
-        return 10 + (
+        size = (
             (s[0] & 0x7F) << 21
             | (s[1] & 0x7F) << 14
             | (s[2] & 0x7F) << 7
             | (s[3] & 0x7F)
         )
+        return 10 + size + (10 if raw[5] & 0x10 else 0)
     return 0
+
+
+def _mp3_frame_size(header: int) -> int:
+    """Length in bytes of the Layer III frame `header` describes (0 if bogus).
+
+    The frame-size coefficient is samples-per-frame/8 (1152/8=144 for MPEG-1,
+    576/8=72 for MPEG-2/2.5).
+    """
+    version = (header >> 19) & 0x3  # 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+    layer = (header >> 17) & 0x3  # 1 = Layer III
+    bitrate_i = (header >> 12) & 0xF
+    sr_i = (header >> 10) & 0x3
+    if version == 1 or layer != 1 or bitrate_i in (0, 0xF) or sr_i == 3:
+        return 0
+    bitrate = (_MP3_BR_M1_L3 if version == 3 else _MP3_BR_M2_L3)[bitrate_i] * 1000
+    spf = 1152 if version == 3 else 576
+    return spf // 8 * bitrate // _MP3_SR[version][sr_i] + ((header >> 9) & 0x1)
+
+
+def _find_mp3_frame(window: bytes) -> int:
+    """Offset of the first MPEG audio frame in `window`, or -1 if none syncs.
+
+    A well-formed file starts its audio exactly where the tag ended, so offset
+    0 is taken on its own. Past that the search needs corroboration: a
+    candidate counts only when the frame its own length points at also syncs,
+    which rejects a stray 0xFF pair inside tag or junk bytes. Scanning at all
+    is what keeps a footer-bearing or sloppily tagged file - where the audio
+    does not begin at the tag boundary - from reporting a zero duration.
+    """
+    n = len(window)
+    if (
+        n >= 4
+        and window[0] == 0xFF
+        and window[1] & 0xE0 == 0xE0
+        and _mp3_frame_size(struct.unpack_from(">I", window, 0)[0])
+    ):
+        return 0
+    pos = 1
+    while pos + 4 <= n:
+        if window[pos] == 0xFF and window[pos + 1] & 0xE0 == 0xE0:
+            size = _mp3_frame_size(struct.unpack_from(">I", window, pos)[0])
+            nxt = pos + size
+            if size and (
+                nxt + 2 > n  # this frame runs to the end of the window
+                or (window[nxt] == 0xFF and window[nxt + 1] & 0xE0 == 0xE0)
+            ):
+                return pos
+        pos += 1
+    return -1
 
 
 def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
@@ -801,23 +1281,21 @@ def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
     fp.seek(0, 2)
     file_size = fp.tell()
     fp.seek(audio_start)
-    # Frame header (4) + max side info (32) + Xing tag header (12).
-    raw = fp.read(48)
-    if len(raw) < 4:
+    # A 64 KiB window holds several max-size frames, so only a pathological
+    # amount of leading garbage escapes the search.
+    window = fp.read(65536)
+    offset = _find_mp3_frame(window)
+    if offset < 0:
         return MediaInfo(has_audio=True)
+    audio_start += offset
+    # Frame header (4) + max side info (32) + a Xing or VBRI tag; VBRI's frame
+    # count is the furthest field, ending 54 bytes into the frame.
+    raw = window[offset : offset + 64]
     h = struct.unpack_from(">I", raw, 0)[0]
-    if (h >> 21) & 0x7FF != 0x7FF:  # 11-bit frame sync
-        return MediaInfo(has_audio=True)
     mpeg_ver = (h >> 19) & 0x3  # 3=MPEG1, 2=MPEG2, 0=MPEG2.5
-    bitrate_i = (h >> 12) & 0xF
     sr_i = (h >> 10) & 0x3
-    padding = (h >> 9) & 0x1
     mono = ((h >> 6) & 0x3) == 3
     sr = _MP3_SR.get(mpeg_ver, (0, 0, 0))[sr_i] if sr_i < 3 else 0
-    # `.mp3` is MPEG Audio Layer III by definition, so the Layer III bitrate
-    # tables apply; the frame-size coefficient is samples-per-frame/8
-    # (1152/8=144 for MPEG-1, 576/8=72 for MPEG-2/2.5).
-    bitrate = (_MP3_BR_M1_L3 if mpeg_ver == 3 else _MP3_BR_M2_L3)[bitrate_i] * 1000
     spf = 1152 if mpeg_ver == 3 else 576
     # A Xing/Info header (VBR) carries the exact frame count; else assume CBR.
     side = (17 if mono else 32) if mpeg_ver == 3 else (9 if mono else 17)
@@ -828,9 +1306,19 @@ def _probe_mp3(fp: IO[bytes]) -> MediaInfo:
         if flags & 0x1 and sr:
             frames = struct.unpack_from(">I", raw, tag_at + 8)[0]
             duration = frames * spf / sr
-    elif bitrate and sr:
-        # bitrate >= 32 kbps and sr >= 8 kHz, so frame_size is always > 0.
-        frame_size = spf // 8 * bitrate // sr + padding
+    elif raw[36:40] == b"VBRI" and sr and len(raw) >= 54:
+        # Fraunhofer's VBR tag sits at a fixed offset (frame start + 4 + 32)
+        # rather than after the side info: tag(4) version(2) delay(2)
+        # quality(2) bytes(4) frames(4). AE ignores it and falls back to a
+        # bitrate estimate that is wrong for a variable-rate file (4.91 s for
+        # an 8.05 s fixture), so this reports the true length instead.
+        if struct.unpack_from(">H", raw, 40)[0] == 1:  # tag version
+            frames = struct.unpack_from(">I", raw, 50)[0]
+            duration = frames * spf / sr
+    elif sr:
+        # _find_mp3_frame already rejected the reserved bitrate/rate codes, so
+        # the frame size here is always > 0.
+        frame_size = _mp3_frame_size(h)
         duration = (file_size - audio_start) // frame_size * spf / sr
     return MediaInfo(duration=duration, has_audio=True, audio_sample_rate=float(sr))
 
@@ -993,27 +1481,102 @@ _MPEG_FR = {
 }
 
 
+#: AE's pixel aspect for the D1/DV frame sizes, keyed by
+#: `(width, height, aspect_ratio_information)`. AE applies its own named
+#: presets here instead of the arithmetic the sequence header implies:
+#: 720x480 flagged 16:9 imports as D1/DV NTSC Widescreen (40/33 = 1.2121),
+#: not the (16/9)/(720/480) = 1.1852 the frame size alone would give. Every
+#: other frame size measured square. Values verified against AE 2026.
+_MPEG_D1_PIXEL_ASPECT = {
+    (720, 480, 2): 10 / 11,
+    (720, 480, 3): 40 / 33,
+    (720, 576, 2): 128 / 117,
+    (720, 576, 3): 512 / 351,
+}
+
+
+def _pes_payload_start(data: bytes, pos: int, end: int) -> int:
+    """Offset of a PES packet's payload, skipping its variable-length header."""
+    p = pos + 6
+    if p < end and data[p] & 0xC0 == 0x80:  # MPEG-2 PES: flags(2) + header len
+        return min(p + 3 + (data[p + 2] if p + 3 <= end else 0), end)
+    while p < end and data[p] == 0xFF:  # MPEG-1 PES: stuffing bytes
+        p += 1
+    if p + 1 < end and data[p] & 0xC0 == 0x40:  # STD buffer scale/size
+        p += 2
+    if p < end:
+        if data[p] & 0xF0 == 0x20:  # PTS only
+            p += 5
+        elif data[p] & 0xF0 == 0x30:  # PTS + DTS
+            p += 10
+        elif data[p] == 0x0F:  # neither
+            p += 1
+    return min(p, end)
+
+
+def _mpeg_video_es(data: bytes) -> tuple[bytes, bool]:
+    """Return `(video elementary stream, has_audio)` from a program stream.
+
+    The elementary stream has to be reassembled before its picture start codes
+    can be counted: a start code routinely straddles a PES packet boundary, so
+    scanning the muxed file both misses real pictures and matches the zero
+    padding that precedes a pack or PES header. Counting the raw file was off
+    by one in both directions on the measured fixtures.
+    """
+    out = bytearray()
+    has_audio = False
+    pos, n = 0, len(data)
+    while pos + 4 <= n:
+        if data[pos : pos + 3] != b"\x00\x00\x01":
+            pos += 1
+            continue
+        stream_id = data[pos + 3]
+        if stream_id == 0xBA:  # pack header
+            if pos + 5 > n:
+                break
+            if data[pos + 4] & 0xC0 == 0x40:  # MPEG-2: 14 bytes + stuffing
+                if pos + 14 > n:
+                    break
+                pos += 14 + (data[pos + 13] & 0x07)
+            else:  # MPEG-1: a flat 12 bytes
+                pos += 12
+            continue
+        if stream_id == 0xB9:  # program end
+            break
+        if pos + 6 > n:
+            break
+        length = int.from_bytes(data[pos + 4 : pos + 6], "big")
+        end = min(pos + 6 + length, n) if length else n
+        if 0xC0 <= stream_id <= 0xDF or stream_id == 0xBD:
+            has_audio = True
+        elif 0xE0 <= stream_id <= 0xEF:
+            out += data[_pes_payload_start(data, pos, end) : end]
+        pos = end
+    return bytes(out), has_audio
+
+
 def _probe_mpeg(fp: IO[bytes]) -> MediaInfo:
-    data = fp.read()
-    seq = data.find(b"\x00\x00\x01\xb3")
+    # Program streams carry no global duration and the SCR timeline stops short
+    # of the final frames, so the frames have to be counted. This reads the
+    # whole file, which is acceptable for the sizes py_aep handles.
+    video, has_audio = _mpeg_video_es(fp.read())
+    seq = video.find(b"\x00\x00\x01\xb3")
     if seq < 0:
         raise ValueError("Not a valid MPEG file (no sequence header)")
-    val = struct.unpack_from(">I", data, seq + 4)[0]
+    val = struct.unpack_from(">I", video, seq + 4)[0]
     width = (val >> 20) & 0xFFF
     height = (val >> 8) & 0xFFF
     fps = _MPEG_FR.get(val & 0xF, 0.0)
-    # Program streams carry no global duration and the SCR timeline stops short
-    # of the final frames, so count picture start codes. This reads the whole
-    # file, which is acceptable for the sizes py_aep handles.
-    frames = data.count(b"\x00\x00\x01\x00")
+    frames = video.count(b"\x00\x00\x01\x00")
     duration = frames / fps if fps else 0.0
-    has_audio = any(data.find(bytes((0, 0, 1, sid))) >= 0 for sid in range(0xC0, 0xE0))
+    pixel_aspect = _MPEG_D1_PIXEL_ASPECT.get((width, height, (val >> 4) & 0xF), 1.0)
     return MediaInfo(
         width=width,
         height=height,
         duration=duration,
         frame_rate=fps,
         has_audio=has_audio,
+        pixel_aspect=pixel_aspect,
     )
 
 
@@ -1099,7 +1662,65 @@ def _probe_text(fp: IO[bytes]) -> MediaInfo:
 _ASF_HEADER = bytes.fromhex("3026B2758E66CF11A6D900AA0062CE6C")
 _ASF_FILE_PROPS = bytes.fromhex("A1DCAB8C47A9CF118EE400C00C205365")
 _ASF_STREAM_PROPS = bytes.fromhex("9107DCB7B7A9CF118EE600C00C205365")
+_ASF_HEADER_EXTENSION = bytes.fromhex("B503BF5F2EA9CF118EE300C00C205365")
+_ASF_EXT_STREAM_PROPS = bytes.fromhex("CBA5E61472C632438399A96952065B5A")
+_ASF_METADATA = bytes.fromhex("EACBF8C5AF5B77488467AA8C44FA4CCA")
 _ASF_VIDEO_PREFIX = bytes.fromhex("C0EF19BC")  # first 4 LE bytes of the video GUID
+_ASF_AUDIO_PREFIX = bytes.fromhex("409E69F8")  # first 4 LE bytes of the audio GUID
+
+
+def _asf_objects(body: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
+    """Yield `(guid, payload_start, payload_end)` for each ASF header object.
+
+    Descends into the Header Extension Object, which AE reads: the stream's
+    frame rate and pixel aspect live in objects nested inside it, invisible to
+    a walk that only steps over the top-level objects. Its nested objects begin
+    46 bytes in - object GUID(16) + size(8) + a reserved GUID(16) + a reserved
+    u2 + the extension data size u4.
+    """
+    pos = start
+    while pos + 24 <= end:
+        guid = body[pos : pos + 16]
+        size = struct.unpack_from("<Q", body, pos + 16)[0]
+        if size < 24 or pos + size > end:
+            return
+        yield guid, pos + 24, pos + size
+        if guid == _ASF_HEADER_EXTENSION:
+            yield from _asf_objects(body, pos + 46, pos + size)
+        pos += size
+
+
+#: Metadata Object value types that carry an integer, and their struct codes.
+#: BOOL is 16-bit here (only the Extended Content Description Object widens
+#: it to 32), so 2 and 5 share a code.
+_ASF_INT_TYPES = {2: "<H", 3: "<I", 4: "<Q", 5: "<H"}
+
+
+def _asf_metadata(body: bytes, start: int, end: int) -> dict[tuple[int, str], int]:
+    """Decode the Metadata Object's integer records, keyed by `(stream, name)`.
+
+    This is where AE finds a WMV's pixel aspect (`AspectRatioX`/`AspectRatioY`)
+    and its frame count (`NumberOfFrames`).
+    """
+    out: dict[tuple[int, str], int] = {}
+    if start + 2 > end:
+        return out
+    pos = start + 2
+    for _ in range(struct.unpack_from("<H", body, start)[0]):
+        if pos + 12 > end:
+            break
+        _lang, stream, name_len, value_type = struct.unpack_from("<4H", body, pos)
+        value_len = struct.unpack_from("<I", body, pos + 8)[0]
+        name_at = pos + 12
+        value_at = name_at + name_len
+        if value_at + value_len > end:
+            break
+        fmt = _ASF_INT_TYPES.get(value_type)
+        if fmt is not None and value_len >= struct.calcsize(fmt):
+            name = body[name_at:value_at].decode("utf-16-le", "replace").rstrip("\x00")
+            out[stream, name] = struct.unpack_from(fmt, body, value_at)[0]
+        pos = value_at + value_len
+    return out
 
 
 def _probe_wmv(fp: IO[bytes]) -> MediaInfo:
@@ -1109,36 +1730,70 @@ def _probe_wmv(fp: IO[bytes]) -> MediaInfo:
     fp.read(6)  # object count (u32) + 2 reserved bytes
     body = fp.read(max(0, header_size - 30))
     width = height = 0
-    duration = 0.0
-    pos = 0
-    while pos + 24 <= len(body):
-        guid = body[pos : pos + 16]
-        size = struct.unpack_from("<Q", body, pos + 16)[0]
-        if size < 24 or pos + size > len(body):
-            break
-        payload = body[pos + 24 : pos + size]
-        if guid == _ASF_FILE_PROPS and len(payload) >= 64:
-            # Send Duration (100ns, +48) is the content length excluding the
-            # preroll; it is the closest header value to AE's decoded duration.
-            # Fall back to Play Duration (+40, includes preroll) minus preroll
-            # (ms, +56) when Send Duration is absent. Neither is exact: AE
-            # decodes the video to get the true frame-accurate duration/fps,
-            # which the ASF header does not store.
-            send_duration = struct.unpack_from("<Q", payload, 48)[0]
-            if send_duration:
-                duration = send_duration / 1e7
-            else:
-                play_duration = struct.unpack_from("<Q", payload, 40)[0]
-                preroll = struct.unpack_from("<Q", payload, 56)[0]
-                duration = max(0.0, play_duration / 1e7 - preroll / 1e3)
-        elif guid == _ASF_STREAM_PROPS and len(payload) >= 62:
-            # Video stream: type-specific data at +54 begins with enc_width/height.
-            if payload[:4] == _ASF_VIDEO_PREFIX:
-                width = struct.unpack_from("<I", payload, 54)[0]
-                height = struct.unpack_from("<I", payload, 58)[0]
-        pos += size
-    # ASF carries no frame rate (AE derives it from the decoder); leave 0.
-    return MediaInfo(width=width, height=height, duration=duration)
+    send_duration = play_duration = preroll = 0.0
+    frame_rate = 0.0
+    audio_sample_rate = 0.0
+    has_audio = False
+    video_stream = -1
+    metadata: dict[tuple[int, str], int] = {}
+    avg_frame_time: dict[int, int] = {}
+
+    for guid, start, end in _asf_objects(body, 0, len(body)):
+        size = end - start
+        if guid == _ASF_FILE_PROPS and size >= 64:
+            play_duration = struct.unpack_from("<Q", body, start + 40)[0] / 1e7
+            send_duration = struct.unpack_from("<Q", body, start + 48)[0] / 1e7
+            preroll = struct.unpack_from("<Q", body, start + 56)[0] / 1e3
+        elif guid == _ASF_STREAM_PROPS and size >= 62:
+            stream = struct.unpack_from("<H", body, start + 48)[0] & 0x7F
+            if body[start : start + 4] == _ASF_VIDEO_PREFIX:
+                video_stream = stream
+                # Type-specific data at +54 begins with enc_width/height.
+                width = struct.unpack_from("<I", body, start + 54)[0]
+                height = struct.unpack_from("<I", body, start + 58)[0]
+            elif body[start : start + 4] == _ASF_AUDIO_PREFIX:
+                has_audio = True
+                # Type-specific data at +54 is a WAVEFORMATEX; its
+                # nSamplesPerSec follows wFormatTag(2) and nChannels(2).
+                audio_sample_rate = float(struct.unpack_from("<I", body, start + 58)[0])
+        elif guid == _ASF_EXT_STREAM_PROPS and size >= 64:
+            stream = struct.unpack_from("<H", body, start + 48)[0]
+            avg_frame_time[stream] = struct.unpack_from("<Q", body, start + 52)[0]
+        elif guid == _ASF_METADATA:
+            metadata = _asf_metadata(body, start, end)
+
+    # Average Time Per Frame (100 ns units) is authoritative for AE: a 25 fps
+    # file whose header claims 29.97 imports at 29.97. Without it, invert AE's
+    # own duration rule below against the Metadata Object's frame count.
+    avg = avg_frame_time.get(video_stream, 0)
+    frames = metadata.get((video_stream, "NumberOfFrames"), 0)
+    if avg:
+        frame_rate = round(1e7 / avg, 3)
+    elif frames > 1 and send_duration:
+        frame_rate = round((frames - 1) / send_duration, 3)
+
+    aspect_x = metadata.get((video_stream, "AspectRatioX"), 0)
+    aspect_y = metadata.get((video_stream, "AspectRatioY"), 0)
+    pixel_aspect = round(aspect_x / aspect_y, 5) if aspect_x and aspect_y else 1.0
+
+    # AE reports the Send Duration rounded out to a whole frame, plus one:
+    # a 1.96 s / 25 fps stream imports as 50 frames = 2.0 s, and the same
+    # stream relabelled 29.97 fps imports as 60 frames = 2.002002 s.
+    if frame_rate and send_duration:
+        duration = (round(send_duration * frame_rate) + 1) / frame_rate
+    elif send_duration:
+        duration = send_duration
+    else:
+        duration = max(0.0, play_duration - preroll)
+    return MediaInfo(
+        width=width,
+        height=height,
+        duration=duration,
+        frame_rate=frame_rate,
+        has_audio=has_audio,
+        audio_sample_rate=audio_sample_rate,
+        pixel_aspect=pixel_aspect,
+    )
 
 
 def _probe_dpx_cineon(fp: IO[bytes]) -> MediaInfo:
@@ -1213,6 +1868,7 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".png": _probe_png,
     ".mov": _probe_mov,
     ".m4v": _probe_mov,
+    ".mp4": _probe_mp4,
     ".m4a": _probe_mov,
     ".fbx": _probe_fbx,
     ".txt": _probe_data,

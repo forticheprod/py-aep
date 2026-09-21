@@ -901,13 +901,16 @@ class TestLayerPropertyGroupInheritance:
         assert isinstance(layer.transform, PropertyGroup)
         assert layer.transform.match_name == "ADBE Transform Group"
 
-    def test_effects_none_when_no_effects(self) -> None:
-        """Layer.effects is None when there are no effects."""
+    def test_effects_empty_when_no_effects(self) -> None:
+        """Layer.effects is an empty (falsy) group when there are no effects."""
         layer = get_layer(
             parse_project(SAMPLES_DIR / "layer_switches.aep"), "enabled_false"
         )
-        # Basic layer without effects
-        assert layer.effects is None
+        # Basic layer without effects: the group exists (as in ExtendScript)
+        # but holds no children, so it is falsy.
+        assert layer.effects is not None
+        assert len(layer.effects) == 0
+        assert not layer.effects
 
     def test_num_properties_positive(self) -> None:
         """Layer.num_properties returns the count of top-level property groups."""
