@@ -2651,7 +2651,36 @@ class Property(PropertyBase):
                 return separated
             return self.value
 
-        return interpolate_keyframes(time, self.keyframes, self._has_motion_path)
+        return interpolate_keyframes(
+            self._layer_time_from_comp(time),
+            self.keyframes,
+            self._has_motion_path,
+            self._inert_dimensions(),
+        )
+
+    def _layer_time_from_comp(self, time: float) -> float:
+        """Composition seconds to the owning layer's own seconds.
+
+        The inverse of the mapping [Keyframe.time][py_aep.Keyframe.time]
+        applies. Interpolation runs on this axis because AE's ease speeds
+        are per layer second and a negatively stretched layer's keyframes
+        only ascend here.
+        """
+        return (time - self._start_time_offset) / self._time_stretch
+
+    def _inert_dimensions(self) -> frozenset[int]:
+        """Value indices the owning layer ignores.
+
+        A 2-D layer's Scale still carries a Z component, and AE holds it
+        flat across a segment whose X and Y bow - it will not even store a
+        Z other than 100 there.
+        """
+        if self.match_name != "ADBE Scale":
+            return frozenset()
+        layer = self._containing_layer
+        if layer is None or getattr(layer, "three_d_layer", False):
+            return frozenset()
+        return frozenset((2,))
 
     def is_interpolation_type_valid(
         self, type: int | KeyframeInterpolationType
@@ -3016,7 +3045,9 @@ class Property(PropertyBase):
         kf.in_interpolation_type = out_type
         kf.out_interpolation_type = in_type
 
-        t0, t1, t = prev_kf.time, next_kf.time, kf.time
+        # Layer time: the speeds synthesized below are stored per layer
+        # second, and on a reversed layer only this axis ascends.
+        t0, t1, t = prev_kf._layer_time, next_kf._layer_time, kf._layer_time
         if not t0 < t < t1:
             return
 

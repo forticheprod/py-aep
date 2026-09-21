@@ -777,8 +777,9 @@ def roving_keyframe_times(keyframes: list[Keyframe]) -> dict[int, float]:
     times to the exact timebase unit for both that case and a flattened one.
 
     Returns:
-        A `{keyframe index: time in seconds}` mapping covering only the
-        roving keyframes that sit between two anchors.
+        A `{keyframe index: time in LAYER seconds}` mapping covering only
+        the roving keyframes that sit between two anchors - the same axis
+        the ticks count, so a stretched layer needs no further conversion.
     """
     result: dict[int, float] = {}
     anchors = [i for i, kf in enumerate(keyframes) if not kf.roving]
@@ -802,7 +803,8 @@ def roving_keyframe_times(keyframes: list[Keyframe]) -> dict[int, float]:
         total = sum(lengths)
         if not lengths or total <= 0:
             continue
-        span_start, span_end = keyframes[start].time, keyframes[end].time
+        span_start = keyframes[start]._layer_time
+        span_end = keyframes[end]._layer_time
         span = span_end - span_start
         # The enclosing anchors' ease applies ONCE across the whole roving
         # run, and the keys are spaced along that single eased span - not
@@ -1018,8 +1020,8 @@ def _interpolate_roving_run(
     if total <= 0:
         return None
 
-    span_start = keyframes[start].time
-    span = keyframes[end].time - span_start
+    span_start = keyframes[start]._layer_time
+    span = keyframes[end]._layer_time - span_start
     if span <= 0:
         return list(cast("list[float]", keyframes[start].value))
 
@@ -1052,6 +1054,7 @@ def interpolate_keyframes(
     time: float,
     keyframes: list[Keyframe],
     is_spatial: bool,
+    inert_dimensions: frozenset[int] = frozenset(),
 ) -> list[float] | float | None:
     """Compute the interpolated value at `time` from a keyframe list.
 
@@ -1061,9 +1064,17 @@ def interpolate_keyframes(
     - Linear arc-length interpolation along sampled path
 
     Args:
-        time: Time in seconds.
-        keyframes: Sorted list of keyframes.
+        time: Time in the owning LAYER's seconds, not composition seconds.
+            AE evaluates the temporal bezier in layer time - its ease
+            speeds are per layer second, and a negatively stretched layer's
+            keyframes only ascend on this axis.
+            [Property.value_at_time][py_aep.Property.value_at_time]
+            converts before calling.
+        keyframes: Keyframes in stored (layer time ascending) order.
         is_spatial: Whether the property is spatial.
+        inert_dimensions: Indices the layer ignores, held at the left
+            keyframe's value instead of interpolated - the Z of a 2-D
+            layer's Scale, which AE never moves.
 
     Returns:
         Interpolated value, or `None` if no keyframes.
@@ -1074,17 +1085,17 @@ def interpolate_keyframes(
     n = len(keyframes)
 
     # Before first keyframe or single keyframe
-    if n == 1 or time <= keyframes[0].time:
+    if n == 1 or time <= keyframes[0]._layer_time:
         return cast("list[float] | float | None", keyframes[0].value)
 
     # After last keyframe
-    if time >= keyframes[-1].time:
+    if time >= keyframes[-1]._layer_time:
         return cast("list[float] | float | None", keyframes[-1].value)
 
     # Find the segment
     right_idx = 0
     for i in range(1, n):
-        if keyframes[i].time >= time:
+        if keyframes[i]._layer_time >= time:
             right_idx = i
             break
 
@@ -1092,8 +1103,8 @@ def interpolate_keyframes(
     kf_left = keyframes[left_idx]
     kf_right = keyframes[right_idx]
 
-    t0 = kf_left.time
-    t1 = kf_right.time
+    t0 = kf_left._layer_time
+    t1 = kf_right._layer_time
 
     # At exactly a keyframe time
     if abs(time - t0) < 1e-12:
@@ -1131,27 +1142,26 @@ def interpolate_keyframes(
 
     # LINEAR
     if out_type == KeyframeInterpolationType.LINEAR:
-        if (
-            is_spatial
-            and isinstance(v0, list)
-            and isinstance(v1, list)
-            and not (
+        if isinstance(v0, list) and isinstance(v1, list) and is_spatial:
+            if not (
                 _tangents_are_zero(kf_left.out_spatial_tangent)
                 and _tangents_are_zero(kf_right.in_spatial_tangent)
-            )
-        ):
-            # A LINEAR key still carries spatial tangents, and AE follows the
-            # cubic they define - measured on AE 2026: a LINEAR/LINEAR segment
-            # from (50,50) to (350,50) with tangents (100,200)/(-100,200)
-            # passes through (200,200), not the straight line's (200,50). Only
-            # the EASE is linear.
-            return _interpolate_spatial_bezier(time, t0, t1, kf_left, kf_right)
-        ratio = (time - t0) / (t1 - t0)
-        if isinstance(v0, list) and isinstance(v1, list):
+            ):
+                # A LINEAR key still carries spatial tangents, and AE follows
+                # the cubic they define - measured on AE 2026: a LINEAR/LINEAR
+                # segment from (50,50) to (350,50) with tangents
+                # (100,200)/(-100,200) passes through (200,200), not the
+                # straight line's (200,50). Only the EASE is linear.
+                return _interpolate_spatial_bezier(time, t0, t1, kf_left, kf_right)
+            ratio = (time - t0) / (t1 - t0)
             return [v0[d] + (v1[d] - v0[d]) * ratio for d in range(len(v0))]
-        if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
-            return float(v0) + (float(v1) - float(v0)) * ratio
-        return cast("list[float] | float | None", v0)
+        # Non-spatial: AE stores a LINEAR side as a diagonal handle - speed
+        # equal to the chord slope, influence 100/6 - so the ordinary bezier
+        # path below reproduces it exactly, including the case AE cares
+        # about: a LINEAR out side facing an EASED in side still gets that
+        # ease (measured on AE 2026: Opacity 0->100 over 2 s with a LINEAR
+        # out and a 90 % influence in side reaches 87.5 at t=1, where a lerp
+        # gives 50). Fall through rather than lerping.
 
     # Pre-compute auto-bezier tangents. Temporal ease needs no equivalent:
     # `Keyframe.in/out_temporal_ease` already derives the auto-bezier speeds
@@ -1164,8 +1174,11 @@ def interpolate_keyframes(
         _compute_auto_spatial_tangents(keyframes) if has_auto_spatial else None
     )
 
-    # BEZIER
-    if out_type == KeyframeInterpolationType.BEZIER:
+    # BEZIER (and the non-spatial LINEAR sides that fell through above)
+    if out_type in (
+        KeyframeInterpolationType.BEZIER,
+        KeyframeInterpolationType.LINEAR,
+    ):
         if is_spatial and isinstance(v0, list) and isinstance(v1, list):
             out_tan_ov: list[float] | None = None
             in_tan_ov: list[float] | None = None
@@ -1184,8 +1197,36 @@ def interpolate_keyframes(
 
         # Non-spatial: per-dimension 1D bezier
         if isinstance(v0, list) and isinstance(v1, list):
+            # One stored ease for a multi-dimensional value means AE drives
+            # the whole value with a single progress rather than a bezier per
+            # dimension - a colour, whose speed has no per-channel meaning.
+            # Measured on AE 2026: the progress follows the INFLUENCES alone
+            # (handles at `(out/100, 0)` and `(1 - in/100, 1)`), reproducing
+            # five sampled colour segments to 4e-4, and the stored speed does
+            # not shape it. Interpolating per channel instead drove the
+            # unchanged channels out of gamut.
+            # `min`, not both: AE stores exactly one ease per side on a
+            # colour, but py's own key insertion can leave one side holding a
+            # per-channel list, and a single ease on either side still means
+            # one progress.
+            if min(len(kf_left.out_temporal_ease), len(kf_right.in_temporal_ease)) == 1:
+                progress = _get_bezier_easing(
+                    kf_left.out_temporal_ease[0].influence / 100.0,
+                    0.0,
+                    1.0 - kf_right.in_temporal_ease[0].influence / 100.0,
+                    1.0,
+                ).get((time - t0) / (t1 - t0))
+                return [v0[d] + (v1[d] - v0[d]) * progress for d in range(len(v0))]
+
             result: list[float] = []
             for d in range(len(v0)):
+                if d in inert_dimensions:
+                    # AE leaves an inert dimension alone: a 2-D layer's Scale
+                    # Z reads exactly 100 across a segment whose live X and Y
+                    # bow. (AE also refuses to STORE any other Z there, so the
+                    # two keyframes always agree.)
+                    result.append(v0[d])
+                    continue
                 out_e = (
                     kf_left.out_temporal_ease[d]
                     if d < len(kf_left.out_temporal_ease)

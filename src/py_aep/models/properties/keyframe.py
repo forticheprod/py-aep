@@ -215,9 +215,13 @@ class Keyframe:
             (prop.keyframes[index], time)
             for index, time in roving_keyframe_times(prop.keyframes).items()
         ]
-        offset = prop._start_time_offset
         for keyframe, time in targets:
-            units = round((time - offset) * keyframe._timebase)
+            # `roving_keyframe_times` works in layer time, which is what the
+            # ticks count. Converting through composition time instead scaled
+            # the run by the stretch factor and pushed roving keys past their
+            # own anchors (a 200 % layer wrote the last key at 8.76 s for a
+            # run ending at 6 s, which re-sorted the property).
+            units = round(time * keyframe._timebase)
             if units == keyframe.time_units:
                 continue
             # A degenerate path (coincident keyframes) can map two keys onto
@@ -484,7 +488,7 @@ class Keyframe:
         values = [as_vector(kf) for kf in window]
         if any(value is None for value in values):
             return None
-        times = [kf.time for kf in window]
+        times = [kf._layer_time for kf in window]
         return auto_temporal_speeds(cast("list[list[float]]", values), times, index)
 
     @property
@@ -856,6 +860,19 @@ class Keyframe:
         return _timebase_units(self._time_scale, self._frame_rate)
 
     @property
+    def _layer_time(self) -> float:
+        """Time of the keyframe in the owning LAYER's own seconds.
+
+        The binary stores ticks against the layer's timebase, so this is
+        what the stored value means before any stretch is applied. Every
+        interpolation runs here rather than in composition time: After
+        Effects evaluates the temporal bezier in layer time, its ease
+        speeds are per layer second, and a negatively stretched layer's
+        keys only ascend on this axis (see [time][]).
+        """
+        return self._ldat_item.time_units / self._timebase
+
+    @property
     def time_units(self) -> int:
         """Raw keyframe time, as the binary stores it.
 
@@ -912,7 +929,7 @@ class Keyframe:
             ValueError: When another keyframe already sits at the target
                 time.
         """
-        seconds = self._ldat_item.time_units / self._timebase
+        seconds = self._layer_time
         prop = self._property
         if prop is not None:
             # Ticks are layer time; a stretched layer maps them onto the
@@ -943,8 +960,10 @@ def _segment_speed(
     """
     # Seconds rather than whole frames: two keyframes can sit inside the
     # same frame at different sub-frame times, and rounding them together
-    # would report a zero-length segment.
-    time_seconds = kf_b.time - kf_a.time
+    # would report a zero-length segment. LAYER seconds, because AE stores
+    # ease speeds per layer second - a 150 % layer whose keys are 3 comp
+    # seconds apart reports 25 %/s where the comp-time span gives 16.667.
+    time_seconds = kf_b._layer_time - kf_a._layer_time
     if time_seconds == 0:
         return [0.0]
     val_a = kf_a.value
