@@ -22,6 +22,7 @@ from py_aep.resolvers.interpolation import (
     _tangents_are_zero,
     interpolate_keyframes,
     path_parameter_at_progress,
+    roving_keyframe_times,
     segment_value_slope,
     split_segment_influences,
     split_spatial_path,
@@ -848,6 +849,47 @@ class Property(PropertyBase):
                     doc_array.insert(new, doc_array.pop(old))
                 td._propagate_cos()
         self._link_keyframes()
+
+    def _redistribute_roving_keyframes(self) -> None:
+        """Re-derive every roving keyframe's time from the spatial path.
+
+        Called after any mutation that can reshape a roving run: a value
+        edit (the path changed), a bounding keyframe's time moving (the
+        span changed), or a roving flag flip. Writes directly to the
+        backing time field to avoid recursion through `_set_time_units`.
+        """
+        if not self._has_motion_path:
+            return
+        # Orientation is spatial-valued but inert under roving: AE's
+        # menu accepts the command (26.3x87) yet the keyframe keeps its
+        # time and ease unchanged.
+        if self.match_name == "ADBE Orientation":
+            return
+        keyframes = self.keyframes
+        if len(keyframes) < 3:
+            return
+        targets = roving_keyframe_times(keyframes)
+        if not targets:
+            return
+        occupied = {kf.time_units for kf in keyframes}
+        for index, time in targets.items():
+            kf = keyframes[index]
+            # `roving_keyframe_times` works in layer time, which is what the
+            # ticks count, so there is no composition-time offset or stretch
+            # to undo here. Converting scaled the run by the stretch factor
+            # and displaced it by the layer's start time, pushing roving keys
+            # outside their own anchors (AE 2026: a run bounded at comp 2 and
+            # 8 on a 200 % layer put a roving key at -0.017).
+            units = round(time * kf._timebase)
+            if units == kf.time_units:
+                continue
+            # A degenerate path (coincident keyframes) can map two keys
+            # onto the same unit; leave those where they are.
+            if units in occupied:
+                continue
+            occupied.discard(kf.time_units)
+            occupied.add(units)
+            kf._ldat_item.time_units = units
 
     def _ensure_materialized(self) -> None:
         """Flip synthetic flags so backing chunks become visible to write_aep().
