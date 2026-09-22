@@ -594,8 +594,11 @@ class Project:
         return f"Project(file={self._file!r})"
 
     def __iter__(self) -> Iterator[Item]:
-        """Return an iterator over the project's items."""
-        return iter(self.items.values())
+        """Return an iterator over the project's items.
+
+        Iterates a snapshot so items can be removed while looping.
+        """
+        return iter(list(self.items.values()))
 
     def _ensure_used_in_linked(self) -> None:
         """Populate `AVItem._used_in` sets on first access.

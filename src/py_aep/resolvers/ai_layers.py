@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..color.icc import icc_profile_description
-from ..cos import CosParser, IndirectObject, IndirectReference
+from ..cos import (
+    CosParser,
+    IndirectObject,
+    IndirectReference,
+    decode_pdf_text_string,
+)
 
 if TYPE_CHECKING:
     import os
@@ -139,7 +144,7 @@ def read_ai_layer_ocgs(
                 layers.append(
                     AiLayer(
                         ref.object_number,
-                        str(ocg["Name"]),
+                        decode_pdf_text_string(ocg["Name"]),
                         ref.object_number not in hidden,
                     )
                 )

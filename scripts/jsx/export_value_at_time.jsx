@@ -17,31 +17,46 @@
 (function() {
     "use strict";
 
+    // Restrict the run to these base names (no extension). Leave empty to
+    // re-export every keyframe_*.aep / property_*.aep sample - which
+    // rewrites all the committed ground truth, so set it when adding one.
+    var ONLY = [];
+
+    function isSelected(baseName) {
+        if (ONLY.length === 0) return true;
+        for (var i = 0; i < ONLY.length; i++) {
+            if (ONLY[i] === baseName) return true;
+        }
+        return false;
+    }
+
     /**
      * Recursively find all animated properties in a property group.
      * @param {PropertyGroup} group - The property group to search.
      * @param {string} pathPrefix - Accumulated path for display.
      * @returns {Array<{path: string, matchName: string, prop: Property}>}
      */
-    function findAnimatedProperties(group, pathPrefix) {
+    function findAnimatedProperties(group, pathPrefix, indexPath) {
         var results = [];
         if (!group) return results;
 
         for (var i = 1; i <= group.numProperties; i++) {
             var p = group.property(i);
             var currentPath = pathPrefix ? (pathPrefix + " > " + p.name) : p.name;
+            var currentIndex = indexPath.concat([i]);
 
             if (p.propertyType === PropertyType.PROPERTY) {
                 if (p.numKeys > 0) {
                     results.push({
                         path: currentPath,
+                        indexPath: currentIndex,
                         matchName: p.matchName,
                         prop: p
                     });
                 }
             } else if (p.propertyType === PropertyType.INDEXED_GROUP ||
                        p.propertyType === PropertyType.NAMED_GROUP) {
-                var sub = findAnimatedProperties(p, currentPath);
+                var sub = findAnimatedProperties(p, currentPath, currentIndex);
                 for (var j = 0; j < sub.length; j++) {
                     results.push(sub[j]);
                 }
@@ -56,6 +71,14 @@
      * @returns {*} JSON-safe value (array or number).
      */
     function valueToArray(val) {
+        if (val instanceof Shape) {
+            return {
+                closed: val.closed,
+                vertices: val.vertices,
+                inTangents: val.inTangents,
+                outTangents: val.outTangents
+            };
+        }
         if (val instanceof Array) {
             var arr = [];
             for (var i = 0; i < val.length; i++) {
@@ -86,6 +109,8 @@
         var numFrames = Math.round(comp.duration / comp.frameDuration);
         var compData = {
             name: comp.name,
+            width: comp.width,
+            height: comp.height,
             duration: comp.duration,
             frameRate: comp.frameRate,
             frameDuration: comp.frameDuration,
@@ -95,12 +120,14 @@
 
         for (var li = 1; li <= comp.numLayers; li++) {
             var layer = comp.layer(li);
-            var animatedProps = findAnimatedProperties(layer, "");
+            var animatedProps = findAnimatedProperties(layer, "", []);
             if (animatedProps.length === 0) continue;
 
             var layerData = {
                 name: layer.name,
                 index: layer.index,
+                width: layer.width,
+                height: layer.height,
                 properties: []
             };
 
@@ -110,6 +137,7 @@
 
                 var propData = {
                     path: propInfo.path,
+                    indexPath: propInfo.indexPath,
                     matchName: propInfo.matchName,
                     numKeys: prop.numKeys,
                     isSpatial: false,
@@ -243,6 +271,9 @@
 
         var errors = 0;
         for (var fi = 0; fi < aepFiles.length; fi++) {
+            if (!isSelected(aepFiles[fi].name.replace(/\.aep$/i, ""))) {
+                continue;
+            }
             $.writeln("[" + (fi + 1) + "/" + aepFiles.length + "] " + aepFiles[fi].name);
             try {
                 processFile(aepFiles[fi], outputFolder);

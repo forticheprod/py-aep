@@ -296,6 +296,26 @@ class TestPropertyDimensions:
             if prop["matchName"] == "ADBE Scale":
                 assert prop["numKeys"] == 2
 
+    def test_scale_is_always_three_dimensional(self) -> None:
+        """Scale is 3-D even on a 2-D layer, so nothing pads it.
+
+        Probed on AE 2026: a 2-D layer's Scale reports three components
+        and `ThreeD` exactly like a 3-D layer's, and even
+        `setValue([50, 50])` stores `[50, 50, 100]`. Synthesis used to
+        carry a 2-to-3 padding branch for this; it never ran on any of
+        the 12721 Scale properties in samples/, and it is gone.
+        """
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "property_types.aep"), "property_scale"
+        )
+        scale = _find_property(layer, "ADBE Scale")
+        assert scale is not None
+        assert scale.dimensions == 3
+        assert scale.property_value_type == PropertyValueType.ThreeD
+        for keyframe in scale.keyframes:
+            assert isinstance(keyframe.value, list)
+            assert len(keyframe.value) == 3
+
 
 class TestOrientation:
     """Tests for orientation property parsing (OTST chunks).

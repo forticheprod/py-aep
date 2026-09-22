@@ -21,6 +21,28 @@ After Effects appears to process all spatial properties through an arc-length
 reparameterisation pipeline (likely a polyline or spline approximation) that
 does not degrade gracefully to exact linear interpolation for straight paths.
 
+## Property.value_at_time on paths and Orientation
+
+A mask path, a shape-layer path and an Orientation carry one temporal ease
+per side rather than one per component, and After Effects blends the whole
+value along that single eased progress - a path vertex by vertex, an
+Orientation as a quaternion slerp along the shortest arc. Two keyframes
+holding different vertex counts are handled the way After Effects handles
+them: the shorter path is resampled up to the longer one first, bisecting
+breadth-first (every segment in path order, then every half) and splitting
+each segment with de Casteljau so the outline does not move.
+
+All of it is verified per frame against AE 2026 - paths to 1e-4, which is
+the float32 the vertices are stored as, and Orientation to 1e-8 - with one
+representation caveat:
+
+- **Near a Y orientation of +/-90 degrees the reported X and Z are not
+  unique.** The two axes turn about the same line there, so only their sum
+  is determined and any split of it describes the same rotation. After
+  Effects is not self-consistent about which split it reports, switching
+  between them from one frame to the next; py_aep reports the continuous
+  one. The rotation itself is identical either way.
+
 ## Runtime-Only Attributes
 
 Many ExtendScript attributes reflect the live state of After Effects and cannot

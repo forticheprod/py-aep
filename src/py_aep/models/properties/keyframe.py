@@ -577,12 +577,11 @@ class Keyframe:
         shadow, so numeric / color / spatial keyframe values must be
         written through here to round-trip.
 
-        The write is skipped when the kf_data carries no value (markers)
-        or when the property keeps its real value in a parallel container
-        (orientation keeps a 1-component kf_data but a 3-component otda
-        value; the parser also assigns that 3-component value here at parse
-        time). For an ordinary numeric property a length mismatch is a
-        genuine dimension error from the caller and is raised.
+        The write is skipped when the kf_data carries no value slot at all -
+        markers, and the parallel (complex) kinds, whose real value lives in
+        a sibling container (an orientation item is a valueless ease item;
+        its angles are in `otky`). For an ordinary numeric property a length
+        mismatch is a genuine dimension error from the caller and is raised.
         """
         kf_data = self._ldat_item.kf_data
         if not hasattr(kf_data, "value"):
@@ -742,6 +741,21 @@ class Keyframe:
                     KeyframeEase(speed=0.0, influence=_DEFAULT_INFLUENCE)
                     for _ in raw_ease
                 ]
+            kind = self._property._parallel_kind() if self._property else None
+            if kind is not None and kind.linear_ease_speed is not None:
+                # A path and an Orientation have no scalar magnitude for a
+                # speed to measure, so AE reports a LINEAR side's speed as
+                # the unit chord slope rather than a rate. Measured on AE
+                # 2026 across three Orientation segments of different
+                # rotation and duration, and on a mask path: always 1.
+                # Reporting only - `_single_progress` forces the LINEAR
+                # control points and never reads the speed back.
+                return [
+                    KeyframeEase(
+                        speed=kind.linear_ease_speed, influence=_DEFAULT_INFLUENCE
+                    )
+                    for _ in raw_ease
+                ]
             speeds = _segment_speed(
                 self if direction == "out" else other,
                 other if direction == "out" else self,
@@ -786,8 +800,8 @@ class Keyframe:
     @spatial_auto_bezier.setter
     def spatial_auto_bezier(self, value: bool) -> None:
         # Only spatial kf_data carries this flag. Non-spatial kinds (e.g.
-        # Orientation, whose kf_data is KfMultiDimensional) have no slot for
-        # it; the getter tolerantly reads False there, but a write must not
+        # Orientation, whose kf_data is a valueless KfNoValue) have no slot
+        # for it; the getter tolerantly reads False there, but a write must not
         # silently vanish (ExtendScript's setSpatialAutoBezierAtKey errors).
         validate_bool(value)
         kf_data = self._ldat_item.kf_data

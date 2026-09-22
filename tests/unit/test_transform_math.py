@@ -10,8 +10,12 @@ import pytest
 
 from py_aep.resolvers.transform import (
     Mat4,
+    _rotate_x,
+    _rotate_y,
+    _rotate_z,
     _translation,
     build_local_matrix,
+    compose_orientation,
     decompose_transform,
 )
 
@@ -401,3 +405,39 @@ class TestEdgeCases:
             d_pos, anchor, d_scale, d_rz, rotate_x=d_rx, rotate_y=d_ry
         )
         _mat_approx(m, m2, tol=1e-4)
+
+
+class TestGimbalLock:
+    """Exactly Y = +/-90, where X and Z turn about the same line.
+
+    Only the combination of X and Z is recoverable there, so the split
+    is a convention. AE's convention was measured on AE 2026 by
+    reparenting a 3D child at orientation `[0, 0, g]` under a parent
+    rotated Y = +/-90 (which drives the composed orientation onto the
+    pole) and reading back what AE wrote: `[0, 270, g]` and `[0, 90, g]`
+    respectively, for `g` across a full turn. All of it on Z, nothing
+    on X.
+    """
+
+    @pytest.mark.parametrize("gamma", [30.0, 60.0, 90.0, 135.0, 210.0, 330.0])
+    @pytest.mark.parametrize(("parent_y", "composed_y"), [(90.0, 270.0), (-90.0, 90.0)])
+    def test_matches_after_effects(
+        self, gamma: float, parent_y: float, composed_y: float
+    ) -> None:
+        delta = _rotate_y(parent_y).inverse()
+        assert compose_orientation([0.0, 0.0, gamma], delta) == pytest.approx(
+            [0.0, composed_y, gamma], abs=1e-9
+        )
+
+    @pytest.mark.parametrize("gamma", [0.0, 45.0, 137.0, 300.0])
+    @pytest.mark.parametrize("parent_y", [90.0, -90.0])
+    def test_reconstructs_the_rotation(self, gamma: float, parent_y: float) -> None:
+        # The split is a convention, but it must still describe the SAME
+        # rotation - solving the pole relation for X instead did not, at
+        # Y = -90.
+        delta = _rotate_y(parent_y).inverse()
+        original = (_rotate_x(0.0) @ _rotate_y(0.0)) @ _rotate_z(gamma)
+        composed = delta @ original
+        angles = compose_orientation([0.0, 0.0, gamma], delta)
+        rebuilt = (_rotate_x(angles[0]) @ _rotate_y(angles[1])) @ _rotate_z(angles[2])
+        _mat_approx(composed, rebuilt, tol=1e-9)

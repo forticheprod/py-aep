@@ -75,8 +75,11 @@ class FolderItem(Item):
         self._viewers: list[Viewer] = []
 
     def __iter__(self) -> Iterator[Item]:
-        """Return an iterator over the folder items."""
-        return iter(self.items)
+        """Return an iterator over the folder items.
+
+        Iterates a snapshot so items can be removed while looping.
+        """
+        return iter(list(self.items))
 
     @property
     def compositions(self) -> list[CompItem]:

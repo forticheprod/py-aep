@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
     from ..binary.chunk import Chunk, ListChunk
     from ..models.items.composition import CompItem
+    from ..models.layers.layer import Layer
 
 
 logger = logging.getLogger(__name__)
@@ -340,7 +341,7 @@ def _parse_effect_properties(
     composition: CompItem,
     parent_property: PropertyGroup,
     group_match_name: str = "",
-    layer_size: tuple[float, float] | None = None,
+    layer: Layer | None = None,
 ) -> list[Property | PropertyGroup]:
     """Parse effect properties and merge with parameter definitions.
 
@@ -365,7 +366,10 @@ def _parse_effect_properties(
     # reachable once the effect is attached, so callers that already know
     # it pass its size; during the initial parse it is unknown and the
     # composition stands in (what py_aep has always used).
-    point_size = layer_size or (float(composition.width), float(composition.height))
+    point_size = (layer._pixel_size if layer is not None else None) or (
+        float(composition.width),
+        float(composition.height),
+    )
 
     # Skip index-0 internal parameters (not exposed in ExtendScript).
     property_runs = [
@@ -379,7 +383,7 @@ def _parse_effect_properties(
         child_depth=child_depth,
         effect_param_defs={},
         composition=composition,
-        layer_size=layer_size,
+        layer=layer,
     )
 
     # Index parsed children by match_name for O(1) lookup.
@@ -443,7 +447,7 @@ def parse_effect(
     effect_param_defs: dict[str, dict[str, dict[str, Any]]],
     composition: CompItem,
     tdmn: TdmnChunk,
-    layer_size: tuple[float, float] | None = None,
+    layer: Layer | None = None,
 ) -> PropertyGroup:
     """
     Parse an effect.
@@ -463,7 +467,7 @@ def parse_effect(
         effect_param_defs: Project-level effect parameter definitions, used as
             fallback when layer-level parT chunks are missing.
         composition: The parent composition.
-        layer_size: Pixel size of the layer the effect belongs to, used to
+        layer: The layer the effect belongs to, whose pixel size is used to
             denormalize point parameters. Optional: during the initial
             parse the layer does not exist yet and the composition stands
             in.
@@ -531,7 +535,7 @@ def parse_effect(
         composition=composition,
         parent_property=effect_group,
         group_match_name=group_match_name,
-        layer_size=layer_size,
+        layer=layer,
     )
     effect_group._properties = properties
     for child in properties:

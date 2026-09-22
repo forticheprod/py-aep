@@ -128,7 +128,7 @@ def parse_layer(
         child_depth=1,
         effect_param_defs=effect_param_defs,
         composition=composition,
-        layer_size=layer._pixel_size,
+        layer=layer,
     )
 
     layer._properties = properties

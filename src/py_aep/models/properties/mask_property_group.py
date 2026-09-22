@@ -227,7 +227,8 @@ class MaskPropertyGroup(PropertyGroup):
         self._ensure_materialized()
         self._ensure_children_synthesized()
         assert self._tdgp is not None
-        comp = self._containing_layer.containing_comp
+        layer = self._containing_layer
+        comp = layer.containing_comp
         tdmn, oms = build_default_mask_shape(
             comp._cdta.internal_timebase, roto_bezier=roto_bezier
         )
@@ -257,6 +258,7 @@ class MaskPropertyGroup(PropertyGroup):
             child_depth=self.property_depth + 1,
             effect_param_defs={},
             composition=comp,
+            layer=layer,
         )
         mask_path = parsed[0]
         mask_path._parent_property = self

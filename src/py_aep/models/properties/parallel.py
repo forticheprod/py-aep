@@ -68,6 +68,11 @@ class ParallelKind:
     """Whether `Property.value` stays aliased to the first keyframe's
     model after animating (matches the shape parser)."""
 
+    linear_ease_speed: float | None = None
+    """The speed AE reports for a LINEAR side of this kind, if its value
+    has no scalar magnitude for a speed to be a rate OF. `None` means the
+    speed is a real rate and gets measured from the segment."""
+
     can_materialize_wrapper: bool = False
     """Whether the wrapper subtree can be created from scratch when the
     binary stores nothing for the property."""
@@ -123,6 +128,7 @@ class _OrientationKind(ParallelKind):
     container_type = "otky"
     header_item_type = LdatItemType.orientation
     can_materialize_wrapper = True
+    linear_ease_speed = 1.0
 
     def held_value(self, prop: Property, time: float) -> Any:
         # Orientation values interpolate numerically.
@@ -236,6 +242,7 @@ class _ShapeKind(ParallelKind):
     container_type = "omks"
     header_item_type = LdatItemType.no_value
     aliases_static_value = True
+    linear_ease_speed = 1.0
 
     def build_value_chunk(self, prop: Property, value: Any) -> Chunk:
         if not isinstance(value, Shape):
@@ -246,14 +253,10 @@ class _ShapeKind(ParallelKind):
         # Deferred import: models <-> parsers is a cycle.
         from ...parsers.specialized_properties import _parse_shape_shap
 
-        comp = prop._containing_layer.containing_comp
         is_mask = prop.match_name == "ADBE Mask Shape"
-        shape = _parse_shape_shap(cast("ListChunk", value_chunk), comp, is_mask)
-        if is_mask:
-            # Mask space is LAYER space: denormalize by the layer source
-            # size, not the comp (psd_vector_mask_cropped fixture).
-            shape._layer = prop._containing_layer
-        return shape
+        return _parse_shape_shap(
+            cast("ListChunk", value_chunk), prop._containing_layer, is_mask
+        )
 
 
 class _GradientKind(ParallelKind):

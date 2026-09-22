@@ -282,7 +282,7 @@ class Layer(PropertyGroup):
             child_depth=1,
             effect_param_defs=effect_param_defs or {},
             composition=containing_comp,
-            layer_size=layer._pixel_size,
+            layer=layer,
         )
         layer._properties = props
         for child in props:

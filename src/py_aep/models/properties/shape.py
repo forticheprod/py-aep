@@ -16,7 +16,6 @@ from ..validators import (
 
 if TYPE_CHECKING:
     from ...binary.misc_chunks import FeatherPointItem
-    from ..items.composition import CompItem
     from ..layers.av_layer import AVLayer
     from ..layers.layer import Layer
 
@@ -168,7 +167,6 @@ class Shape:
         self._shph: ShphChunk | None = ShphChunk()
         self._shph.open = not closed
         self._is_mask = False
-        self._composition: CompItem | None = None
         self._layer: Layer | None = None
         self._closed_fallback = closed
         self.feather_points = feather_points if feather_points is not None else []
@@ -226,7 +224,7 @@ class Shape:
         _shph: ShphChunk,
         _points: list[ShapePoint],
         _is_mask: bool = False,
-        _composition: CompItem | None = None,
+        _layer: Layer | None = None,
         feather_points: list[FeatherPoint] | None = None,
     ) -> Shape:
         """Wrap parsed shape chunks as a `Shape` view."""
@@ -234,8 +232,7 @@ class Shape:
         obj._shph = _shph
         obj._points = _points
         obj._is_mask = _is_mask
-        obj._composition = _composition
-        obj._layer = None
+        obj._layer = _layer
         obj.feather_points = feather_points if feather_points is not None else []
         return obj
 
@@ -243,17 +240,15 @@ class Shape:
     def _comp_size(self) -> tuple[float, float] | None:
         """Mask-shape denormalization size, read lazily.
 
-        Mask space is LAYER space, so the owning layer's source size wins
-        (pinned by the psd_vector_mask_cropped fixture: a layer smaller
-        than its comp); the composition is the parse-context fallback for
-        shapes not yet bound to a layer.
+        Mask space is LAYER space, so this is the owning layer's source
+        size (pinned by the psd_vector_mask_cropped fixture: a 56 px layer
+        in a 64 px comp). Read on demand rather than snapshotted at parse
+        time, so it follows the layer if its source is later replaced.
         """
-        if self._layer is not None:
-            layer = cast("AVLayer", self._layer)
-            return (float(layer.width), float(layer.height))
-        if self._composition is not None:
-            return (float(self._composition.width), float(self._composition.height))
-        return None
+        if self._layer is None:
+            return None
+        layer = cast("AVLayer", self._layer)
+        return (float(layer.width), float(layer.height))
 
     def _denormalize_point(self, pt: ShapePoint) -> list[float]:
         """Convert a normalized [0,1] shape point to absolute coordinates."""
@@ -285,8 +280,9 @@ class Shape:
         result: list[list[float]] = []
         for i in range(0, len(self._points), 3):
             result.append(self._denormalize_point(self._points[i]))
-        if self._is_mask and self._comp_size is not None:
-            w, h = self._comp_size
+        mask_size = self._comp_size if self._is_mask else None
+        if mask_size is not None:
+            w, h = mask_size
             result = [[x * w, y * h] for x, y in result]
         return result
 
@@ -299,8 +295,9 @@ class Shape:
         for pt in value:
             validate_vector2(pt)
         coords = value
-        if self._is_mask and self._comp_size is not None:
-            w, h = self._comp_size
+        mask_size = self._comp_size if self._is_mask else None
+        if mask_size is not None:
+            w, h = mask_size
             coords = [[x / w, y / h] for x, y in coords]
         for j, (x, y) in enumerate(coords):
             i = j * 3
@@ -329,8 +326,9 @@ class Shape:
             in_idx = (i - 1) % len(self._points)
             t = self._denormalize_point(self._points[in_idx])
             result.append([t[0] - v[0], t[1] - v[1]])
-        if self._is_mask and self._comp_size is not None:
-            w, h = self._comp_size
+        mask_size = self._comp_size if self._is_mask else None
+        if mask_size is not None:
+            w, h = mask_size
             result = [[x * w, y * h] for x, y in result]
         return result
 
@@ -343,8 +341,9 @@ class Shape:
         for pt in value:
             validate_vector2(pt)
         tangents = value
-        if self._is_mask and self._comp_size is not None:
-            w, h = self._comp_size
+        mask_size = self._comp_size if self._is_mask else None
+        if mask_size is not None:
+            w, h = mask_size
             tangents = [[x / w, y / h] for x, y in tangents]
         for j, (tx, ty) in enumerate(tangents):
             i = j * 3
@@ -375,8 +374,9 @@ class Shape:
             v = self._denormalize_point(self._points[i])
             t = self._denormalize_point(self._points[i + 1])
             result.append([t[0] - v[0], t[1] - v[1]])
-        if self._is_mask and self._comp_size is not None:
-            w, h = self._comp_size
+        mask_size = self._comp_size if self._is_mask else None
+        if mask_size is not None:
+            w, h = mask_size
             result = [[x * w, y * h] for x, y in result]
         return result
 
@@ -389,8 +389,9 @@ class Shape:
         for pt in value:
             validate_vector2(pt)
         tangents = value
-        if self._is_mask and self._comp_size is not None:
-            w, h = self._comp_size
+        mask_size = self._comp_size if self._is_mask else None
+        if mask_size is not None:
+            w, h = mask_size
             tangents = [[x / w, y / h] for x, y in tangents]
         for j, (tx, ty) in enumerate(tangents):
             i = j * 3

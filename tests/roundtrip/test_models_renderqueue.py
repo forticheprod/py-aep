@@ -897,6 +897,42 @@ class TestRoutChunkIntegrity:
         _assert_rout_consistent(parse_aep(out))
 
 
+class TestIterationWhileRemoving:
+    """Issue #230: emptying a collection by looping over it must work."""
+
+    def test_removing_every_rq_item_while_iterating(self, tmp_path: Path) -> None:
+        app = parse_aep(SAMPLES_DIR / "2_rqitems.aep")
+        rq = app.project.render_queue
+        assert len(rq.items) == 2
+
+        for rq_item in rq:
+            rq_item.remove()
+
+        assert list(rq) == []
+        assert rq.num_items == 0
+
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        assert parse_aep(out).project.render_queue.num_items == 0
+
+    def test_removing_every_layer_while_iterating(self) -> None:
+        layer_sample = (
+            Path(__file__).parent.parent.parent
+            / "samples"
+            / "models"
+            / "layer"
+            / "parametric_meshes.aep"
+        )
+        comp = parse_aep(layer_sample).project.compositions[0]
+        assert len(comp.layers) > 1
+
+        for layer in comp:
+            layer.remove()
+
+        assert list(comp) == []
+        assert len(comp.layers) == 0
+
+
 class TestRQItemRemove:
     """Tests for RenderQueueItem.remove()."""
 
