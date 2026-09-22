@@ -373,8 +373,11 @@ class RenderQueueItem:
         return om
 
     def __iter__(self) -> Iterator[OutputModule]:
-        """Allow iteration over Output Modules."""
-        return iter(self.output_modules)
+        """Allow iteration over Output Modules.
+
+        Iterates a snapshot so modules can be removed while looping.
+        """
+        return iter(list(self.output_modules))
 
     def __repr__(self) -> str:
         return (

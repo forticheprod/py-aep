@@ -24,7 +24,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..ae_version import get_ae_version_major
-from ..enums import PropertyValueType
 from ..models.layers.av_layer import AVLayer
 from ..models.layers.camera_layer import CameraLayer
 from ..models.layers.light_layer import LightLayer
@@ -183,20 +182,14 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
     for prop in transform.properties:
         if isinstance(prop, Property):
             existing[prop.match_name] = prop
-            # Pad 2D Scale to 3D with Z=100 (ExtendScript always reports 3D)
-            if (
-                prop.match_name == "ADBE Scale"
-                and isinstance(prop._value, list)
-                and len(prop._value) == 2
-            ):
-                prop._value = prop._value + [1.0]
-                # Avoid mutating chunk fields
-                prop.__dict__["dimensions"] = 3
-                prop.__dict__["property_value_type"] = PropertyValueType.ThreeD
-                for kf in prop.keyframes:
-                    raw = kf._extract_raw_value()
-                    if isinstance(raw, list) and len(raw) == 2:
-                        kf._value = raw + [1.0]
+            # A 2-component Scale padded to 3 used to be handled here. AE
+            # never writes one: probed on AE 2026, Scale reads back 3
+            # components and ThreeD on a 2D layer as much as a 3D one, and
+            # even `setValue([50, 50])` stores [50, 50, 100]. Every one of
+            # the 12721 Scale properties in samples/ carries dimensions=3
+            # from its own tdb4, so the padding never ran. (Half of it
+            # could not have worked anyway: `property_value_type` is a
+            # plain property, so the `__dict__` write was discarded.)
             if prop.default_value is not None:
                 continue  # already set (e.g. by effect param defs)
             default = _TRANSFORM_FIXED_DEFAULTS.get(prop.match_name)

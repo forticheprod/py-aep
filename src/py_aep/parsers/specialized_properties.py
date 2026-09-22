@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..binary.property_chunks import TdmnChunk
     from ..binary.scalar_chunks import Utf8Chunk
     from ..models.items.composition import CompItem
+    from ..models.layers.layer import Layer
     from ..models.properties.property import Property
 
 
@@ -85,9 +86,8 @@ def parse_orientation(
 
     # Animated orientation keyframes store their 3-component values in
     # otky > otda chunks (one otda per keyframe), a sibling of tdbs inside
-    # otst.  The standard _parse_keyframes() reads from tdbs which only has 1D
-    # orientation data, so we override each keyframe's value with the full 3D
-    # otda data.
+    # otst.  The tdbs items carry ease only and no value at all, so each
+    # keyframe's value comes from the otda data instead.
     try:
         otky_chunk = find_by_list_type(chunks=otst_chunk.chunks, list_type="otky")
         prop._kf_value_container = otky_chunk
@@ -106,7 +106,7 @@ def parse_orientation(
 
 def _parse_shape_shap(
     shap_chunk: ListChunk,
-    composition: CompItem,
+    layer: Layer | None,
     is_mask_shape: bool,
 ) -> Shape:
     """Parse a single shape path from a `shap` LIST chunk.
@@ -122,18 +122,25 @@ def _parse_shape_shap(
     `vertex, out_tangent, in_tangent_of_next_vertex`.
 
     Mask shapes use a normalized `[0, 1]` bounding box, so the
-    resulting coordinates must be scaled by the composition size to get
-    pixel values.  Shape-layer paths already have a pixel bounding box.
+    resulting coordinates must be scaled by the owning LAYER's source
+    size to get pixel values.  Shape-layer paths already have a pixel
+    bounding box.
 
     Args:
         shap_chunk: A `shap` LIST chunk.
-        composition: The parent composition, used for denormalizing
-            mask shapes.
+        layer: The owning layer, which a mask shape denormalizes against.
+            Only optional because a shape-layer path does not need one.
         is_mask_shape: Whether this shape belongs to a mask property.
 
     Returns:
         A [Shape][] with absolute coordinates and tangent offsets.
+
+    Raises:
+        ValueError: If a mask shape is parsed without its layer, which
+            would silently yield raw normalized coordinates.
     """
+    if is_mask_shape and layer is None:
+        raise ValueError("a mask shape must be parsed with its owning layer")
     shph_chunk = cast(
         "ShphChunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="shph")
     )
@@ -162,7 +169,7 @@ def _parse_shape_shap(
         _shph=shph_chunk,
         _points=points,
         _is_mask=is_mask_shape,
-        _composition=composition if is_mask_shape else None,
+        _layer=layer if is_mask_shape else None,
         feather_points=feather_points,
     )
 
@@ -173,6 +180,7 @@ def parse_shape(
     property_depth: int,
     composition: CompItem,
     tdmn: TdmnChunk,
+    layer: Layer | None = None,
 ) -> Property:
     """Parse a shape/mask-path property from an `om-s` LIST chunk.
 
@@ -186,6 +194,8 @@ def parse_shape(
         match_name: The property match name.
         property_depth: Nesting depth of this property.
         composition: The parent composition.
+        layer: The owning layer, required for a mask path (which
+            denormalizes against the layer, not the composition).
 
     Returns:
         A [Property][] with `property_value_type` set to
@@ -217,7 +227,7 @@ def parse_shape(
         for shap_chunk in filter_by_list_type(
             chunks=omks_chunk.chunks, list_type="shap"
         ):
-            shape_values.append(_parse_shape_shap(shap_chunk, composition, is_mask))
+            shape_values.append(_parse_shape_shap(shap_chunk, layer, is_mask))
     except ChunkNotFoundError:
         logger.debug("Could not parse omks shape data for %s", match_name)
         return prop

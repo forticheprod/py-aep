@@ -10,6 +10,7 @@ from .cos import (
     run_spans,
 )
 from .descriptors import CosField
+from .pdfdoc import decode_pdf_text_string
 from .serializer import serialize
 from .text import POINT_TEXT_COS_TEMPLATE, get_cos_template
 
@@ -22,6 +23,7 @@ __all__ = [
     "POINT_TEXT_COS_TEMPLATE",
     "Stream",
     "cos_get",
+    "decode_pdf_text_string",
     "get_cos_template",
     "run_spans",
     "serialize",

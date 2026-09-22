@@ -556,7 +556,11 @@ def _euler_xyz(
     # Clamp to [-1, 1] for asin safety.
     sin_beta = max(-1.0, min(1.0, r02))
     beta = math.asin(sin_beta)
-    cos_beta = math.cos(beta)
+    # cos(beta) straight off the matrix. Going through `cos(asin(r02))`
+    # loses most of its digits as r02 approaches 1, which matters because
+    # an orientation slerping towards a 90-degree Y passes near the pole
+    # on almost every frame without ever reaching it.
+    cos_beta = math.hypot(r00, r01)
 
     if abs(cos_beta) > _EPSILON:
         # Normal case: no gimbal lock.
@@ -564,9 +568,15 @@ def _euler_xyz(
         ry_deg = beta * _RAD2DEG
         rz_deg = math.atan2(-r01, r00) * _RAD2DEG
     else:
-        # Gimbal lock: beta = +/-90 deg. Set rz=0 and solve for rx.
-        rz_deg = 0.0
-        rx_deg = math.atan2(r10, r11) * _RAD2DEG
+        # Gimbal lock: beta = +/-90 deg, where X and Z turn about the same
+        # line and only their combination is recoverable. AE puts all of it
+        # on Z and leaves X at zero - measured on AE 2026 by reparenting a
+        # 3D child at orientation [0, 0, g] under a parent rotated Y = +/-90,
+        # which AE writes back as [0, 270, g] / [0, 90, g] for g across a
+        # full turn. Solving the same relation for X instead (the previous
+        # behavior) does not even reconstruct the rotation at beta = -90.
+        rx_deg = 0.0
+        rz_deg = math.atan2(r10, r11) * _RAD2DEG
         ry_deg = beta * _RAD2DEG
     return rx_deg, ry_deg, rz_deg
 

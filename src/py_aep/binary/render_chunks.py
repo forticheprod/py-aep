@@ -540,7 +540,7 @@ class OutputModuleSettingsItem(FmtItem):
     _reserved_24: bytes = bytes_field(2, repr=False)
     output_audio: int = u1_field(default=1)
     _reserved_26: bytes = bytes_field(4, repr=False)
-    include_project_link: bool = bool_field()
+    _include_project_link: int = u1_field(repr=False)
     post_render_action: int = u4_field()
     post_render_use_comp: int = u4_field()
     _reserved_30: bytes = bytes_field(16, default=b"\xff" * 16, repr=False)
@@ -556,6 +556,7 @@ class OutputModuleSettingsItem(FmtItem):
     use_region_of_interest = BitField("_flag_byte_07", 4)
     use_comp_frame_number = BitField("_flag_byte_07", 3)
     crop = BitField("_flag_byte_22", 0)
+    include_project_link = BitField("_include_project_link", 0)
 
     _TEMPLATE_FIELDS: ClassVar[tuple[str, ...]] = (
         "_flag_byte_07",
@@ -576,7 +577,7 @@ class OutputModuleSettingsItem(FmtItem):
         "_reserved_24",
         "output_audio",
         "_reserved_26",
-        "include_project_link",
+        "_include_project_link",
         "post_render_action",
         "_reserved_30",
         "output_profile_id",

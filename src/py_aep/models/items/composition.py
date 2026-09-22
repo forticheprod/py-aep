@@ -859,8 +859,11 @@ class CompItem(AVItem):
         self._view_data: list[Chunk] = []
 
     def __iter__(self) -> Iterator[Layer]:
-        """Return an iterator over the composition's layers."""
-        return iter(self.layers)
+        """Return an iterator over the composition's layers.
+
+        Iterates a snapshot so layers can be removed while looping.
+        """
+        return iter(list(self.layers))
 
     def remove(self) -> None:
         """Remove this composition, including any render-queue items targeting it."""

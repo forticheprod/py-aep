@@ -348,10 +348,10 @@ def build_ldat_item(kf_data: Any, *, spatial: bool) -> LdatItem:
 def set_orientation_item_values(item: LdatItem, values: list[float]) -> None:
     """Mirror orientation angles into a keyframe item's trailing bytes.
 
-    AE stores a copy of the otda angles after the 1D ease data of each
-    orientation keyframe item: 8 zero bytes + 3 little-endian doubles.
+    AE stores a copy of the otda angles after the ease data of each
+    orientation keyframe item: 3 little-endian doubles.
     """
-    item._trailing = b"\x00" * 8 + struct.pack("<3d", *values[:3])
+    item._trailing = struct.pack("<3d", *values[:3])
 
 
 def build_parallel_ldat_item(
@@ -366,17 +366,11 @@ def build_parallel_ldat_item(
     padding. Layouts reverse-engineered from AE 2026 output.
     """
     item_size = ITEM_SIZE_BY_TYPE[item_type]
-    if item_type == LdatItemType.orientation:
-        kf_data: Any = KfMultiDimensional(
-            value=[0.0],
-            in_speed=[0.0],
-            in_influence=[0.0],
-            out_speed=[0.0],
-            out_influence=[0.0],
-        )
-        interp, flags = 1, 1
-    elif item_type == LdatItemType.no_value:  # shape, gradient
-        kf_data = KfNoValue()
+    # Orientation shares the valueless 48-byte ease prefix with shape and
+    # gradient keys; only the trailing padding (which holds a copy of the
+    # angles) differs.
+    if item_type in (LdatItemType.orientation, LdatItemType.no_value):
+        kf_data: Any = KfNoValue()
         interp, flags = 1, 1
     elif item_type == LdatItemType.marker:  # marker, text (HOLD - no interpolation)
         kf_data = b"\x00" * 8

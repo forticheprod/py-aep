@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from py_aep.cli.validate import (
     ValidationResult,
+    _get_field_names,
+    _get_property_names,
     compare_marker,
     compare_values,
     get_enum_value,
     main,
 )
 from py_aep.enums import BlendingMode
+from py_aep.models.properties.keyframe_ease import KeyframeEase
+from py_aep.models.properties.property import Property
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples"
 
@@ -117,6 +125,52 @@ class TestCompareMarker:
         parsed_marker = {"comment": "actual"}
         compare_marker(expected_marker, parsed_marker, "Marker[0]", 30.0, result)
         assert len(result) >= 1
+
+
+class TestTraversalOrder:
+    """`to_dict` must walk attributes in a fixed order.
+
+    Reading a model attribute can realize lazily-parsed children, and
+    `to_dict` memoizes the first result it reaches a shared object by, so
+    an unordered walk let `PYTHONHASHSEED` change the report: two runs
+    over the same project disagreed by 16 differences on whether an
+    effect had all of its parameters.
+    """
+
+    def test_field_names_are_ordered(self) -> None:
+        names = _get_field_names(KeyframeEase(speed=0.0, influence=50.0))
+        assert names is not None
+        assert isinstance(names, tuple)
+        assert list(names) == sorted(names)
+
+    def test_property_names_are_ordered(self) -> None:
+        names = _get_property_names(Property)
+        assert isinstance(names, tuple)
+        assert list(names) == sorted(names)
+
+    def test_repeated_validation_is_identical(self) -> None:
+        """The reported differences must not vary between runs."""
+        aep = SAMPLES_DIR / "bugs" / "29.97_fps_time_scale_3.125.aep"
+        json_path = aep.with_suffix(".json")
+        if not aep.exists() or not json_path.exists():
+            pytest.skip("sample not available")
+        # Separate interpreters, so each gets its own hash seed.
+        script = (
+            "from pathlib import Path;"
+            "from py_aep.cli.validate import validate_aep;"
+            f"r = validate_aep(Path(r'{aep}'), Path(r'{json_path}'));"
+            "print(len(r.differences))"
+        )
+        counts = {
+            subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            for _ in range(3)
+        }
+        assert len(counts) == 1, f"validate_aep is not deterministic: {counts}"
 
 
 class TestMain:

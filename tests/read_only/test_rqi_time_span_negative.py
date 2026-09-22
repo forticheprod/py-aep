@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from helpers import parse_project
+from helpers import parse_project, parse_project_fresh
 
 SAMPLE = (
     Path(__file__).parent.parent.parent
@@ -34,3 +34,12 @@ class TestNegativeTimeSpanDecode:
         rqi = project.render_queue.items[1]
         assert rqi.time_span_start == 110.0
         assert rqi.time_span_duration == -100.0
+
+    def test_roundtrip_stays_byte_identical(self, tmp_path: Path) -> None:
+        out = tmp_path / "time_span_negative.aep"
+        out2 = tmp_path / "time_span_negative_2.aep"
+
+        parse_project_fresh(SAMPLE).save(out)
+        parse_project_fresh(out).save(out2)
+
+        assert out.read_bytes() == out2.read_bytes()

@@ -545,6 +545,7 @@ class GpuAccelType(IntEnum):
 _GPU_UUID_TO_ENUM: dict[str, GpuAccelType] = {
     "7ee0ab59-822d-44cc-ac10-16279d041016": GpuAccelType.CUDA,
     "f33089e2-1ede-47c1-8a9e-b232bb1cc1a4": GpuAccelType.SOFTWARE,
+    "6ed1497e-17ad-4a5b-846f-52bb81e20104": GpuAccelType.METAL,
 }
 _GPU_ENUM_TO_UUID: dict[GpuAccelType, str] = {
     v: k for k, v in _GPU_UUID_TO_ENUM.items()

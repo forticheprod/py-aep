@@ -77,7 +77,6 @@ _NUM_VALUE: dict[int, int] = {
     LdatItemType.two_d: 2,
     LdatItemType.two_d_spatial: 2,
     LdatItemType.one_d: 1,
-    LdatItemType.orientation: 1,
 }
 
 
@@ -373,7 +372,15 @@ class LdatItem:
         if item_type == LdatItemType.color:
             kf_data = KfColor.frombytes(payload)
             trailing = payload[144:]
-        elif item_type == LdatItemType.no_value:
+        elif item_type in (LdatItemType.no_value, LdatItemType.orientation):
+            # An orientation keyframe keeps its angles in the sibling
+            # `otky` container, so its item carries the same valueless
+            # 48-byte ease prefix as a shape or gradient key - measured on
+            # AE 2026: the nine doubles read 0, out-segment duration, in
+            # speed, in influence, out speed, out influence, then padding.
+            # Reading it as a 1-D value item shifted every ease field by
+            # one slot, so `in/out_temporal_ease` reported the duration as
+            # a speed and lost the influence entirely.
             kf_data = KfNoValue.frombytes(payload)
             trailing = payload[48:]
         elif item_type in (
@@ -386,7 +393,7 @@ class LdatItem:
             expected = 8 + 5 * 8 + 3 * num_value * 8
             trailing = payload[expected:]
         elif num_value is not None:
-            # three_d, two_d, one_d, orientation
+            # three_d, two_d, one_d
             kf_data = KfMultiDimensional.frombytes(payload, num_value=num_value)
             expected = 5 * num_value * 8
             trailing = payload[expected:]

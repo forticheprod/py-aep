@@ -20,13 +20,18 @@ animations exported from After Effects:
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, cast
+from collections import deque
+from typing import TYPE_CHECKING, Tuple, cast
 
 from py_aep.enums import KeyframeInterpolationType
+from py_aep.models.properties.parallel import ORIENTATION_KIND, SHAPE_KIND
+from py_aep.models.properties.shape import Shape
+from py_aep.resolvers.transform import _euler_xyz
 
 if TYPE_CHECKING:
     from ..models.properties.keyframe import Keyframe
     from ..models.properties.keyframe_ease import KeyframeEase
+    from ..models.properties.parallel import ParallelKind
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0  # 16.6667 %
 
@@ -1050,12 +1055,334 @@ def _interpolate_roving_run(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Single-progress value kinds: paths and Orientation
+# ---------------------------------------------------------------------------
+# A mask / shape path and an Orientation keyframe carry ONE ease per side
+# (their value has no per-component speed to ease against), and AE drives
+# the whole value along that single progress. Measured on AE 2026 across
+# LINEAR, eased, asymmetric and mixed LINEAR/BEZIER key pairs: a path and
+# an Orientation with the same ease yield the same progress curve, and
+# every ease AE writes for these kinds stores a speed of 0.
+
+
+def _single_progress(
+    kf_left: Keyframe,
+    kf_right: Keyframe,
+    time: float,
+    t0: float,
+    t1: float,
+) -> float:
+    """The eased 0-1 parameter AE drives a path or Orientation segment with.
+
+    These values have no scalar magnitude for a speed to be a rate OF, so
+    a stored ease speed is dimensionless: 1 means the chord slope, which
+    is exactly what AE reports for a LINEAR side. Unit time against unit
+    arc length says exactly that, and leaves the handle at
+    `speed * influence` - measured on AE 2026, where normalizing against
+    the rotation arc instead is 33 degrees out on a 40 deg/s Orientation
+    ease.
+
+    Args:
+        kf_left: The keyframe starting the segment.
+        kf_right: The keyframe ending it.
+        time: Evaluation time, in the owning layer's seconds.
+        t0: `kf_left`'s layer time.
+        t1: `kf_right`'s layer time.
+    """
+    # Bound to locals: `in/out_temporal_ease` re-derives its list on every
+    # read, and this runs once per interpolated frame.
+    out_ease = kf_left.out_temporal_ease
+    in_ease = kf_right.in_temporal_ease
+    easing = _spatial_progress_easing(
+        1.0,
+        1.0,
+        out_ease[0] if out_ease else None,
+        in_ease[0] if in_ease else None,
+        out_linear=kf_left.out_interpolation_type == KeyframeInterpolationType.LINEAR,
+        in_linear=kf_right.in_interpolation_type == KeyframeInterpolationType.LINEAR,
+    )
+    x = (time - t0) / (t1 - t0)
+    return easing.get(x) if easing is not None else x
+
+
+def _axis_quaternion(axis: int, degrees: float) -> tuple[float, float, float, float]:
+    """A rotation of `degrees` about axis 0 (X), 1 (Y) or 2 (Z)."""
+    half = math.radians(degrees) / 2.0
+    parts = [0.0, 0.0, 0.0, math.cos(half)]
+    parts[axis] = math.sin(half)
+    return (parts[0], parts[1], parts[2], parts[3])
+
+
+def _quaternion_multiply(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> tuple[float, float, float, float]:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def euler_to_quaternion(angles: list[float]) -> tuple[float, float, float, float]:
+    """Orientation angles in degrees as a quaternion.
+
+    Uses AE's own composition order, `Rx . Ry . Rz` - the same one
+    `build_local_matrix` applies an Orientation with.
+    """
+    q = (0.0, 0.0, 0.0, 1.0)
+    for axis, angle in enumerate(angles[:3]):
+        q = _quaternion_multiply(q, _axis_quaternion(axis, angle))
+    return q
+
+
+def quaternion_to_euler(q: tuple[float, float, float, float]) -> list[float]:
+    """The `Rx . Ry . Rz` angles of `q`, in degrees wrapped into [0, 360).
+
+    AE reports a rotation that runs backwards past zero as its positive
+    equivalent - a Z orientation eased from 10 to 350 reads 357.5, not
+    -2.5 (AE 2026).
+
+    The extraction itself is `_euler_xyz`, which this feeds the quaternion's
+    rotation matrix; only the elements it needs are built.
+    """
+    x, y, z, w = q
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if norm > 0:
+        x, y, z, w = x / norm, y / norm, z / norm, w / norm
+    return [
+        angle % 360.0
+        for angle in _euler_xyz(
+            1.0 - 2.0 * (y * y + z * z),  # m00
+            2.0 * (x * y - z * w),  # m01
+            2.0 * (x * z + y * w),  # m02
+            2.0 * (x * y + z * w),  # m10
+            1.0 - 2.0 * (x * x + z * z),  # m11
+            2.0 * (y * z - x * w),  # m12
+            1.0 - 2.0 * (x * x + y * y),  # m22
+        )
+    ]
+
+
+def slerp_orientation(
+    start: list[float], end: list[float], progress: float
+) -> list[float]:
+    """Interpolate two Orientation values the way After Effects does.
+
+    AE turns both ends into quaternions, takes the shortest arc between
+    them and reads it at `progress` - NOT a per-axis blend of the angles.
+    Verified against AE 2026 to 1e-13 degrees: `[0,0,0]` to `[45,90,30]`
+    reads `[22.0832, 42.8194, 22.0832]` at the midpoint, where a per-axis
+    blend would give `[22.5, 45, 15]`.
+    """
+    q0 = euler_to_quaternion(start)
+    q1 = euler_to_quaternion(end)
+    dot = sum(a * b for a, b in zip(q0, q1))
+    if dot < 0.0:
+        # Opposite hemisphere: negate so the arc taken is the short one.
+        q1 = (-q1[0], -q1[1], -q1[2], -q1[3])
+        dot = -dot
+    dot = min(1.0, max(-1.0, dot))
+    if dot > 0.9995:
+        # Nearly parallel: sin(theta) underflows, and a normalized linear
+        # blend is within float noise of the arc.
+        blend = tuple(a + (b - a) * progress for a, b in zip(q0, q1))
+        return quaternion_to_euler(cast("tuple[float, float, float, float]", blend))
+    theta = math.acos(dot)
+    sin_theta = math.sin(theta)
+    s0 = math.sin((1.0 - progress) * theta) / sin_theta
+    s1 = math.sin(progress * theta) / sin_theta
+    return quaternion_to_euler(
+        cast(
+            "tuple[float, float, float, float]",
+            tuple(a * s0 + b * s1 for a, b in zip(q0, q1)),
+        )
+    )
+
+
+def _lerp_points(
+    a: list[list[float]], b: list[list[float]], progress: float
+) -> list[list[float]]:
+    return [
+        [p[0] + (q[0] - p[0]) * progress, p[1] + (q[1] - p[1]) * progress]
+        for p, q in zip(a, b)
+    ]
+
+
+def _lerp_point(
+    a: tuple[float, float], b: tuple[float, float], t: float
+) -> tuple[float, float]:
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+
+# A cubic bezier segment: start, its out handle, the end's in handle, end.
+_Cubic = Tuple[
+    Tuple[float, float],
+    Tuple[float, float],
+    Tuple[float, float],
+    Tuple[float, float],
+]
+
+
+def _split_cubic(cubic: _Cubic, t: float) -> tuple[_Cubic, _Cubic]:
+    """De Casteljau: the two halves of `cubic` either side of `t`.
+
+    `split_spatial_path` above is the same subdivision, but it speaks the
+    TANGENT representation and returns one side. Resampling chains splits
+    and wants both halves as control points, which is what this returns -
+    marshalling between the two costs more than the 6 lerps do.
+    """
+    p0, p1, p2, p3 = cubic
+    a = _lerp_point(p0, p1, t)
+    b = _lerp_point(p1, p2, t)
+    c = _lerp_point(p2, p3, t)
+    d = _lerp_point(a, b, t)
+    e = _lerp_point(b, c, t)
+    f = _lerp_point(d, e, t)
+    return (p0, a, d, f), (f, e, c, p3)
+
+
+def _subdivision_cuts(segment_count: int, target_count: int) -> list[list[float]]:
+    """Where AE cuts each segment to reach `target_count` segments.
+
+    After Effects bisects breadth-first: every segment once in path
+    order, then every half in that same order, and so on, stopping the
+    moment the counts match. Measured on AE 2026 over 22 source/target
+    pairs from 2 to 12 vertices, open and closed - the distribution
+    depends on the counts alone, not on either path's geometry (a target
+    of a completely different shape, and a source with even rather than
+    lopsided segments, both cut identically).
+    """
+    pieces = deque((index, 0.0, 1.0) for index in range(segment_count))
+    while len(pieces) < target_count:
+        index, start, end = pieces.popleft()
+        middle = (start + end) / 2.0
+        pieces.append((index, start, middle))
+        pieces.append((index, middle, end))
+    cuts: list[list[float]] = [[] for _ in range(segment_count)]
+    for index, start, _end in pieces:
+        if start > 0.0:
+            cuts[index].append(start)
+    for per_segment in cuts:
+        per_segment.sort()
+    return cuts
+
+
+def _resample_path(
+    vertices: list[list[float]],
+    in_tangents: list[list[float]],
+    out_tangents: list[list[float]],
+    closed: bool,
+    target: int,
+) -> tuple[list[list[float]], list[list[float]], list[list[float]]]:
+    """Add vertices to a path until it has `target` of them, shape intact.
+
+    The new vertices land where a de Casteljau split puts them, so the
+    outline is unchanged - only its parameterisation gains points.
+    """
+    count = len(vertices)
+    segment_count = count if closed else count - 1
+    if segment_count < 1:
+        # A one-vertex open path: nothing to subdivide, so it cannot be
+        # brought up to `target`. The caller checks the resulting length.
+        return vertices, in_tangents, out_tangents
+    cuts = _subdivision_cuts(segment_count, segment_count + target - count)
+
+    chain: list[_Cubic] = []
+    for index in range(segment_count):
+        tail = (index + 1) % count
+        start = (vertices[index][0], vertices[index][1])
+        end = (vertices[tail][0], vertices[tail][1])
+        out_t = out_tangents[index]
+        in_t = in_tangents[tail]
+        if not any(out_t) and not any(in_t):
+            # AE keeps a straight segment straight: the new vertices land
+            # on the line at the cut parameters and every handle stays
+            # zero. Splitting it as the degenerate cubic instead would put
+            # them at 0.15625 rather than 0.25 and hand each one a handle
+            # a quarter of the segment long (AE 2026).
+            bounds = [0.0, *cuts[index], 1.0]
+            for low, high in zip(bounds, bounds[1:]):
+                a = _lerp_point(start, end, low)
+                b = _lerp_point(start, end, high)
+                chain.append((a, a, b, b))
+            continue
+        cubic = (
+            start,
+            (start[0] + out_t[0], start[1] + out_t[1]),
+            (end[0] + in_t[0], end[1] + in_t[1]),
+            end,
+        )
+        consumed = 0.0
+        for cut in cuts[index]:
+            left, cubic = _split_cubic(cubic, (cut - consumed) / (1.0 - consumed))
+            chain.append(left)
+            consumed = cut
+        chain.append(cubic)
+
+    new_vertices = [[c[0][0], c[0][1]] for c in chain]
+    new_out = [[c[1][0] - c[0][0], c[1][1] - c[0][1]] for c in chain]
+    # Each piece's own IN handle, measured at the vertex it arrives at.
+    arriving = [[c[2][0] - c[3][0], c[2][1] - c[3][1]] for c in chain]
+    if closed:
+        # Every vertex starts a piece, so its IN handle comes from the
+        # piece before it - the last one wrapping around to vertex 0.
+        new_in = arriving[-1:] + arriving[:-1]
+    else:
+        # The open path's final vertex ends the last piece rather than
+        # starting one, so it is appended, and the first vertex keeps the
+        # original path's own leading handles.
+        new_vertices.append([chain[-1][3][0], chain[-1][3][1]])
+        new_out.append(list(out_tangents[-1]))
+        new_in = [list(in_tangents[0]), *arriving]
+    return new_vertices, new_in, new_out
+
+
+def interpolate_shapes(start: Shape, end: Shape, progress: float) -> Shape | None:
+    """Blend two path values vertex by vertex.
+
+    Vertices and both tangent sets move linearly at `progress`; `closed`
+    is held at the left key's, as AE does. When the two keys hold
+    different vertex counts the shorter path is resampled up to the
+    longer one first, the way AE does it.
+
+    `None` means "no blend is defined" - either path is empty, or the
+    shorter one has no segment to subdivide - and the caller holds the
+    left keyframe's value instead.
+    """
+    verts_a, in_a, out_a = start.vertices, start.in_tangents, start.out_tangents
+    verts_b, in_b, out_b = end.vertices, end.in_tangents, end.out_tangents
+    if not verts_a or not verts_b:
+        return None
+    target = max(len(verts_a), len(verts_b))
+    if len(verts_a) < target:
+        verts_a, in_a, out_a = _resample_path(
+            verts_a, in_a, out_a, start.closed, target
+        )
+    elif len(verts_b) < target:
+        verts_b, in_b, out_b = _resample_path(verts_b, in_b, out_b, end.closed, target)
+    if len(verts_a) != len(verts_b):
+        # `_resample_path` could not reach the target: a one-vertex open
+        # path has no segment to subdivide.
+        return None
+    return Shape(
+        _lerp_points(verts_a, verts_b, progress),
+        _lerp_points(in_a, in_b, progress),
+        _lerp_points(out_a, out_b, progress),
+        closed=start.closed,
+    )
+
+
 def interpolate_keyframes(
     time: float,
     keyframes: list[Keyframe],
     is_spatial: bool,
     inert_dimensions: frozenset[int] = frozenset(),
-) -> list[float] | float | None:
+    value_kind: ParallelKind | None = None,
+) -> list[float] | float | Shape | None:
     """Compute the interpolated value at `time` from a keyframe list.
 
     Uses lottie-web's algorithms:
@@ -1075,6 +1402,9 @@ def interpolate_keyframes(
         inert_dimensions: Indices the layer ignores, held at the left
             keyframe's value instead of interpolated - the Z of a 2-D
             layer's Scale, which AE never moves.
+        value_kind: `SHAPE_KIND` or `ORIENTATION_KIND` for the two kinds
+            AE blends as one eased quantity rather than per component;
+            `None` for an ordinary numeric property.
 
     Returns:
         Interpolated value, or `None` if no keyframes.
@@ -1139,6 +1469,20 @@ def interpolate_keyframes(
 
     v0 = kf_left.value
     v1 = kf_right.value
+
+    # A path and an Orientation blend as ONE eased quantity, so they skip
+    # the per-dimension machinery below entirely.
+    if value_kind is not None:
+        progress = _single_progress(kf_left, kf_right, time, t0, t1)
+        if value_kind is SHAPE_KIND and isinstance(v0, Shape) and isinstance(v1, Shape):
+            blended = interpolate_shapes(v0, v1, progress)
+            return blended if blended is not None else v0
+        if (
+            value_kind is ORIENTATION_KIND
+            and isinstance(v0, list)
+            and isinstance(v1, list)
+        ):
+            return slerp_orientation(v0, v1, progress)
 
     # LINEAR
     if out_type == KeyframeInterpolationType.LINEAR:

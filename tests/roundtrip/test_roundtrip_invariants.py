@@ -42,6 +42,11 @@ ROUNDTRIP_SAMPLES = [
     PROPERTY_DIR / "keyframe_1D.aep",
     PROPERTY_DIR / "shape_basic.aep",
     PROPERTY_DIR / "mask_add.aep",
+    # Orientation and path keyframes: their ldat items carry an ease but
+    # no value, a layout the item reader has to get exactly right.
+    PROPERTY_DIR / "property_path_orientation_pin.aep",
+    PROPERTY_DIR / "property_path_orientation_ease.aep",
+    PROPERTY_DIR / "property_vat_edge_cases.aep",
     EG_DIR / "multiple_controllers.aep",
     COMPOSITION_DIR / "bgColor_custom.aep",
     # Edge cases

@@ -130,6 +130,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A PARSED complex property is identified by the wrapper LIST the
+# specialized parsers record on it - structure, not a decoded value type.
+# Measured over every sample (1.98M properties): no parsed complex
+# property lacks a wrapper, and no wrapper ever disagrees with the kind.
+_WRAPPER_KINDS: dict[str, ParallelKind] = {
+    kind.wrapper_type: kind
+    for kind in (ORIENTATION_KIND, MARKER_KIND, SHAPE_KIND, GRADIENT_KIND, TEXT_KIND)
+}
+
+# A SYNTHESIZED one has no wrapper yet (AE omits it for pristine state)
+# and its seeded value type does not identify the kind - a mask path is
+# seeded CUSTOM_VALUE, a Layer Styles gradient NO_VALUE. Only the match
+# name is left. Every entry here is reachable only before the property is
+# materialized; afterwards the wrapper above answers first.
+_SYNTHESIZED_KINDS: dict[str, ParallelKind] = {
+    "ADBE Orientation": ORIENTATION_KIND,
+    "ADBE Marker": MARKER_KIND,
+    "ADBE Mask Shape": SHAPE_KIND,
+    "ADBE Text Document": TEXT_KIND,
+    "ADBE EP Text Document": TEXT_KIND,
+    "ADBE Vector Grad Colors": GRADIENT_KIND,
+    "outerGlow/gradient": GRADIENT_KIND,
+    "innerGlow/gradient": GRADIENT_KIND,
+    "gradientFill/gradient": GRADIENT_KIND,
+}
+
 _UNSET = object()  # sentinel for unset min/max fallback
 
 # Match names whose binary values are stored as 0-1 fractions but
@@ -1452,18 +1478,6 @@ class Property(PropertyBase):
         if separated is not None:
             return separated
         if self._value is not None:
-            if (
-                self.match_name == "ADBE Mask Shape"
-                and isinstance(self._value, Shape)
-                and self._value._layer is None
-            ):
-                # Mask space is LAYER space, but the cached parse Shape
-                # (from `_parse_shape_shap`) only knows the comp. Stamp the
-                # owning layer so its vertices/tangents denormalize by the
-                # layer's source size, matching the write and parallel-read
-                # paths (a mask on a layer smaller than its comp would
-                # otherwise read comp-scaled coordinates).
-                self._value._layer = self._containing_layer
             return self._wire_text_version(self._value)
         if self.keyframes:
             return self.value_at_time(0)
@@ -2297,7 +2311,45 @@ class Property(PropertyBase):
     def _determine_property_types(
         self,
     ) -> tuple[PropertyControlType, PropertyValueType]:
-        """Determine property control and value types from tdb4 flags."""
+        """Determine property control and value types from tdb4 flags.
+
+        Memoized on the tdb4 bytes the inference actually reads, so every
+        write that could change the answer - animating, de-animating,
+        materializing a synthesized property, activating a VF axis -
+        invalidates it for free, with no invalidation hook to keep in sync.
+
+        The `__dict__` overrides of `_no_value` / `_color` / `_vector` /
+        `dimensions` are not in the key. They are set once at parse or
+        synthesis time before any read, and `ChunkField.__set__` pops them
+        on a real write, so they cannot change under a live memo.
+
+        Uncached this ran on every `property_value_type` and
+        `property_control_type` read - 15 times per `value_at_time` on an
+        animated Opacity, since `_effect_scale` alone consults the control
+        type ten times.
+        """
+        tdb4 = self._tdb4
+        if tdb4 is not None:
+            key = (
+                tdb4.dimensions,
+                tdb4._type_flags,
+                tdb4._spatial_static_flags,
+                tdb4._no_value_flags,
+            )
+            memo = self.__dict__.get("_types_memo")
+            if memo is not None and memo[0] == key:
+                return cast("tuple[PropertyControlType, PropertyValueType]", memo[1])
+        else:
+            key = None
+        result = self._compute_property_types()
+        if key is not None:
+            self.__dict__["_types_memo"] = (key, result)
+        return result
+
+    def _compute_property_types(
+        self,
+    ) -> tuple[PropertyControlType, PropertyValueType]:
+        """Derive the control and value types from the tdb4 flags."""
         pct = PropertyControlType.UNKNOWN
         pvt = PropertyValueType.UNKNOWN
 
@@ -2699,11 +2751,16 @@ class Property(PropertyBase):
                 return separated
             return self.value
 
-        return interpolate_keyframes(
-            self._layer_time_from_comp(time),
-            self.keyframes,
-            self._has_motion_path,
-            self._inert_dimensions(),
+        kind = self._parallel_kind()
+        return cast(
+            "_ValueType",
+            interpolate_keyframes(
+                self._layer_time_from_comp(time),
+                self.keyframes,
+                self._has_motion_path,
+                self._inert_dimensions(),
+                value_kind=kind,
+            ),
         )
 
     def _layer_time_from_comp(self, time: float) -> float:
@@ -2795,34 +2852,15 @@ class Property(PropertyBase):
         """The complex-value kind storing keyframe values in a parallel
         container, or `None` for ordinary numeric properties.
         """
-        if self.match_name == "ADBE Orientation":
-            return ORIENTATION_KIND
-        if self.match_name == "ADBE Marker":
-            return MARKER_KIND
-        # By match name as well as by value: a never-edited gradient has no
-        # Gradient value to sample (no GCst data in the binary).
-        if self.match_name in (
-            "ADBE Vector Grad Colors",
-            # The Layer Styles gradients (a synthesized one has no pard and
-            # a NO_VALUE seed, so only the match name identifies the kind).
-            "outerGlow/gradient",
-            "innerGlow/gradient",
-            "gradientFill/gradient",
-        ):
-            return GRADIENT_KIND
-        # A freshly-synthesized mask path is seeded as CUSTOM_VALUE (not
-        # SHAPE), so guard it by match name or its value write silently no-ops.
-        if self.match_name == "ADBE Mask Shape":
-            return SHAPE_KIND
-        pvt = self.property_value_type
-        if pvt == PropertyValueType.SHAPE:
-            return SHAPE_KIND
-        if pvt == PropertyValueType.TEXT_DOCUMENT:
-            return TEXT_KIND
-        sample = self.keyframes[0].value if self.keyframes else self._value
-        if isinstance(sample, Gradient):
-            return GRADIENT_KIND
-        return None
+        wrapper = self._wrapper
+        if wrapper is not None:
+            # `_materialize_parallel_container` can adopt an arbitrary
+            # sibling LIST as the wrapper, so an unknown type falls through
+            # to the match name rather than deciding the answer is None.
+            kind = _WRAPPER_KINDS.get(wrapper.list_type)
+            if kind is not None:
+                return kind
+        return _SYNTHESIZED_KINDS.get(self.match_name)
 
     def _keyframe_item_type(self) -> LdatItemType:
         """The `LdatItemType` for this property's keyframe header data."""
@@ -3018,8 +3056,6 @@ class Property(PropertyBase):
             raise ValueError(f"property {self.match_name!r} has no value to keyframe")
         new_value = self.value_at_time(time) if value is _USE_VALUE else value
         time_scale, frame_rate = self._time_units()
-        self._ensure_materialized()
-        lhd3, ldat = self._ensure_animated()
 
         item_type = self._keyframe_item_type()
         kf_data = build_kf_data(item_type, self.dimensions)
@@ -3031,11 +3067,17 @@ class Property(PropertyBase):
             _frame_rate=frame_rate,
         )
         kf._bind_property(self)
+        # Before any mutation: `time` can be far enough out that its tick
+        # count overflows the 32-bit field, and animating first left the
+        # property marked animated with no keyframes and its static value
+        # gone (issue #228). `_add_parallel_key` orders itself the same way.
         kf.time = time
 
         idx, exists = self._keyframe_insert_index(kf.time_units)
         if exists:
             return idx
+        self._ensure_materialized()
+        lhd3, ldat = self._ensure_animated()
         ldat.items.insert(idx, ldat_item)
         self.keyframes.insert(idx, kf)
         set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
@@ -3673,8 +3715,6 @@ class Property(PropertyBase):
         ):
             del container.chunks[0]
         cdat = kind.static_cdat(removed_value)
-        # Assign the static value before _static_tdb4: _parallel_kind()
-        # detects gradients by sampling it once the keyframes are gone.
         self._value = removed_value if kind.keeps_value_on_revert else None
         self._static_tdb4()
         chunks = self._tdbs.chunks
@@ -3927,7 +3967,13 @@ class Property(PropertyBase):
                 if size is not None:
                     scale = [size[0], size[1], 1.0]
         elif (
-            self._property_control_type
+            # The PUBLIC control type, so a property the effect creates
+            # dynamically and never declares in a `pard` still counts: a
+            # puppet pin's position has no param def, and reading the
+            # private field left it unscaled. AE 2026 reports a pin at
+            # [50, 25] on a 200x100 layer, where the file holds
+            # [0.25, 0.25], exactly like a declared effect point.
+            self.property_control_type
             in (PropertyControlType.TWO_D, PropertyControlType.THREE_D)
             and self._is_in_effect()
         ):
@@ -3945,7 +3991,7 @@ class Property(PropertyBase):
             size = self._layer_pixel_size()
             if size is not None:
                 scale = list(size)
-                if self._property_control_type == PropertyControlType.THREE_D:
+                if self.property_control_type == PropertyControlType.THREE_D:
                     scale.append(size[1])
 
         return scale

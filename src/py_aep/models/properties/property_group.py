@@ -611,8 +611,13 @@ class PropertyGroup(PropertyBase):
         return self._properties
 
     def __iter__(self) -> Iterator[Property | PropertyGroup]:
-        """Return an iterator over the properties in this group."""
-        return iter(self.properties)
+        """Return an iterator over the properties in this group.
+
+        Iterates a snapshot so children can be removed while looping -
+        `PropertyBase.remove()` mutates `properties` in place, so the live
+        list would skip every other child (issue #230).
+        """
+        return iter(list(self.properties))
 
     def __len__(self) -> int:
         """Return the number of child properties in this group."""
@@ -1105,7 +1110,7 @@ class PropertyGroup(PropertyBase):
             effect_param_defs=effect_param_defs,
             composition=comp,
             tdmn=tdmn,
-            layer_size=layer._pixel_size,
+            layer=layer,
         )
         effect._parent_property = self
         effect._deferred_ae_major = get_ae_version_major(layer)
@@ -1138,6 +1143,7 @@ class PropertyGroup(PropertyBase):
             effect_param_defs=comp._project._effect_param_defs,
             composition=comp,
             tdmn=tdmn,
+            layer=layer,
         )
         group._parent_property = self
         group._deferred_ae_major = get_ae_version_major(layer)

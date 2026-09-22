@@ -113,7 +113,13 @@ class RenderQueue:
         )
 
     def __iter__(self) -> Iterator[RenderQueueItem]:
-        return iter(self.items)
+        """Iterate the queue's items.
+
+        Iterates a snapshot, so removing items as they come up - the
+        obvious way to empty the queue - visits every one instead of
+        skipping every other item (issue #230).
+        """
+        return iter(list(self.items))
 
     @property
     def items(self) -> list[RenderQueueItem]:

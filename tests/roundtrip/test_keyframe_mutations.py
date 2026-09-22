@@ -138,6 +138,25 @@ class TestAddKey:
         app2 = _roundtrip(app, tmp_path)
         assert len(_prop(app2, "ADBE Opacity").keyframes) == n0 + 1
 
+    def test_out_of_range_time_leaves_the_property_untouched(self) -> None:
+        # Issue #228: the tick conversion overflows the 32-bit time field,
+        # and animating before converting left the property marked animated
+        # with no keyframes and its static value discarded.
+        app = _fresh("2_gaussian.aep")
+        op = _prop(app, "ADBE Opacity")
+        assert not op.keyframes
+        before = op.value
+
+        with pytest.raises(ValueError, match="32-bit keyframe time field"):
+            op.add_key(1e9)
+
+        assert not op.keyframes
+        assert op.value == before
+
+        # ... and the property still animates normally afterwards.
+        op.add_key(1.0)
+        assert len(op.keyframes) == 1
+
     def test_add_key_returns_existing_index_at_same_time(self) -> None:
         app = _fresh("keyframe_HOLD.aep")
         op = _prop(app, "ADBE Opacity")

@@ -78,15 +78,21 @@ SKIP_PROPERTIES = {
 }
 
 
-_field_names_cache: dict[type, frozenset[str] | set[str] | None] = {}
+_field_names_cache: dict[type, tuple[str, ...] | None] = {}
 
 
-def _get_field_names(obj: Any) -> frozenset[str] | set[str] | None:
+def _get_field_names(obj: Any) -> tuple[str, ...] | None:
     """Get serializable field names for model objects.
 
     Supports both `@dataclass` models and plain-class models that use
     type annotations and/or chunk-backed descriptors (e.g. the Item
     hierarchy after the descriptor conversion).
+
+    Sorted, not a set: reading a model attribute can synthesize property
+    children and populate caches, and `_to_dict` memoizes the first
+    result it reaches a shared object by. Iterating a set therefore let
+    `PYTHONHASHSEED` decide what the report said - two runs over the same
+    project disagreed on whether an effect had all of its parameters.
 
     Results are cached per type since field names are class-level metadata.
     """
@@ -114,7 +120,7 @@ def _get_field_names(obj: Any) -> frozenset[str] | set[str] | None:
             if is_descriptor and hasattr(attr, "__get__"):
                 names.add(name)
     if names:
-        result = frozenset(names)
+        result = tuple(sorted(names))
         _field_names_cache[cls] = result
         return result
     # Check for public @property definitions (descriptor-backed classes
@@ -125,16 +131,19 @@ def _get_field_names(obj: Any) -> frozenset[str] | set[str] | None:
         for name, attr in vars(base).items():
             if not name.startswith("_") and isinstance(attr, property):
                 names.add(name)
-    result2: frozenset[str] | None = frozenset(names) if names else None
+    result2: tuple[str, ...] | None = tuple(sorted(names)) if names else None
     _field_names_cache[cls] = result2
     return result2
 
 
-_property_names_cache: dict[type, frozenset[str]] = {}
+_property_names_cache: dict[type, tuple[str, ...]] = {}
 
 
-def _get_property_names(cls: type) -> frozenset[str]:
-    """Get public @property names for a class, cached per type."""
+def _get_property_names(cls: type) -> tuple[str, ...]:
+    """Get public @property names for a class, cached per type.
+
+    Sorted for the same reason as `_get_field_names`.
+    """
     if cls in _property_names_cache:
         return _property_names_cache[cls]
     names: set[str] = set()
@@ -144,7 +153,7 @@ def _get_property_names(cls: type) -> frozenset[str]:
         attr = getattr(cls, name, None)
         if isinstance(attr, property):
             names.add(name)
-    result = frozenset(names)
+    result = tuple(sorted(names))
     _property_names_cache[cls] = result
     return result
 

@@ -120,10 +120,19 @@ class CosString(str):
     """
 
     cos_utf16: bool
+    #: The literal's own bytes, kept only when no byte-order mark said how
+    #: to read them and the lexer fell back to UTF-8. A PDF *text* string
+    #: with no BOM is PDFDocEncoding instead (PDF 32000-1 7.9.2.2), which
+    #: only the consumer knows to apply - see `decode_pdf_text_string`.
+    #: `None` whenever a BOM settled the encoding.
+    cos_raw: bytes | None
 
-    def __new__(cls, value: str, *, utf16: bool = True) -> CosString:
+    def __new__(
+        cls, value: str, *, utf16: bool = True, raw: bytes | None = None
+    ) -> CosString:
         obj = super().__new__(cls, value)
         obj.cos_utf16 = utf16
+        obj.cos_raw = raw
         return obj
 
 
@@ -451,6 +460,7 @@ class CosParser:
 
         # Default to UTF-8 encoding
         encoding = "utf-8"
+        no_bom = False
 
         # Check for BOM at the start of the string and remove it
         if string.startswith(b"\xef\xbb\xbf"):
@@ -464,13 +474,20 @@ class CosParser:
             # UTF-16 LE BOM - remove it (2 bytes)
             string = string[2:]
             encoding = "utf-16-le"
+        else:
+            no_bom = True
 
         try:
             decoded = string.decode(encoding)
         except UnicodeDecodeError:
             return Token(TokenType.String, string)
         return Token(
-            TokenType.String, CosString(decoded, utf16=encoding == "utf-16-be")
+            TokenType.String,
+            CosString(
+                decoded,
+                utf16=encoding == "utf-16-be",
+                raw=string if no_bom else None,
+            ),
         )
 
     def lex_string_char(self) -> bytes | None:
