@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import struct
 import warnings
 from pathlib import Path
@@ -193,7 +194,7 @@ class TestImportFileSingle:
         assert item.main_source.is_still is False
         assert item.duration == pytest.approx(0.1274376, abs=1e-5)
 
-    def test_import_dpx(self, tmp_path: Path) -> None:
+    def test_import_dpx(self) -> None:
         project = parse_aep(BASE).project
         item = project.import_file(ImportOptions(ASSETS / "dpx_8bit_rgb.dpx"))
         assert isinstance(item.main_source, FileSource)
@@ -201,7 +202,7 @@ class TestImportFileSingle:
         assert item.main_source._sspc.source_format_type == "sDPX"
         assert len(item.main_source._opti.data) == 48
 
-    def test_import_cin(self, tmp_path: Path) -> None:
+    def test_import_cin(self) -> None:
         project = parse_aep(BASE).project
         item = project.import_file(ImportOptions(ASSETS / "cin.cin"))
         assert isinstance(item.main_source, FileSource)
@@ -209,7 +210,7 @@ class TestImportFileSingle:
         assert item.main_source._sspc.source_format_type == "sDPX"
         assert len(item.main_source._opti.data) == 48
 
-    def test_import_heic(self, tmp_path: Path) -> None:
+    def test_import_heic(self) -> None:
         project = parse_aep(BASE).project
         item = project.import_file(ImportOptions(ASSETS / "heic.heic"))
         assert isinstance(item.main_source, FileSource)
@@ -218,7 +219,7 @@ class TestImportFileSingle:
         assert len(item.main_source._opti.data) == 58
         assert item.main_source.has_alpha is False
 
-    def test_import_heic_alpha(self, tmp_path: Path) -> None:
+    def test_import_heic_alpha(self) -> None:
         project = parse_aep(BASE).project
         item = project.import_file(ImportOptions(ASSETS / "heic_alpha.heic"))
         assert isinstance(item.main_source, FileSource)
@@ -333,7 +334,7 @@ class TestImportFileSequence:
         assert item.name == "sequence_[001-003].gif"
         assert item.main_source.is_still is False
 
-    def test_import_dpx_sequence(self, tmp_path: Path) -> None:
+    def test_import_dpx_sequence(self) -> None:
         project = parse_aep(BASE).project
         opts = ImportOptions(ASSETS / "dpx_seq.0001.dpx")
         opts.sequence = True
@@ -817,7 +818,9 @@ class TestImportGapFormats:
     def test_generic_still_imports_match_ae_fixtures(self) -> None:
         # AE 2026 macOS tags BMP/GIF stills and sequences IMIO
         # (imio_stills.aep, imio_sequence.aep). Windows opens IMIO stills but
-        # not IMIO sequences; macOS opens no STIL item (the former default).
+        # not IMIO sequences, so a sequence takes the host's importer code
+        # while stills stay IMIO everywhere.
+        seq_code = "STIL" if os.name == "nt" else "IMIO"
         truth_items = {}
         for fixture in ("imio_stills.aep", "imio_sequence.aep"):
             for f in parse_aep(IMPORT_DIR / fixture).project.footages:
@@ -834,21 +837,18 @@ class TestImportGapFormats:
             item = project.import_file(opts)
             truth = truth_items[item.name]
             ours, ae = item.main_source, truth.main_source
-            assert (
-                ours._sspc.source_format_type == ae._sspc.source_format_type == "IMIO"
-            )
+            assert ae._sspc.source_format_type == "IMIO"
+            assert ours._sspc.source_format_type == (seq_code if seq else "IMIO")
             assert (item.width, item.height) == (truth.width, truth.height)
             assert len(ours._opti.data) == len(ae._opti.data) == 58
             if seq:
-                # Sequence opti is byte-exact; a sequence duration is stored
-                # as frames / fps unreduced, as AE writes it.
-                assert ours._opti.data == ae._opti.data
+                # AE zeroes the importer block for a generic-still sequence;
+                # only the leading 4-char code is platform-specific.
+                assert ours._opti.data[:4] == seq_code.encode("ascii")
+                assert ours._opti.data[4:] == ae._opti.data[4:]
                 assert (
                     (ours._sspc.duration_dividend, ours._sspc.duration_divisor)
-                    == (
-                        ae._sspc.duration_dividend,
-                        ae._sspc.duration_divisor,
-                    )
+                    == (ae._sspc.duration_dividend, ae._sspc.duration_divisor)
                     == (3, 30)
                 )
 

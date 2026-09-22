@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, cast
@@ -903,11 +904,10 @@ class FileSource(FootageSource):
         if has_range and range_end < range_start:
             raise ValueError("Range end cannot be less than range start")
 
-        # BMP/GIF sequences take the folder path's platform importer code.
+        # BMP/GIF sequences take the running platform's importer code. AE
+        # refuses the other one (see GENERIC_STILL_FORMATS).
         fmt = fmt._replace(
-            source_format=sequence_source_format(
-                fmt, windows=isinstance(file, PureWindowsPath)
-            )
+            source_format=sequence_source_format(fmt, windows=os.name == "nt")
         )
 
         frame_re = re.compile(re.escape(prefix) + r"(\d+)$")

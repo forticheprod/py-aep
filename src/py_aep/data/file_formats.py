@@ -54,7 +54,7 @@ def sequence_source_format(fmt: FileFormat, *, windows: bool) -> str:
 
     Args:
         fmt: The frame file's format.
-        windows: `True` for a Windows-style sequence folder path (see
+        windows: `True` to tag the sequence for AE on Windows (see
             `GENERIC_STILL_FORMATS`).
     """
     if windows and fmt.source_format == GENERIC_STILL_FORMATS["macos"]:

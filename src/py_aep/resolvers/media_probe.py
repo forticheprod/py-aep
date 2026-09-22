@@ -40,7 +40,7 @@ class MediaInfo(NamedTuple):
     audio_sample_rate: float = 0.0
     pixel_aspect: float = 1.0
     bit_depth: int = 8
-    """Bits per channel (8, 16, 32). Currently read only for PSD/PSB."""
+    """Bits per channel (8, 16, 32). Read for PSD/PSB, DPX/Cineon and HEIF."""
     layer_count: int = 0
     """Number of layers (PSD/PSB only; 0 for a flattened document)."""
     channels: int = 0
@@ -1813,7 +1813,7 @@ def _probe_dpx_cineon(fp: IO[bytes]) -> MediaInfo:
     Raises:
         ValueError: If the file is too short or has an unrecognised magic number.
     """
-    header = fp.read(1024)
+    header = fp.read(1408)  # 768-byte file info + 640-byte image info
     if len(header) < 1024:
         raise ValueError("Not a valid DPX/Cineon file (header too short)")
 

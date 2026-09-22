@@ -240,7 +240,7 @@ from a static file rather than through AE's live media engine:
   an `IMIO` still opens on either platform, so py-aep writes `IMIO` for
   stills everywhere; but an `IMIO` sequence never opens on Windows and a
   `STIL` sequence never opens on macOS - even in an AE-collected project.
-  py-aep picks the sequence code from the path style of the imported frame,
+  py-aep picks the sequence code from the platform it is running on,
   so a BMP/GIF sequence needs re-importing when the project changes platform.
 - **`has_alpha` is a per-format heuristic**, not a full media decode. Alpha is
   inferred from the format and header - allocated for PNG/TIFF/BMP/GIF, opaque
