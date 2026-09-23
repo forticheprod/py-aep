@@ -1207,8 +1207,7 @@ class TestRQAddWithoutPreferences:
 
     def test_add_to_empty_queue_reparse_links_comp(self, tmp_path: Path) -> None:
         # Regression: adding to a queue-less project, saving, then reparsing
-        # must yield exactly one item linked to the original comp. (See
-        # project memory "renderqueue-add-known-bug".)
+        # must yield exactly one item linked to the original comp.
         app = parse_aep(SAMPLES_DIR / "empty.aep")
         rq = app.project.render_queue
         assert rq.num_items == 0

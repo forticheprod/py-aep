@@ -8,7 +8,6 @@ The list is the OCIO *active* color spaces (`colorspaces` +
 `display_colorspaces`, minus `inactive_colorspaces`) - exactly what
 `PyOpenColorIO.Config.getColorSpaceNames()` returns (verified set-equal for
 AE's bundled `ACES 1.2` (353)), so no OCIO runtime dependency is needed.
-See the `color-management-write-rev-eng` notes.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from typing import Any, Iterator, NamedTuple
 import yaml
 
 from .envelope import _compact, build_ocio_envelope
-from .murmur3 import dva_guid
+from .murmur3 import ae_guid
 
 
 class _OcioLoader(yaml.SafeLoader):
@@ -202,19 +201,18 @@ _OCIO_PROFILE_TYPE = 3
 def _color_space_guid(profile_name: str, profile_data: str) -> bytes:
     """The 16-byte After Effects `Guid` of an OCIO color space.
 
-    Two-stage MurmurHash3 (reverse-engineered from `dvamediatypes.dll`):
-    the inner `ColorProfile` Guid hashes the display name + the
-    `colorProfileData` JSON; the outer `ColorSpace` Guid wraps that with the
-    `baseProfileType` and a flag byte.
+    Two-stage MurmurHash3: the inner `ColorProfile` Guid hashes the display
+    name + the `colorProfileData` JSON; the outer `ColorSpace` Guid wraps that
+    with the `baseProfileType` and a flag byte.
 
     Args:
         profile_name: The `colorProfileName` (e.g. `"ACES/ACEScg yo"`).
         profile_data: The `colorProfileData` JSON (e.g. `{"colorSpace1":"ACEScg yo"}`).
     """
-    inner = dva_guid(
+    inner = ae_guid(
         b"DVAColorProfile" + profile_name.encode("utf-8") + profile_data.encode("utf-8")
     )
-    return dva_guid(
+    return ae_guid(
         b"DVAColorSpace" + inner + _OCIO_PROFILE_TYPE.to_bytes(4, "little") + b"\x00"
     )
 

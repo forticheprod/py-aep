@@ -669,7 +669,7 @@ class TestReplaceKeepsInterpretation:
 class TestImportGapFormats:
     """import_file for formats AE handles that py-aep newly supports.
 
-    Expected values are AE 2026 ground truth (see the import-gap-matrix notes).
+    Expected values are AE 2026 ground truth.
     """
 
     @pytest.mark.parametrize(

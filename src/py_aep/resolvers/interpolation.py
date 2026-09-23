@@ -3,16 +3,16 @@
 Implements HOLD, LINEAR, and BEZIER interpolation for
 `Property.value_at_time()`.  Pure Python with no external dependencies.
 
-The algorithms are ported from `lottie-web <https://github.com/airbnb/
+The structure follows `lottie-web <https://github.com/airbnb/
 lottie-web>`_, the industry-standard renderer for Lottie/bodymovin
-animations exported from After Effects:
+animations exported from After Effects, with the numerics adjusted to
+match AE's own output:
 
 - **Temporal ease** uses a normalised [0, 1] -> [0, 1] cubic-bezier
-  easing function (`BezierEasing`), with an 11-point sample table,
-  Newton-Raphson refinement, and binary-subdivision fallback (ported
-  from `BezierEaser.js`).
-- **Spatial paths** are pre-sampled into a 150-segment polyline with
-  per-segment partial lengths (ported from `bez.js`).
+  easing function (`BezierEasing`), whose curve parameter is solved in
+  closed form (Cardano).
+- **Spatial paths** are pre-sampled into a 128-sample polyline with
+  per-segment partial lengths (after lottie's `bez.js`).
 - **Arc-length reparameterisation** walks the segment table linearly,
   interpolating between adjacent sample points.
 """
@@ -35,25 +35,33 @@ if TYPE_CHECKING:
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0  # 16.6667 %
 
-# Number of polyline segments for spatial bezier path approximation.
-# lottie-web uses getDefaultCurveSegments() which defaults to 150.
-_CURVE_SEGMENTS = 150
+# Number of samples in the arc-length table for a spatial bezier segment.
+# After Effects takes 128 samples, walking t uniformly in 1/(N-1) steps and
+# summing the straight chords between consecutive samples. AE's arc length is
+# that polyline, so matching the sample count matters more than sampling more
+# finely.
+_CURVE_SEGMENTS = 128
 
 
 # ---------------------------------------------------------------------------
-# BezierEasing - port of lottie-web 3rd_party/BezierEaser.js
+# BezierEasing
 # ---------------------------------------------------------------------------
-# Implements a cached unit-square bezier easing function.
-# Given control points (cx1, cy1, cx2, cy2), maps x in [0,1] -> y in [0,1].
-# Uses precomputed sample table + Newton-Raphson with binary subdivision
-# fallback, matching Firefox's nsSMILKeySpline.
+# A cached unit-square bezier easing function: given control points
+# (cx1, cy1, cx2, cy2), maps x in [0,1] -> y in [0,1].
+#
+# The curve parameter is solved in CLOSED FORM, the way After Effects does it:
+# the segment is rewritten in power basis and `a t^3 + b t^2 + c t + d = 0` is
+# handed to a Cardano solver (the Numerical Recipes form, with
+# Q = (A^2 - 3B)/9 and R = (2A^3 - 9AB + 27C)/54), after snapping to either
+# endpoint within `_EPS`. This replaces an earlier sample-table + Newton port,
+# which agreed with AE only to ~1e-5 in the parameter.
 
-_NEWTON_ITERATIONS = 4
-_NEWTON_MIN_SLOPE = 0.001
-_SUBDIVISION_PRECISION = 0.0000001
-_SUBDIVISION_MAX_ITERATIONS = 10
-_SAMPLE_TABLE_SIZE = 11
-_SAMPLE_STEP_SIZE = 1.0 / (_SAMPLE_TABLE_SIZE - 1.0)
+_EPS = 1e-10
+
+# AE saturates a vertical slope instead of dividing by a near-zero dx: inside
+# this window it reports +/- this value.
+_VERTICAL_SLOPE_EPS = 1e-12
+_VERTICAL_SLOPE = 1e10
 
 
 def _bez_A(a1: float, a2: float) -> float:
@@ -73,66 +81,82 @@ def _calc_bezier(t: float, a1: float, a2: float) -> float:
     return ((_bez_A(a1, a2) * t + _bez_B(a1, a2)) * t + _bez_C(a1)) * t
 
 
-def _get_slope(t: float, a1: float, a2: float) -> float:
-    """Calculate bezier derivative at t for one axis."""
-    return 3.0 * _bez_A(a1, a2) * t * t + 2.0 * _bez_B(a1, a2) * t + _bez_C(a1)
+def _solve_cubic(a: float, b: float, c: float, d: float) -> float | None:
+    """The root of `a t^3 + b t^2 + c t + d` in [0, 1] that AE picks.
 
+    Closed-form Cardano. The root preference order and its asymmetric
+    bounds - the first root must be strictly inside [0, 1], the second may
+    sit on either end - are AE's, and only tell the two apart on a
+    non-monotonic curve.
 
-def _binary_subdivide(x: float, a: float, b: float, x1: float, x2: float) -> float:
-    """Binary subdivision fallback to find t for given x."""
-    current_t = 0.0
-    for _ in range(_SUBDIVISION_MAX_ITERATIONS):
-        current_t = a + (b - a) / 2.0
-        current_x = _calc_bezier(current_t, x1, x2) - x
-        if current_x > 0.0:
-            b = current_t
-        else:
-            a = current_t
-        if abs(current_x) <= _SUBDIVISION_PRECISION:
-            break
-    return current_t
-
-
-def _newton_raphson_iterate(x: float, guess_t: float, x1: float, x2: float) -> float:
-    """Newton-Raphson iteration to refine t for given x."""
-    for _ in range(_NEWTON_ITERATIONS):
-        slope = _get_slope(guess_t, x1, x2)
-        if slope == 0.0:
-            return guess_t
-        current_x = _calc_bezier(guess_t, x1, x2) - x
-        guess_t -= current_x / slope
-    return guess_t
+    Returns `None` when no root lands in [0, 1]. AE's result is undefined
+    there; that is a bug, not behaviour to copy.
+    """
+    if abs(a) >= _EPS:
+        big_a = b / a
+        q = (big_a * big_a - 3.0 * (c / a)) / 9.0
+        r = (
+            2.0 * big_a * big_a * big_a - 9.0 * big_a * (c / a) + 27.0 * (d / a)
+        ) / 54.0
+        third = big_a / 3.0
+        q3 = q * q * q
+        if q3 < r * r:
+            # One real root. `sq +/- r` is strictly positive here, since
+            # `q3 < r * r` rules out both terms vanishing together.
+            sq = math.sqrt(r * r - q3)
+            if r < 0.0:
+                x = math.pow(sq - r, 1.0 / 3.0)
+                return (q / x + x) - third
+            x = math.pow(sq + r, 1.0 / 3.0)
+            return (-x - q / x) - third
+        if abs(q) < _EPS:
+            return -third
+        # Three real roots.
+        theta = math.acos(r / math.sqrt(q3))
+        scale = -2.0 * math.sqrt(q)
+        first = math.cos(theta / 3.0) * scale - third
+        if 0.0 < first < 1.0:
+            return first
+        second = math.cos((theta + 2.0 * math.pi) / 3.0) * scale - third
+        if 0.0 <= second <= 1.0:
+            return second
+        root = math.cos((theta + 4.0 * math.pi) / 3.0) * scale - third
+    else:
+        # Degenerates to a quadratic (or a line).
+        if abs(b) < _EPS:
+            return -d / c if abs(c) >= _EPS else 0.0
+        disc = c * c - 4.0 * b * d
+        if disc < 0.0:
+            return None
+        if abs(disc) < _EPS:
+            return -c / (2.0 * b)
+        sq = math.sqrt(disc)
+        # AE's numerically stable form: both branches yield 2d/q and q/2b.
+        q_quad = (sq - c) if c <= 0.0 else -(sq + c)
+        first = (2.0 * d) / q_quad
+        root = q_quad / (2.0 * b)
+        if 0.0 <= first <= 1.0:
+            return first
+    return root if 0.0 <= root <= 1.0 else None
 
 
 class _BezierEasing:
-    """Cached unit-square bezier easing function.
+    """Cached unit-square bezier easing function."""
 
-    Port of lottie-web's BezierEasing class.
-    """
-
-    __slots__ = ("_cx1", "_cy1", "_cx2", "_cy2", "_samples")
+    __slots__ = ("_cx1", "_cy1", "_cx2", "_cy2")
 
     def __init__(self, cx1: float, cy1: float, cx2: float, cy2: float) -> None:
         self._cx1 = cx1
         self._cy1 = cy1
         self._cx2 = cx2
         self._cy2 = cy2
-        # Precompute sample table
-        self._samples = [
-            _calc_bezier(i * _SAMPLE_STEP_SIZE, cx1, cx2)
-            for i in range(_SAMPLE_TABLE_SIZE)
-        ]
 
     def get(self, x: float) -> float:
         """Map x in [0,1] to eased y in [0,1]."""
-        # Linear shortcut
+        # The curve is the identity when both handles sit on the diagonal.
         if self._cx1 == self._cy1 and self._cx2 == self._cy2:
             return x
-        if x == 0.0:
-            return 0.0
-        if x == 1.0:
-            return 1.0
-        return _calc_bezier(self._get_t_for_x(x), self._cy1, self._cy2)
+        return _calc_bezier(self.parameter_at(x), self._cy1, self._cy2)
 
     def parameter_at(self, x: float) -> float:
         """The curve parameter `u` whose x-coordinate is `x`.
@@ -140,45 +164,24 @@ class _BezierEasing:
         Callers that place their control points in absolute value space
         (rather than the normalized 0-1 y used by `get`) need the parameter
         itself: only the TIME axis is normalized there.
+
+        As in AE, an `x` within `_EPS` of either end snaps to that end
+        before any solving happens.
         """
-        if x <= 0.0:
+        if x < 0.0 or abs(x) < _EPS:
             return 0.0
-        if x >= 1.0:
+        if x > 1.0 or abs(x - 1.0) < _EPS:
             return 1.0
-        return self._get_t_for_x(x)
-
-    def _get_t_for_x(self, x: float) -> float:
-        """Find t parameter for a given x value."""
-        # Find the sample interval
-        interval_start = 0.0
-        current_sample = 1
-        last_sample = _SAMPLE_TABLE_SIZE - 1
-
-        while current_sample != last_sample and self._samples[current_sample] <= x:
-            interval_start += _SAMPLE_STEP_SIZE
-            current_sample += 1
-        current_sample -= 1
-
-        # Interpolate for initial guess
-        denom = self._samples[current_sample + 1] - self._samples[current_sample]
-        if denom == 0.0:
-            dist = 0.0
-        else:
-            dist = (x - self._samples[current_sample]) / denom
-        guess_t = interval_start + dist * _SAMPLE_STEP_SIZE
-
-        initial_slope = _get_slope(guess_t, self._cx1, self._cx2)
-        if initial_slope >= _NEWTON_MIN_SLOPE:
-            return _newton_raphson_iterate(x, guess_t, self._cx1, self._cx2)
-        if initial_slope == 0.0:
-            return guess_t
-        return _binary_subdivide(
-            x,
-            interval_start,
-            interval_start + _SAMPLE_STEP_SIZE,
-            self._cx1,
-            self._cx2,
+        u = _solve_cubic(
+            _bez_A(self._cx1, self._cx2),
+            _bez_B(self._cx1, self._cx2),
+            _bez_C(self._cx1),
+            -x,
         )
+        # No root in [0, 1] means the curve does not reach `x`, which only
+        # happens on a degenerate one. Fall back to the linear estimate
+        # rather than to AE's undefined result.
+        return x if u is None else u
 
 
 # Cache for easing functions (mirroring lottie-web's BezierFactory cache)
@@ -297,8 +300,13 @@ def segment_value_slope(
     mu = 1.0 - u
     dy_du = 3.0 * (mu * mu * (y1 - v0) + 2.0 * mu * u * (y2 - y1) + u * u * (v1 - y2))
     dx_du = 3.0 * (mu * mu * cx1 + 2.0 * mu * u * (cx2 - cx1) + u * u * (1.0 - cx2))
-    if abs(dx_du) < 1e-12:
-        return 0.0
+    if abs(dx_du) < _VERTICAL_SLOPE_EPS:
+        # The curve is vertical here, so the speed is unbounded. AE reports
+        # its saturation value rather than dividing, inside the same 1e-12
+        # window; the sign follows the value axis. This is reachable at
+        # 100 % influence on both sides, where dx/du is exactly 0 at the
+        # midpoint.
+        return _VERTICAL_SLOPE if dy_du >= 0.0 else -_VERTICAL_SLOPE
     return dy_du / (dx_du * dt)
 
 
@@ -398,58 +406,13 @@ def _cubic_bezier_nd(
     ]
 
 
-def _point_on_line_2d(
-    x1: float,
-    y1: float,
-    x2: float,
-    y2: float,
-    x3: float,
-    y3: float,
-) -> bool:
-    """Check if (x3,y3) is collinear with segment (x1,y1)->(x2,y2).
-
-    Port of lottie-web's pointOnLine2D.
-    """
-    det = x1 * y2 + y1 * x3 + x2 * y3 - x3 * y2 - y3 * x1 - x2 * y1
-    return -0.001 < det < 0.001
-
-
-def _point_on_line_3d(
-    x1: float,
-    y1: float,
-    z1: float,
-    x2: float,
-    y2: float,
-    z2: float,
-    x3: float,
-    y3: float,
-    z3: float,
-) -> bool:
-    """Check if (x3,y3,z3) is collinear with segment in 3D.
-
-    Port of lottie-web's pointOnLine3D.
-    """
-    if z1 == 0.0 and z2 == 0.0 and z3 == 0.0:
-        return _point_on_line_2d(x1, y1, x2, y2, x3, y3)
-    dist1 = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2)
-    dist2 = math.sqrt((x3 - x1) ** 2 + (y3 - y1) ** 2 + (z3 - z1) ** 2)
-    dist3 = math.sqrt((x3 - x2) ** 2 + (y3 - y2) ** 2 + (z3 - z2) ** 2)
-    if dist1 > dist2:
-        diff = dist1 - dist2 - dist3 if dist1 > dist3 else dist3 - dist2 - dist1
-    elif dist3 > dist2:
-        diff = dist3 - dist2 - dist1
-    else:
-        diff = dist2 - dist1 - dist3
-    return -0.0001 < diff < 0.0001
-
-
 class _BezierPathData:
     """Pre-sampled spatial bezier path with arc-length data.
 
-    Port of lottie-web's BezierData / buildBezierData.
-    Stores N+1 sample points along the curve with their partial
-    lengths, enabling arc-length reparameterization via linear
-    interpolation in the segment table.
+    Mirrors AE's arc-length table: `_CURVE_SEGMENTS` samples taken
+    uniformly in the curve parameter, carrying the straight chord to the
+    previous sample, which lets arc length be reparameterized by linear
+    interpolation within the table.
     """
 
     __slots__ = ("points", "partial_lengths", "segment_length")
@@ -462,40 +425,17 @@ class _BezierPathData:
         in_tangent: list[float],
     ) -> None:
         ndim = len(v0)
-        # Convert to absolute control points (lottie-web convention)
+        # Convert to absolute control points
         p1 = [v0[d] + out_tangent[d] for d in range(ndim)]
         p2 = [v1[d] + in_tangent[d] for d in range(ndim)]
 
-        # Check for collinear (straight line) - use 2 segments only
-        is_collinear = False
-        if ndim == 2 and (v0[0] != v1[0] or v0[1] != v1[1]):
-            is_collinear = _point_on_line_2d(
-                v0[0], v0[1], v1[0], v1[1], p1[0], p1[1]
-            ) and _point_on_line_2d(v0[0], v0[1], v1[0], v1[1], p2[0], p2[1])
-        elif ndim == 3 and (v0[0] != v1[0] or v0[1] != v1[1] or v0[2] != v1[2]):
-            is_collinear = _point_on_line_3d(
-                v0[0],
-                v0[1],
-                v0[2],
-                v1[0],
-                v1[1],
-                v1[2],
-                p1[0],
-                p1[1],
-                p1[2],
-            ) and _point_on_line_3d(
-                v0[0],
-                v0[1],
-                v0[2],
-                v1[0],
-                v1[1],
-                v1[2],
-                p2[0],
-                p2[1],
-                p2[2],
-            )
-
-        n_segs = 2 if is_collinear else _CURVE_SEGMENTS
+        # AE takes no straight-line shortcut, whereas lottie collapses any
+        # segment whose handles are COLLINEAR with the chord to two samples -
+        # which also discards the easing such a segment still carries along
+        # that line. Handles sitting exactly ON the endpoints
+        # are the only genuinely uniform case, and those never reach here:
+        # `_interpolate_spatial_bezier` lerps them as `straight_path`.
+        n_segs = _CURVE_SEGMENTS
 
         self.points: list[list[float]] = []
         self.partial_lengths: list[float] = []
@@ -778,7 +718,7 @@ def roving_keyframe_times(keyframes: list[Keyframe]) -> dict[int, float]:
     The metric is the length of the actual curve, not the chord between
     keyframes - measured on AE 2026 with one segment bowed by +/-400 px
     tangents, where chord length predicts 0.667 s and AE produced 2.2205 s.
-    The 150-sample approximation in `_BezierPathData` reproduces AE's stored
+    The 128-sample table in `_BezierPathData` reproduces AE's stored
     times to the exact timebase unit for both that case and a flattened one.
 
     Returns:

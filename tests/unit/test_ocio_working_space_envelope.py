@@ -2,7 +2,7 @@
 
 Every expected string below is the exact `PwCs` `Utf8` value After Effects
 itself stored in the matching sample - the same four selection kinds the
-output color space uses (see the `color-management-write-rev-eng` notes).
+output color space uses.
 
 The AE25/AE26 pair is the controlled experiment: the same scene, the same
 pick, two AE versions, byte-identical envelopes. `aces_acescg_yo.aep` is AE

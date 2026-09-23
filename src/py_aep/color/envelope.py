@@ -6,7 +6,7 @@ chunk's `.value`:
 
     {"baseColorProfile":{"colorProfileData":"<base64>","colorProfileName":"<name>"},"baseProfileType":<1|2|3>}
 
-`baseProfileType` (see `color-management-write-rev-eng` notes):
+`baseProfileType`:
 
 - `2` = Adobe ICC: `colorProfileData` is the raw ICC profile bytes (base64),
   `bytes[36:40] == b"acsp"`.

@@ -3,10 +3,10 @@
 
 After Effects identifies an OCIO output color space by a 16-byte id stored in the
 render-queue output module (`output_profile_id`). That id is the color space's
-`dvamediatypes::color::ColorSpace` `Guid`, computed as a two-stage MurmurHash3
-(see `dvacore::utility::Murmur3MixerState`), reverse-engineered from
-`dvamediatypes.dll` / `dvacore.dll`. The only non-standard detail is the seed:
-AE initializes both 64-bit accumulators with `0xC29DE5B8264CD69E` instead of 0.
+`Guid`, computed as a two-stage MurmurHash3. The only non-standard detail is the
+seed: AE initializes both 64-bit accumulators with `0xC29DE5B8264CD69E` instead
+of 0. Verified against the ids AE itself stores in the `output_color_space_ocio`
+samples.
 
 This module is the standard `MurmurHash3_x64_128` (Austin Appleby), parameterized
 by that seed.
@@ -18,8 +18,8 @@ _MASK = (1 << 64) - 1
 _C1 = 0x87C37B91114253D5
 _C2 = 0x4CF5AD432745937F
 
-#: The seed After Effects loads into both accumulators (dvacore Murmur3MixerState).
-DVA_SEED = 0xC29DE5B8264CD69E
+#: The seed After Effects loads into both accumulators.
+GUID_SEED = 0xC29DE5B8264CD69E
 
 
 def _rotl64(x: int, r: int) -> int:
@@ -39,7 +39,7 @@ def murmurhash3_x64_128(data: bytes, seed: int = 0) -> bytes:
     """Return the 16-byte MurmurHash3 x64 128-bit digest of `data`.
 
     `seed` initializes both 64-bit accumulators (After Effects uses
-    [DVA_SEED][py_aep.color.murmur3.DVA_SEED]). The output is `h1` then `h2`,
+    [GUID_SEED][py_aep.color.murmur3.GUID_SEED]). The output is `h1` then `h2`,
     each little-endian - the byte order After Effects stores in a `Guid`.
     """
     h1 = seed & _MASK
@@ -108,7 +108,7 @@ def murmurhash3_x64_128(data: bytes, seed: int = 0) -> bytes:
     return h1.to_bytes(8, "little") + h2.to_bytes(8, "little")
 
 
-def dva_guid(data: bytes) -> bytes:
+def ae_guid(data: bytes) -> bytes:
     """Return the 16-byte After Effects `Guid` for `data` (MurmurHash3 x64 128
-    with After Effects' [DVA_SEED][py_aep.color.murmur3.DVA_SEED])."""
-    return murmurhash3_x64_128(data, DVA_SEED)
+    with After Effects' [GUID_SEED][py_aep.color.murmur3.GUID_SEED])."""
+    return murmurhash3_x64_128(data, GUID_SEED)

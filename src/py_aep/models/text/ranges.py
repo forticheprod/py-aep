@@ -854,7 +854,7 @@ class RangeField(Generic[T]):
 
     Writable fields split the style runs at the range boundaries, write
     the key into the covered runs and re-merge adjacent identical runs,
-    mirroring AE's probed behavior (see plans/text-range-writes.md).
+    mirroring AE's probed behavior.
     Fields whose writes need coupled side effects (kerning runs,
     leading/auto-leading) stay `read_only` until their phase lands.
 

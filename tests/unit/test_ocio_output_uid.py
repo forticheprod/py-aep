@@ -1,8 +1,7 @@
 """The OCIO output-color-space UID = MurmurHash3-128 of a color-profile envelope.
 
-Reverse-engineered from AE's `dvamediatypes.dll` / `dvacore.dll` (see the
-`color-management-write-rev-eng` notes). Every expected id below is the value
-After Effects itself stored in the matching sample under
+Every expected id below is the value After Effects itself stored in the matching
+sample under
 `samples/unused/output_module/output_color_space_ocio/` (AE ground truth).
 """
 
@@ -12,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from py_aep.color.murmur3 import DVA_SEED, murmurhash3_x64_128
+from py_aep.color.murmur3 import GUID_SEED, murmurhash3_x64_128
 from py_aep.color.ocio import (
     ocio_color_space_for_profile_id,
     ocio_output_profile_id,
@@ -28,8 +27,8 @@ def test_murmurhash3_empty_is_zero() -> None:
     assert murmurhash3_x64_128(b"", 0) == b"\x00" * 16
 
 
-def test_dva_seed() -> None:
-    assert DVA_SEED == 0xC29DE5B8264CD69E
+def test_guid_seed() -> None:
+    assert GUID_SEED == 0xC29DE5B8264CD69E
 
 
 @pytest.mark.parametrize(

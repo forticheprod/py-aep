@@ -9,7 +9,7 @@ either on open, so py_aep has to reproduce the box.
 The box is **not** the true visual extent of the art. It is a deliberately
 conservative estimate that After Effects computes from the page content
 stream, reverse-engineered against AE 2026 and reproduced here exactly for
-123 probe layers (see `.claude/plans/ai-layer-size.md`):
+123 probe layers:
 
 - the box is the union of one contribution per painting operator, with the
   expansion applied **per contribution**, never to the union;
