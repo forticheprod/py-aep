@@ -1607,6 +1607,52 @@ def _probe_hdr(fp: IO[bytes]) -> MediaInfo:
 
 
 # ---------------------------------------------------------------------------
+# Canon CRW (CIFF) - Camera Raw still
+# ---------------------------------------------------------------------------
+
+_CIFF_IMAGE_INFO = 0x1810
+
+
+def _probe_crw(fp: IO[bytes]) -> MediaInfo:
+    data = fp.read()
+    order = {b"II": "<", b"MM": ">"}.get(data[:2])
+    if order is None or data[6:14] != b"HEAPCCDR":
+        raise ValueError("Not a Canon CRW file (missing CIFF heap header)")
+    (header_length,) = struct.unpack(order + "I", data[2:6])
+    info = _ciff_record(data, order, header_length, len(data), _CIFF_IMAGE_INFO)
+    if info is None:
+        raise ValueError("CRW file has no ImageInfo record")
+    # Camera Raw develops the image at the ImageInfo size, turned by its
+    # rotation (AE 2026 reports a CRW marked 90 or 270 degrees upright).
+    width, height, _pixel_aspect, rotation = struct.unpack(order + "IIfi", info[:16])
+    if rotation % 180 == 90:
+        width, height = height, width
+    return MediaInfo(width=width, height=height)
+
+
+def _ciff_record(
+    data: bytes, order: str, start: int, end: int, wanted: int
+) -> bytes | None:
+    """The body of the first `wanted` record in the CIFF heap `[start, end)`."""
+    (table,) = struct.unpack(order + "I", data[end - 4 : end])
+    table += start
+    (count,) = struct.unpack(order + "H", data[table : table + 2])
+    for i in range(count):
+        entry = table + 2 + i * 10
+        tag, size, offset = struct.unpack(order + "HII", data[entry : entry + 10])
+        if tag & 0xC000:  # value stored in the entry itself: not a heap
+            continue
+        body = start + offset
+        if tag & 0x3800 in (0x2800, 0x3000):  # a sub-heap
+            found = _ciff_record(data, order, body, body + size, wanted)
+            if found is not None:
+                return found
+        elif tag & 0x3FFF == wanted:
+            return data[body : body + size]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # AI / EPS / PDF - vector page dimensions (still image, TEXT source format)
 # ---------------------------------------------------------------------------
 
@@ -1940,6 +1986,7 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".mpeg": _probe_mpeg,
     ".mpg": _probe_mpeg,
     ".hdr": _probe_hdr,
+    ".crw": _probe_crw,
     ".ai": _probe_text,
     ".eps": _probe_text,
     ".pdf": _probe_text,

@@ -566,6 +566,18 @@ def build_rhdr_opti_data() -> bytes:
     )
 
 
+def build_craw_opti_data() -> bytes:
+    """Build the 30-byte Camera Raw (`Craw`) `opti` asset-info body.
+
+    The `RHDR` layout with a zero flag word: what AE 2026 writes for a
+    camera raw file it holds no develop settings for (it rewrites a generic
+    `opti` into this on resave). An import carries its default settings as
+    base64 XMP after the header instead, which renders the same image
+    (compared frame by frame). The dimensions live in `sspc`.
+    """
+    return b"Craw" + b"\x00\x2e" + struct.pack(">I", 30) + b"\x00" * 20
+
+
 def build_text_opti_data(width: int, height: int) -> bytes:
     """Build the 596-byte `TEXT` `opti` asset-info body for AI/EPS/PDF.
 

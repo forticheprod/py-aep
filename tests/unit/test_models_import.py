@@ -303,6 +303,33 @@ class TestProbeFormatVariants:
         with pytest.raises(ValueError):
             _probe_hdr(BytesIO(data))
 
+    @pytest.mark.parametrize(
+        ("rotation", "size"),
+        [
+            (0, (1536, 1024)),
+            (90, (1024, 1536)),
+            (180, (1536, 1024)),
+            (270, (1024, 1536)),
+        ],
+    )
+    def test_crw_image_info_rotation(self, rotation: int, size: tuple) -> None:
+        """Camera Raw develops a CRW turned by its ImageInfo rotation: AE 2026
+        reports the sample marked 90 or 270 degrees as 1024x1536."""
+        import struct
+
+        data = (ASSETS / "crw.crw").read_bytes()
+        record = struct.pack("<IIfi", 1536, 1024, 1.0, 0)
+        assert data.count(record) == 1
+        rotated = data.replace(record, struct.pack("<IIfi", 1536, 1024, 1.0, rotation))
+        info = probe_media(ASSETS / "crw.crw", data=rotated)
+        assert (info.width, info.height) == size
+
+    def test_crw_bad_signature_raises_valueerror(self) -> None:
+        with pytest.raises(ValueError):
+            probe_media(
+                Path("x.crw"), data=b"II\x1a\x00\x00\x00NOTACIFF" + b"\x00" * 16
+            )
+
     def test_mgjson_tolerant_timestamps(self) -> None:
         """Sample times with sub-second precision / offsets that Python 3.7's
         strict fromisoformat rejects must parse, not crash the probe."""
@@ -397,6 +424,13 @@ class TestGapOptiBuilders:
         data = build_rhdr_opti_data()
         assert len(data) == 30
         assert data[:4] == b"RHDR"
+
+    def test_build_craw_opti_data(self) -> None:
+        from py_aep.binary.footage_chunks import build_craw_opti_data
+
+        # What AE 2026 writes back for a camera raw file without develop
+        # settings (its heap-address tail zeroed).
+        assert build_craw_opti_data() == b"Craw\x00\x2e\x00\x00\x00\x1e" + b"\x00" * 20
 
     def test_build_text_opti_data(self) -> None:
         import struct

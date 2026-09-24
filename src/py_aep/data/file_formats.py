@@ -114,6 +114,8 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     ".wmv": FileFormat("WMED", False, "generic"),
     # Radiance HDR - format-specific 30-byte opti.
     ".hdr": FileFormat("RHDR", False, "hdr"),
+    # Canon CRW, developed by Camera Raw - format-specific 30-byte opti.
+    ".crw": FileFormat("Craw", False, "craw"),
     # Vector / PostScript / PDF - shared 596-byte TEXT opti.
     ".ai": FileFormat("TEXT", False, "text"),
     ".eps": FileFormat("TEXT", False, "text"),
@@ -122,10 +124,12 @@ _FILE_FORMATS: dict[str, FileFormat] = {
 
 
 # Formats AE imports as footage but py-aep does NOT support, with reasons:
-#   .c4d  -> "C4DC" - opti is a ~357KB blob embedding the absolute file path and
-#            Cineware render state; not reconstructable without Cineware
-#   .crw / .nef -> "Craw" - opti embeds per-file Camera Raw XMP decode settings;
-#            not reconstructable without Adobe Camera Raw
+#   .c4d  -> "C4DC" - AE accepts the generic opti (it rebuilds its own on
+#            save), but the footage size, frame rate and duration come from the
+#            scene's render settings and document timeline, which need a Cinema
+#            4D scene parser
+#   .nef  -> "Craw" - Camera Raw develops it at a per-camera crop the file
+#            does not record (a Nikon D1's 2012x1324 sensor opens 2000x1312)
 # AE refuses .avi (codec), .flv/.ps (invalid type) on import. .ma imports
 # only as a cropped comp (not footage) - a separate comp-conversion feature.
 
@@ -172,6 +176,7 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".bmp": frozenset({_FOOTAGE}),
     ".gif": frozenset({_FOOTAGE}),
     ".hdr": frozenset({_FOOTAGE}),
+    ".crw": frozenset({_FOOTAGE}),
     # Video - footage or project.
     ".mov": frozenset({_FOOTAGE, _PROJECT}),
     ".m4v": frozenset({_FOOTAGE}),

@@ -229,6 +229,10 @@ from a static file rather than through AE's live media engine:
 
 - **`PROJECT` import is not supported** - importing an `.aep`/`.aet` raises. An
   extension a requested import type does not cover also raises `ValueError`.
+- **Nikon NEF and Cinema 4D scenes are not importable** (`ValueError`). Camera
+  Raw develops a NEF at a per-camera crop the file does not record, and a
+  `.c4d` takes its size, frame rate and duration from the scene's render
+  settings and timeline, which py_aep does not parse. Canon CRW imports.
 - **SVG** imports only as `COMP_CROPPED_LAYERS` (native vector shape layers);
   importing an SVG as `FOOTAGE` raises. `<text>`/`<tspan>` require the
   `font-family` to be installed - an unresolved font is skipped - and raster
