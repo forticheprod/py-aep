@@ -1899,6 +1899,83 @@ class TestCanSetExpression:
                 assert prop is not None, f"layer[{idx}] {mn} not found"
                 assert prop.can_set_expression is False, f"layer[{idx}] {mn}"
 
+    def test_parallel_light_rotation(self) -> None:
+        """A parallel light aims at its point of interest: no rotation
+        expressions."""
+        project = parse_project(LAYER_SAMPLES_DIR / "lightType.aep")
+        light = get_comp(project, "lightType_PARALLEL").layers[0]
+        for mn in ("ADBE Orientation", "ADBE Rotate X", "ADBE Rotate Z"):
+            prop = _find_property(light, mn)
+            assert prop is not None, f"{mn} not found"
+            assert prop.can_set_expression is False, mn
+
+    def test_environment_light(self) -> None:
+        """An environment light takes expressions on its rotations only."""
+        project = parse_project(LAYER_SAMPLES_DIR / "light_source_default.aep")
+        light = get_comp(project, "crystal").layers[0]
+        transform = light.property("ADBE Transform Group")
+        assert transform.property("ADBE Rotate X").can_set_expression is True
+        assert transform.property("ADBE Position").can_set_expression is False
+        options = light.property("ADBE Light Options Group")
+        for mn in (
+            "ADBE Light Color",
+            "ADBE Light Falloff Type",
+            "ADBE Light Shadow Diffusion",
+        ):
+            assert options.property(mn).can_set_expression is False, mn
+
+    def test_3d_model_layer(self) -> None:
+        """A 3D model layer hides the material options its model replaces
+        and keeps plane bending and its own Shadow Color."""
+        project = parse_project(LAYER_SAMPLES_DIR / "light_source_default.aep")
+        model = get_comp(project, "crystal").layers[2]
+        materials = model.property("ADBE Material Options Group")
+        for mn in (
+            "ADBE Light Transmission",
+            "ADBE Metal Coefficient",
+            "ADBE Shadow Color",
+        ):
+            assert materials.property(mn).can_set_expression is False, mn
+        plane = model.property("ADBE Plane Options Group")
+        assert plane.property("ADBE Plane Curvature").can_set_expression is True
+        compositing = model.property("ADBE Compositing Options Group")
+        assert compositing.property("ADBE Shadow Color").can_set_expression is True
+
+    def test_effect_params_follow_their_type(self) -> None:
+        """Effect parameters take expressions by parameter type, whatever
+        their name; a mask reference does not."""
+        effects = self._get_main_comp_layer(1).property("ADBE Effect Parade")
+        drop_shadow = effects.property("ADBE Drop Shadow")
+        assert drop_shadow.property("Distance").can_set_expression is True
+        assert drop_shadow.property("Softness").can_set_expression is True
+        fill = effects.property("ADBE Fill")
+        assert fill.property("Color").can_set_expression is True
+        assert fill.property("Fill Mask").can_set_expression is False
+
+    def test_stroke_miter_limit_needs_a_miter_join(self) -> None:
+        """AE shows a stroke's Miter Limit only while it joins by miter."""
+        layer = parse_project(SAMPLES_DIR / "gradient.aep").compositions[0].layers[0]
+        stroke = layer.property("ADBE Root Vectors Group").property(
+            "ADBE Vector Graphic - G-Stroke"
+        )
+        assert stroke.property("ADBE Vector Stroke Line Join").value == 2  # round
+        miter = stroke.property("ADBE Vector Stroke Miter Limit")
+        assert miter.can_set_expression is False
+
+
+class TestCanVaryOverTime:
+    """Tests for Property.can_vary_over_time."""
+
+    def test_puppet_engine_cannot_vary(self) -> None:
+        """The Puppet Engine popup is fixed; its sibling toggles vary."""
+        layer = get_layer(parse_project(SAMPLES_DIR / "effects.aep"), "effect_puppet")
+        puppet = layer.property("ADBE Effect Parade").property("ADBE FreePin3")
+        engine = puppet.property("ADBE FreePin3 Puppet Engine")
+        assert engine.can_vary_over_time is False
+        assert engine.can_set_expression is False
+        auto_rotate = puppet.property("ADBE FreePin3 Auto Rotate Pins")
+        assert auto_rotate.can_vary_over_time is True
+
 
 class TestCanAddProperty:
     """Tests for PropertyGroup.can_add_property()."""

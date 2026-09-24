@@ -230,7 +230,9 @@ _NAME_OVERRIDES: dict[str, str] = {
 # prediction matches this table (and the ExtendScript JSON, when
 # available).
 _CANVARY_OVERRIDES: dict[str, bool] = {
-    "ADBE Light Falloff Type": True,  # light option - no pard exists
+    # Hold-only (AE's interpolation mask for it is 4), which still varies;
+    # the tdb4 byte py reads marks only the interpolating masks.
+    "ADBE Light Falloff Type": True,
     # Puppet pin internals are not regular effect parameters; the engine
     # dropdown's pard flags even disagree with ExtendScript.
     "ADBE FreePin3 Outlines": False,
@@ -244,37 +246,6 @@ _CANVARY_OVERRIDES: dict[str, bool] = {
 # can_set_expression overrides
 # ---------------------------------------------------------------------------
 
-# Exact true exceptions to the broad can_set_expression reduction rules.
-# These are the sampled outliers that remain expressionable even though
-# their surrounding raw signatures are overwhelmingly false.
-_CANSETEXPR_TRUE_OVERRIDES: frozenset[str] = frozenset(
-    {
-        "ADBE Block Dissolve-0002",
-        "ADBE Block Dissolve-0003",
-        "ADBE Cell Pattern-0003",
-        "ADBE Circle-0004",
-        "ADBE CurvesCustom-0001",
-        "ADBE Easy Levels-0002",
-        "ADBE Easy Levels2-0002",
-        "ADBE Geometry2-0003",
-        "ADBE Geometry2-0004",
-        "ADBE HUE SATURATION-0003",
-        "ADBE LIQUIFY-0014",
-        "ADBE Lightning 2-0003",
-        "ADBE Lumetri-0032",
-        "ADBE Lumetri-0047",
-        "ADBE Lumetri-0073",
-        "ADBE Lumetri-0085",
-        "ADBE MESH WARP-0004",
-        "ADBE Paint Bucket-0005",
-        "ADBE Point3D Control-0001",
-        "ADBE RESHAPE-0006",
-        "APC Colorama-0012",
-        "ISL MochaShapeImporter-0001",
-        "ISL MochaShapeImporter-0012",
-    }
-)
-
 # Match names where canSetExpression is always False regardless of context.
 _CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset(
     {
@@ -282,10 +253,8 @@ _CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset(
         "ADBE Paint Clone Time",
         "ADBE Paint Clone Position",
         "ADBE Paint Clone Time Shift",
-        # Material coefficients (always-false, not 3D-dependent)
-        "ADBE Reflection Coefficient",
-        "ADBE Glossiness Coefficient",
-        "ADBE Fresnel Coefficient",
+        # Material coefficients no renderer shows (probed on AE 2026 under
+        # Classic 3D, Advanced 3D and Cinema 4D)
         "ADBE Transparency Coefficient",
         "ADBE Transp Rolloff",
         "ADBE Index of Refraction",
@@ -377,19 +346,17 @@ _CANSETEXPR_FALSE_OVERRIDES: frozenset[str] = frozenset(
         "ADBE Vec3D Back IOR",
         # Replace Source / Item Cache Entry
         "ADBE Layer Source Alternate",
-        # Shadow Color (true=5 vs false=1024; accept rare mismatches)
-        "ADBE Shadow Color",
-        # Match-specific effect params whose broader signatures are still mixed.
+        # A shape gradient's color stops (ExtendScript, gradient.aep: false
+        # on both the fill and the stroke, though they are keyframeable)
+        "ADBE Vector Grad Colors",
     }
 )
 
 # Match names never expressionable on parametric mesh layers (AE 2026
 # ExtendScript evidence from parametric_meshes.json): the material
-# texture-projection params, Displacement Intensity, and Light
-# Transmission (expressionable on regular 3D AV layers, not on mesh).
+# texture-projection params and Displacement Intensity.
 _PARAMETRIC_MESH_NO_EXPRESSION: frozenset[str] = frozenset(
     {
-        "ADBE Light Transmission",
         "ADBE Displacement Intensity",
         "ADBE3D Material Projection",
         "ADBE3D Material Texturre Offset",
@@ -433,16 +400,6 @@ _PARAMETRIC_MESH_CHECKBOX_STREAMS: frozenset[str] = frozenset(
     }
 )
 
-# Generic always-False / 2D-only rules that DO allow expressions on
-# parametric mesh layers (AE 2026 ExtendScript evidence).
-_PARAMETRIC_MESH_EXPRESSION_OK: frozenset[str] = frozenset(
-    {
-        "ADBE Shadow Color",
-        "ADBE Plane Curvature",
-        "ADBE Plane Subdivision",
-    }
-)
-
 # Match names that are expressionable only on 3D AV layers.
 _CANSETEXPR_3D_ONLY: frozenset[str] = frozenset(
     {
@@ -454,15 +411,55 @@ _CANSETEXPR_3D_ONLY: frozenset[str] = frozenset(
         "ADBE Specular Coefficient",
         "ADBE Shininess Coefficient",
         "ADBE Metal Coefficient",
-        "ADBE Light Transmission",
     }
 )
 
-# Match names that are expressionable only on 2D layers (not 3D).
+# Match names a 3D layer shows under one renderer only (probed on AE 2026
+# across Classic 3D, Advanced 3D and Cinema 4D): light transmission is
+# Classic 3D's, colored shadows Advanced 3D's, reflections Cinema 4D's.
+# Keyed by `CompItem.renderer` name.
+_CANSETEXPR_RENDERER_3D_ONLY: dict[str, str] = {
+    "ADBE Light Transmission": "ADBE Advanced 3d",
+    "ADBE Shadow Color": "ADBE Calder",
+    "ADBE Reflection Coefficient": "ADBE Ernst",
+    "ADBE Glossiness Coefficient": "ADBE Ernst",
+    "ADBE Fresnel Coefficient": "ADBE Ernst",
+}
+
+# Match names hidden on a 3D layer drawn by Classic 3D, which cannot bend it
+# (a 3D model or parametric mesh layer keeps them under every renderer).
 _CANSETEXPR_2D_ONLY: frozenset[str] = frozenset(
     {
         "ADBE Plane Curvature",
         "ADBE Plane Subdivision",
+    }
+)
+
+# Extrusion depths, hidden on a 3D text or shape layer drawn by Classic 3D,
+# which cannot extrude (probed on AE 2026; a 3D footage layer keeps them).
+_CANSETEXPR_EXTRUSION_DEPTHS: frozenset[str] = frozenset(
+    {
+        "ADBE Bevel Depth",
+        "ADBE Hole Bevel Depth",
+        "ADBE Extrsn Depth",
+    }
+)
+
+# A 3D model brings its own materials, so its layer hides every renderer's
+# material options (probed on AE 2026 under Classic 3D, Advanced 3D and
+# Cinema 4D).
+_MODEL_LAYER_HIDDEN_MATERIALS: frozenset[str] = frozenset(
+    {
+        "ADBE Ambient Coefficient",
+        "ADBE Diffuse Coefficient",
+        "ADBE Specular Coefficient",
+        "ADBE Shininess Coefficient",
+        "ADBE Metal Coefficient",
+        "ADBE Shadow Color",
+        "ADBE Light Transmission",
+        "ADBE Reflection Coefficient",
+        "ADBE Glossiness Coefficient",
+        "ADBE Fresnel Coefficient",
     }
 )
 
@@ -502,7 +499,7 @@ _LIGHT_AMBIENT_NO_EXPRESSION: frozenset[str] = frozenset(
     }
 )
 
-# Additional match names not expressionable on point / environment lights.
+# Additional match names not expressionable on point lights.
 # Point lights have Position but not Orientation/Anchor/RotateX/Y/Z.
 _LIGHT_POINT_NO_EXPRESSION: frozenset[str] = frozenset(
     {
@@ -520,9 +517,31 @@ _LIGHT_POINT_NO_EXPRESSION: frozenset[str] = frozenset(
 # Only Cone properties are Spot-exclusive.
 _LIGHT_SPOT_NO_EXPRESSION: frozenset[str] = frozenset()
 
+# A parallel light is aimed by its point of interest alone.
 _LIGHT_PARALLEL_NO_EXPRESSION: frozenset[str] = frozenset(
     {
+        "ADBE Orientation",
+        "ADBE Rotate X",
+        "ADBE Rotate Y",
+        "ADBE Rotate Z",
         "ADBE Light Cone Angle",
         "ADBE Light Cone Feather 2",
+        "ADBE Light Shadow Diffusion",
+    }
+)
+
+# An environment light has no position and takes its color from its source,
+# but rotates like an ambient light.
+_LIGHT_ENVIRONMENT_NO_EXPRESSION: frozenset[str] = frozenset(
+    {
+        "ADBE Position",
+        "ADBE Anchor Point",
+        "ADBE Orientation",
+        "ADBE Rotate Z",
+        "ADBE Light Color",
+        "ADBE Light Cone Angle",
+        "ADBE Light Cone Feather 2",
+        "ADBE Light Falloff Type",
+        "ADBE Light Shadow Diffusion",
     }
 )

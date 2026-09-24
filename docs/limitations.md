@@ -5,21 +5,21 @@ parsing a binary file format rather than querying a running After Effects
 instance.
 
 
-## Property.value_at_time accuracy on spatial Properties (~0.015 Maximum Error)
+## Property.value_at_time on spatial Properties
 
-`Property.value_at_time()` for spatial properties (position, 2D/3D) has a
-systematic ±0.015 deviation from After Effects' `valueAtTime()`. This is
-**not** a bug in the parser - it is caused by After Effects' internal spatial
-evaluation pipeline.
+`Property.value_at_time()` on a spatial property (Position, Anchor Point,
+an effect point) reproduces After Effects' own motion-path model, so it
+matches `valueAtTime()` to the digits ExtendScript prints (verified to
+1e-9 against AE 2026, including non-square pixel comps, normalized effect
+points, roving runs and temporal auto-bezier) - including where AE itself
+departs from the exact curve:
 
-**Evidence:** even a perfectly straight, LINEAR-interpolated path shows a
-sinusoidal deviation pattern in After Effects' own output, peaking at ±0.011.
-The same deviation appears regardless of whether the keyframe interpolation
-type is LINEAR or BEZIER.
-
-After Effects appears to process all spatial properties through an arc-length
-reparameterisation pipeline (likely a polyline or spline approximation) that
-does not degrade gracefully to exact linear interpolation for straight paths.
+- **AE is not exact.** It measures distance along the path approximately,
+  so even a straight LINEAR path is up to ~0.01 px off the exact line (a
+  0->100 px segment reports 50.00078 at half time).
+- **An in-side HOLD on a spatial property holds at the segment's START**,
+  where a non-spatial property jumps to the next key's value - both as AE
+  does.
 
 ## Property.value_at_time on paths and Orientation
 
@@ -129,11 +129,23 @@ even though After Effects displays a unit string in the UI.
 
 ### Property.canSetExpression
 
-`Property.can_set_expression` is resolved from binary signals plus a pure-logic
-model of what After Effects decides at runtime (layer type, 3D, separated
-position dimensions, light type). The residual mismatches against ExtendScript
-are instance-state cases the file cannot capture - e.g. plugin-supervised
-parameters whose enablement depends on the live values of other parameters.
+After Effects allows an expression on a property the Timeline shows, whose
+value is not empty, that can vary over time, and - for an effect parameter -
+whose parameter type is not a layer or mask reference. What the Timeline hides
+depends on the layer (a 3D-only property on a 2D layer, another light type's
+options, another renderer's material options) and, for an effect, on its
+plugin. For a layer property, `Property.can_set_expression` models the layer's
+state, so it follows py-side edits (the 3D switch, the light type, the comp's
+renderer). For an effect parameter it reads the hidden flag After Effects
+stores with each property.
+
+Against every ExtendScript `canSetExpression` in the sample corpus, and on
+solid, text, shape, 3D model and parametric mesh layers under each of the
+Classic 3D, Advanced 3D and Cinema 4D renderers, the result matches except for
+one case: a mask whose path was never stored reports no expressionable path in
+py_aep, where After Effects shows a default rectangle. An effect parameter's
+plugin can also hide or show parameters from the live values of others; py_aep
+reports the state the file was saved in.
 
 ### Property.min_value / Property.max_value
 

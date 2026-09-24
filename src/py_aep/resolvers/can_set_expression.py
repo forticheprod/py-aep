@@ -1,8 +1,20 @@
 """Resolver for `Property.can_set_expression`.
 
-Determines whether an After Effects expression can be set on a given
-property.  Rules are derived from sample-based analysis of the AE binary
-format, with explicit match-name overrides for known outliers.
+After Effects allows an expression on a stream the Timeline shows, whose
+value is not empty, that can vary over time, and - for an effect
+parameter - whose parameter type is not a layer, a mask reference or a
+group. Checked against every ExtendScript `canSetExpression` in the sample
+corpus.
+
+What the Timeline hides depends, for a layer property, on the layer's
+state (a 3D-only property on a 2D layer, another renderer's material
+options, another light type's options), which the `overrides` tables state. For
+an effect parameter it depends on the effect's plugin: AE stores that in
+the stream's `tdsb`, recomputing it when it opens a project, so a stored
+flag is trusted there and a synthesized parameter falls back on its
+`PF_PUI_INVISIBLE` flag. Layer properties never read the stored flag: it
+would go stale on a py-side edit of the layer (the 3-D switch, the light
+type, the comp renderer) and stay stale once saved.
 """
 
 from __future__ import annotations
@@ -14,15 +26,17 @@ from py_aep.models.properties.overrides import (
     _CAMERA_NO_EXPRESSION,
     _CANSETEXPR_2D_ONLY,
     _CANSETEXPR_3D_ONLY,
+    _CANSETEXPR_EXTRUSION_DEPTHS,
     _CANSETEXPR_FALSE_OVERRIDES,
-    _CANSETEXPR_TRUE_OVERRIDES,
+    _CANSETEXPR_RENDERER_3D_ONLY,
     _LIGHT_AMBIENT_NO_EXPRESSION,
+    _LIGHT_ENVIRONMENT_NO_EXPRESSION,
     _LIGHT_NO_EXPRESSION,
     _LIGHT_PARALLEL_NO_EXPRESSION,
     _LIGHT_POINT_NO_EXPRESSION,
     _LIGHT_SPOT_NO_EXPRESSION,
+    _MODEL_LAYER_HIDDEN_MATERIALS,
     _PARAMETRIC_MESH_CHECKBOX_STREAMS,
-    _PARAMETRIC_MESH_EXPRESSION_OK,
     _PARAMETRIC_MESH_GROUP_TYPE,
     _PARAMETRIC_MESH_NO_EXPRESSION,
 )
@@ -44,28 +58,31 @@ _PVT_ALWAYS_FALSE: frozenset[int] = frozenset(
     {
         PropertyValueType.NO_VALUE,
         PropertyValueType.MARKER,
-        PropertyValueType.LAYER_INDEX,
-        PropertyValueType.CUSTOM_VALUE,
     }
 )
 
-# Effect properties matching one of these (control_type, vector, spatial,
-# integer) tuples are non-expressionable unless explicitly listed in
-# _CANSETEXPR_TRUE_OVERRIDES.
-#
-# Derived from sample analysis: within effects, these tdb4 flag
-# combinations correspond to UI controls (integer sliders, boolean
-# toggles, color pickers, 2D/3D point controls) that AE does not allow
-# expressions on.
-_EFFECT_NON_EXPRESSIONABLE: frozenset[tuple[int, bool, bool, bool]] = frozenset(
+# Effect parameter types that never take an expression: a layer or mask
+# reference, and group markers.
+_NON_EXPRESSION_PARAM_TYPES: frozenset[int] = frozenset(
     {
-        (PropertyControlType.SCALAR, False, False, True),  # integer sliders
-        (PropertyControlType.BOOLEAN, False, False, True),  # boolean toggles
-        (PropertyControlType.COLOR, False, False, False),  # color pickers
-        (PropertyControlType.TWO_D, False, True, True),  # integer 2D points
-        (PropertyControlType.THREE_D, True, True, False),  # 3D position controls
+        PropertyControlType.LAYER,
+        PropertyControlType.PAINT_GROUP,
+        PropertyControlType.MASK,
+        PropertyControlType.GROUP,
+        PropertyControlType.UNKNOWN_14,
     }
 )
+
+# Hidden, but still expressionable: AE exempts these paint streams.
+_HIDDEN_BUT_EXPRESSIONABLE: frozenset[str] = frozenset(
+    {"ADBE Paint Transfer Mode", "ADBE Paint Duration"}
+)
+
+# `CompItem.renderer` of Classic 3D, which draws a 3D layer as a flat plane.
+_CLASSIC_3D = "ADBE Advanced 3d"
+
+# Shape stroke Line Join value for a miter join.
+_MITER_JOIN = 1
 
 
 def resolve_can_set_expression(prop: Property) -> bool:
@@ -114,27 +131,22 @@ def resolve_can_set_expression(prop: Property) -> bool:
     if not prop.can_vary_over_time:
         return False
 
-    if mn in _CANSETEXPR_TRUE_OVERRIDES:
-        return True
-
-    # Effect parameters whose pard definition disables expressions.
-    if prop._expressions_disabled:
-        return False
-
     if pvt in _PVT_ALWAYS_FALSE:
         return False
 
-    # Non-expressionable effect signatures - a small set of
-    # (control_type, vector, spatial, integer) flag combinations.
-    if prop._is_in_effect() and not prop.is_dropdown_effect:
-        key = (
-            prop.property_control_type,
-            bool(prop._vector),
-            bool(prop._is_spatial_raw),
-            bool(prop._integer),
-        )
-        if key in _EFFECT_NON_EXPRESSIONABLE:
+    if prop._is_in_effect():
+        # What the plugin hides: AE's stored flag, then the parameter's
+        # PF_PUI_INVISIBLE flag, all a synthesized parameter has.
+        tdsb = prop._tdsb
+        stored_hidden = tdsb is not None and not tdsb.synthetic and tdsb.hidden
+        if stored_hidden and mn not in _HIDDEN_BUT_EXPRESSIONABLE:
             return False
+        if prop._expressions_disabled:
+            return False
+        return prop.property_control_type not in _NON_EXPRESSION_PARAM_TYPES
+
+    if pvt in (PropertyValueType.LAYER_INDEX, PropertyValueType.CUSTOM_VALUE):
+        return False
 
     layer = prop._containing_layer
     layer_type = layer._ldta.layer_type
@@ -162,13 +174,44 @@ def resolve_can_set_expression(prop: Property) -> bool:
     if layer_type == 1:
         return _can_set_expression_light(layer, mn)
 
-    # AV/Text/Shape/3DModel: 3D-dependent properties
-    if mn in _CANSETEXPR_3D_ONLY:
-        return bool(layer._ldta.three_d_layer)
+    three_d = bool(layer._ldta.three_d_layer)
+    renderer = layer.containing_comp.renderer
 
-    # Properties expressionable only on 2D layers
+    if (
+        layer_type == 5
+        and mn in _MODEL_LAYER_HIDDEN_MATERIALS
+        and parent is not None
+        and parent.match_name == "ADBE Material Options Group"
+    ):
+        return False
+
+    if mn in _CANSETEXPR_3D_ONLY:
+        return three_d
+
+    # A mesh or model layer's own Shadow Color, under Compositing Options,
+    # shows under every renderer (probed on AE 2026).
+    if (
+        mn == "ADBE Shadow Color"
+        and parent is not None
+        and parent.match_name == "ADBE Compositing Options Group"
+    ):
+        return True
+
+    only_under = _CANSETEXPR_RENDERER_3D_ONLY.get(mn)
+    if only_under is not None:
+        return three_d and renderer == only_under
+
+    classic_3d = three_d and renderer == _CLASSIC_3D
     if mn in _CANSETEXPR_2D_ONLY:
-        return layer.null_layer or not bool(layer._ldta.three_d_layer)
+        return layer.null_layer or layer_type in (5, 7) or not classic_3d
+
+    if mn in _CANSETEXPR_EXTRUSION_DEPTHS:
+        return not (classic_3d and layer_type in (3, 4))
+
+    # AE shows a stroke's miter limit only while it joins by miter.
+    if mn == "ADBE Vector Stroke Miter Limit" and parent is not None:
+        join = parent.property("ADBE Vector Stroke Line Join")
+        return join.value == _MITER_JOIN
 
     return True
 
@@ -184,7 +227,8 @@ def _can_set_expression_light(layer: Any, mn: str) -> bool:
         return mn not in _LIGHT_SPOT_NO_EXPRESSION
     if light_type == 0:  # PARALLEL
         return mn not in _LIGHT_PARALLEL_NO_EXPRESSION
-    # POINT (2) / ENVIRONMENT (4)
+    if light_type == 4:  # ENVIRONMENT
+        return mn not in _LIGHT_ENVIRONMENT_NO_EXPRESSION
     return mn not in _LIGHT_POINT_NO_EXPRESSION
 
 
@@ -197,17 +241,14 @@ def _can_set_expression_parametric_mesh(
     the generic (layer-type-agnostic) resolution. Rules verified against
     AE 2026 ExtendScript (parametric_meshes.json):
 
-    * A fixed set of streams is never expressionable (`Light Transmission`,
-      `Displacement Intensity`, the material texture-projection params).
-    * `Shadow Color` and the Plane geometry streams are always expressionable.
+    * A fixed set of streams is never expressionable (`Displacement
+      Intensity`, the material texture-projection params).
     * Mesh-option / bevel streams are expressionable only when they belong
       to the layer's ACTIVE mesh type; checkbox toggles (caps / invert
       slice) are expressionable regardless of active type.
     """
     if mn in _PARAMETRIC_MESH_NO_EXPRESSION:
         return False
-    if mn in _PARAMETRIC_MESH_EXPRESSION_OK:
-        return True
     parent = prop.parent_property
     group_mn = parent.match_name if parent is not None else ""
     group_type = _PARAMETRIC_MESH_GROUP_TYPE.get(group_mn)

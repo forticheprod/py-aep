@@ -7,6 +7,7 @@ from py_aep.enums import KeyframeInterpolationType, Label
 
 from ...resolvers.interpolation import (
     _DEFAULT_INFLUENCE,
+    auto_path_speed,
     auto_spatial_tangents,
     auto_temporal_speeds,
 )
@@ -454,6 +455,18 @@ class Keyframe:
         Returns `None` when the value is not numeric, so the caller can fall
         back to the stored ease.
         """
+        prop = self._property
+        if prop is not None and prop._has_motion_path:
+            # A motion path carries ONE ease, a speed along the path. AE
+            # writes it on both sides; the outward side of an end key is
+            # reported as 0, as on any other property.
+            keyframes = prop.keyframes
+            index = next(i for i, kf in enumerate(keyframes) if kf is self)
+            speed = auto_path_speed(keyframes, index, prop._arc_metric)
+            return (
+                [0.0 if index == 0 else speed],
+                [0.0 if index == len(keyframes) - 1 else speed],
+            )
 
         def as_vector(keyframe: Keyframe) -> list[float] | None:
             value = keyframe.value

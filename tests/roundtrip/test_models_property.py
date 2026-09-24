@@ -3326,3 +3326,36 @@ class TestExpressionEnabledGuard:
         prop = project.compositions[0].layers[0].transform["ADBE Opacity"]
         prop.expression_enabled = False
         assert prop.expression_enabled is False
+
+
+class TestCanSetExpressionAfterLayerEdits:
+    """What the Timeline hides follows a py-side edit, and still does once
+    saved: AE recomputes the stored `tdsb` hidden flags when it opens the
+    file, so they are not read for a layer property."""
+
+    def test_three_d_switch(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "property_2D_position.aep").project
+        layer = project.compositions[0].layers[0]
+        orientation = layer.transform.property("ADBE Orientation")
+        assert orientation.can_set_expression is False
+        layer.three_d_layer = True
+        assert orientation.can_set_expression is True
+        out = tmp_path / "three_d.aep"
+        project.save(out)
+        reloaded = parse_aep(out).project.compositions[0].layers[0]
+        orientation = reloaded.transform.property("ADBE Orientation")
+        assert orientation.can_set_expression is True
+
+    def test_renderer_switch(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "property_2D_position.aep").project
+        comp = project.compositions[0]
+        comp.layers[0].three_d_layer = True
+        comp.renderer = "ADBE Ernst"
+        out = tmp_path / "cinema_4d.aep"
+        project.save(out)
+        reloaded = parse_aep(out).project.compositions[0].layers[0]
+        materials = reloaded.property("ADBE Material Options Group")
+        reflection = materials.property("ADBE Reflection Coefficient")
+        assert reflection.can_set_expression is True
+        transmission = materials.property("ADBE Light Transmission")
+        assert transmission.can_set_expression is False
