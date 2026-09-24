@@ -3962,10 +3962,13 @@ class Property(PropertyBase):
         if self.match_name == "ADBE Anchor Point":
             # Only footage/comp layers normalize the anchor to source size;
             # source-less layers (shape, text, null) store it in raw pixels.
+            # Z shares the height divisor, as a 3D effect point's does: AE
+            # 2026 reports [100, 75, 120] on a 200x150 solid whose file holds
+            # [0.5, 0.5, 0.8], and only 120/150 gives 0.8.
             if getattr(self._containing_layer, "source", None) is not None:
                 size = self._layer_pixel_size()
                 if size is not None:
-                    scale = [size[0], size[1], 1.0]
+                    scale = [size[0], size[1], size[1]]
         elif (
             # The PUBLIC control type, so a property the effect creates
             # dynamically and never declares in a `pard` still counts: a

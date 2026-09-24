@@ -53,12 +53,15 @@ _PVT_DIMENSIONS: dict[PropertyValueType, int] = {
 def _param_def_to_spec(
     match_name: str,
     param_def: dict[str, Any],
+    borrowed: bool = False,
 ) -> PropSpec:
     """Convert an effect parameter definition dict into a `PropSpec`.
 
     Args:
         match_name: The property's match name.
         param_def: The parameter definition dict from parT parsing.
+        borrowed: The definition is another instance's - see
+            `_resolve_effect_value`.
 
     Returns:
         A `PropSpec` suitable for `Property._new()`.
@@ -71,7 +74,9 @@ def _param_def_to_spec(
         pvt in (PropertyValueType.TwoD_SPATIAL, PropertyValueType.ThreeD_SPATIAL)
         or is_color
     )
-    value, default_value = _resolve_effect_value(match_name, param_def, control_type)
+    value, default_value = _resolve_effect_value(
+        match_name, param_def, control_type, borrowed
+    )
     return PropSpec(
         match_name=match_name,
         auto_name=param_def.get("name") or match_name,
@@ -91,6 +96,7 @@ def _resolve_effect_value(
     match_name: str,
     param_def: dict[str, Any],
     control_type: PropertyControlType,
+    borrowed: bool = False,
 ) -> tuple[Any, Any]:
     """Resolve value and default_value for a synthesized effect property.
 
@@ -98,34 +104,47 @@ def _resolve_effect_value(
     0-512 range to pixel coordinates is handled separately by
     `_scale_point_to_pixels`.
 
+    A parT's `last_value` is the value of the instance that wrote it. When
+    the definition is `borrowed` - a later instance of the same effect type,
+    whose own parT AE leaves empty - that is another instance's value, and
+    a property this instance does not store is at its default instead: a
+    Gradient Ramp left at Linear read as Radial when another ramp in the
+    project was radial.
+
     Args:
         match_name: The property's match name.
         param_def: The parameter definition dict from parT parsing.
         control_type: The effect control type.
+        borrowed: The definition is another instance's (see `parse_effect`).
 
     Returns:
         A (value, default_value) tuple.
     """
     if control_type == PropertyControlType.ENUM:
-        # parT stores 0-indexed default; ExtendScript uses 1-indexed.
-        # last_value from parT is already 1-indexed and reflects the
-        # current value even when the property is absent from tdgp.
-        raw_default = param_def.get("default_value", 0)
-        fallback = raw_default + 1
-        value = param_def.get("last_value", fallback)
+        # parT stores a 0-indexed default; ExtendScript uses 1-indexed.
+        default = param_def.get("default_value", 0) + 1
+        if borrowed:
+            return default, default
+        # last_value from the instance's own parT is already 1-indexed and
+        # reflects the current value even when the property is absent from
+        # tdgp.
+        value = param_def.get("last_value", default)
         return value, value
     if control_type == PropertyControlType.BOOLEAN:
         value = param_def.get("default_value", param_def.get("last_value"))
         return value, value
     # General case: last_value > default_value > override table > pard
-    # default.
-    value = param_def.get("last_value")
+    # default. A borrowed definition's last_value comes last: a point pard
+    # carries no default, so there it is still the only value there is.
+    value = None if borrowed else param_def.get("last_value")
     if value is None:
         value = param_def.get("default_value")
     if value is None:
         value = _PROPERTY_DEFAULTS.get(match_name)
     if value is None:
         value = param_def.get("default")
+    if value is None and borrowed:
+        value = param_def.get("last_value")
     default_value: Any = param_def.get("default_value")
     if default_value is None:
         default_value = value
@@ -191,6 +210,15 @@ def _point_default_pixels(
     [400, 600] and [128, 256] - right only when layer and comp match,
     which is why this went unnoticed.
 
+    Effect definitions carried over from older projects can store the
+    default as a percentage of the layer times 512 instead: an untouched
+    CC Radial Fast Blur `Center` in a CC 2013 (12.x) project re-saved by
+    AE 2026 has parT (25600, 25600), which AE reports as the layer centre,
+    while the same effect added in AE 2026 stores (256, 256). A fraction
+    that large would put the default more than 16 layers away, so such
+    values are read as percentages. A legacy default under 16% of the
+    layer is not detected.
+
     Returns `None` when the value is not a point or the layer has no
     pixel size.
     """
@@ -203,7 +231,10 @@ def _point_default_pixels(
         scale = prop._effect_scale or []
     if not scale or not isinstance(raw, list) or len(raw) < 2:
         return None
-    return [v / 512.0 * factor for v, factor in zip(raw, scale)]
+    divisor = 512.0
+    if max(abs(v) for v in raw) > 512.0 * 16:
+        divisor *= 100.0
+    return [v / divisor * factor for v, factor in zip(raw, scale)]
 
 
 def _scale_point_to_pixels(prop: Property, size: tuple[float, float]) -> None:
@@ -276,6 +307,9 @@ def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
         # is_modified=False. `_reset_to_default_values` reads `last_value`
         # directly for the one case that needs it (a cloned EfdG effect).
         prop.default_value = None
+    elif param_def["property_control_type"] == PropertyControlType.ENUM:
+        # 0-indexed in the pard, 1-indexed like the value.
+        prop.default_value = param_def.get("default_value", 0) + 1
     elif param_def["property_control_type"] != PropertyControlType.LAYER:
         prop.default_value = param_def.get("default_value")
     _apply_param_def_metadata(prop, param_def)
@@ -287,6 +321,7 @@ def _synthesize_effect_property(
     property_depth: int,
     *,
     parent_property: PropertyGroup,
+    borrowed: bool = False,
 ) -> Property | PropertyGroup:
     """Create a default Property from an effect parameter definition.
 
@@ -300,6 +335,8 @@ def _synthesize_effect_property(
         param_def: The parameter definition dict from parT parsing.
         property_depth: The nesting depth for this property.
         parent_property: The effect group that owns the synthesized child.
+        borrowed: The definition is another instance's - see
+            `_resolve_effect_value`.
 
     Returns:
         A Property or PropertyGroup with default values.
@@ -322,7 +359,7 @@ def _synthesize_effect_property(
             synthetic=True,
         )
 
-    spec = _param_def_to_spec(match_name, param_def)
+    spec = _param_def_to_spec(match_name, param_def, borrowed)
     prop = Property._new(
         spec,
         property_depth,
@@ -342,6 +379,7 @@ def _parse_effect_properties(
     parent_property: PropertyGroup,
     group_match_name: str = "",
     layer: Layer | None = None,
+    borrowed: bool = False,
 ) -> list[Property | PropertyGroup]:
     """Parse effect properties and merge with parameter definitions.
 
@@ -356,6 +394,8 @@ def _parse_effect_properties(
         child_depth: The property depth for parsed child properties.
         composition: The parent composition.
         parent_property: The effect group that owns the parsed children.
+        borrowed: `param_defs` are another instance's - see
+            `_resolve_effect_value`.
 
     Returns:
         List of parsed and merged properties.
@@ -409,6 +449,7 @@ def _parse_effect_properties(
                 param_def,
                 child_depth,
                 parent_property=parent_property,
+                borrowed=borrowed,
             )
             if isinstance(synth, Property) and synth._property_control_type in (
                 PropertyControlType.TWO_D,
@@ -490,9 +531,12 @@ def parse_effect(
 
     # Layer-level sspc may have an empty parT when the same effect type
     # is used more than once (AE doesn't duplicate the data).  Fall back
-    # to previously cached or project-level EfdG definitions.
+    # to previously cached or project-level EfdG definitions, whose
+    # last values are another instance's.
+    borrowed = False
     if not param_defs and group_match_name in effect_param_defs:
         param_defs = effect_param_defs[group_match_name]
+        borrowed = True
 
     # Cache successful parT parsing so later instances of the same
     # effect can reuse the definitions.
@@ -536,6 +580,7 @@ def parse_effect(
         parent_property=effect_group,
         group_match_name=group_match_name,
         layer=layer,
+        borrowed=borrowed,
     )
     effect_group._properties = properties
     for child in properties:

@@ -117,6 +117,58 @@ class TestResolveEffectValue:
         result = _resolve_effect_value("TEST-0001", param_def, control_type)
         assert result == expected
 
+    @pytest.mark.parametrize(
+        ("param_def", "control_type", "expected"),
+        [
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.ENUM,
+                    "default_value": 0,
+                    "last_value": 2,
+                },
+                PropertyControlType.ENUM,
+                (1, 1),
+                id="enum_ignores_another_instances_choice",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.SCALAR,
+                    "last_value": 42.0,
+                    "default_value": 10.0,
+                },
+                PropertyControlType.SCALAR,
+                (10.0, 10.0),
+                id="general_prefers_the_default",
+            ),
+            pytest.param(
+                {
+                    "property_control_type": PropertyControlType.TWO_D,
+                    "last_value": [128.0, 256.0],
+                },
+                PropertyControlType.TWO_D,
+                ([128.0, 256.0], [128.0, 256.0]),
+                id="point_without_default_keeps_last_value",
+            ),
+        ],
+    )
+    def test_resolve_borrowed_effect_value(
+        self,
+        param_def: dict[str, Any],
+        control_type: PropertyControlType,
+        expected: tuple[Any, Any],
+    ) -> None:
+        """A later instance of an effect type borrows the first one's parT.
+
+        Its last values are that instance's, so a property the later
+        instance does not store resolves to its default instead.
+        """
+        from py_aep.parsers.effect import _resolve_effect_value
+
+        result = _resolve_effect_value(
+            "TEST-0001", param_def, control_type, borrowed=True
+        )
+        assert result == expected
+
 
 class TestTdsnWithoutUtf8:
     """A tdsn missing its Utf8 child degrades to the auto-name.
@@ -141,3 +193,21 @@ class TestTdsnWithoutUtf8:
         )
         assert group._name_utf8 is None
         assert group.name == "Transform"
+
+
+class TestPointDefaultPixels:
+    """parT point defaults are a fraction of the layer times 512, or, in
+    effect definitions carried over from old projects, a percentage times
+    512 (CC Radial Fast Blur's untouched Center in a CC 2013 project)."""
+
+    def test_fraction_of_the_layer(self) -> None:
+        from py_aep.parsers.effect import _point_default_pixels
+
+        prop = cast(Any, None)
+        assert _point_default_pixels(prop, [256.0, 512.0], (200.0, 100.0)) == [100.0, 100.0]
+
+    def test_legacy_percentage_of_the_layer(self) -> None:
+        from py_aep.parsers.effect import _point_default_pixels
+
+        prop = cast(Any, None)
+        assert _point_default_pixels(prop, [25600.0, 25600.0], (1920.0, 1080.0)) == [960.0, 540.0]

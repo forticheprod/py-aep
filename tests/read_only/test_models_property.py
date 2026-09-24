@@ -547,6 +547,31 @@ class TestMasks:
         for mask in layer.masks.properties:
             assert mask.is_mask is True
 
+    @pytest.mark.parametrize(
+        ("layer_name", "expected"),
+        [
+            ("solid", [[10, 20], [70, 20], [70, 60], [10, 60]]),
+            ("shape", [[-50, -30], [50, -30], [50, 30], [-50, 30]]),
+            ("text", [[-40, -25], [40, -25], [40, 25], [-40, 25]]),
+        ],
+    )
+    def test_mask_vertices_on_each_layer_kind(
+        self, layer_name: str, expected: list[list[float]]
+    ) -> None:
+        """Mask vertices match ExtendScript on a solid, a shape and a text layer.
+
+        A 200x100 solid keeps its masks in pixels from its top-left corner;
+        shape and text layers have no source and keep theirs in pixels around
+        the layer origin, although both report the comp's 640x360 as their
+        size - scaling their masks by it multiplied every point by the comp.
+        """
+        project = parse_project(SAMPLES_DIR / "mask_shape_and_text_layers.aep")
+        comp = get_comp(project, "masks_on_layer_kinds")
+        layer = next(layer for layer in comp.layers if layer.name == layer_name)
+        assert layer.masks is not None
+        shape = layer.masks.properties[0].property("ADBE Mask Shape").value
+        assert shape.vertices == pytest.approx(expected, abs=1e-4)
+
     def test_no_masks(self) -> None:
         """Layer without masks has an empty (falsy) mask parade."""
         layer = get_layer(
@@ -2172,3 +2197,37 @@ class TestEffectPointNormalization:
         # divisor itself: [width, height, height], not [width, height, 1] or
         # the comp size.
         assert point._effect_scale == [200.0, 100.0, 100.0]
+
+
+class TestAnchorPointNormalization:
+    """A 3D anchor point's Z is normalized like its Y on a layer with a source.
+
+    `anchor_point_z.aep` was built in AE 2026 and read back via ExtendScript.
+    A solid stores its anchor divided by the source size, Z by the height -
+    read with a divisor of 1, a 120 px Z on a 150 px tall solid came back as
+    0.8. A shape layer has no source and keeps its anchor in pixels.
+    """
+
+    @pytest.mark.parametrize(
+        ("layer_name", "expected"),
+        [
+            ("solid", [100.0, 75.0, 120.0]),
+            ("shape", [10.0, 20.0, 30.0]),
+        ],
+    )
+    def test_static_anchor_point(
+        self, layer_name: str, expected: list[float]
+    ) -> None:
+        comp = get_comp(parse_aep(SAMPLES_DIR / "anchor_point_z.aep").project, "anchor_z")
+        layer = next(layer for layer in comp.layers if layer.name == layer_name)
+        anchor = layer.property("ADBE Transform Group").property("ADBE Anchor Point")
+        assert anchor.value == pytest.approx(expected)
+
+    def test_animated_anchor_point(self) -> None:
+        comp = get_comp(parse_aep(SAMPLES_DIR / "anchor_point_z.aep").project, "anchor_z")
+        layer = next(layer for layer in comp.layers if layer.name == "solid_animated")
+        anchor = layer.property("ADBE Transform Group").property("ADBE Anchor Point")
+        assert [kf.value for kf in anchor.keyframes] == [
+            pytest.approx([150.0, 50.0, 0.0]),
+            pytest.approx([150.0, 50.0, 80.0]),
+        ]

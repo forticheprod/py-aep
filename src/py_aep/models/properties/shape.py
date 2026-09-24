@@ -244,8 +244,15 @@ class Shape:
         size (pinned by the psd_vector_mask_cropped fixture: a 56 px layer
         in a 64 px comp). Read on demand rather than snapshotted at parse
         time, so it follows the layer if its source is later replaced.
+
+        Shape and text layers have no source: AE stores their masks in
+        pixels around the layer origin, while reporting the comp's size as
+        their width and height - scaling by it multiplied every point by
+        the comp size (pinned by mask_shape_and_text_layers).
         """
         if self._layer is None:
+            return None
+        if type(self._layer).__name__ in ("ShapeLayer", "TextLayer"):
             return None
         layer = cast("AVLayer", self._layer)
         return (float(layer.width), float(layer.height))
