@@ -18,12 +18,13 @@ from py_aep.enums import (
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import (
     _DEFAULT_INFLUENCE,
-    _BezierPathData,
+    ArcMetric,
     _tangents_are_zero,
     interpolate_keyframes,
-    path_parameter_at_progress,
+    motion_path_length,
     roving_keyframe_times,
     segment_value_slope,
+    spatial_location,
     split_segment_influences,
     split_spatial_path,
 )
@@ -900,27 +901,29 @@ class Property(PropertyBase):
         # that hop was four fifths of the cost.
         if not any(kf._ldat_item.roving for kf in keyframes):
             return
-        targets = roving_keyframe_times(keyframes)
+        targets = roving_keyframe_times(keyframes, self._arc_metric)
         if not targets:
             return
-        occupied = {kf.time_units for kf in keyframes}
-        for index, time in targets.items():
+        # Units count layer time, so there is no composition-time offset or
+        # stretch to undo here. Converting scaled the run by the stretch
+        # factor and displaced it by the layer's start time, pushing roving
+        # keys outside their own anchors (AE 2026: a run bounded at comp 2
+        # and 8 on a 200 % layer put a roving key at -0.017).
+        holders = {kf.time_units: i for i, kf in enumerate(keyframes)}
+        for index, units in targets.items():
             kf = keyframes[index]
-            # `roving_keyframe_times` works in layer time, which is what the
-            # ticks count, so there is no composition-time offset or stretch
-            # to undo here. Converting scaled the run by the stretch factor
-            # and displaced it by the layer's start time, pushing roving keys
-            # outside their own anchors (AE 2026: a run bounded at comp 2 and
-            # 8 on a 200 % layer put a roving key at -0.017).
-            units = round(time * kf._timebase)
+            # A degenerate path (coincident keyframes) can map a key onto a
+            # unit another key holds; AE steps it away from that key's
+            # side, one unit at a time, for at most ten tries per keyframe.
+            for _ in range(10 * len(keyframes)):
+                holder = holders.get(units)
+                if holder is None or holder == index:
+                    break
+                units += -1 if holder > index else 1
             if units == kf.time_units:
                 continue
-            # A degenerate path (coincident keyframes) can map two keys
-            # onto the same unit; leave those where they are.
-            if units in occupied:
-                continue
-            occupied.discard(kf.time_units)
-            occupied.add(units)
+            del holders[kf.time_units]
+            holders[units] = index
             kf._ldat_item.time_units = units
 
     def _ensure_materialized(self) -> None:
@@ -1900,10 +1903,13 @@ class Property(PropertyBase):
             Effects allows keyframing them.
         Read-only.
         """
-        if self._can_vary_over_time is not None:
-            return self._can_vary_over_time
+        # The residue table first: a synthesized effect parameter carries its
+        # pard's verdict in `_can_vary_over_time`, and the Puppet Engine's
+        # pard claims it varies where AE says it does not.
         if self.match_name in _CANVARY_OVERRIDES:
             return _CANVARY_OVERRIDES[self.match_name]
+        if self._can_vary_over_time is not None:
+            return self._can_vary_over_time
         # NO_VALUE properties always report canVaryOverTime=True in AE,
         # even though the binary byte says otherwise.
         return bool(self._tdb4.can_vary_over_time or self._no_value)
@@ -1976,9 +1982,10 @@ class Property(PropertyBase):
         self._ensure_materialized()
         assert self._tdsb is not None
         self._tdsb.dimensions_separated = True
-        # AE writes the group collapsed alongside it (enable byte 0x3,
-        # lock byte 0x8 on every separated position it authored).
-        self._tdsb.collapsed = True
+        # AE hides the leader in the Timeline while the followers drive the
+        # layer (enable byte 0x3, lock byte 0x8 on every separated position
+        # it authored).
+        self._tdsb.hidden = True
         self._dimensions_separated = True
         three_d = self._containing_layer.is_3d
         for dimension, follower in enumerate(followers):
@@ -1999,6 +2006,8 @@ class Property(PropertyBase):
         self._ensure_materialized()
         assert self._tdsb is not None
         self._tdsb.dimensions_separated = False
+        # Recombined, the leader is shown again (enable byte 0x1).
+        self._tdsb.hidden = False
         self._dimensions_separated = False
         self.value = composed
         for follower in followers:
@@ -2041,9 +2050,10 @@ class Property(PropertyBase):
         self._ensure_materialized()
         assert self._tdsb is not None
         self._tdsb.dimensions_separated = True
-        # AE writes the group collapsed alongside it (enable byte 0x3,
-        # lock byte 0x8 on every separated position it authored).
-        self._tdsb.collapsed = True
+        # AE hides the leader in the Timeline while the followers drive the
+        # layer (enable byte 0x3, lock byte 0x8 on every separated position
+        # it authored).
+        self._tdsb.hidden = True
         self._dimensions_separated = True
         self._set_own_value(list(cast("list[float]", self.default_value)))
 
@@ -2165,6 +2175,8 @@ class Property(PropertyBase):
         self._ensure_materialized()
         assert self._tdsb is not None
         self._tdsb.dimensions_separated = False
+        # Recombined, the leader is shown again (enable byte 0x1).
+        self._tdsb.hidden = False
         self._dimensions_separated = False
         for index, time in enumerate(times):
             self._add_key(time, composed[index])
@@ -2752,15 +2764,39 @@ class Property(PropertyBase):
             return self.value
 
         kind = self._parallel_kind()
+        has_motion_path = self._has_motion_path
         return cast(
             "_ValueType",
             interpolate_keyframes(
                 self._layer_time_from_comp(time),
                 self.keyframes,
-                self._has_motion_path,
+                has_motion_path,
                 self._inert_dimensions(),
                 value_kind=kind,
+                metric=self._arc_metric if has_motion_path else ArcMetric(),
             ),
+        )
+
+    @property
+    def _arc_metric(self) -> ArcMetric:
+        """How AE measures this property's motion path, from its `tdb4`.
+
+        A normalized point (an effect point, a footage layer's Anchor Point)
+        is measured in its stored fractions of the layer, so its reported
+        pixels and ease speeds are divided back first.
+        """
+        tdb4 = self._tdb4
+        scale = self._effect_scale
+        return ArcMetric(
+            accuracy=tdb4._arc_accuracy,
+            multipliers=(
+                tdb4.pixel_aspect,
+                tdb4._arc_multiplier_y,
+                tdb4._arc_multiplier_z,
+                tdb4._arc_multiplier_w,
+            ),
+            divisors=tuple(scale) if scale is not None else None,
+            speed_divisor=self._effect_point_speed_factor or 1.0,
         )
 
     def _layer_time_from_comp(self, time: float) -> float:
@@ -3054,7 +3090,6 @@ class Property(PropertyBase):
         # path.)
         if self._no_value:
             raise ValueError(f"property {self.match_name!r} has no value to keyframe")
-        new_value = self.value_at_time(time) if value is _USE_VALUE else value
         time_scale, frame_rate = self._time_units()
 
         item_type = self._keyframe_item_type()
@@ -3076,6 +3111,10 @@ class Property(PropertyBase):
         idx, exists = self._keyframe_insert_index(kf.time_units)
         if exists:
             return idx
+        # At the key's own time, which is `time` rounded to whole units: the
+        # value has to be where the curve is when the key sits, or it kinks
+        # the motion path at the split.
+        new_value = self.value_at_time(kf.time) if value is _USE_VALUE else value
         self._ensure_materialized()
         lhd3, ldat = self._ensure_animated()
         ldat.items.insert(idx, ldat_item)
@@ -3152,11 +3191,15 @@ class Property(PropertyBase):
         # is along the path), where a plain vector stores one per dimension.
         n_ease = min(len(prev_out), len(next_in)) or 1
         spatial = n_ease == 1 and dims > 1
+        split_at: float | None = None
         if spatial:
             # A spatial ease's speed is measured along the PATH, so the split
             # runs once over the segment's arc length - the chord would be
             # short wherever the tangents bow the curve.
             pairs = [(0.0, self._segment_arc_length(prev_kf, next_kf))]
+            # Read before the eases below change: the new key has to sit
+            # where the path was at its time.
+            split_at = self._motion_path_parameter(idx, t)
 
         for d in range(n_ease):
             v0, v1 = pairs[d] if d < len(pairs) else pairs[0]
@@ -3190,11 +3233,14 @@ class Property(PropertyBase):
         prev_kf.out_temporal_ease = left_out
         next_kf.in_temporal_ease = right_in
 
-        if spatial:
-            self._split_motion_path(prev_kf, kf, next_kf)
+        if split_at is not None:
+            self._split_motion_path(prev_kf, kf, next_kf, split_at)
 
     def _segment_arc_length(self, prev_kf: Keyframe, next_kf: Keyframe) -> float:
-        """Arc length of the motion path between two keyframes."""
+        """Arc length of the motion path between two keyframes.
+
+        In the units the property's ease speeds are reported in.
+        """
         v0 = prev_kf.value
         v1 = next_kf.value
         if not isinstance(v0, list) or not isinstance(v1, list):
@@ -3202,14 +3248,26 @@ class Property(PropertyBase):
         ndim = len(v0)
         out_tangent = prev_kf.out_spatial_tangent or [0.0] * ndim
         in_tangent = next_kf.in_spatial_tangent or [0.0] * ndim
-        if _tangents_are_zero(out_tangent) and _tangents_are_zero(in_tangent):
-            return math.sqrt(sum((v1[d] - v0[d]) ** 2 for d in range(ndim)))
-        return _BezierPathData(v0, v1, out_tangent, in_tangent).segment_length
+        return motion_path_length(v0, v1, out_tangent, in_tangent, self._arc_metric)
+
+    def _motion_path_parameter(self, idx: int, time: float) -> float | None:
+        """The curve parameter the motion path was at, at `time` in layer time.
+
+        Located on the path as it was before the keyframe at `idx` was
+        inserted, which is what the inserted key's value was read from.
+        `None` when the time falls on another segment of a roving run.
+        """
+        before = self.keyframes[:idx] + self.keyframes[idx + 1 :]
+        if not all(isinstance(kf.value, list) for kf in before):
+            return None
+        segment, u = spatial_location(time, before, idx - 1, self._arc_metric)
+        return u if segment == idx - 1 else None
 
     def _split_motion_path(
-        self, prev_kf: Keyframe, kf: Keyframe, next_kf: Keyframe
+        self, prev_kf: Keyframe, kf: Keyframe, next_kf: Keyframe, u: float
     ) -> None:
-        """Split the motion path so the inserted key does not reshape it.
+        """Split the motion path at curve parameter `u` so the inserted key
+        does not reshape it.
 
         Without this the new keyframe carries no spatial tangents and the
         single curve becomes two straight-ish halves.
@@ -3223,13 +3281,6 @@ class Property(PropertyBase):
         in_tangent = next_kf.in_spatial_tangent or [0.0] * ndim
         if _tangents_are_zero(out_tangent) and _tangents_are_zero(in_tangent):
             return
-        data = _BezierPathData(v0, v1, out_tangent, in_tangent)
-        if data.segment_length <= 0:
-            return
-        # The split sits where the key landed: the arc-length fraction of the
-        # path that the new keyframe's value corresponds to.
-        progress = _progress_of_point(data, cast("list[float]", kf.value))
-        u = path_parameter_at_progress(data, progress)
         left_out, new_in, _split, new_out, right_in = split_spatial_path(
             v0, v1, out_tangent, in_tangent, u
         )
@@ -4029,21 +4080,6 @@ def _deactivate_follower(follower: Property) -> None:
     follower.remove_all_keys()
     follower._revert_to_synthetic()
     follower._value = 0.0
-
-
-def _progress_of_point(data: _BezierPathData, point: list[float]) -> float:
-    """Arc-length fraction of the sampled path nearest to `point`."""
-    best_index = 0
-    best_dist = float("inf")
-    for i, sample in enumerate(data.points):
-        dist = sum((sample[d] - point[d]) ** 2 for d in range(len(point)))
-        if dist < best_dist:
-            best_dist = dist
-            best_index = i
-    travelled = sum(data.partial_lengths[: best_index + 1])
-    if data.segment_length <= 0:
-        return 0.0
-    return min(max(travelled / data.segment_length, 0.0), 1.0)
 
 
 def _segment_components(

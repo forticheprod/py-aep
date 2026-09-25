@@ -53,13 +53,18 @@ class TdsbChunk(Chunk):
     """Whether a separation leader's dimensions are split.
 
     Bit 3 of the lock byte, NOT bit 1 of the enable byte: that one is the
-    cosmetic group-collapse flag, and it is set on a collapsed but
-    UNSEPARATED position (an ambient light, an environment light). Checked
+    Timeline `hidden` flag, and it is also set on an UNSEPARATED position
+    that does not apply (an ambient light, an environment light). Checked
     against every AE-exported `dimensionsSeparated` in the sample corpus -
     the lock bit agrees 288/288, the enable bit 285/288."""
     enabled = BitField("_enable_flags", 0)
-    collapsed = BitField("_enable_flags", 1)
-    """Cosmetic: the property group is collapsed in the Timeline panel."""
+    hidden = BitField("_enable_flags", 1)
+    """The stream is hidden in the Timeline because it does not apply to
+    the layer as it is: a 3D-only property on a 2D layer, an option of
+    another light type, a separated position's leader, an effect parameter
+    its plugin hides. AE refuses an expression on a hidden stream, and
+    recomputes the flag from the layer's state when it opens a project, so
+    it never changes what renders."""
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +129,18 @@ class Tdb4Chunk(Chunk):
     32-bit field, not a 16-bit one: a 300 % stretched layer at 24 fps stores
     73728 (0x00012000), which does not fit in two bytes (measured on AE 2026
     across 50 / 101 / 150 / 300 / -150 % stretch)."""
-    _unknown_float_0: float = f8_field(default=0.0001, repr=False)
+    _arc_accuracy: float = f8_field(default=0.0001, repr=False)
+    """Tolerance AE fits a spatial segment's arc-length spline to, as a
+    squared distance in the measured space: 1e-4 for a value stored in
+    pixels, 6.25e-12 for a point stored normalized to its layer."""
     pixel_aspect: float = f8_field(default=1.0, repr=False)
-    """The containing comp's pixel aspect ratio (AE writes it into
-    every spatial property's tdb4; 1.0 elsewhere)."""
-    _unknown_float_2: float = f8_field(default=1.0, repr=False)
-    _unknown_float_3: float = f8_field(default=1.0, repr=False)
-    _unknown_float_4: float = f8_field(default=1.0, repr=False)
+    """X multiplier AE measures a motion path with (the first of four,
+    one per dimension): the containing comp's pixel aspect ratio for a
+    layer's spatial property, the layer's display aspect (width / height)
+    for a normalized point; 1.0 elsewhere."""
+    _arc_multiplier_y: float = f8_field(default=1.0, repr=False)
+    _arc_multiplier_z: float = f8_field(default=1.0, repr=False)
+    _arc_multiplier_w: float = f8_field(default=1.0, repr=False)
     _pad4: int = u1_field(repr=False)
     _no_value_flags: int = u1_field(repr=False)
     _pad5: int = u1_field(repr=False)

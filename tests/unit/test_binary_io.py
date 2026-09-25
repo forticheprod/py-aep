@@ -757,11 +757,11 @@ class TestTdsbChunk:
         assert isinstance(chunk, TdsbChunk)
         assert chunk.roto_bezier == 0
         assert chunk.locked_ratio is True
-        # Separation is lock-byte bit 3; enable-byte bit 1 is the cosmetic
-        # group-collapse flag (AE sets it on a collapsed but UNSEPARATED
-        # position, e.g. an ambient light).
+        # Separation is lock-byte bit 3; enable-byte bit 1 is the Timeline
+        # hidden flag (AE sets it on an UNSEPARATED position that does not
+        # apply, e.g. an ambient light's).
         assert chunk.dimensions_separated is False
-        assert chunk.collapsed is True
+        assert chunk.hidden is True
         assert chunk.enabled is True
         out = BytesIO()
         chunk.write(out)
@@ -776,7 +776,7 @@ class TestTdsbChunk:
         assert isinstance(chunk, TdsbChunk)
         assert chunk.dimensions_separated is True
         assert chunk.locked_ratio is False
-        assert chunk.collapsed is True
+        assert chunk.hidden is True
         out = BytesIO()
         chunk.write(out)
         assert out.getvalue() == raw
@@ -800,7 +800,7 @@ class TestTdsbChunk:
 
         chunk = TdsbChunk(chunk_type="tdsb")
         chunk.enabled = True
-        chunk.collapsed = True
+        chunk.hidden = True
         assert chunk._enable_flags == 0x03
         chunk.enabled = False
         assert chunk._enable_flags == 0x02

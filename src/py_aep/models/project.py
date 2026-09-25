@@ -2158,7 +2158,7 @@ def _stamp_style_tdb4(
         # (source_width * PAR / source_height; 1.28 in the fixture).
         tdb4._spatial_marker = True
         tdb4._spatial_static_flags = 0x0F
-        tdb4._unknown_float_0 = _STYLE_POINT_EPSILON
+        tdb4._arc_accuracy = _STYLE_POINT_EPSILON
         tdb4.pixel_aspect = point_aspect
     tdb4._time_base = timebase
 

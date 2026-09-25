@@ -13,6 +13,7 @@ from ...binary.footage_chunks import (
     SspcChunk,
     TextOptiChunk,
     build_ai_layer_opti_data,
+    build_craw_opti_data,
     build_dpx_opti_data,
     build_generic_opti_data,
     build_psd_layer_opti_data,
@@ -102,6 +103,8 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
       rather than missing footage.
     - HDR (Radiance): needs the 30-byte format-specific `RHDR` header;
       dimensions live in `sspc`, not the opti.
+    - Camera Raw (CRW): the 30-byte `Craw` header AE writes for a raw file
+      without develop settings; an empty opti crashes AE.
     - AI/EPS/PDF: need the 596-byte `TEXT` header with width/height
       embedded as big-endian u16.
     """
@@ -113,6 +116,8 @@ def _opti_data(fmt: FileFormat, info: MediaInfo, *, sequence: bool) -> bytes:
         )
     if fmt.opti == "hdr":
         return build_rhdr_opti_data()
+    if fmt.opti == "craw":
+        return build_craw_opti_data()
     if fmt.opti == "dpx":
         return build_dpx_opti_data()
     if fmt.opti == "text":

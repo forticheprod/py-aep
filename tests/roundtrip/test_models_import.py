@@ -686,6 +686,7 @@ class TestImportGapFormats:
             ("swf.swf", "SWF ", 640, 360),
             ("mpeg.mpeg", "MPEO", 640, 360),
             ("hdr.hdr", "RHDR", 640, 426),
+            ("crw.crw", "Craw", 1536, 1024),
             ("ai.ai", "TEXT", 612, 792),
             ("eps.eps", "TEXT", 1921, 2881),
             ("pdf.pdf", "TEXT", 595, 842),
