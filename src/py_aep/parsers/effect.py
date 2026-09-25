@@ -597,10 +597,15 @@ def _extract_color(body: Any, result: dict[str, Any]) -> None:
 @_pard_extractor(PropertyControlType.ENUM)
 def _extract_enum(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value
-    # nb_options is stored with the count in the high 16 bits
+    # The s4 read as nb_options is PF_PopupDef's two shorts: the number of
+    # choices in the high 16 bits, and the 1-based default (dephault) in the
+    # low 16. The s4 read as `default` after it is the names pointer, always
+    # 0 on disk: taken as the default, a borrowed popup left at its default
+    # read as the first choice (Glow's Glow Operation as None, not Add).
     nb_options = body.nb_options >> 16
     result["nb_options"] = nb_options
-    result["default_value"] = body.default
+    dephault = body.nb_options & 0xFFFF
+    result["default_value"] = dephault - 1 if dephault else body.default
     result["min_value"] = 1
     result["max_value"] = nb_options
 

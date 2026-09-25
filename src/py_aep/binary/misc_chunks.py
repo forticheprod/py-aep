@@ -778,7 +778,9 @@ class TwoDPardChunk(PardChunk):
 
 @define
 class EnumPardChunk(PardChunk):
-    """Enum/popup control (type 7): u4 last_value, s4 nb_options, s4 default."""
+    """Enum/popup control (type 7): u4 last_value, then SDK `PF_PopupDef`'s
+    num_choices and 1-based dephault as the high and low shorts of the s4
+    `nb_options`, then the names pointer (`default`, 0 on disk)."""
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=7)

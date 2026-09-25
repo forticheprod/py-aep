@@ -1,5 +1,6 @@
 """Property models."""
 
+from .curves import Curves, CurvesChannel
 from .gradient import Gradient, GradientAlphaStop, GradientColorStop
 from .keyframe import Keyframe
 from .keyframe_ease import KeyframeEase
@@ -11,6 +12,8 @@ from .property_group import PropertyGroup
 from .shape import FeatherPoint, Shape
 
 __all__ = [
+    "Curves",
+    "CurvesChannel",
     "FeatherPoint",
     "GradientAlphaStop",
     "Gradient",

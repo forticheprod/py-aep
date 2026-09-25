@@ -255,6 +255,14 @@ def _dispatch_tdbs(ctx: _ParseContext) -> list[Property | PropertyGroup]:
         vfdn = filter_by_type(chunks=ctx.chunks, chunk_type="vfdn")
         if vfdn:
             prop._vfdn = cast("VfdnChunk", vfdn[0])
+    # Curves keeps its curves as the effect's arbitrary data, an aRbp in a
+    # LIST:aRbs after the tdbs (whose cdat holds nothing of them).
+    if ctx.match_name == "ADBE CurvesCustom-0001":
+        for arbs in filter_by_list_type(ctx.chunks, "aRbs"):
+            arbp = filter_by_type(chunks=arbs.chunks, chunk_type="aRbp")
+            if arbp:
+                prop._arbp = arbp[0]
+                break
     return [prop]
 
 

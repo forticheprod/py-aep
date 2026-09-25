@@ -28,7 +28,7 @@ from py_aep.resolvers.interpolation import (
     split_spatial_path,
 )
 
-from ...binary.chunk import ContainerChunk, ListChunk
+from ...binary.chunk import Chunk, ContainerChunk, ListChunk
 from ...binary.ldat_chunks import (
     LHD3_BLOCK_KEYFRAMES,
     LdatItemType,
@@ -78,6 +78,7 @@ from ..validators import (
     validate_sequence,
     validate_string,
 )
+from .curves import Curves
 from .gradient import Gradient
 from .keyframe import Keyframe, _timebase_units
 from .keyframe_ease import KeyframeEase
@@ -716,6 +717,10 @@ class Property(PropertyBase):
         self._vfdn: VfdnChunk | None = None
         """The axis display-name container AE writes after an active
         variable-font axis slot's tdbs (set by the parser)."""
+
+        self._arbp: Chunk | None = None
+        """The Curves effect's curves, its arbitrary data (set by the
+        parser); `value` decodes it as a [Curves][]."""
 
     @property
     def _is_vf_axis(self) -> bool:
@@ -1477,6 +1482,8 @@ class Property(PropertyBase):
         separated = self._separated_value()
         if separated is not None:
             return separated
+        if self._arbp is not None:
+            return Curves(self._arbp.data)
         if self._value is not None:
             return self._wire_text_version(self._value)
         if self.keyframes:
