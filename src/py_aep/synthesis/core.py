@@ -21,7 +21,7 @@ Note:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ..ae_version import get_ae_version_major
 from ..models.layers.av_layer import AVLayer
@@ -37,6 +37,7 @@ from ..models.properties.property_group import (
     _derive_layer_styles_enabled,
     _reorder_and_fill,
 )
+from ..resolvers.transform import default_camera_zoom
 from .property import (
     _PARAMETRIC_MESH_TOP_LEVEL_SPECS,
     _SKIP_FOR_CAMERA,
@@ -143,8 +144,9 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
     5. Applies min/max bounds on transform leaf properties.
 
     Spatial defaults (Anchor Point, Position, and the X / Y separated followers)
-    depend on layer dimensions and are computed here; all other defaults are
-    fixed constants defined in `_TRANSFORM_FIXED_DEFAULTS`.
+    depend on layer dimensions - and a camera or light's Position on its zoom -
+    and are computed here; all other defaults are fixed constants defined in
+    `_TRANSFORM_FIXED_DEFAULTS`.
     """
     transform = layer.transform
     if transform is None:
@@ -169,10 +171,32 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
         anchor_w = comp_w
         anchor_h = comp_h
 
+    position = [comp_w / 2.0, comp_h / 2.0, 0.0]
+    if isinstance(layer, CameraLayer):
+        # A camera's default Position is its Zoom in front of the comp centre,
+        # following the current Zoom (pre-expression, at time 0). AE leaves a
+        # Position still there out of the file and places the camera from the
+        # Zoom on open (measured on AE 2026, also after the Zoom was later
+        # keyframed or given an expression).
+        options = cast("PropertyGroup", layer["ADBE Camera Options Group"])
+        zoom = cast("float", cast("Property", options["ADBE Camera Zoom"]).value)
+        position[2] = -zoom
+    elif isinstance(layer, LightLayer):
+        # A light's default Position sits up, right and in front of the comp
+        # centre, at fixed fractions of the comp's default camera zoom rather
+        # than any camera's. Measured on AE 2026 for every light type, at
+        # 1920x1080, 1440x1620, 2880x810, 810x1440 and a 2:1 pixel aspect.
+        zoom = default_camera_zoom(comp_w, layer.containing_comp.pixel_aspect)
+        position = [
+            comp_w / 2.0 + 0.03 * zoom,
+            comp_h / 2.0 - 0.03 * zoom,
+            -zoom / 4.0,
+        ]
+
     # Spatial defaults depend on layer dimensions.
     spatial_defaults: dict[str, list[float] | float] = {
         "ADBE Anchor Point": [anchor_w / 2.0, anchor_h / 2.0, 0.0],
-        "ADBE Position": [comp_w / 2.0, comp_h / 2.0, 0.0],
+        "ADBE Position": position,
         "ADBE Position_0": comp_w / 2.0,
         "ADBE Position_1": comp_h / 2.0,
     }
@@ -362,13 +386,11 @@ def synthesize_layer_properties(layer: Layer) -> None:
     # --- Synthesize missing top-level groups --------------------------------
     _synthesize_missing_top_level_groups(layer, ae_major)
 
-    _set_transform_defaults(layer, ae_major)
-
     # --- Synthesize children & apply min/max (single recursive pass) --------
     for group in layer.properties:
         if isinstance(group, PropertyGroup):
             if group.match_name == "ADBE Transform Group":
-                continue  # already handled by _set_transform_defaults
+                continue  # handled by _set_transform_defaults below
             synthesize_children(group, ae_major=ae_major)
         elif isinstance(group, Property):
             _apply_bounds(group)
@@ -376,3 +398,7 @@ def synthesize_layer_properties(layer: Layer) -> None:
             # actual source duration.
             if group.match_name == "ADBE Time Remapping" and group._tduM is None:
                 group._max_value_fallback = 0
+
+    # After the pass: a camera's default Position reads its Zoom, which is
+    # only synthesized (when AE left it out) once its group is registered.
+    _set_transform_defaults(layer, ae_major)
