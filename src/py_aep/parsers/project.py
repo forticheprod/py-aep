@@ -49,6 +49,26 @@ def _color_profile_utf8(root_chunks: list[Chunk], marker: str) -> Utf8Chunk | No
     return None
 
 
+# The project settings nhed holds as nnhd does, in its older layout.
+_NHED_SETTINGS = (
+    "_display_byte",
+    "footage_timecode_display_start_type",
+    "_feet_byte",
+    "timecode_default_base",
+    "frames_count_type",
+    "bits_per_channel",
+    "transparency_grid_thumbnails",
+)
+
+
+def _nnhd_from_nhed(nhed: NhedChunk) -> NnhdChunk:
+    """A synthetic nnhd carrying the settings of a project that has only nhed."""
+    nnhd = NnhdChunk(synthetic=True)
+    for name in _NHED_SETTINGS:
+        setattr(nnhd, name, getattr(nhed, name))
+    return nnhd
+
+
 @_suppress_materialization()
 def parse_project(
     rifx: ListChunk,
@@ -70,14 +90,26 @@ def parse_project(
     root_folder_chunk = find_by_list_type(chunks=root_chunks, list_type="Fold")
     head_chunk = cast("HeadChunk", find_by_type(chunks=root_chunks, chunk_type="head"))
     nhed_chunk = cast("NhedChunk", find_by_type(chunks=root_chunks, chunk_type="nhed"))
-    nnhd_chunk = cast("NnhdChunk", find_by_type(chunks=root_chunks, chunk_type="nnhd"))
     acer_chunk = cast("U1Chunk", find_by_type(chunks=root_chunks, chunk_type="acer"))
     adfr_chunk = cast("F8Chunk", find_by_type(chunks=root_chunks, chunk_type="adfr"))
-    dwga_chunk = cast("DwgaChunk", find_by_type(chunks=root_chunks, chunk_type="dwga"))
-    gpug_chunk = find_by_list_type(chunks=root_chunks, list_type="gpuG")
-    gpug_utf8 = cast(
-        "Utf8Chunk", find_by_type(chunks=gpug_chunk.chunks, chunk_type="Utf8")
-    )
+    # Older projects (AE CC 12.0) have none of nnhd, dwga and gpuG: their
+    # settings come from nhed, and the others take their defaults. The
+    # stand-ins are synthetic, so the file is written back without them.
+    try:
+        nnhd_chunk = cast("NnhdChunk", find_by_type(chunks=root_chunks, chunk_type="nnhd"))
+    except ChunkNotFoundError:
+        nnhd_chunk = _nnhd_from_nhed(nhed_chunk)
+    try:
+        dwga_chunk = cast("DwgaChunk", find_by_type(chunks=root_chunks, chunk_type="dwga"))
+    except ChunkNotFoundError:
+        dwga_chunk = DwgaChunk(synthetic=True)
+    try:
+        gpug_chunk = find_by_list_type(chunks=root_chunks, list_type="gpuG")
+        gpug_utf8 = cast(
+            "Utf8Chunk", find_by_type(chunks=gpug_chunk.chunks, chunk_type="Utf8")
+        )
+    except ChunkNotFoundError:
+        gpug_utf8 = Utf8Chunk(value="", synthetic=True)
 
     # Expression engine: LIST:ExEn > Utf8
     exen_utf8 = None

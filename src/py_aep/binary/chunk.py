@@ -404,10 +404,36 @@ class ContainerChunk(Chunk):
     ) -> ContainerChunk:
         if ctx is None:
             ctx = EMPTY_CTX
+        start = fp.tell()
+        head = fp.read(min(size, 8))
+        fp.seek(start)
+        if not _starts_with_chunk(head, size):
+            return cls._read_legacy(fp, size, chunk_type=chunk_type)
         defer = kwargs.get("defer_list_types")
         # Pass-through context (no list_type level change)
         chunks = read_chunks(fp, size, ctx=ctx, defer_list_types=defer)
         return cls(chunk_type=chunk_type, chunks=chunks)
+
+    @classmethod
+    def _read_legacy(cls, fp: IO[bytes], size: int, *, chunk_type: str) -> ContainerChunk:
+        """A body holding the string itself, as older projects write it: NUL
+        terminated in a buffer of its own size (a `fnam` of 48 bytes, a
+        `tdsn` of a lone zero byte), where newer ones wrap it in a `Utf8`
+        child. The bytes are kept to be written back as they were; the
+        string is a synthetic `Utf8` child, for the readers."""
+        data = read_bytes(fp, size)
+        nul = data.find(b"\x00")
+        text = (data[:nul] if nul >= 0 else data).decode("UTF-8", "surrogateescape")
+        value = cls._legacy_value(text)
+        from .scalar_chunks import Utf8Chunk
+
+        chunks: list[Chunk] = [Utf8Chunk(value=value, synthetic=True)] if value is not None else []
+        return cls(chunk_type=chunk_type, data=data, chunks=chunks)
+
+    @classmethod
+    def _legacy_value(cls, text: str) -> str | None:
+        """The `Utf8` value standing for a legacy body's string."""
+        return text
 
     def __iter__(self) -> Iterator[Chunk]:
         return iter(self.chunks)
@@ -416,12 +442,38 @@ class ContainerChunk(Chunk):
         return len(self.chunks)
 
     def write(self, fp: IO[bytes]) -> int:
+        if self.data:
+            return write_bytes(fp, self._legacy_body())
         written = 0
         for chunk in self.chunks:
             if chunk.synthetic:
                 continue
             written += write_chunk(fp, chunk)
         return written
+
+    def _legacy_body(self) -> bytes:
+        """A legacy body (see `_read_legacy`), with its string changed if the
+        synthetic `Utf8` child's value was: in the same buffer, truncated to
+        fit with its NUL."""
+        nul = self.data.find(b"\x00")
+        text = (self.data[:nul] if nul >= 0 else self.data).decode("UTF-8", "surrogateescape")
+        utf8 = next((c for c in self.chunks if c.chunk_type == "Utf8"), None)
+        value = getattr(utf8, "value", None)
+        if value is None or value == self._legacy_value(text):
+            return self.data
+        encoded = value.encode("UTF-8", "surrogateescape")[: max(len(self.data) - 1, 0)]
+        return encoded.ljust(len(self.data), b"\x00")
+
+
+def _starts_with_chunk(head: bytes, size: int) -> bool:
+    """Whether a body of `size` bytes, starting with `head`, starts with a
+    child chunk: a header of a printable type and a length that fits."""
+    if len(head) < 8:
+        return size == 0
+    if not all(0x20 <= b < 0x7F for b in head[:4]):
+        return False
+    (length,) = struct.unpack(">I", head[4:8])
+    return length <= size - 8
 
 
 # ---------------------------------------------------------------------------

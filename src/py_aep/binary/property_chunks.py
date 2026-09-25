@@ -495,6 +495,12 @@ class TdsnChunk(ContainerChunk):
             synthetic=synthetic,
         )
 
+    @classmethod
+    def _legacy_value(cls, text: str) -> str | None:
+        # An empty legacy name is an unnamed property: the name resolves from
+        # the match name, as for the sentinel.
+        return text or TDSN_SENTINEL
+
     @property
     def utf8(self) -> Utf8Chunk:
         """The `Utf8` child holding the display name.
