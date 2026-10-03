@@ -245,7 +245,7 @@ def _parse_hsl(v: str) -> Rgba | None:
     if len(parts) < 3:
         return None
     h = float(parts[0].rstrip("%")) % 360.0 / 360.0
-    s = float(parts[1].rstrip("%")) / 100.0
+    s = max(0.0, float(parts[1].rstrip("%")) / 100.0)
     light = float(parts[2].rstrip("%")) / 100.0
     a = (
         float(parts[3].rstrip("%")) / (100.0 if "%" in parts[3] else 1.0)

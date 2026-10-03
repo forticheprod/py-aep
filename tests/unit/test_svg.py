@@ -199,6 +199,26 @@ class TestColors:
     def test_hsl_red(self):
         assert _approx(parse_color("hsl(0,100%,50%)"), (1.0, 0.0, 0.0, 1.0))
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("hsl(0,-100%,50%)", (0.5, 0.5, 0.5, 1.0)),
+            ("hsl(120,-20%,25%)", (0.25, 0.25, 0.25, 1.0)),
+            ("hsla(240,-100%,75%,0.5)", (0.75, 0.75, 0.75, 0.5)),
+            ("hsl(60 -50% 50% / 25%)", (0.5, 0.5, 0.5, 0.25)),
+        ],
+    )
+    def test_negative_hsl_saturation(
+        self, value: str, expected: tuple[float, float, float, float]
+    ) -> None:
+        assert parse_color(value) == pytest.approx(expected)
+
+    def test_svg_fill_with_negative_hsl_saturation(self) -> None:
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10" fill="hsl(0,-100%,50%)"/></svg>'
+        paint = read_svg(svg).drawables[0].fill
+        assert isinstance(paint, SolidPaint)
+        assert paint.color == pytest.approx((0.5, 0.5, 0.5, 1.0))
+
     def test_none_is_none(self):
         assert parse_color("none") is None
 
