@@ -245,8 +245,10 @@ def _parse_hsl(v: str) -> Rgba | None:
     if len(parts) < 3:
         return None
     h = float(parts[0].rstrip("%")) % 360.0 / 360.0
-    s = float(parts[1].rstrip("%")) / 100.0
-    light = float(parts[2].rstrip("%")) / 100.0
+    # CSS clamps saturation and lightness to [0, 100 %] before converting
+    # (hsl(400, 150%, -5%) is black), not the converted channels.
+    s = clamp01(float(parts[1].rstrip("%")) / 100.0)
+    light = clamp01(float(parts[2].rstrip("%")) / 100.0)
     a = (
         float(parts[3].rstrip("%")) / (100.0 if "%" in parts[3] else 1.0)
         if len(parts) > 3

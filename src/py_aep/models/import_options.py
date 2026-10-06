@@ -7,7 +7,9 @@ import re
 from pathlib import Path
 
 from ..data.file_formats import (
+    AI_COMP_EXTENSIONS,
     COMP_CONVERSION_EXTENSIONS,
+    PSD_COMP_EXTENSIONS,
     get_file_format,
     get_import_as_types,
 )
@@ -220,6 +222,10 @@ class ImportOptions:
         """When `True` and `sequence` is also `True`, use alphabetical
         order for sequence frame numbering. Read / Write.
 
+        Like After Effects, the sequence then takes every file of the
+        imported file's type in its folder, numbered or not, in
+        case-insensitive name order, and is named after the folder.
+
         Setting `True` resets [range_start][ImportOptions.range_start] and
         [range_end][ImportOptions.range_end] to 0 (matching After Effects:
         an alphabetical sequence cannot carry a frame range)."""
@@ -301,7 +307,9 @@ class ImportOptions:
         every type. `ImportAsType.PROJECT` is never importable (py_aep does
         not implement project import for any format), so it always returns
         `False` even though AE can import `.mov`/`.m4a`/`.aep`/`.aet` as a
-        project.
+        project. Likewise `ImportAsType.COMP_CROPPED_LAYERS` is `True` only
+        for SVG, `.ai`/`.pdf` and `.psd`/`.psb`, the formats py_aep crops
+        (AE also crops `.eps` and multi-layer `.exr`).
 
         Args:
             type: The import type to check.
@@ -323,6 +331,15 @@ class ImportOptions:
         except ValueError:
             return False
         if fmt.opti == "unsupported":
+            return False
+        if (
+            type == ImportAsType.COMP_CROPPED_LAYERS
+            and suffix not in PSD_COMP_EXTENSIONS
+            and suffix not in AI_COMP_EXTENSIONS
+        ):
+            # AE offers a cropped import for `.eps`/`.exr` too, but
+            # `import_file` implements it for SVG, Illustrator/PDF and
+            # Photoshop only.
             return False
         return type in get_import_as_types(suffix)
 

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from typing import TYPE_CHECKING, Any
 
+import attrs
 import pytest
 from helpers import get_rqi
 
@@ -15,15 +17,20 @@ from py_aep.binary.render_chunks import (
     ROUT_ITEMS_PER_RQ_ITEM,
     OutputModuleSettingsItem,
     RenderSettingsItem,
+    RouuChunk,
 )
 from py_aep.binary.utils import find_by_list_type
 from py_aep.enums import (
+    AudioBitDepth,
+    AudioChannels,
     ColorManagementSystem,
     FieldRender,
     FrameRateSetting,
     GetSettingsFormat,
     LogType,
     MotionBlurSetting,
+    OutputAudio,
+    OutputColorDepth,
     PostRenderAction,
     RenderQuality,
     ResizeQuality,
@@ -33,9 +40,16 @@ from py_aep.enums import (
 from py_aep.enums.mappings import profile_id_for_name
 from py_aep.models.renderqueue.render_queue_item import RenderQueueItem
 
+if TYPE_CHECKING:
+    from py_aep.models.project import Project
+    from py_aep.models.renderqueue.output_module import OutputModule
+
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "renderqueue"
 OM_SAMPLES_DIR = (
     Path(__file__).parent.parent.parent / "samples" / "models" / "output_module"
+)
+FO_SAMPLES_DIR = (
+    Path(__file__).parent.parent.parent / "samples" / "models" / "format_options"
 )
 BUGS_DIR = Path(__file__).parent.parent.parent / "samples" / "bugs"
 AE_PREFS_DIR = os.getenv("AE_PREFS_DIR")
@@ -424,7 +438,11 @@ class TestRoundtripFileTemplate:
         assert om.file_template  # should be non-empty
 
     def test_file_template_roundtrip(self, tmp_path: Path) -> None:
-        project = parse_aep(SAMPLES_DIR / "render_settings.aep").project
+        # The sample's output path is a Windows one; a project for macOS
+        # would store a set path in macOS style.
+        project = parse_aep(
+            SAMPLES_DIR / "render_settings.aep", platform="windows"
+        ).project
         rqi = get_rqi(project, "base")
         om = rqi.output_modules[0]
         original = om.file_template
@@ -447,26 +465,151 @@ class TestRoundtripSkipFrames:
     """Roundtrip tests for RenderQueueItem.skip_frames setter."""
 
     def test_set_skip_frames(self, tmp_path: Path) -> None:
+        # Kept in memory only: AE 2026 reads 0 for every item of a project it
+        # opens and renders all frames, so a re-parsed item reads 0.
         project = parse_aep(SAMPLES_DIR / "skip_frames.aep").project
         rqi = get_rqi(project, "skip_frames_0")
         assert rqi.skip_frames == 0
         rqi.skip_frames = 1
+        assert rqi.skip_frames == 1
+        assert rqi.output_modules[0]._roou.frame_rate == 15.0
 
         out = tmp_path / "skip1.aep"
         project.save(out)
         rqi2 = get_rqi(parse_aep(out).project, "skip_frames_0")
-        assert rqi2.skip_frames == 1
+        assert rqi2.skip_frames == 0
+        assert rqi2.output_modules[0]._roou.frame_rate == 15.0
 
-    def test_set_skip_frames_back_to_0(self, tmp_path: Path) -> None:
+    def test_set_skip_frames_back_to_0(self) -> None:
         project = parse_aep(SAMPLES_DIR / "skip_frames.aep").project
         rqi = get_rqi(project, "skip_frames_1")
-        assert rqi.skip_frames == 1
+        rqi.skip_frames = 1
         rqi.skip_frames = 0
+        assert rqi.output_modules[0]._roou.frame_rate == 30.0
 
-        out = tmp_path / "skip0.aep"
+    @pytest.mark.parametrize("n", [1, 2, 3])
+    def test_set_skip_frames_writes_after_effects_bytes(
+        self, n: int, tmp_path: Path
+    ) -> None:
+        # Every item of the sample renders at 30 fps; AE stored 30 / (n + 1)
+        # fps in the output module of `skip_frames_n` (7.5 = 00 07 80 00).
+        project = parse_aep(SAMPLES_DIR / "skip_frames.aep").project
+        get_rqi(project, "skip_frames_0").skip_frames = n
+
+        out = tmp_path / "skip.aep"
         project.save(out)
-        rqi2 = get_rqi(parse_aep(out).project, "skip_frames_1")
-        assert rqi2.skip_frames == 0
+        saved = parse_aep(out).project
+        got = get_rqi(saved, "skip_frames_0")
+        want = get_rqi(saved, f"skip_frames_{n}")
+        assert got.output_modules[0]._roou.tobytes() == (
+            want.output_modules[0]._roou.tobytes()
+        )
+        assert got.skip_frames == 0
+
+    def test_comp_frame_rate_change_keeps_skip_frames(self) -> None:
+        # AE 2026 keeps skipFrames (1) when the comp goes from 24 to 60 fps,
+        # and leaves the 12 fps output rate stored in the module as it is.
+        project = parse_aep(SAMPLES_DIR / "skip_frames.aep").project
+        rqi = get_rqi(project, "skip_frames_1")
+        rqi.skip_frames = 1
+        stored = rqi.output_modules[0]._roou.frame_rate
+        rqi.comp.frame_rate = rqi.comp.frame_rate * 2.5
+        assert rqi.skip_frames == 1
+        assert rqi.output_modules[0]._roou.frame_rate == stored
+
+    def test_use_this_frame_rate_keeps_skip_frames(self) -> None:
+        # AE 2026 keeps skipFrames when "Use this frame rate" changes.
+        project = parse_aep(SAMPLES_DIR / "skip_frames.aep").project
+        rqi = get_rqi(project, "skip_frames_2")
+        rqi.skip_frames = 2
+        rqi.settings["Use this frame rate"] = 24
+        assert rqi.skip_frames == 2
+        assert rqi.output_modules[0]._roou.frame_rate == 8.0
+
+    def test_frame_rate_setting_keeps_skip_frames(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "skip_frames.aep").project
+        rqi = get_rqi(project, "skip_frames_2")
+        rqi.skip_frames = 2
+        rqi.settings["Frame Rate"] = FrameRateSetting.USE_COMP_FRAME_RATE
+        assert rqi.skip_frames == 2
+        assert rqi.output_modules[0]._roou.frame_rate == 8.0  # 24 fps comp
+
+    @pytest.mark.parametrize("fps", [12.5, 29.97, 60.0])
+    def test_new_item_stores_render_frame_rate(self, fps: float) -> None:
+        # Once AE prepares an item for output, its output module holds the
+        # render frame rate (AE 2026: 60 and 12.5 fps comps store 60 and
+        # 12.5), so a new item reads skip_frames 0 at any comp rate.
+        app = parse_aep(SAMPLES_DIR / "custom.aep")
+        comp = app.project.root_folder.add_comp("C", 64, 36, 1.0, 1.0, fps)
+        rqi = app.project.render_queue.add(comp)
+        assert rqi.output_modules[0]._roou.frame_rate == pytest.approx(
+            fps, abs=1 / 65536
+        )
+        assert rqi.skip_frames == 0
+        assert rqi.add()._roou.frame_rate == rqi.output_modules[0]._roou.frame_rate
+
+
+class TestRoundtripRouuFrameRateAndDepth:
+    """The `Rouu` output frame rate (16.16 fixed point at 0x42) and depth
+    (signed 2 bytes at 0x46) are separate fields."""
+
+    def test_depth_write_keeps_29_97_frame_rate(self, tmp_path: Path) -> None:
+        project = parse_aep(FO_SAMPLES_DIR / "png" / "png_rgba.aep").project
+        om = project.render_queue.items[0].output_modules[0]
+        assert om._roou.tobytes()[0x42:0x48] == bytes.fromhex("001DF8520020")
+        om.settings["Depth"] = OutputColorDepth.TRILLIONS_OF_COLORS_PLUS
+
+        out = tmp_path / "depth.aep"
+        project.save(out)
+        om2 = parse_aep(out).project.render_queue.items[0].output_modules[0]
+        assert om2._roou.tobytes()[0x42:0x48] == bytes.fromhex("001DF8520040")
+        assert om2.settings["Depth"] == OutputColorDepth.TRILLIONS_OF_COLORS_PLUS
+
+    def test_floating_point_gray_is_signed(self) -> None:
+        # AE 2026 reads `FF E0` at 0x46 as -32 ("Floating Point Gray") and
+        # keeps the bytes when it saves.
+        body = bytearray(RouuChunk().tobytes())
+        body[0x46:0x48] = b"\xff\xe0"
+        rouu = RouuChunk.frombytes(bytes(body), chunk_type="Roou")
+        assert isinstance(rouu, RouuChunk)
+        assert rouu.depth == OutputColorDepth.FLOATING_POINT_GRAY == -32
+        assert rouu.tobytes() == bytes(body)
+
+    def test_frame_rate_setter_writes_16_16(self) -> None:
+        rouu = RouuChunk()
+        rouu.frame_rate = 29.97
+        assert rouu.tobytes()[0x42:0x48] == bytes.fromhex("001DF8520020")
+        rouu.frame_rate = 7.5
+        assert rouu.tobytes()[0x42:0x46] == bytes.fromhex("00078000")
+
+    def test_width_and_height_are_4_bytes(self) -> None:
+        # AE 2026 opens resize_checked.aep, but not the same file with 1 in
+        # the upper two bytes of 0x22 and 0x26 (a 2-byte read at 0x24/0x28
+        # would see a valid 4464 x 1080): the size fields are 4 bytes.
+        body = bytearray(RouuChunk().tobytes())
+        body[0x22:0x2A] = (70000).to_bytes(4, "big") + (66616).to_bytes(4, "big")
+        rouu = RouuChunk.frombytes(bytes(body), chunk_type="Roou")
+        assert isinstance(rouu, RouuChunk)
+        assert (rouu.width, rouu.height) == (70000, 66616)
+
+
+class TestRoundtripPreserveRgb:
+    """Preserve RGB is byte 0x5E of the output-module settings record."""
+
+    def test_set_preserve_rgb_writes_after_effects_bytes(self, tmp_path: Path) -> None:
+        # preserve_rgb_off/on differ only in that byte.
+        project = parse_aep(OM_SAMPLES_DIR / "preserve_rgb_off.aep").project
+        project.render_queue.items[0].output_modules[0].settings["Preserve RGB"] = True
+        out = tmp_path / "prgb.aep"
+        project.save(out)
+        got = parse_aep(out).project.render_queue.items[0].output_modules[0]
+        want = (
+            parse_aep(OM_SAMPLES_DIR / "preserve_rgb_on.aep")
+            .project.render_queue.items[0]
+            .output_modules[0]
+        )
+        assert got._om_ldat.tobytes() == want._om_ldat.tobytes()
+        assert got.settings["Preserve RGB"] is True
 
 
 class TestRoundtripTimeSpanStart:
@@ -1234,7 +1377,7 @@ class TestRQAddWithoutPreferences:
         rouu = RouuChunk()
         assert rouu.format_id == "TIF "
         assert rouu.depth == 32
-        assert rouu.audio_disabled_hi == 255
+        assert rouu.audio_encoding == 0xFFFF
         assert rouu.audio_channels == 0
         # The full image-sequence body is 154 bytes (114 typed + 40 trailing).
         assert len(rouu.tobytes()) == 154
@@ -1244,7 +1387,9 @@ class TestRQAddWithoutPreferences:
         assert rs._reserved_06 == b"\x00\x03\x00\x00"
         assert rs._reserved_39 == b"\xff\xff\xff\xff\x00\xb4" + b"\x00" * 8
         assert rs._reserved_45 == b"\x00\x00\x00\x02\xff\xff"
-        assert rs._remaining == b"\x00" * 19 + b"\x02\x00\x00\x00\x0f" + b"\x00" * 16
+        assert rs._reserved_end == b"\x00" * 16
+        assert rs.item_id == 2
+        assert rs._remaining == b"\x00\x00\x00\x0f" + b"\x00" * 16
 
         om = OutputModuleSettingsItem()
         assert om.convert_to_linear_light == 2
@@ -1749,3 +1894,122 @@ class TestRoundtripOutputColorSpace:
         om = project.render_queue.items[0].output_modules[0]
         with pytest.raises(ValueError, match="not a color space"):
             om.output_color_space = "NotAColorSpaceInThisConfig"
+
+
+# Audio edit chains After Effects applied in audio_settings_matrix.aep: each
+# case names its starting item and the setSettings calls AE made on a
+# duplicate of it (items are named by their output file stem). U = Output
+# Audio Off with an unset audio format, S = On + Stereo, A = Auto + Stereo,
+# Z = A switched Off.
+_ON, _OFF, _AUTO = OutputAudio.ON, OutputAudio.OFF, OutputAudio.AUTO
+_8, _16, _32 = (
+    AudioBitDepth.EIGHT_BIT,
+    AudioBitDepth.SIXTEEN_BIT,
+    AudioBitDepth.THIRTY_TWO_BIT,
+)
+_AUDIO_CHAINS: dict[str, tuple[str, list[dict[str, Any]]]] = {
+    "E0_on": ("U", [{"Output Audio": _ON}]),
+    "E1_on_8": ("U", [{"Output Audio": _ON}, {"Audio Bit Depth": _8}]),
+    "E2_on_16": ("U", [{"Output Audio": _ON}, {"Audio Bit Depth": _16}]),
+    "E3_on_32": ("U", [{"Output Audio": _ON}, {"Audio Bit Depth": _32}]),
+    "E5_on_mono": (
+        "U",
+        [{"Output Audio": _ON}, {"Audio Channels": AudioChannels.MONO}],
+    ),
+    "E7_on_rate": ("U", [{"Output Audio": _ON}, {"Audio Sample Rate": 44100}]),
+    "E8_auto": ("U", [{"Output Audio": _AUTO}]),
+    "E9_on_mono_8": (
+        "U",
+        [
+            {"Output Audio": _ON},
+            {"Audio Channels": AudioChannels.MONO},
+            {"Audio Bit Depth": _8},
+        ],
+    ),
+    "E10_on_8_rate": (
+        "U",
+        [{"Output Audio": _ON}, {"Audio Bit Depth": _8}, {"Audio Sample Rate": 22050}],
+    ),
+    "E11_on_all": (
+        "U",
+        [
+            {
+                "Output Audio": _ON,
+                "Audio Bit Depth": _8,
+                "Audio Channels": AudioChannels.MONO,
+                "Audio Sample Rate": 22050,
+            }
+        ],
+    ),
+    "E12_off_8": ("U", [{"Audio Bit Depth": _8}]),
+    "F1_8": ("S", [{"Audio Bit Depth": _8}]),
+    "F2_32": ("S", [{"Audio Bit Depth": _32}]),
+    "F3_32_16": ("S", [{"Audio Bit Depth": _32}, {"Audio Bit Depth": _16}]),
+    "F4_32_8": ("S", [{"Audio Bit Depth": _32}, {"Audio Bit Depth": _8}]),
+    "F5_mono": ("S", [{"Audio Channels": AudioChannels.MONO}]),
+    "F6_rate": ("S", [{"Audio Sample Rate": 22050}]),
+    "F7_off": ("S", [{"Output Audio": _OFF}]),
+    "F8_auto": ("S", [{"Output Audio": _AUTO}]),
+    "F9_off_on": ("S", [{"Output Audio": _OFF}, {"Output Audio": _ON}]),
+    "G4_auto_on": ("A", [{"Output Audio": _ON}]),
+    "G5_auto_off_on": ("A", [{"Output Audio": _OFF}, {"Output Audio": _ON}]),
+    "G2_offauto_on": ("Z", [{"Output Audio": _ON}]),
+    "G3_offauto_auto": ("Z", [{"Output Audio": _AUTO}]),
+    # The starting states themselves, rebuilt from U.
+    "S": ("U", [{"Output Audio": _ON}, {"Audio Channels": AudioChannels.STEREO}]),
+    "A": ("U", [{"Output Audio": _AUTO}, {"Audio Channels": AudioChannels.STEREO}]),
+    "Z": ("A", [{"Output Audio": _OFF}]),
+}
+
+
+def _om_by_file_stem(project: Project, stem: str) -> OutputModule:
+    for rqi in project.render_queue.items:
+        om = rqi.output_modules[0]
+        if PureWindowsPath(om.file).stem == stem:
+            return om
+    raise KeyError(stem)
+
+
+class TestOutputModuleAudioMatchesAfterEffects:
+    """Audio settings writes produce the bytes After Effects writes for the
+    same `setSettings` calls (audio_settings_matrix.aep)."""
+
+    MATRIX = OM_SAMPLES_DIR / "audio_settings_matrix.aep"
+
+    @pytest.mark.parametrize("case", sorted(_AUDIO_CHAINS))
+    def test_audio_edit_writes_after_effects_bytes(
+        self, case: str, tmp_path: Path
+    ) -> None:
+        start, steps = _AUDIO_CHAINS[case]
+        project = parse_aep(self.MATRIX).project
+        om = _om_by_file_stem(project, start)
+        for step in steps:
+            # Single keys go through `settings[key]`: a `settings` dict skips
+            # a key whose read value is unchanged, and an unset audio format
+            # reads Stereo / 32 Bit (AE's fallbacks).
+            if len(step) == 1:
+                ((key, value),) = step.items()
+                om.settings[key] = value
+            else:
+                om.settings = step
+
+        out = tmp_path / "audio.aep"
+        project.save(out)
+        saved = parse_aep(out).project
+        got = _om_by_file_stem(saved, start)
+        want = _om_by_file_stem(saved, case)
+        assert got._roou.tobytes() == want._roou.tobytes()
+        assert attrs.asdict(got._om_ldat) == attrs.asdict(want._om_ldat)
+
+    @pytest.mark.parametrize("start", ["U", "S"])
+    def test_24_bit_audio_is_rejected(self, start: str) -> None:
+        # AE 2026 has no 24-bit audio output: a script setting it crashes
+        # AE, and a stored 24-bit format reads back as 16 Bit.
+        project = parse_aep(self.MATRIX).project
+        om = _om_by_file_stem(project, start)
+        before = om._roou.tobytes()
+        with pytest.raises(ValueError, match="24-bit"):
+            om.settings["Audio Bit Depth"] = AudioBitDepth.TWENTY_FOUR_BIT
+        with pytest.raises(ValueError, match="24-bit"):
+            om.settings = {"Audio Bit Depth": AudioBitDepth.TWENTY_FOUR_BIT}
+        assert om._roou.tobytes() == before

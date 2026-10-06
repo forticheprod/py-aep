@@ -6,6 +6,8 @@ from pathlib import Path
 
 from conftest import load_expected, parse_project
 
+from py_aep.enums import GpuAccelType
+
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "project"
 VIEW_SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "view"
 VERSIONS_DIR = Path(__file__).parent.parent.parent / "samples" / "versions"
@@ -87,6 +89,20 @@ class TestWorkingSpace:
         assert expected["workingSpace"] == "sRGB IEC61966-2.1"
         assert project.working_space == expected["workingSpace"]
 
+    def test_pre_color_management_profile_id(self) -> None:
+        """A CC 2018 project names its working space only by the `cpid`
+        profile id, whose ICC sits in `LIST:CPPl`."""
+        expected = load_expected(VERSIONS_DIR / "ae2018", "complete")
+        project = parse_project(VERSIONS_DIR / "ae2018" / "complete.aep")
+        assert expected["workingSpace"] == "sRGB IEC61966-2.1"
+        assert project.working_space == expected["workingSpace"]
+
+    def test_pre_color_management_no_working_space(self) -> None:
+        # The all-0xFF `cpid` of an empty CC 2018 project: AE 2026 reports
+        # workingSpace "None" for it.
+        project = parse_project(SAMPLES_DIR / "emptier_2018.aep")
+        assert project.working_space == "None"
+
 
 class TestDisplayColorSpace:
     """Tests for display_color_space attribute."""
@@ -135,6 +151,27 @@ class TestGpuAccelType:
         project = parse_project(SAMPLES_DIR / "gpuAccelType_mercury_software_only.aep")
         assert expected["gpuAccelType"] == 1816
         assert project.gpu_accel_type.value == expected["gpuAccelType"]
+
+    def test_opencl(self) -> None:
+        # Saved by AE 25.3 (Windows); AE 2026 reports gpuAccelType 1812 for it.
+        project = parse_project(
+            SAMPLES_DIR.parent.parent / "bugs" / "outputmodule_path.aep"
+        )
+        assert project.gpu_accel_type == GpuAccelType.OPENCL
+
+    def test_renderer_ids(self) -> None:
+        # What AE 2026 reports as `gpuAccelType` for a project holding each id.
+        ids = {
+            "7ee0ab59-822d-44cc-ac10-16279d041016": GpuAccelType.CUDA,
+            "be93941a-7488-4117-8a46-7e3596950307": GpuAccelType.OPENCL,
+            "6ed1497e-17ad-4a5b-846f-52bb81e20104": GpuAccelType.METAL,
+            "c4471277-d5d1-4ea7-a36c-b93ac76dfd41": GpuAccelType.VULKAN,
+            "f33089e2-1ede-47c1-8a9e-b232bb1cc1a4": GpuAccelType.SOFTWARE,
+            "cd99cfc1-bf65-4cb7-ab70-a8f5ea50e8f4": GpuAccelType.DIRECTX,
+        }
+        for guid, accel in ids.items():
+            assert GpuAccelType.from_binary(guid) == accel
+            assert GpuAccelType.to_binary(accel) == guid
 
 
 class TestLinearBlending:
@@ -200,6 +237,14 @@ class TestRevision:
         project_simple = parse_project(SAMPLES_DIR / "save_01.aep")
         project_changed = parse_project(SAMPLES_DIR / "bitsPerChannel_16.aep")
         assert project_changed.revision > project_simple.revision
+
+    def test_revision_is_a_32_bit_counter(self) -> None:
+        # The stored counter exceeds 16 bits. AE 2026 reports 23,113,386 for
+        # this file: the stored value plus the 13 edits AE makes on open.
+        project = parse_project(
+            SAMPLES_DIR.parent.parent / "bugs" / "windows-1250_decoding_error.aep"
+        )
+        assert project.revision == 23_113_373
 
 
 class TestActiveItem:

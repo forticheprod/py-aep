@@ -34,9 +34,9 @@ class TestImportFileErrors:
         with pytest.raises(ValueError, match="COMP import"):
             project.import_file(opts)
 
-    def test_ai_cropped_layers_not_implemented(self) -> None:
+    def test_eps_cropped_layers_not_implemented(self) -> None:
         project = parse_aep(BASE).project
-        opts = ImportOptions(ASSETS / "ai.ai")
+        opts = ImportOptions(ASSETS / "eps.eps")
         opts.import_as = ImportAsType.COMP_CROPPED_LAYERS
         with pytest.raises(ValueError, match="COMP_CROPPED_LAYERS"):
             project.import_file(opts)

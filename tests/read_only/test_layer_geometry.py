@@ -17,12 +17,30 @@ from pathlib import Path
 import pytest
 from conftest import parse_project
 
+from py_aep.svg.fonts import font_version_string
+
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
 GEOMETRY_AEP = SAMPLES_DIR / "geometry_probe.aep"
 CAMERAS_AEP = SAMPLES_DIR / "camera_rigs.aep"
+SHAPES_AEP = SAMPLES_DIR / "shape_source_rect.aep"
+AUTO_ORIENT_AEP = SAMPLES_DIR / "auto_orient.aep"
+TEXT_INK_AEP = SAMPLES_DIR / "text_ink.aep"
 
 POINTS = [[0.0, 0.0], [100.0, 50.0], [960.0, 540.0]]
 CAMERA_POINTS = [[0.0, 0.0], [100.0, 50.0], [200.0, 100.0]]
+
+
+def _skip_unless_fonts_match(layer) -> None:  # type: ignore[no-untyped-def]
+    """Skip where the text cannot be measured as the fixture was: without
+    uharfbuzz (Python 3.7), or with a font missing or at another version
+    than the one AE embedded."""
+    pytest.importorskip("uharfbuzz")
+    document = layer.text["ADBE Text Document"].value
+    for font in document._fonts:
+        if font_version_string(font.post_script_name) != font.version:
+            pytest.skip(
+                f"{font.post_script_name} not installed at the fixture's version"
+            )
 
 
 def _fixture(name: str) -> dict:
@@ -188,7 +206,7 @@ class TestCalculateTransformFromPoints:
 
 
 class TestSourceRectAtTime:
-    """Slice 1: footage/solid/precomp rects; text/shape refuse."""
+    """Footage/solid/precomp/shape rects; text refuses."""
 
     def test_rects_match_ae(self) -> None:
         expected = _fixture("geometry_rects_probe.json")
@@ -201,6 +219,7 @@ class TestSourceRectAtTime:
             "solid_keyed",
             "precomp_layer",
             "footage_layer",
+            "shape_rect",
         ):
             layer = _layer(comp, layer_name)
             for time_val in (0.0, 1.5, 2.5):
@@ -213,12 +232,16 @@ class TestSourceRectAtTime:
                     assert got["width"] == pytest.approx(want["width"])
                     assert got["height"] == pytest.approx(want["height"])
 
-    def test_text_and_shape_not_implemented(self) -> None:
-        comp = _probe_comp(parse_project(GEOMETRY_AEP))
-        with pytest.raises(NotImplementedError, match="text"):
-            _layer(comp, "text_point").source_rect_at_time(0.0, False)
-        with pytest.raises(NotImplementedError, match="shape"):
-            _layer(comp, "shape_rect").source_rect_at_time(0.0, True)
+    @pytest.mark.parametrize("layer_name", ["text_point", "text_box", "text_animated"])
+    def test_text_rects_match_ae(self, layer_name: str) -> None:
+        expected = _fixture("geometry_rects_probe.json")[layer_name]
+        layer = _layer(_probe_comp(parse_project(GEOMETRY_AEP)), layer_name)
+        _skip_unless_fonts_match(layer)
+        for key, record in expected.items():
+            time_key, suffix = key.split("_")
+            got = layer.source_rect_at_time(float(time_key[1:]), suffix == "ext")
+            for side in ("top", "left", "width", "height"):
+                assert got[side] == pytest.approx(record["value"][side], abs=1e-3)
 
     def test_invalid_args_raise(self) -> None:
         comp = _probe_comp(parse_project(GEOMETRY_AEP))
@@ -264,3 +287,92 @@ class TestCalculateTransformFromPointsNumerics:
         )
         assert got["scale"][0] == pytest.approx(1e300 / layer.width * 100.0)
         assert got["scale"][1] == pytest.approx(1e300 / layer.height * 100.0)
+
+
+_SHAPE_TRUTH = _fixture("shape_source_rect_probe.json")
+_UNMODELED_SHAPES = {"mod_offset", "ps_k2_p5.5_r50"}
+
+
+class TestShapeSourceRect:
+    """Shape layers against AE 2026 (`shape_source_rect.aep`, built headlessly
+    in AE 2026 with its `sourceRectAtTime` read back): shape types,
+    stroke joins/caps/miter limits, group transforms and nesting, disabled
+    items, paint order and path operations."""
+
+    @pytest.fixture(scope="class")
+    def comp(self):
+        project = parse_project(SHAPES_AEP)
+        return next(c for c in project.compositions if c.name == "SHAPE_RECTS")
+
+    @pytest.mark.parametrize("name", sorted(set(_SHAPE_TRUTH) - _UNMODELED_SHAPES))
+    @pytest.mark.parametrize("extents", [False, True])
+    def test_matches_ae(self, comp, name: str, extents: bool) -> None:
+        record = _SHAPE_TRUTH[name]
+        want = record["ext" if extents else "noext"]
+        got = _layer(comp, name).source_rect_at_time(record["time"], extents)
+        for key in ("top", "left", "width", "height"):
+            # AE measures in single precision.
+            assert got[key] == pytest.approx(want[key], abs=1e-3), key
+
+    @pytest.mark.parametrize("name", sorted(_UNMODELED_SHAPES))
+    def test_unmodeled_constructs_raise(self, comp, name: str) -> None:
+        with pytest.raises(NotImplementedError):
+            _layer(comp, name).source_rect_at_time(0.0, False)
+
+
+_ORIENT_TRUTH = _fixture("auto_orient_probe.json")
+
+
+class TestAutoOrientPointConversions:
+    """Point conversions under auto-orientation and camera/light parents
+    against AE 2026 (`auto_orient.aep`, built headlessly in AE 2026
+    with its point conversions read back): along 2D/3D paths
+    (straight, curved, eased, with the layer's own rotations, at and past
+    keyframes), towards the default and a moving camera, and children of
+    an oriented null, two-node and one-node cameras, spot, parallel and
+    point lights."""
+
+    @pytest.fixture(scope="class")
+    def comps(self):
+        project = parse_project(AUTO_ORIENT_AEP)
+        return {comp.name: comp for comp in project.compositions}
+
+    @pytest.mark.parametrize("key", sorted(_ORIENT_TRUTH))
+    def test_matches_ae(self, comps, key: str) -> None:
+        comp_name, layer_name = key.split("/", 1)
+        layer = _layer(comps[comp_name], layer_name)
+        for time_key, record in _ORIENT_TRUTH[key].items():
+            if not time_key.startswith("t"):
+                continue
+            time = float(time_key[1:])
+            for point, got in (
+                ("p00", layer.source_point_to_comp([0.0, 0.0], time=time)),
+                ("p10050", layer.source_point_to_comp([100.0, 50.0], time=time)),
+                ("inv", layer.comp_point_to_source([500.0, 400.0], time=time)),
+            ):
+                assert got == pytest.approx(record[point], abs=1e-2), (time_key, point)
+
+
+_TEXT_TRUTH = _fixture("text_ink_probe.json")
+
+
+class TestTextSourceRect:
+    """Text-layer ink boxes against AE 2026 (`text_ink.aep`, built headlessly in AE 2026 with
+    its `sourceRectAtTime` read back): sizes 8-500, CFF and
+    TrueType fonts, justification, leading, tracking and stroke."""
+
+    @pytest.fixture(scope="class")
+    def comp(self):
+        project = parse_project(TEXT_INK_AEP)
+        return next(c for c in project.compositions if c.name == "TEXT_INK")
+
+    @pytest.mark.parametrize("name", sorted(_TEXT_TRUTH))
+    @pytest.mark.parametrize("extents", [False, True])
+    def test_matches_ae(self, comp, name: str, extents: bool) -> None:
+        layer = _layer(comp, name)
+        _skip_unless_fonts_match(layer)
+        want = _TEXT_TRUTH[name]["ext" if extents else "noext"]
+        got = layer.source_rect_at_time(0.0, extents)
+        for side in ("top", "left", "width", "height"):
+            # AE measures in single precision.
+            assert got[side] == pytest.approx(want[side], abs=1e-3), side

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from py_aep import ImportAsType, ImportOptions, parse
+from py_aep import ImportAsType, ImportOptions, new, parse
 from py_aep.models.items.composition import CompItem
 from py_aep.models.layers.shape_layer import ShapeLayer
 from py_aep.models.properties.property_group import PropertyGroup
@@ -130,7 +130,6 @@ class TestSvgImportGradients:
         # 2026 stores that aspect ratio in Grad Scale; without it the wing
         # gradients render as circles instead of tall ellipses. Import into a
         # fresh (2026) project so the Grad Scale / Grad Rotation leaves exist.
-        from py_aep import new
 
         app = new()
         opts = ImportOptions(ASSETS / "butterfly.svg")
@@ -158,6 +157,117 @@ class TestSvgImportGradients:
         assert sorted(round(s) for s in scales_y) == [100, 200, 200, 300, 400]
 
 
+def _import_text(tmp_path: Path, body: str) -> list[PropertyGroup]:
+    """Import an inline 200x200 SVG into a fresh project; return its groups."""
+
+    svg = tmp_path / "probe.svg"
+    svg.write_text(
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">{body}</svg>',
+        encoding="utf-8",
+    )
+    opts = ImportOptions(svg)
+    opts.import_as = ImportAsType.COMP_CROPPED_LAYERS
+    comp = new().project.import_file(opts)
+    assert isinstance(comp, CompItem)
+    contents = comp.layers[0].property("ADBE Root Vectors Group")
+    assert isinstance(contents, PropertyGroup)
+    return [
+        g
+        for g in contents.properties
+        if isinstance(g, PropertyGroup) and g.match_name == "ADBE Vector Group"
+    ]
+
+
+class TestSvgImportAeConventions:
+    """Conventions measured on AE 2026's own SVG import."""
+
+    def test_group_centred_on_tangent_hull(self, tmp_path: Path) -> None:
+        # AE centres a group on the box of its vertices AND tangent handles
+        # (all 21 butterfly.svg groups), not on the vertices alone: this
+        # bulge's handles at y=10 pull the centre up to (50, 30).
+        (group,) = _import_text(
+            tmp_path, '<path d="M10,50 C10,10 90,10 90,50 Z" fill="#f00"/>'
+        )
+        pos = group["ADBE Vector Transform Group"]["ADBE Vector Position"].value
+        assert pos == pytest.approx([50.0, 30.0])
+        shape = group["ADBE Vectors Group"]["ADBE Vector Shape - Group"][
+            "ADBE Vector Shape"
+        ].value
+        assert shape.vertices == [[-40.0, 20.0], [40.0, 20.0]]
+
+    def test_line_has_no_fill(self, tmp_path: Path) -> None:
+        # A line has no interior, so the default black fill paints nothing;
+        # AE adds only the Stroke.
+        (group,) = _import_text(
+            tmp_path, '<line x1="20" y1="30" x2="150" y2="170" stroke="#000"/>'
+        )
+        kinds = [c.match_name for c in group["ADBE Vectors Group"].properties]
+        assert kinds == ["ADBE Vector Shape - Group", "ADBE Vector Graphic - Stroke"]
+
+    def test_duplicate_alpha_stops_collapse(self, tmp_path: Path) -> None:
+        # AE writes one alpha stop where consecutive stops share both offset
+        # and opacity (two colour stops at offset 0 -> one alpha stop), while
+        # every colour stop stays.
+        (group,) = _import_text(
+            tmp_path,
+            '<linearGradient id="L" x1="20" y1="20" x2="180" y2="20"'
+            ' gradientUnits="userSpaceOnUse">'
+            '<stop offset="0" stop-color="#f00"/><stop offset="0" stop-color="#00f"/>'
+            '<stop offset="0.5" stop-color="#0f0"/><stop offset="1" stop-color="#00f"/>'
+            '</linearGradient><rect x="20" y="20" width="160" height="100" fill="url(#L)"/>',
+        )
+        fill = group["ADBE Vectors Group"]["ADBE Vector Graphic - G-Fill"]
+        grad = fill["ADBE Vector Grad Colors"].value
+        assert [s.offset for s in grad.color_stops] == [0.0, 0.0, 0.5, 1.0]
+        assert [(s.offset, s.alpha) for s in grad.alpha_stops] == [
+            (0.0, 1.0),
+            (0.5, 1.0),
+            (1.0, 1.0),
+        ]
+
+    def test_fill_and_stroke_opacity_applied(self, tmp_path: Path) -> None:
+        # AE 2026 ignores fill-opacity / stroke-opacity (100 % both); py_aep
+        # applies each to its own paint, 8-bit quantized like `opacity`, and
+        # combined with an element `opacity`.
+        (group,) = _import_text(
+            tmp_path,
+            '<rect x="20" y="20" width="100" height="60" fill="#f00" '
+            'fill-opacity="0.5" stroke="#000" stroke-width="4" '
+            'stroke-opacity="0.25" opacity="0.5"/>',
+        )
+        inner = group["ADBE Vectors Group"]
+        fill = inner["ADBE Vector Graphic - Fill"]
+        stroke = inner["ADBE Vector Graphic - Stroke"]
+        assert fill["ADBE Vector Fill Opacity"].value == pytest.approx(
+            64 / 255 * 100, abs=1e-5
+        )
+        assert stroke["ADBE Vector Stroke Opacity"].value == pytest.approx(
+            32 / 255 * 100, abs=1e-5
+        )
+
+    def test_hard_alpha_edge_keeps_both_stops(self, tmp_path: Path) -> None:
+        # py honours stop-opacity (AE 2026 drops it and renders the gradient
+        # opaque), so two stops at one offset with different opacities stay
+        # apart: merging them would erase the hard alpha edge.
+        (group,) = _import_text(
+            tmp_path,
+            '<linearGradient id="L" x1="20" y1="20" x2="180" y2="20"'
+            ' gradientUnits="userSpaceOnUse">'
+            '<stop offset="0" stop-color="#f00"/><stop offset="0.5" stop-color="#f00"/>'
+            '<stop offset="0.5" stop-color="#f00" stop-opacity="0.2"/>'
+            '<stop offset="1" stop-color="#f00" stop-opacity="0.2"/>'
+            '</linearGradient><rect x="20" y="20" width="160" height="100" fill="url(#L)"/>',
+        )
+        fill = group["ADBE Vectors Group"]["ADBE Vector Graphic - G-Fill"]
+        grad = fill["ADBE Vector Grad Colors"].value
+        assert [(s.offset, round(s.alpha, 4)) for s in grad.alpha_stops] == [
+            (0.0, 1.0),
+            (0.5, 1.0),
+            (0.5, 0.2),
+            (1.0, 0.2),
+        ]
+
+
 class TestSvgImportByteFidelity:
     """Byte-level fidelity fixes surfaced by aep-compare vs AE's import."""
 
@@ -167,7 +277,6 @@ class TestSvgImportByteFidelity:
         # Unlike solid paints it is the RAW percentage, not 8-bit quantized:
         # AE reads the SVG opacity as float32, so 0.3 -> 30.000001907 (not the
         # solid-path 30.196). A fully-opaque gradient leaves Opacity defaulted.
-        from py_aep import new
 
         svg = tmp_path / "go.svg"
         svg.write_text(
@@ -325,10 +434,11 @@ class TestSvgImportByteFidelity:
 
     def test_group_opacity_baked_into_paint_opacity(self) -> None:
         # AE bakes an SVG element/group opacity into the paint's Fill/Stroke
-        # Opacity, 8-bit quantized (0.3 -> 77/255*100 = 30.196), and IGNORES
-        # the fill-opacity/stroke-opacity attributes. Verified byte-for-byte
-        # against AE 2026's own import of svg.svg (two <g opacity="0.3">
-        # fills -> 30.196; its four stroke-opacity="0.5" strokes -> 100).
+        # Opacity, 8-bit quantized (0.3 -> 77/255*100 = 30.196). Verified
+        # byte-for-byte against AE 2026's own import of svg.svg (two
+        # <g opacity="0.3"> fills -> 30.196). AE ignores stroke-opacity (its
+        # four stroke-opacity="0.5" strokes -> 100); py_aep applies it the
+        # same way (-> 50.196), so they render as the SVG says.
         _app, comp = _import("svg")
         contents = comp.layers[0].property("ADBE Root Vectors Group")
         fills, strokes = [], []
@@ -343,4 +453,7 @@ class TestSvgImportByteFidelity:
                     strokes.append(child["ADBE Vector Stroke Opacity"].value)
         low = sorted(v for v in fills if v < 99.9)
         assert low == [pytest.approx(30.19607925, abs=1e-5)] * 2
-        assert all(v == pytest.approx(100.0) for v in strokes)
+        assert (
+            sorted(strokes)
+            == [pytest.approx(50.19607843, abs=1e-5)] * 4 + [pytest.approx(100.0)] * 4
+        )

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Tuple
 
-from ._util import NUMBER_RE, parse_number
+from ._util import NUMBER_RE, LengthContext, parse_length
 from .errors import UnsupportedSVGError
 from .path_data import RawSubpath, parse_path
 from .transform import Affine
@@ -23,17 +23,55 @@ if TYPE_CHECKING:
 # Control-point distance for a 90-degree circular arc as a cubic bezier.
 _KAPPA = 0.5522847498307936
 
+# The viewport dimension (`LengthContext` attribute) a percentage of each
+# geometry attribute refers to (SVG 1.1 7.10): the width, the height, or the
+# normalized diagonal.
+_PERCENT_AXIS = {
+    "x": "width",
+    "width": "width",
+    "cx": "width",
+    "rx": "width",
+    "x1": "width",
+    "x2": "width",
+    "y": "height",
+    "height": "height",
+    "cy": "height",
+    "ry": "height",
+    "y1": "height",
+    "y2": "height",
+    "r": "diagonal",
+}
 
-def _f(attrs: dict[str, str], key: str, default: float = 0.0) -> float:
-    return parse_number(attrs.get(key), default)
+
+def _f(
+    attrs: dict[str, str],
+    key: str,
+    ctx: LengthContext | None,
+    default: float = 0.0,
+) -> float:
+    """A geometry attribute in user units: units converted and a percentage
+    resolved against `ctx` (kept as the bare number without one)."""
+    if ctx is None:
+        return parse_length(attrs.get(key), default)
+    ref = getattr(ctx, _PERCENT_AXIS[key])
+    return parse_length(attrs.get(key), default, ref, ctx.font_size)
 
 
-def element_subpaths(tag: str, attrs: dict[str, str]) -> list[RawSubpath]:
+def _is_auto(raw: str | None) -> bool:
+    """An absent or `auto` corner radius, which takes the other radius."""
+    return raw is None or raw.strip() in ("", "auto")
+
+
+def element_subpaths(
+    tag: str, attrs: dict[str, str], ctx: LengthContext | None = None
+) -> list[RawSubpath]:
     """Return untransformed cubic subpaths for a drawable element.
 
     Args:
         tag: Local element name (no namespace), e.g. `rect`, `path`.
         attrs: Element attributes.
+        ctx: The viewport and font size percentage and `em` lengths
+            resolve against.
 
     Raises:
         UnsupportedSVGError: For an element that is not a basic shape.
@@ -41,35 +79,28 @@ def element_subpaths(tag: str, attrs: dict[str, str]) -> list[RawSubpath]:
     if tag == "path":
         return parse_path(attrs.get("d", ""))
     if tag == "rect":
-        return _rect(attrs)
+        return _rect(attrs, ctx)
     if tag in ("circle", "ellipse"):
-        return _ellipse(tag, attrs)
+        return _ellipse(tag, attrs, ctx)
     if tag == "line":
-        x1, y1 = _f(attrs, "x1"), _f(attrs, "y1")
-        x2, y2 = _f(attrs, "x2"), _f(attrs, "y2")
+        x1, y1 = _f(attrs, "x1", ctx), _f(attrs, "y1", ctx)
+        x2, y2 = _f(attrs, "x2", ctx), _f(attrs, "y2", ctx)
         return [RawSubpath([(x1, y1, x1, y1, x2, y2, x2, y2)], False)]
     if tag in ("polyline", "polygon"):
         return _poly(attrs, closed=(tag == "polygon"))
     raise UnsupportedSVGError(f"Unsupported drawable element: <{tag}>")
 
 
-def _rect(attrs: dict[str, str]) -> list[RawSubpath]:
-    x, y = _f(attrs, "x"), _f(attrs, "y")
-    w, h = _f(attrs, "width"), _f(attrs, "height")
+def _rect(attrs: dict[str, str], ctx: LengthContext | None) -> list[RawSubpath]:
+    x, y = _f(attrs, "x", ctx), _f(attrs, "y", ctx)
+    w, h = _f(attrs, "width", ctx), _f(attrs, "height", ctx)
     if w <= 0 or h <= 0:
         return []
-    rx_raw = attrs.get("rx")
-    ry_raw = attrs.get("ry")
-    rx = (
-        _f(attrs, "rx")
-        if rx_raw not in (None, "")
-        else (_f(attrs, "ry") if ry_raw not in (None, "") else 0.0)
-    )
-    ry = (
-        _f(attrs, "ry")
-        if ry_raw not in (None, "")
-        else (_f(attrs, "rx") if rx_raw not in (None, "") else 0.0)
-    )
+    rx, ry = _f(attrs, "rx", ctx), _f(attrs, "ry", ctx)
+    if _is_auto(attrs.get("rx")):
+        rx = ry
+    if _is_auto(attrs.get("ry")):
+        ry = rx
     rx = min(max(rx, 0.0), w / 2.0)
     ry = min(max(ry, 0.0), h / 2.0)
     if rx == 0 or ry == 0:
@@ -106,26 +137,35 @@ def _rect(attrs: dict[str, str]) -> list[RawSubpath]:
     return [RawSubpath(segs, True)]
 
 
-def _ellipse(tag: str, attrs: dict[str, str]) -> list[RawSubpath]:
-    cx, cy = _f(attrs, "cx"), _f(attrs, "cy")
+def _ellipse(
+    tag: str, attrs: dict[str, str], ctx: LengthContext | None
+) -> list[RawSubpath]:
+    cx, cy = _f(attrs, "cx", ctx), _f(attrs, "cy", ctx)
     if tag == "circle":
-        r = _f(attrs, "r")
+        r = _f(attrs, "r", ctx)
         rx = ry = r
     else:
-        rx, ry = _f(attrs, "rx"), _f(attrs, "ry")
+        rx, ry = _f(attrs, "rx", ctx), _f(attrs, "ry", ctx)
+        # `auto` takes the other radius (SVG 2). AE 2026 reads it as 0 and
+        # imports `rx="auto" ry="20"` as a zero-width ellipse.
+        if (attrs.get("rx") or "").strip() == "auto":
+            rx = ry
+        elif (attrs.get("ry") or "").strip() == "auto":
+            ry = rx
     if rx <= 0 or ry <= 0:
         return []
     kx, ky = rx * _KAPPA, ry * _KAPPA
-    # Right, bottom, left, top (clockwise).
+    # Top, right, bottom, left (clockwise): AE 2026 starts an imported
+    # circle/ellipse at the top vertex.
     right = (cx + rx, cy)
     bottom = (cx, cy + ry)
     left = (cx - rx, cy)
     top = (cx, cy - ry)
     segs = [
+        (top[0], top[1], cx + kx, cy - ry, cx + rx, cy - ky, right[0], right[1]),
         (right[0], right[1], cx + rx, cy + ky, cx + kx, cy + ry, bottom[0], bottom[1]),
         (bottom[0], bottom[1], cx - kx, cy + ry, cx - rx, cy + ky, left[0], left[1]),
         (left[0], left[1], cx - rx, cy - ky, cx - kx, cy - ry, top[0], top[1]),
-        (top[0], top[1], cx + kx, cy - ry, cx + rx, cy - ky, right[0], right[1]),
     ]
     return [RawSubpath(segs, True)]
 

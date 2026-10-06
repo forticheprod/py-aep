@@ -351,7 +351,7 @@ Python round-trip:
 | `tdmn` | Match name identifier (links property to its spec) |
 | `LIST:tdgp` | PropertyGroup container |
 | `LIST:tdbs` | Leaf Property container (fixed children: tdsb, tdsn, tdb4) |
-| `tdsb` | Property flags (enabled, locked_ratio, roto_bezier, dimensions_separated) |
+| `tdsb` | Property flags (enabled, hidden, ratio_unlinked, roto_bezier, dimensions_separated) |
 | `tdsn` | Property display name |
 | `tdb4` | Property metadata (dimensions, is_spatial, color, can_vary_over_time, ...) |
 | `cdat` | Property static value data |

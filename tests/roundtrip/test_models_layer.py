@@ -93,6 +93,14 @@ class TestLightSource:
         assert isinstance(layer2, LightLayer)
         assert layer2.light_source is None
 
+    def test_light_source_set_none_before_ae_23(self) -> None:
+        # AE 22 stores no light source as 0 (0xFFFFFFFF from AE 23).
+        project = py_aep.new("22.5x53").project
+        comp = project.root_folder.add_comp("Comp", 100, 100, 1.0, 1.0, 24.0)
+        light = comp.add_light("Light", [50, 50])
+        light.light_source = None
+        assert light._ldta.source_id == 0
+
     def test_light_source_rejects_3d_layer(self) -> None:
         project = parse_aep(SAMPLES_DIR / "light_source_mov_23_976.mov.aep").project
         light = project.compositions[0].light_layers[0]
@@ -1631,18 +1639,37 @@ class TestLayerReservedBytes:
 
 
 class TestGeometryAutoOrientGuard:
-    """Mutates auto-orient, so it lives here rather than in read_only/."""
+    """The auto-orientations the transform math does not model still refuse.
 
-    def test_auto_orient_chain_raises(self) -> None:
-        project = parse_project_fresh(SAMPLES_DIR / "geometry_probe.aep")
+    Mutates auto-orient, so it lives here rather than in read_only/."""
+
+    @staticmethod
+    def _probe_layer(project, name: str):  # type: ignore[no-untyped-def]
         comp = next(c for c in project.compositions if c.name == "PROBE_MAIN")
-        layer = next(ly for ly in comp.layers if ly.name == "solid_xform")
+        return next(ly for ly in comp.layers if ly.name == name)
+
+    def test_along_path_with_separated_position_raises(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "geometry_probe.aep")
+        layer = self._probe_layer(project, "solid_keyed")
+        layer.transform["ADBE Position"].dimensions_separated = True
         layer.auto_orient = AutoOrientType.ALONG_PATH
-        with pytest.raises(NotImplementedError, match="auto-orient"):
+        with pytest.raises(NotImplementedError, match="separated"):
             layer.source_point_to_comp([0.0, 0.0])
-        child = next(ly for ly in comp.layers if ly.name == "solid_parented")
-        with pytest.raises(NotImplementedError, match="auto-orient"):
+
+    def test_parented_layer_towards_camera_raises(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "geometry_probe.aep")
+        child = self._probe_layer(project, "solid_parented")
+        child.three_d_layer = True
+        child.auto_orient = AutoOrientType.CAMERA_OR_POINT_OF_INTEREST
+        with pytest.raises(NotImplementedError, match="towards the camera"):
             child.comp_point_to_source([0.0, 0.0])
+
+    def test_characters_towards_camera_raises(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "geometry_probe.aep")
+        layer = self._probe_layer(project, "text_point")
+        layer.auto_orient = AutoOrientType.CHARACTERS_TOWARD_CAMERA
+        with pytest.raises(NotImplementedError, match="characters"):
+            layer.source_point_to_comp([0.0, 0.0])
 
 
 class TestForwardRayOnly:
@@ -1729,3 +1756,43 @@ class TestRoundtripTimeRemapRamp:
         assert source is not None
         times = [k.time for k in layer["ADBE Time Remapping"].keyframes]
         assert times == pytest.approx([2.0, 2.0 + source.duration])
+
+
+class TestParentToCameraRig:
+    """Parenting to a camera compensates through the camera's rig (its
+    position and look-at toward the point of interest, no anchor point):
+    AE 2026 gave the same layer this Orientation (`auto_orient.aep`)."""
+
+    def test_two_node_camera_compensation_matches_ae(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "auto_orient.aep")
+        comp = next(c for c in project.compositions if c.name == "ORIENT_CAM")
+        child = next(ly for ly in comp.layers if ly.name == "child_of_cam")
+        camera = child.parent
+        child.parent = None
+        child.transform["ADBE Position"].value = [960.0, 540.0, 0.0]
+        child.transform["ADBE Orientation"].value = [0.0, 0.0, 0.0]
+        child.parent = camera
+        orientation = child.transform["ADBE Orientation"].value
+        assert orientation == pytest.approx([16.8075, 334.9831, 0.0], abs=1e-3)
+
+
+class TestTextSourceRectRefusals:
+    """Text features the ink measurements did not cover refuse rather than
+    guess (mutates the fixture, so it lives in roundtrip/)."""
+
+    @staticmethod
+    def _hello(project):  # type: ignore[no-untyped-def]
+        comp = next(c for c in project.compositions if c.name == "TEXT_INK")
+        return next(ly for ly in comp.layers if ly.name == "Hello_36")
+
+    def test_faux_bold_raises(self) -> None:
+        layer = self._hello(parse_project_fresh(SAMPLES_DIR / "text_ink.aep"))
+        layer.text["ADBE Text Document"].value.faux_bold = True
+        with pytest.raises(NotImplementedError, match="faux bold"):
+            layer.source_rect_at_time(0.0, False)
+
+    def test_text_animator_raises(self) -> None:
+        layer = self._hello(parse_project_fresh(SAMPLES_DIR / "text_ink.aep"))
+        layer.text["ADBE Text Animators"].add_property("ADBE Text Animator")
+        with pytest.raises(NotImplementedError, match="animators"):
+            layer.source_rect_at_time(0.0, False)

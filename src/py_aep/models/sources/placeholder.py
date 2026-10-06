@@ -42,6 +42,7 @@ class PlaceholderSource(FootageSource):
     """
 
     _owns_name = True
+    _rate_is_assumed = True
 
     def __init__(
         self,
@@ -84,15 +85,22 @@ class PlaceholderSource(FootageSource):
             width=width,
             height=height,
             alpha_mode_raw=3,
-            footage_missing_at_save=True,
             layer_index=0xFFFFFFFE,
         )
+        sspc.footage_missing_at_save = True
         sspc.native_frame_rate = frame_rate
         sspc.duration = duration
 
         opti = PlaceholderOptiChunk(placeholder_name=name)
 
         return cls(_sspc=sspc, _opti=opti)
+
+    @property
+    def _duration(self) -> float:
+        # A placeholder's duration is in seconds whatever its rate: AE 2026
+        # reports 10 s for a 10 s placeholder even with a conform rate stored
+        # (as py_aep once wrote one).
+        return self._sspc.duration * self._sspc.loop
 
     def _resolve_name(self, raw_name: str) -> str:
         return cast("PlaceholderOptiChunk", self._opti).placeholder_name

@@ -20,6 +20,10 @@ _STRUCT_CACHE: dict[str, struct.Struct] = {}
 _INT32_MIN = -(2**31)
 _INT32_MAX = 2**31 - 1
 
+#: Seconds between the Mac epoch (1904-01-01) AE stamps file and item times
+#: with and the Unix epoch.
+MAC_EPOCH_OFFSET = 2082844800
+
 
 def to_dividend_divisor(value: float) -> tuple[int, int]:
     """Split `value` into the `(dividend, divisor)` integers AE stores for its
@@ -45,6 +49,29 @@ def to_dividend_divisor(value: float) -> tuple[int, int]:
     max_denominator = max(1, _INT32_MAX // (int(abs(value)) + 2))
     frac = Fraction(value).limit_denominator(min(1_000_000, max_denominator))
     return frac.numerator, frac.denominator
+
+
+def to_float32_ratio(value: float) -> tuple[int, int]:
+    """Split `value` into the `(dividend, divisor)` AE stores for a comp's
+    display start time or a layer's stretch: the value rounded to float32,
+    as an exact ratio, with the divisor held to the signed 32-bit range.
+
+    Measured on AE 2026: 0.51 -> 2139095/4194304, 0.5 -> 1/2, and
+    8.33e-7 (whose exact float32 ratio needs a 2^44 divisor) ->
+    330/396000001.
+    """
+    frac = Fraction(to_f4(value)).limit_denominator(_INT32_MAX)
+    return frac.numerator, frac.denominator
+
+
+def to_fixed_16_16(value: float) -> tuple[int, int]:
+    """Split `value` into the `(integer, fractional)` parts of a 16.16 fixed
+    point number (fraction in 1/65536 units), as AE stores frame rates.
+
+    The whole value is rounded before the split: rounding the fraction alone
+    turns 23.99999999 into 23 + 65536/65536, which overflows a u2 fraction.
+    """
+    return divmod(round(value * 65536), 65536)
 
 
 def _get_struct(full_fmt: str) -> struct.Struct:
@@ -79,6 +106,10 @@ def write_fmt(fp: IO[bytes], fmt: str, *args: Any, endian: str = ">") -> int:
     data = _get_struct(endian + fmt).pack(*args)
     fp.write(data)
     return len(data)
+
+
+#: The largest finite IEEE-754 single (float32).
+FLOAT32_MAX = 3.4028234663852886e38
 
 
 def to_f4(value: float) -> float:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..validators import _validate_number, validate_number
+from ..validators import _validate_number, validate_f8
 
 if TYPE_CHECKING:
     from typing import Any
@@ -32,7 +32,7 @@ class KeyframeEase:
     """
 
     def __init__(self, speed: float = 0.0, influence: float = 0.0) -> None:
-        validate_number(speed)
+        validate_f8(speed)
         # The setter enforces the 0.1-100 user range, but 0.0 is the
         # "no ease" sentinel the parser constructs with, so allow it here.
         _validate_number(min=0.0, max=100.0)(influence)
@@ -75,7 +75,7 @@ class KeyframeEase:
         """
         speed = other.speed
         influence = other.influence
-        validate_number(speed)
+        validate_f8(speed)
         _validate_number(min=0.0, max=100.0)(influence)
         if self._kf_data is None:
             self._speed = speed
@@ -112,7 +112,7 @@ class KeyframeEase:
 
     @speed.setter
     def speed(self, value: float) -> None:
-        validate_number(value)
+        validate_f8(value)
         if self._kf_data is None:
             self._speed = value
             return

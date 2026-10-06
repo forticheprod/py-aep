@@ -8,26 +8,81 @@ interpretation.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
 from attrs import define
 
-from .bin_utils import to_dividend_divisor
+from .bin_utils import to_dividend_divisor, to_fixed_16_16, to_float32_ratio
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import FmtItem, bytes_field, s4_field, u1_field, u2_field, u4_field
 from .registry import register
 
-# Standard NTSC multipliers: N*1000/1001 gives the NTSC frame rate.
-_NTSC_MULTIPLIERS = frozenset({24, 30, 48, 60, 120})
+# The largest internal timebase AE picks a units-per-frame for: 99.99 fps
+# gets 39996 (400 units a frame), 78.125 fps 20000 rather than 40000.
+_TIMEBASE_LIMIT = 40000
+
+# The finest timebase AE counts a composition's or a layer's time in.
+_MAX_TIMEBASE = 115200
+
+#: `work_area_end_dividend` of a work area that runs to the end of the
+#: composition.
+WORK_AREA_TO_END = 0xFFFFFFFF
 
 
-def _is_ntsc(fps: float) -> bool:
-    """Return True if fps is a standard NTSC drop-frame rate (N*1000/1001)."""
-    n = round(fps * 1001 / 1000)
-    if n not in _NTSC_MULTIPLIERS:
-        return False
-    true_rate = n * 1000 / 1001
-    return abs(fps - true_rate) < 0.01
+def frame_grid(fps: float) -> tuple[int, int]:
+    """The `(internal timebase, timebase units per frame)` After Effects
+    derives from a composition frame rate.
+
+    AE reads the rate to the thousandth (half up) as a reduced fraction
+    p/q, and gives a frame q * 2**k timebase units with the largest k (at
+    least 0) keeping the timebase under 40000. Measured on AE 2026 over 90
+    rates and matching every AE-saved composition in the samples: 24 fps ->
+    (24576, 1024), 29.97 -> (23976, 800), 23.98 -> (38368, 1600), 7.3 ->
+    (37376, 5120), 12.3456 -> (24692, 2000), 99.123 -> (99123, 1000), 999 ->
+    (31968, 32). AE derives it again on open, so it also gives the frame grid
+    of a file whose stored timebase disagrees with its rate.
+
+    When even k = 0 lands past 115200, AE halves the units per frame until
+    the timebase fits, rounds the timebase down and keeps the whole units
+    per frame, so the grid runs a hair off the rate: 120.001 fps -> (60000,
+    500), a 120 fps grid; 333.333 -> (83333, 250); 998.999 -> (62437, 62),
+    from 62.5 units a frame (measured on AE 2026 over 12 such rates).
+    """
+    rate = Fraction(math.floor(fps * 1000 + 0.5), 1000)
+    units_per_frame = Fraction(rate.denominator)
+    while rate * units_per_frame * 2 < _TIMEBASE_LIMIT:
+        units_per_frame *= 2
+    while rate * units_per_frame > _MAX_TIMEBASE:
+        units_per_frame /= 2
+    return math.floor(rate * units_per_frame), math.floor(units_per_frame)
+
+
+def layer_timebase(internal_timebase: int, stretch: float) -> int:
+    """Keyframe ticks per second of a layer's own time, in a composition
+    of `internal_timebase` for a layer stretch factor `stretch` (the
+    percentage / 100, sign ignored).
+
+    Up to 100 % the layer uses the composition timebase. Past it, After
+    Effects scales the timebase by the stretch read as 16.16 fixed point,
+    rounds down, and caps the result at 115200 ticks a second. Measured on
+    AE 2026 on 142 layers over 10 frame rates: 150 % at 24 fps gives
+    36864, 116 % at 99.123 fps 114983 (114982 with the exact stretch), and
+    500 % at 24 fps 115200 rather than 122880, like every stretch past the
+    cap. The layer's start time and keyframe ticks use this timebase.
+    """
+    fixed = math.floor(abs(stretch) * 65536 + 0.5)
+    if fixed <= 65536:
+        return internal_timebase
+    return min(internal_timebase * fixed // 65536, _MAX_TIMEBASE)
+
+
+def rescale_ticks(ticks: int, old: int, new: int) -> int:
+    """`ticks` of an `old` timebase in a `new` one, at the same time; a tie
+    rounds up, as After Effects does (measured on AE 2026: ticks 15 and -13
+    become 23 and -19 going from 100 to 150 %, 12 and -84 become 13 and -87
+    going from 24 to 25 fps)."""
+    return (2 * ticks * new + old) // (2 * old)
 
 
 @register("cdta")
@@ -67,9 +122,11 @@ class CdtaChunk(Chunk):
     # -- Time / work area / duration (bytes 20-51) -------------------------
     time_dividend: int = s4_field(default=1)
     time_divisor: int = u4_field(default=1)
-    work_area_start_dividend: int = u4_field(default=1)
+    work_area_start_dividend: int = s4_field(default=1)
+    """Signed: AE 2026 stores -1 frame for a zero-length composition."""
+
     work_area_start_divisor: int = u4_field(default=1)
-    work_area_end_dividend: int = u4_field(default=0xFFFFFFFF)
+    work_area_end_dividend: int = u4_field(default=WORK_AREA_TO_END)
     work_area_end_divisor: int = u4_field(default=1)
     duration_dividend: int = u4_field(default=1)
     duration_divisor: int = u4_field(default=1)
@@ -145,8 +202,7 @@ class CdtaChunk(Chunk):
 
     @frame_rate.setter
     def frame_rate(self, value: float) -> None:
-        self.frame_rate_integer = int(value)
-        self.frame_rate_fractional = round((value - int(value)) * 65536)
+        self.frame_rate_integer, self.frame_rate_fractional = to_fixed_16_16(value)
         self._update_timebase(value)
 
     @property
@@ -154,25 +210,13 @@ class CdtaChunk(Chunk):
         """Time scale assembled from integer + fractional/256."""
         return self.time_scale_integer + self.time_scale_fractional / 256.0
 
-    @time_scale.setter
-    def time_scale(self, value: float) -> None:
-        self.time_scale_integer = int(value)
-        self.time_scale_fractional = round((value - int(value)) * 256)
-
     def _update_timebase(self, fps: float) -> None:
-        """Recalculate internal_timebase and time_scale for a new frame rate.
-
-        NTSC rates (multiples of 24000/1001) use a fixed timebase of 23976.
-        All other rates use the largest power-of-2 time_scale such that
-        fps * time_scale * 256 <= 36864.
-        """
-        if _is_ntsc(fps):
-            self.internal_timebase = 23976
-            self.time_scale = 23976 / (fps * 256)
-        else:
-            time_scale = 2.0 ** math.floor(math.log2(144 / fps))
-            self.internal_timebase = round(fps * time_scale * 256)
-            self.time_scale = time_scale
+        """Recalculate internal_timebase and time_scale (units per frame /
+        256) for a new frame rate (see `frame_grid`)."""
+        self.internal_timebase, units_per_frame = frame_grid(fps)
+        self.time_scale_integer, self.time_scale_fractional = divmod(
+            units_per_frame, 256
+        )
 
     @property
     def pixel_aspect(self) -> float:
@@ -190,10 +234,6 @@ class CdtaChunk(Chunk):
         """Duration in seconds from dividend/divisor."""
         return self.duration_dividend / self.duration_divisor
 
-    @duration.setter
-    def duration(self, value: float) -> None:
-        self.duration_dividend, self.duration_divisor = to_dividend_divisor(value)
-
     @property
     def display_start_time(self) -> float:
         """Display start time in seconds from dividend/divisor."""
@@ -202,7 +242,7 @@ class CdtaChunk(Chunk):
     @display_start_time.setter
     def display_start_time(self, value: float) -> None:
         self.display_start_time_dividend, self.display_start_time_divisor = (
-            to_dividend_divisor(value)
+            to_float32_ratio(value)
         )
 
     @property
@@ -210,25 +250,15 @@ class CdtaChunk(Chunk):
         """Work area start in seconds from dividend/divisor."""
         return self.work_area_start_dividend / self.work_area_start_divisor
 
-    @work_area_start.setter
-    def work_area_start(self, value: float) -> None:
-        self.work_area_start_dividend, self.work_area_start_divisor = (
-            to_dividend_divisor(value)
-        )
-
     @property
     def time_seconds(self) -> float:
         """Current time in seconds from dividend/divisor."""
         return self.time_dividend / self.time_divisor
 
-    @time_seconds.setter
-    def time_seconds(self, value: float) -> None:
-        self.time_dividend, self.time_divisor = to_dividend_divisor(value)
-
     @property
     def work_area_end_absolute(self) -> float:
         """Absolute work area end in seconds."""
-        if self.work_area_end_dividend == 0xFFFFFFFF:
+        if self.work_area_end_dividend == WORK_AREA_TO_END:
             return self.display_start_time + self.duration
         return (
             self.display_start_time
@@ -238,7 +268,7 @@ class CdtaChunk(Chunk):
     @property
     def frame_work_area_end_absolute(self) -> float:
         """Absolute work area end in frames."""
-        if self.work_area_end_dividend == 0xFFFFFFFF:
+        if self.work_area_end_dividend == WORK_AREA_TO_END:
             return (self.display_start_time + self.duration) * self.frame_rate
         return self.work_area_end_absolute * self.frame_rate
 
@@ -265,67 +295,25 @@ class CdtaChunk(Chunk):
 
     @property
     def frame_duration(self) -> int:
-        """Duration in frames."""
-        return int(self.duration * self.frame_rate)
-
-    @frame_duration.setter
-    def frame_duration(self, value: int) -> None:
-        self.duration = value / self.frame_rate
-
-    @property
-    def display_start_frame(self) -> int:
-        """Display start time in frames."""
-        return int(self.display_start_time * self.frame_rate)
-
-    @display_start_frame.setter
-    def display_start_frame(self, value: int) -> None:
-        self.display_start_time = value / self.frame_rate
-
-    @property
-    def work_area_start_frame(self) -> int:
-        """Work area start in frames."""
-        return int(self.work_area_start * self.frame_rate)
-
-    @work_area_start_frame.setter
-    def work_area_start_frame(self, value: int) -> None:
-        self.work_area_start = value / self.frame_rate
+        """Duration in frames. A duration is a whole number of frames, so the
+        product is rounded: truncating it loses a frame at 23.976 fps, where
+        the stored rate is only 16.16-accurate (51.999995 for 52 frames)."""
+        return round(self.duration * self.frame_rate)
 
     @property
     def work_area_duration(self) -> float:
         """Work area duration in seconds."""
-        if self.work_area_end_dividend == 0xFFFFFFFF:
+        if self.work_area_end_dividend == WORK_AREA_TO_END:
             return self.duration - self.work_area_start
         return (
             self.work_area_end_dividend / self.work_area_end_divisor
             - self.work_area_start
         )
 
-    @work_area_duration.setter
-    def work_area_duration(self, value: float) -> None:
-        self.work_area_end_dividend, self.work_area_end_divisor = to_dividend_divisor(
-            self.work_area_start + value
-        )
-
     @property
     def work_area_duration_frame(self) -> int:
-        """Work area duration in frames."""
-        return int(self.work_area_duration * self.frame_rate)
-
-    @work_area_duration_frame.setter
-    def work_area_duration_frame(self, value: int) -> None:
-        duration_seconds = value / self.frame_rate
-        self.work_area_end_dividend, self.work_area_end_divisor = to_dividend_divisor(
-            self.work_area_start + duration_seconds
-        )
-
-    @property
-    def frame_time(self) -> int:
-        """Current time in frames."""
-        return int(self.time_seconds * self.frame_rate)
-
-    @frame_time.setter
-    def frame_time(self, value: int) -> None:
-        self.time_seconds = value / self.frame_rate
+        """Work area duration in frames, rounded like `frame_duration`."""
+        return round(self.work_area_duration * self.frame_rate)
 
 
 # ---------------------------------------------------------------------------
@@ -336,10 +324,10 @@ class CdtaChunk(Chunk):
 @register("CsCt")
 @define
 class CsctChunk(Chunk):
-    """CpS2 entry count chunk."""
+    """CpS2 entry count chunk, little-endian inside the big-endian file."""
 
     chunk_type: str = "CsCt"
-    value: int = u4_field(default=0x01000000)
+    value: int = u4_field(default=1, endian="<")
 
 
 # ---------------------------------------------------------------------------

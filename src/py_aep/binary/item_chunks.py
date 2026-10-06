@@ -11,6 +11,7 @@ import re
 
 from attrs import define
 
+from .bin_utils import MAC_EPOCH_OFFSET
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import FmtItem, bool_field, bytes_field, u1_field, u2_field, u4_field
@@ -49,26 +50,29 @@ class IdtaChunk(Chunk):
     label: int = u1_field()
     """Label color index."""
 
-    _reserved_3c: bytes = bytes_field(25, repr=False)
+    _reserved_3c: bytes = bytes_field(21, repr=False)
+    _modified_stamp: int = u4_field(repr=False)
+    """Bytes 0x50-0x53: big-endian Mac-epoch seconds (see `modified_time`)."""
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     use_proxy = BitField("_proxy_flags", 0)
     is_solid = BitField("_flags_17", 4)
     is_footage = BitField("_flags_17", 5)
 
+    @property
+    def modified_time(self) -> int:
+        """Item time stamp, as a Unix timestamp (`0` when unstamped).
 
-# ---------------------------------------------------------------------------
-# iide - item ID echo (4 bytes, little-endian u32)
-# ---------------------------------------------------------------------------
+        For file footage AE stores the last-modified time of the file in
+        use (the proxy's while a file proxy is active); for other items it
+        stores the time of the item's last edit.
+        """
+        stamp = self._modified_stamp
+        return stamp - MAC_EPOCH_OFFSET if stamp else 0
 
-
-@register("iide")
-@define
-class IideChunk(Chunk):
-    """Item ID echo chunk (4 bytes, little-endian u32)."""
-
-    chunk_type: str = "iide"
-    value: int = u4_field(endian="<")
+    @modified_time.setter
+    def modified_time(self, value: int) -> None:
+        self._modified_stamp = value + MAC_EPOCH_OFFSET if value else 0
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +106,27 @@ class IdpcChunk(Chunk):
 #   bits  7-0    : ae_build_number     (8 bits)
 
 
+#: The (file format version, minor) pair After Effects stamps when saving a
+#: project for each release. 15 and 23-26 match projects those releases saved
+#: (samples/versions); 16-18 and 22 are the pairs AE writes when it saves for
+#: them (an early 22.x build saved samples/versions/ae2022 as 93.40). Its keys
+#: are the majors py_aep can write a project for (there was no AE 19-21).
+FORMAT_VERSIONS: dict[int, tuple[int, int]] = {
+    15: (92, 14),
+    16: (93, 5),
+    17: (93, 22),
+    18: (93, 29),
+    22: (93, 43),
+    23: (94, 9),
+    24: (95, 6),
+    25: (96, 9),
+    26: (97, 2),
+}
+
+#: An After Effects version string, `"{major}.{minor}x{build}"`.
+AE_VERSION_RE = re.compile(r"^(\d+)\.(\d+)x(\d+)$")
+
+
 @register("head")
 @define
 class HeadChunk(Chunk):
@@ -129,9 +154,8 @@ class HeadChunk(Chunk):
     _reserved_08: bytes = bytes_field(4, default=b"\x80\x00\x00\x00", repr=False)
     next_item_id: int = u4_field(default=1, repr=False)
     """Next item ID to allocate, always > max existing item ID."""
-    _reserved_10: bytes = bytes_field(2, repr=False)
-    file_revision: int = u2_field(default=1)
-    """File revision counter, incremented on each save."""
+    file_revision: int = u4_field(default=1)
+    """File revision counter (32-bit), incremented on each user action."""
 
     @property
     def ae_version_major_a(self) -> int:
@@ -206,7 +230,7 @@ class HeadChunk(Chunk):
 
     @version.setter
     def version(self, value: str) -> None:
-        m = re.match(r"^(\d+)\.(\d+)x(\d+)$", value)
+        m = AE_VERSION_RE.match(value)
         if not m:
             raise ValueError(f"Invalid version format: {value!r}")
         major, minor, build = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -216,11 +240,17 @@ class HeadChunk(Chunk):
         self.ae_build_number = build
 
     def sync_file_format_version(self) -> None:
-        """Set `file_format_version` (the open-compatibility gate) from the
-        current major version. AE tracks the major with a constant offset
-        for AE 2022+; the gate is a `<=` compare, so this is exact for
-        2022+ and a safe under-estimate for older majors."""
-        self.file_format_version = self.ae_version_major + 71
+        """Stamp `file_format_version` (the open-compatibility gate) and its
+        minor for the current major version, as After Effects saves for that
+        release (`FORMAT_VERSIONS`). AE opens a file whose format version is
+        at most its own and reads it with the rules of the (format, minor)
+        pair, so a major with no release to take a stamp from is refused: a
+        derived pair (AE 2026 measured on `py_aep.new` 12-14 and 19-21) makes
+        AE misread every property name or reject the file (`validate_ae_version`
+        refuses such a major before it reaches the head chunk)."""
+        self.file_format_version, self._format_subversion = FORMAT_VERSIONS[
+            self.ae_version_major
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +321,12 @@ class NnhdChunk(Chunk):
     chunk_type: str = "nnhd"
 
     # Defaults capture a fresh AE 2026 project (see project_chunks.py).
-    _reserved_00: bytes = bytes_field(8, default=b"\x00" * 7 + b"\x05", repr=False)
+    _reserved_00: bytes = bytes_field(2, repr=False)
+    _saving_platform: int = u1_field(repr=False)
+    """Byte 2: 0x08 when After Effects on macOS saved the project, 0 on
+    Windows (AE rewrites it on every save)."""
+
+    _reserved_03: bytes = bytes_field(5, default=b"\x00" * 4 + b"\x05", repr=False)
     _display_byte: int = u1_field(repr=False)
     """Byte 8: bit 7 = feet_frames_film_type, bits 6-0 = time_display_type."""
 
@@ -307,7 +342,12 @@ class NnhdChunk(Chunk):
     _reserved_15: bytes = bytes_field(3, repr=False)
     bits_per_channel: int = u1_field()
     transparency_grid_thumbnails: bool = bool_field()
-    _unknown_1a: bytes = bytes_field(14, repr=False)
+    _system_code_page: int = u2_field(repr=False)
+    """Bytes 0x1A-0x1B: the saving system's text encoding - Windows code
+    page 1252 up to AE 25 and 65001 (UTF-8) from AE 26, 0x0100 on macOS
+    (AE rewrites it on every save)."""
+
+    _unknown_1c: bytes = bytes_field(12, repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
     feet_frames_film_type = BitField("_display_byte", 7)

@@ -22,7 +22,9 @@ if TYPE_CHECKING:
     from .ai_layers import AiLayer
 
 
-def psd_leaf_layers(file: str | os.PathLike[str]) -> list[PsdLayer]:
+def psd_leaf_layers(
+    file: str | os.PathLike[str], *, mask_boxes: bool = True
+) -> list[PsdLayer]:
     """Return a PSD's leaf layers in document order (bottom layer first).
 
     Flattens the [read_psd_layers][] group tree to the layers AE's
@@ -41,7 +43,7 @@ def psd_leaf_layers(file: str | os.PathLike[str]) -> list[PsdLayer]:
             else:
                 leaves.append(node)
 
-    _walk(read_psd_layers(file))
+    _walk(read_psd_layers(file, mask_boxes=mask_boxes))
     leaves.sort(key=lambda leaf: leaf.record_index)
     return leaves
 
@@ -63,7 +65,8 @@ def list_layers(file: str | os.PathLike[str]) -> list[str]:
     """
     suffix = Path(file).suffix.lower()
     if suffix in PSD_COMP_EXTENSIONS:
-        return [leaf.name for leaf in reversed(psd_leaf_layers(file))]
+        leaves = psd_leaf_layers(file, mask_boxes=False)
+        return [leaf.name for leaf in reversed(leaves)]
     if suffix in AI_COMP_EXTENSIONS:
         return list(reversed(read_ai_layers(file)))
     raise ValueError(
@@ -89,7 +92,7 @@ def layer_index_for_stored(
     """
     suffix = Path(file).suffix.lower()
     if suffix in PSD_COMP_EXTENSIONS:
-        leaves = psd_leaf_layers(file)
+        leaves = psd_leaf_layers(file, mask_boxes=False)
         for i, leaf in enumerate(reversed(leaves)):
             if leaf.record_index == stored_index:
                 return i

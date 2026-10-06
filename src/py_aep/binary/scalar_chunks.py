@@ -16,7 +16,7 @@ from attrs import define
 
 from .bin_utils import read_bytes, write_bytes
 from .chunk import Chunk
-from .fmt_field import f8_field, s4_field, u1_field, u2_field, u4_field
+from .fmt_field import f8_field, s2_field, s4_field, u1_field, u2_field, u4_field
 from .registry import register
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ class U1Chunk(Chunk):
     value: int = u1_field()
 
 
-@register("fivc", "fipc", "oacc")
+@register("oacc")
 @define
 class U2Chunk(Chunk):
     """Unsigned 2-byte integer chunk."""
@@ -81,12 +81,18 @@ class U2Chunk(Chunk):
     value: int = u2_field()
 
 
+@register("fivc", "fipc")
+@define
+class S2Chunk(Chunk):
+    """Signed 2-byte integer chunk."""
+
+    value: int = s2_field()
+
+
 @register(
     "CapL",
-    "CcCt",
     "CCId",
     "CLId",
-    "CprC",
     "CSMd",
     "CSMe",
     "CSMh",
@@ -94,18 +100,14 @@ class U2Chunk(Chunk):
     "CSMt",
     "CSMw",
     "CTyp",
-    "StVS",
     "blsi",
     "blsv",
-    "parn",
     "fovi",
     "fivi",
     "fcid",
     "fvdv",
     "ftts",
     "fifl",
-    "mrid",
-    "sfid",
 )
 @define
 class U4Chunk(Chunk):
@@ -114,10 +116,31 @@ class U4Chunk(Chunk):
     value: int = u4_field()
 
 
-@register("tdli", "tdpi", "tdps")
+@register("iide", "mrid", "sfid", "StVS")
+@define
+class U4LeChunk(Chunk):
+    """Unsigned 4-byte integer chunk, little-endian inside the big-endian file.
+
+    `iide` echoes the item id. `sfid` / `mrid` hold the item id of the folder
+    After Effects files new items into (the Solids folder / the Media
+    Replacement Comps folder), 0 when there is none. `StVS` is the file count
+    heading the `LIST:StVc` of an alphabetical image sequence, followed by one
+    `Utf8` file name per frame.
+    """
+
+    value: int = u4_field(endian="<")
+
+
+@register("tdli", "tdpi", "tdps", "CcCt", "CprC", "parn")
 @define
 class S4Chunk(Chunk):
-    """Signed 4-byte integer chunk."""
+    """Signed 4-byte integer chunk.
+
+    `CprC` is big-endian inside `LIST:CCtl` but little-endian inside
+    `LIST:OvG2` (a layer override count: `03 00 00 00` for three
+    `LIST:CPrp`). py_aep never reads that count and writes it only as 0,
+    so `value` is meaningful for the `LIST:CCtl` copy alone.
+    """
 
     value: int = s4_field()
 

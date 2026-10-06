@@ -55,7 +55,6 @@ class CameraLayer(Layer):
         containing_comp: CompItem,
         effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> CameraLayer:
-        ae_major = containing_comp._project._head.ae_version_major
         ldta = LdtaChunk(
             layer_id=layer_id,
             label=label_index(
@@ -63,7 +62,6 @@ class CameraLayer(Layer):
             ),
             layer_type=LayerType.CAMERA,
             layer_flags_2=0x01,
-            matte_layer_id=0 if ae_major >= 23 else None,
             layer_name=name[:31] if len(name) > 31 else name,
         )
         ldta.out_point = duration

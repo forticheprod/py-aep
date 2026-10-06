@@ -159,6 +159,7 @@ from .models import (
     ViewOptions,
     XmlFormatOptions,
 )
+from .models.validators import validate_ae_version, validate_platform
 from .parsers.comp_presets import CompPreset
 from .resolvers.source_layers import list_layers
 
@@ -325,6 +326,7 @@ def parse(
     aep_file_path: str | os.PathLike[str],
     *,
     ae_preferences_dir: str | os.PathLike[str] | None = None,
+    platform: str | None = None,
 ) -> Application:
     """Parse an After Effects (.aep) project file and return an [Application][] instance.
 
@@ -339,6 +341,15 @@ def parse(
             (e.g. `C:/Users/<user>/AppData/Roaming/Adobe/After Effects/25.6`).
             When provided, render settings and output module templates are
             parsed lazily when needed.
+        platform: The After Effects platform the project is for: `"windows"`
+            or `"macos"`. Footage and render output paths py_aep writes are
+            stored in that platform's style (`C:\\x` <-> `/x`, see
+            [platform_path][py_aep.resolvers.platform_paths.platform_path]),
+            and imported footage is recorded the way After Effects on that
+            platform records it: BMP and GIF files take the platform's
+            importer code (After Effects on the other platform refuses an
+            image sequence tagged for it), and on Windows a HEIC file has no
+            alpha channel. Defaults to the running operating system.
 
     Example:
         ```python
@@ -355,11 +366,15 @@ def parse(
 
     _DEFERRED_LIST_TYPES = frozenset({"Layr"})
 
+    if platform is not None:
+        validate_platform(platform)
     file_path = os.fspath(aep_file_path)
     prefs_path = Path(ae_preferences_dir) if ae_preferences_dir else None
     with open(file_path, "rb") as f:
         rifx, xmp = read_aep(f, defer_list_types=_DEFERRED_LIST_TYPES)
     project = parse_project(rifx, xmp, file_path, ae_preferences_dir=prefs_path)
+    if platform is not None:
+        project._platform = platform
     return parse_app(rifx, project)
 
 
@@ -372,6 +387,7 @@ def new(
     version: str = _DEFAULT_NEW_VERSION,
     *,
     ae_preferences_dir: str | os.PathLike[str] | None = None,
+    platform: str | None = None,
 ) -> Application:
     """Creates a new project in After Effects, replicating the File > New > New Project
     menu command.
@@ -383,9 +399,21 @@ def new(
         version: The After Effects version to stamp into the file,
             formatted as `"{major}.{minor}x{build}"` (e.g. `"26.0x67"`).
             A file stamped at version N opens in After Effects N and later.
+            The major must be an After Effects release: 15 (CC 2018) to 18,
+            or 22 to 26.
         ae_preferences_dir: Optional path to the AE preferences directory
             (e.g. `C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0`),
             required only for adding items to the render queue.
+        platform: The After Effects platform the project is for, as in
+            [parse][py_aep.parse]. It also selects the header stamps and the
+            GPU renderer (Metal on macOS, CUDA on Windows) a project created
+            on that platform carries. Defaults to the running operating
+            system.
+
+    Raises:
+        ValueError: If `version` is malformed, names a major that is not an
+            After Effects release py_aep writes, or has a minor above 15 or
+            a build above 255 (the head chunk's field widths).
 
     Example:
         ```python
@@ -396,5 +424,8 @@ def new(
         app.project.save("new_project.aep")
         ```
     """
+    validate_ae_version(version)
+    if platform is not None:
+        validate_platform(platform)
     prefs_path = Path(ae_preferences_dir) if ae_preferences_dir else None
-    return Application._new(version, ae_preferences_dir=prefs_path)
+    return Application._new(version, ae_preferences_dir=prefs_path, platform=platform)

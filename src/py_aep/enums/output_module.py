@@ -60,23 +60,6 @@ class OutputColorDepth(IntEnum):
         """ExtendScript STRING format label."""
         return _OUTPUT_COLOR_DEPTH_LABELS[self.value]
 
-    @classmethod
-    def from_binary(cls, value: int) -> OutputColorDepth:
-        """Decode the `Rouu` depth field.
-
-        Modern AE builds write noise in the upper three bytes of the s4
-        field with the real bpp in the low byte (constant `0xF8529Axx`
-        observed across every AE 2026 save on this corpus); older files
-        store the plain value. Raises `ValueError` when neither form
-        decodes, mirroring a plain enum call.
-        """
-        if value in cls._value2member_map_:
-            return cls(value)
-        low_byte = value & 0xFF
-        if low_byte in cls._value2member_map_:
-            return cls(low_byte)
-        raise ValueError(f"{value!r} is not a valid {cls.__name__}")
-
 
 _OUTPUT_COLOR_DEPTH_LABELS: dict[int, str] = {
     -32: "Floating Point Gray",
@@ -299,6 +282,8 @@ class AudioBitDepth(IntEnum):
     EIGHT_BIT = 1
     SIXTEEN_BIT = 2
     TWENTY_FOUR_BIT = 3
+    """Read only: After Effects has no 24-bit audio output, so writing it
+    raises `ValueError`."""
     THIRTY_TWO_BIT = 4
 
     @property

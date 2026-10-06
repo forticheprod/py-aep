@@ -234,7 +234,7 @@ class BlendingMode(IntEnum):
 # (= stencil/silhouette/luminescent premul), 12/23/24 the classic
 # (< PS 5.5) difference/dodge/burn and 26-28 their PS >= 6.0 variants.
 _BLENDING_MODE_BINARY_MAP: dict[int, BlendingMode] = {
-    0: BlendingMode.NORMAL,  # cameras, lights, and null layers
+    0: BlendingMode.NORMAL,  # cameras and lights (null layers store 2)
     2: BlendingMode.NORMAL,
     3: BlendingMode.DISSOLVE,
     4: BlendingMode.ADD,
@@ -546,6 +546,9 @@ _GPU_UUID_TO_ENUM: dict[str, GpuAccelType] = {
     "7ee0ab59-822d-44cc-ac10-16279d041016": GpuAccelType.CUDA,
     "f33089e2-1ede-47c1-8a9e-b232bb1cc1a4": GpuAccelType.SOFTWARE,
     "6ed1497e-17ad-4a5b-846f-52bb81e20104": GpuAccelType.METAL,
+    "be93941a-7488-4117-8a46-7e3596950307": GpuAccelType.OPENCL,
+    "c4471277-d5d1-4ea7-a36c-b93ac76dfd41": GpuAccelType.VULKAN,
+    "cd99cfc1-bf65-4cb7-ab70-a8f5ea50e8f4": GpuAccelType.DIRECTX,
 }
 _GPU_ENUM_TO_UUID: dict[GpuAccelType, str] = {
     v: k for k, v in _GPU_UUID_TO_ENUM.items()

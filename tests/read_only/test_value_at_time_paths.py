@@ -37,14 +37,13 @@ SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "prop
 VAT_DIR = SAMPLES_DIR / "value_at_time"
 
 # Path vertices are stored as float32, so a blend of two of them cannot be
-# closer than about 1e-5 of AE's double. An effect point additionally
-# carries AE's own arc-length reparameterisation noise (see
-# /limitations), which is a few 1e-4 on the measured fixture.
+# closer than about 1e-5 of AE's double. An effect point follows AE's own
+# arc-length model and matches to the digits ExtendScript prints.
 _TOLERANCE = {
     "ADBE Mask Shape": 1e-4,
     "ADBE Vector Shape": 1e-4,
     "ADBE Orientation": 1e-8,
-    "ADBE FreePin3 PosPin Position": 1e-3,
+    "ADBE FreePin3 PosPin Position": 1e-9,
     "ADBE Opacity": 1e-9,
 }
 

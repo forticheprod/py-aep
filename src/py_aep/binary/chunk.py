@@ -367,6 +367,11 @@ class DeferredListChunk(ListChunk):
         object.__setattr__(self, "_parsed_chunks", value)
         object.__setattr__(self, "_raw_body", b"")
 
+    @property
+    def is_parsed(self) -> bool:
+        """Whether `chunks` was accessed or assigned (the raw body is gone)."""
+        return self._parsed_chunks is not None
+
     def write(self, fp: IO[bytes]) -> int:
         written = write_bytes(fp, self.list_type.encode("ASCII"))
         if self._parsed_chunks is None:
