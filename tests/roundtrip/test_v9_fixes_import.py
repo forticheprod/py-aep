@@ -10,7 +10,7 @@ import shutil
 import struct
 import warnings
 import zlib
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from helpers import parse_project_fresh, project_bytes
@@ -53,7 +53,7 @@ def _layer_footage(project: object, file_name: str) -> list[FootageItem]:
         item
         for item in project.footages  # type: ignore[attr-defined]
         if isinstance(item.main_source, FileSource)
-        and Path(item.main_source.file).name == file_name
+        and PureWindowsPath(item.main_source.file).name == file_name
         and item.main_source.layer_name
     ]
 

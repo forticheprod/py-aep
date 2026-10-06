@@ -23,8 +23,10 @@ if TYPE_CHECKING:
 SAMPLES = Path(__file__).parent.parent.parent / "samples"
 
 
-def _new_comp(rate: float = 24.0, duration: float = 10.0) -> tuple[Project, CompItem]:
-    project = py_aep.new().project
+def _new_comp(
+    rate: float = 24.0, duration: float = 10.0, platform: str | None = None
+) -> tuple[Project, CompItem]:
+    project = py_aep.new(platform=platform).project
     return project, project.root_folder.add_comp("c", 640, 360, 1.0, duration, rate)
 
 
@@ -191,7 +193,9 @@ class TestRateRoundingSaves:
 
 class TestNewItemOutputPath:
     def test_file_template_on_added_item(self, tmp_path: Path) -> None:
-        project, comp = _new_comp()
+        # A Windows path: on a macOS project (the default off Windows) it
+        # would be stored as `/out/...`.
+        project, comp = _new_comp(platform="windows")
         rqi = project.render_queue.add(comp)
         assert rqi.status == RQItemStatus.NEEDS_OUTPUT
         template = "C:\\out\\[compName]_[#####].[fileExtension]"

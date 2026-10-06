@@ -35,6 +35,7 @@ VERSIONS_DIR = Path(__file__).parent.parent.parent / "samples" / "versions"
 PROPERTY_SAMPLES_DIR = (
     Path(__file__).parent.parent.parent / "samples" / "models" / "property"
 )
+CANVARY_DIR = Path(__file__).parent.parent.parent / "samples" / "debug" / "canvary"
 
 
 def _find_property(layer: Layer, match_name: str) -> Property | None:
@@ -563,14 +564,16 @@ class TestEffectProperties:
         assert json_values["S_BlurDirectional-0068"] == 2
         assert checked
 
+    @pytest.mark.skipif(
+        not CANVARY_DIR.is_dir(), reason="samples/debug is not committed"
+    )
     def test_omitted_point_takes_pard_default(self) -> None:
         """An omitted point parameter is its pard default percentage of the
         layer size: Path Text's 80 % x 50 % on a 100 x 100 layer reports
         exactly [80, 50] in ExtendScript, not the cached 16.16 fraction
         (0.79998779 x 100)."""
-        canvary = SAMPLES_DIR.parent.parent / "debug" / "canvary"
-        project = parse_project(canvary / "effects_canvary.aep")
-        expected = load_expected(canvary, "effects_canvary")
+        project = parse_project(CANVARY_DIR / "effects_canvary.aep")
+        expected = load_expected(CANVARY_DIR, "effects_canvary")
         assert _json_values_by_match_name(expected)["ADBE Path Text-0020"] == [80, 50]
         layer = get_layer(project, "type_null")
         assert layer.effects is not None

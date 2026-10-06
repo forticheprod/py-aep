@@ -12,7 +12,7 @@ open, so a wrong cached depth renders without alpha.
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 import pytest
@@ -103,7 +103,7 @@ def test_layered_comp_import_caches_after_effects_depth(comp_file: str) -> None:
         source = item.main_source
         if (
             isinstance(source, FileSource)
-            and Path(source.file).name == file_name
+            and PureWindowsPath(source.file).name == file_name
             and source._sspc.layer_index != 0xFFFFFFFF
         ):
             ours[source._sspc.layer_index] = source
