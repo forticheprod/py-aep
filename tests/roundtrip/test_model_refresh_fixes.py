@@ -174,18 +174,19 @@ class TestCameraAndLightSeparate:
         assert pos2.value == pytest.approx(before)
         assert pos2.get_separation_follower(2).value == pytest.approx(before[2])
 
-    def test_a_collapsed_group_is_not_a_separated_one(self) -> None:
-        """`lightType.aep`'s ambient light has the enable byte's collapse bit
-        set and AE reports `dimensionsSeparated` false - separation lives in
-        the lock byte. Checked against every AE export in the corpus: the lock
-        bit agrees 288/288, the enable bit 285/288."""
+    def test_a_hidden_leader_is_not_a_separated_one(self) -> None:
+        """`lightType.aep`'s ambient light has the enable byte's hidden bit
+        set (an ambient light has no position to show) and AE reports
+        `dimensionsSeparated` false - separation lives in the lock byte.
+        Checked against every AE export in the corpus: the lock bit agrees
+        288/288, the enable bit 285/288."""
         app = parse_app_fresh(LAYER_DIR / "lightType.aep")
         comp = next(
             c for c in app.project.compositions if c.name == "lightType_AMBIENT"
         )
         pos = comp.layers[0].property("Transform").property("ADBE Position")
 
-        assert pos._tdsb.collapsed is True
+        assert pos._tdsb.hidden is True
         assert pos.dimensions_separated is False
 
 

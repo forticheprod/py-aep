@@ -39,9 +39,10 @@ class TargaFormatOptions(FormatOptionsBase):
 
     Not coupled to the module's `Channels` setting in the binary: AE
     only rewrites this byte when the Targa Options dialog is visited,
-    so AE-saved files hold RGB with 32 bpp and RGB+Alpha with 24 bpp
-    (stale, like Cineon's FIDO `bit_depth`). The output module's
-    `Depth` setting is the authoritative alpha/depth choice.
+    so AE-saved files hold RGB with 32 bpp and RGB+Alpha with 24 bpp.
+    This value, not the module's `Depth`, decides the rendered file: AE
+    2026 renders a 32-bpp TGA with 8 alpha bits for an RGB module whose
+    value is 32, and a 24-bpp TGA once it is 24.
     """
 
     rle_compression = ChunkField.bool(

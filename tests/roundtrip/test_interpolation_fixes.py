@@ -7,6 +7,7 @@ can be judged against it rather than against py's current output.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
@@ -120,9 +121,17 @@ class TestLinearSideKeepsTheMotionPath:
 
         for t, want in self.AE.items():
             got = pos.value_at_time(t)
-            assert got[:2] == pytest.approx(want, abs=0.05)
+            assert got[:2] == pytest.approx(want, abs=1e-6)
 
     def test_a_tangentless_linear_segment_is_still_a_line(self) -> None:
+        """On the line, but not at the exact halfway point.
+
+        AE reads a position off the arc-length spline it fits to the
+        segment, which puts even a straight LINEAR path ~1e-3 px off the
+        exact lerp. AE 2026, (0,0) -> (100,200) LINEAR: 50.0007773538156 /
+        100.001554707631 at half time (the value depends on the duration
+        only through that fraction).
+        """
         _app, comp = _new_comp(400, 400)
         _layer, pos = _position_with(
             comp, "Plain", [(0.0, [0.0, 0.0, 0.0]), (2.0, [100.0, 200.0, 0.0])]
@@ -130,7 +139,9 @@ class TestLinearSideKeepsTheMotionPath:
         for kf in pos.keyframes:
             kf.in_interpolation_type = KeyframeInterpolationType.LINEAR
             kf.out_interpolation_type = KeyframeInterpolationType.LINEAR
-        assert pos.value_at_time(1.0)[:2] == pytest.approx([50.0, 100.0], abs=1e-6)
+        x, y = pos.value_at_time(1.0)[:2]
+        assert y == 2.0 * x
+        assert [x, y] == pytest.approx([50.0007773538156, 100.001554707631], abs=1e-9)
 
 
 class TestSpatialEaseDivisorAndClamp:
@@ -166,7 +177,7 @@ class TestSpatialEaseDivisorAndClamp:
             kf.out_interpolation_type = KeyframeInterpolationType.BEZIER
 
         for t, want_x in self.AE.items():
-            assert pos.value_at_time(t)[0] == pytest.approx(want_x, abs=0.05)
+            assert pos.value_at_time(t)[0] == pytest.approx(want_x, abs=1e-6)
 
 
 class TestRovingRunIsOneEasedSpan:
@@ -215,12 +226,12 @@ class TestRovingRunIsOneEasedSpan:
     def test_key_times_match_after_effects(self) -> None:
         pos = self._build()
         times = [kf.time for kf in pos.keyframes]
-        assert times == pytest.approx(self.AE_TIMES, abs=1e-4)
+        assert times == pytest.approx(self.AE_TIMES, abs=1e-6)
 
     def test_curve_matches_after_effects(self) -> None:
         pos = self._build()
         for t, want in self.AE_CURVE.items():
-            assert pos.value_at_time(t)[:2] == pytest.approx(want, abs=0.05)
+            assert pos.value_at_time(t)[:2] == pytest.approx(want, abs=1e-6)
 
 
 class TestAddKeyPreservesTheCurve:
@@ -259,6 +270,49 @@ class TestAddKeyPreservesTheCurve:
                     assert after == pytest.approx(before, abs=1e-6)
                     checked += 1
         assert checked, "no property exercised"
+
+    def test_spatial_split_keeps_the_motion_path(self) -> None:
+        """A key added on a bowed motion path splits the cubic where the path
+        was at the key's time, so the path itself does not move. Splitting
+        at the nearest of 128 arc samples instead, with the value read at
+        the unrounded time, bent this one by 0.15 px."""
+
+        def point(curve: list[list[float]], t: float) -> list[float]:
+            m = 1.0 - t
+            return [
+                m * m * m * a + 3 * m * m * t * b + 3 * m * t * t * c + t * t * t * d
+                for a, b, c, d in zip(*curve)
+            ]
+
+        def distance_to(p: list[float], a: list[float], b: list[float]) -> float:
+            ab = [y - x for x, y in zip(a, b)]
+            ap = [y - x for x, y in zip(a, p)]
+            length = sum(v * v for v in ab)
+            t = max(0.0, min(1.0, sum(x * y for x, y in zip(ab, ap)) / length))
+            q = [x + t * v for x, v in zip(a, ab)]
+            return math.sqrt(sum((x - y) ** 2 for x, y in zip(p, q)))
+
+        app = parse_app_fresh(PROPERTY_DIR / "keyframe_spatial_bezier_arc.aep")
+        pos = app.project.compositions[0].layers[0].transform["ADBE Position"]
+        k0, k1 = pos.keyframes[0], pos.keyframes[1]
+        curve = [
+            k0.value,
+            [v + t for v, t in zip(k0.value, k0.out_spatial_tangent)],
+            [v + t for v, t in zip(k1.value, k1.in_spatial_tangent)],
+            k1.value,
+        ]
+        path = [point(curve, i / 2000) for i in range(2001)]
+        t0, t1 = k0.time, k1.time
+
+        pos.add_key(t0 + (t1 - t0) * 0.37)
+
+        worst = 0.0
+        for i in range(1, 50):
+            p = pos.value_at_time(t0 + (t1 - t0) * i / 50)
+            worst = max(
+                worst, min(distance_to(p, a, b) for a, b in zip(path, path[1:]))
+            )
+        assert worst < 1e-4
 
     def test_bezier_split_matches_after_effects(self) -> None:
         """AE splits a 5 s 0->100 segment eased 0/75 at 2.5 s into a BEZIER

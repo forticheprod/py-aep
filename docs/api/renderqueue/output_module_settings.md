@@ -34,6 +34,12 @@ Output module settings are accessed via `OutputModule.settings`, a [SettingsView
 | `"Use Region of Interest"` | `bool` | Whether to use the region of interest |
 | `"Video Output"` | `bool` | Whether video output is enabled |
 
+!!! note "Keys After Effects does not expose"
+    `"Convert to Linear Light"` and `"Preserve RGB"` (Output Module Settings >
+    Color Management) are py_aep additions: After Effects 2026 `getSettings`
+    returns neither key, and a script passing `"Preserve RGB"` to
+    `setSettings` crashes it.
+
 !!! note "Output color space"
     The output color space is not a settings key (After Effects does not expose
     it in `getSettings`). Read or write it through the
@@ -120,6 +126,9 @@ The `"Output File Info"` value is a `dict[str, str]` with the following keys:
 | `SIXTEEN_BIT` | 2 | `"16 Bit"` |
 | `TWENTY_FOUR_BIT` | 3 | `"24 Bit"` |
 | `THIRTY_TWO_BIT` | 4 | `"32 Bit"` |
+
+`TWENTY_FOUR_BIT` is read only: After Effects has no 24-bit audio output
+(AE 2026 crashes when a script sets it), so writing it raises `ValueError`.
 
 ### AudioChannels
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, TypeVar, cast
 
-from .chunk import Chunk, ListChunk
-from .scalar_chunks import Utf8Chunk
+from .chunk import Chunk, DeferredListChunk, ListChunk
+from .scalar_chunks import U4LeChunk, Utf8Chunk
 
 if TYPE_CHECKING:
     from typing import Any, Sequence
@@ -240,6 +240,25 @@ def parse_alas_data(parent_chunks: list[Chunk]) -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
+#: `ascendcount_*` value marking an `alas` path record py_aep wrote: the
+#: relative-path counts depend on where the project is saved, so
+#: `Project.save` fills them in for the file it writes.
+PENDING_ASCENDCOUNT = -1
+
+
+def alas_platform(fullpath: str) -> int:
+    """The `alas` `platform` code After Effects stores for a path: 2 for a
+    POSIX path, 1 for a drive-letter or UNC path (it follows the path's
+    style, not the saving machine)."""
+    return 2 if fullpath.startswith("/") else 1
+
+
+def dump_alas(data: dict[str, Any]) -> str:
+    """Serialize an `alas` record the way After Effects writes it: sorted
+    keys, no whitespace."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+
 def build_als2_list(
     fullpath: str,
     *,
@@ -248,8 +267,9 @@ def build_als2_list(
     """Build a `LIST:Als2 -> alas` chunk holding a footage source path.
 
     Inverse of `parse_alas_data`. AE locates the file via the absolute
-    `fullpath`; `ascendcount_*` (relative-path resolution depth) are set
-    equal so no relative offset is applied.
+    `fullpath`, falling back to the relative-path counts
+    (`ascendcount_*`), which are left `PENDING_ASCENDCOUNT` for
+    `Project.save` to compute.
 
     Args:
         fullpath: Absolute path to the file, or the containing folder for
@@ -257,17 +277,26 @@ def build_als2_list(
         target_is_folder: `True` when `fullpath` is a sequence folder.
     """
     data = {
-        "ascendcount_base": 0,
-        "ascendcount_target": 0,
+        "ascendcount_base": PENDING_ASCENDCOUNT,
+        "ascendcount_target": PENDING_ASCENDCOUNT,
         "fullpath": fullpath,
-        "platform": 1,  # 1 = Windows
+        "platform": alas_platform(fullpath),
         "server_name": "",
         "server_volume_name": "",
         "target_is_folder": target_is_folder,
     }
-    text = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    alas = Utf8Chunk(chunk_type="alas", value=text)
+    alas = Utf8Chunk(chunk_type="alas", value=dump_alas(data))
     return ListChunk(list_type="Als2", chunks=[alas])
+
+
+def build_stvc_list(file_names: list[str]) -> ListChunk:
+    """Build the `LIST:StVc` frame list of an alphabetical image sequence:
+    the file count, then one `Utf8` name per frame, in order."""
+    names: list[Chunk] = [Utf8Chunk(value=name) for name in file_names]
+    return ListChunk(
+        list_type="StVc",
+        chunks=[U4LeChunk(chunk_type="StVS", value=len(file_names)), *names],
+    )
 
 
 def chunk_tree(
@@ -337,10 +366,13 @@ def recursive_find(
     chunks: list[Chunk],
     chunk_type: str | None = None,
     list_type: str | None = None,
+    skip_unparsed: bool = False,
 ) -> list[Chunk]:
     """Recursively search the chunk tree for matching chunks.
 
     At least one of `chunk_type` or `list_type` must be given.
+    `skip_unparsed` leaves the children of a `DeferredListChunk` never read
+    unsearched (searching parses it and costs the save its raw-bytes write).
 
     Returns:
         All matching chunks across the entire tree, in DFS order.
@@ -354,7 +386,15 @@ def recursive_find(
                 results.append(chunk)
         elif chunk.chunk_type == chunk_type:
             results.append(chunk)
+        if (
+            skip_unparsed
+            and isinstance(chunk, DeferredListChunk)
+            and not chunk.is_parsed
+        ):
+            continue
         children = getattr(chunk, "chunks", None)
         if children is not None:
-            results.extend(recursive_find(children, chunk_type, list_type))
+            results.extend(
+                recursive_find(children, chunk_type, list_type, skip_unparsed)
+            )
     return results

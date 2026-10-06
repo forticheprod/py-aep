@@ -57,12 +57,11 @@ class PngFormatOptions(FormatOptionsBase):
     height = ChunkField[int]("_body", "height", read_only=True)
     """The output height in pixels. Read-only."""
 
-    bit_depth = ChunkField[int](
-        "_body", "bit_depth", validate=validate_one_of([8, 16, 32])
-    )
+    bit_depth = ChunkField[int]("_body", "bit_depth", validate=validate_one_of([8, 16]))
     """
-    The output bit depth per channel.
-    Common values are `8` and `16`. Read / Write.
+    The output bit depth per channel: `8` or `16`, kept in step with the
+    output module's `Depth` setting. After Effects renders the module's
+    `Depth` (AE 2026), so change that rather than this field. Read / Write.
     """
 
     compression = ChunkField.enum(

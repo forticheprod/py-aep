@@ -262,14 +262,20 @@ class _PathParser:
         dx, dy = (x1 - x) / 2.0, (y1 - y) / 2.0
         x1p = cos_p * dx + sin_p * dy
         y1p = -sin_p * dx + cos_p * dy
-        # Correct out-of-range radii.
-        lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry)
-        if lam > 1:
-            s = math.sqrt(lam)
+        # Correct out-of-range radii. hypot of the ratios, not a sum of
+        # squares over rx * rx: a tiny radius (1e-200) would underflow the
+        # square to 0.
+        s = math.hypot(x1p / rx, y1p / ry)
+        if s > 1:
+            # The scaled ellipse just reaches the end point, so its centre is
+            # the chord midpoint. The square root below would instead read a
+            # rounding remainder (1e-16) as an offset and shift the centre.
             rx, ry = rx * s, ry * s
-        num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
-        den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
-        co = math.sqrt(max(0.0, num / den)) if den != 0 else 0.0
+            co = 0.0
+        else:
+            num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+            den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
+            co = math.sqrt(max(0.0, num / den)) if den != 0 else 0.0
         if large == sweep:
             co = -co
         cxp = co * rx * y1p / ry
@@ -296,11 +302,15 @@ class _PathParser:
         delta = dtheta / n_segs
         t = 4.0 / 3.0 * math.tan(delta / 4.0)
         theta = theta1
-        for _ in range(n_segs):
+        for i in range(n_segs):
             cos1, sin1 = math.cos(theta), math.sin(theta)
             cos2, sin2 = math.cos(theta + delta), math.sin(theta + delta)
-            ep_x = cos_p * rx * cos2 - sin_p * ry * sin2 + cx_
-            ep_y = sin_p * rx * cos2 + cos_p * ry * sin2 + cy_
+            if i == n_segs - 1:
+                # The arc ends on the given end point, not on its evaluation.
+                ep_x, ep_y = x, y
+            else:
+                ep_x = cos_p * rx * cos2 - sin_p * ry * sin2 + cx_
+                ep_y = sin_p * rx * cos2 + cos_p * ry * sin2 + cy_
             d1x, d1y = -rx * sin1, ry * cos1
             d2x, d2y = -rx * sin2, ry * cos2
             c1x = self.cx + t * (cos_p * d1x - sin_p * d1y)

@@ -33,6 +33,51 @@ if TYPE_CHECKING:
 _UNSET = object()
 
 
+class _NulTailStr(str):
+    """The text of a fixed-size string field, read up to its first NUL,
+    that also keeps the field's raw bytes when non-zero bytes follow the
+    terminator.
+
+    After Effects leaves such bytes behind: a renamed solid keeps the tail
+    of its previous name in its `opti`, and CSV / TXT data footage is coded
+    `"\\0vsc"` / `"\\0vst"` in `sspc` (AE 2026 imports). Writing the raw
+    bytes back keeps parse -> save byte-identical; an assigned plain `str`
+    is encoded and NUL-padded as usual.
+    """
+
+    raw: bytes
+
+
+def _decode_fixed_str(value: bytes, encoding: str) -> str:
+    """Decode a fixed-size string field up to its first NUL, keeping the
+    raw bytes when a non-zero tail follows it."""
+    nul = value.find(b"\x00")
+    # surrogateescape keeps byte-exact round-trips even for legacy
+    # non-UTF-8 bytes in old files.
+    if nul < 0:
+        return value.decode(encoding, "surrogateescape")
+    text = value[:nul].decode(encoding, "surrogateescape")
+    if not value[nul:].strip(b"\x00"):
+        return text
+    tailed = _NulTailStr(text)
+    tailed.raw = value
+    return tailed
+
+
+def _fixed_str_converter(encoding: str, size: int) -> Callable[[Any], Any]:
+    """attrs converter for a fixed-size string field: a value holding a NUL
+    is stored as those field bytes, so it reads back as a re-parse of the
+    written file would (the text up to the NUL)."""
+
+    def convert(value: Any) -> Any:
+        if type(value) is str and "\x00" in value:
+            raw = value.encode(encoding, "surrogateescape")[:size]
+            return _decode_fixed_str(raw.ljust(size, b"\x00"), encoding)
+        return value
+
+    return convert
+
+
 def fmt_field(
     fmt: str,
     *,
@@ -52,9 +97,10 @@ def fmt_field(
             other formats default to `0`.
         repr: Whether to include this field in `repr()`.
         encoding: When set, the raw `bytes` from `struct.unpack`
-            are decoded to `str` (stripping trailing NUL bytes),
-            and on write the `str` is encoded back and NUL-padded
-            to fill the fixed size.
+            are decoded to `str` up to the first NUL, and on write the
+            `str` is encoded back and NUL-padded to fill the fixed size
+            (non-zero bytes read after the NUL are written back
+            unchanged, see `_NulTailStr`).
         optional: When `True`, the field may be absent in older
             binary versions. Use `default=None` so that `None`
             means "not present" (preserves round-trip fidelity).
@@ -77,15 +123,17 @@ def fmt_field(
             # (e.g. bool_field defaults to False, not 0).
             default = coerce(0) if coerce is not None else 0
     md: dict[str, Any] = {"fmt": fmt}
+    converter = None
     if encoding is not None:
         md["encoding"] = encoding
+        converter = _fixed_str_converter(encoding, struct.calcsize(">" + fmt))
     if optional:
         md["optional"] = True
     if endian == "<":
         md["endian"] = endian
     if coerce is not None:
         md["coerce"] = coerce
-    return field(default=default, repr=repr, metadata=md)
+    return field(default=default, repr=repr, metadata=md, converter=converter)
 
 
 def items_field(
@@ -323,14 +371,7 @@ def _decode_fields(
     for i, (fld, value) in enumerate(zip(data_fields, values)):
         enc = encodings.get(i)
         if enc is not None and value is not None:
-            nul = value.find(b"\x00")
-            # surrogateescape keeps byte-exact round-trips even for
-            # legacy non-UTF-8 bytes in old files.
-            value = (
-                value[:nul].decode(enc, "surrogateescape")
-                if nul >= 0
-                else value.decode(enc, "surrogateescape")
-            )
+            value = _decode_fixed_str(value, enc)
         crc = coerces.get(i)
         if crc is not None and value is not None:
             value = crc(value)
@@ -355,6 +396,8 @@ def _encode_value(
     enc = encodings.get(idx)
     if enc is not None:
         field_size = struct.calcsize(endian + fmt_str)
+        if isinstance(value, _NulTailStr) and len(value.raw) == field_size:
+            return value.raw
         encoded = value.encode(enc, "surrogateescape")[:field_size]
         return encoded + b"\x00" * (field_size - len(encoded))
     if idx in coerces:

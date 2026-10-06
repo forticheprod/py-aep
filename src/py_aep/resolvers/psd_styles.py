@@ -21,6 +21,7 @@ the synthetic-descriptor probes):
 
 from __future__ import annotations
 
+import math
 import struct
 import warnings
 from typing import TYPE_CHECKING, NamedTuple, cast
@@ -34,11 +35,12 @@ from .media_probe import iter_image_resources
 
 if TYPE_CHECKING:
     import os
-    from typing import Any, Callable, Union
+    from typing import Any, Callable, Iterator, Union
 
     from .psd_layers import PsdGroup, PsdLayer, PsdStyleBlocks
 
     StyleValue = Union[float, "list[float]", Gradient]
+    _Box = tuple[int, int, int, int]
 
 
 class UnsupportedStyleError(ValueError):
@@ -622,9 +624,10 @@ def parse_layer_styles(
 def has_enabled_styles(node: PsdLayer | PsdGroup) -> bool:
     """Whether any style instance is enabled on the layer or group.
 
-    Used to gate merge-mode geometry: enabled styles (including multi-instance
-    ones) expand the rasterized content box in ways py_aep cannot compute. An
-    undecodable descriptor counts as styled (the conservative answer).
+    Used to warn about a group's styles, which a layered import does not
+    apply (a layer's merged styles size its footage through
+    `merged_styles_bounds`). An undecodable descriptor counts as styled
+    (the conservative answer).
     """
     blocks = node.style_blocks
     if blocks is None or blocks.effects is None:
@@ -633,8 +636,167 @@ def has_enabled_styles(node: PsdLayer | PsdGroup) -> bool:
         descriptor = _parse_effects_descriptor(blocks.effects)
     except ValueError:
         return True
-    return any(
-        isinstance(inst, dict) and inst.get("enab", False)
-        for instances in _style_instances(descriptor).values()
-        for inst in instances
+    return next(_enabled_instances(descriptor), None) is not None
+
+
+def _enabled_instances(
+    descriptor: dict[str, Any],
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """`(key, instance)` of every enabled style instance in a descriptor."""
+    for key, instances in _style_instances(descriptor).items():
+        for instance in instances:
+            if isinstance(instance, dict) and instance.get("enab", False):
+                yield key, instance
+
+
+# ---------------------------------------------------------------------------
+# Merged-styles content box
+# ---------------------------------------------------------------------------
+#
+# Merging styles into the footage rasterizes them, and After Effects sizes the
+# result to a box it derives from the style parameters alone - opacity, noise,
+# contour shape and the lighting angles do not move it. Measured on AE 2026 by
+# importing byte-patched copies of psd_layer_styles.psd (one style at a time,
+# ~450 parameter combinations) as COMP_CROPPED_LAYERS:
+#
+# - A blurred style (drop shadow, outer glow) spreads `round(size * spread%)`
+#   px first, then blurs the rest of its size. Its reach is the blur's
+#   (Softer: the radius, at least 2; Precise: the radius + 2.5; either: a
+#   fixed 4.5 / 6.5 once the spread takes the whole size) plus the spread +
+#   2 px. A drop shadow moves by its distance along the light angle, each
+#   axis rounded half away from zero.
+# - A stroke reaches its size + 2 px outside, half its size (rounded up) + 2
+#   centered, nothing inside.
+# - A bevel reaches its size (outer bevel) or half of it (emboss, pillow
+#   emboss); Smooth adds 1.5 px (2 px at least), Chisel 4 px, and softening
+#   `max(softening, 2) - 0.5`. With no softening, a Chisel bevel - or a
+#   zero-size one - sits 1 px up and left. An inner bevel stays inside.
+# - A reach of `e` px covers `ceil(e)` px left and above and `floor(e)` px
+#   right and below, one px less left and above when the style's contour is
+#   not anti-aliased.
+# - The box is the union of the layer's own bounds and every enabled style
+#   instance's box. The effects-scale percentage has no effect.
+
+
+def _round_away(value: float) -> int:
+    # The epsilon lands exact halves (a 30 degree light: sin * 11 = 5.4999...
+    # in doubles) where AE does.
+    return int(math.copysign(math.floor(abs(value) + 0.5 + 1e-9), value))
+
+
+def _blur_reach(size: float, spread: float, precise: bool) -> float:
+    spread_px = math.floor(size * spread / 100 + 0.5)
+    radius = size - spread_px
+    if precise:
+        reach = radius + 2.5 if radius > 0 else 6.5
+    else:
+        reach = max(radius, 2) if radius > 0 else 4.5
+    return reach + (spread_px + 2 if spread_px > 0 else 0)
+
+
+def _pads(reach: float, anti_aliased: bool, shift: float = 0.0) -> tuple[int, int]:
+    """The px a style covers before (left, above) and after (right, below)."""
+    lead = math.ceil(reach - shift) - (0 if anti_aliased else 1)
+    return lead, math.floor(reach + shift)
+
+
+def _bevel_pads(instance: dict[str, Any], name: str) -> tuple[int, int] | None:
+    style = instance.get("bvlS", "InrB")
+    if style == "InrB":
+        return None
+    size = float(instance.get("blur", 0))
+    if style == "OtrB":
+        height = size
+    elif style in ("Embs", "PlEb"):
+        height = float(math.ceil(size / 2))
+    else:
+        raise NotImplementedError(
+            f"layer {name!r}: the merged bounds of a {style!r} bevel are not "
+            "known; import without merging its layer styles"
+        )
+    smooth = instance.get("bvlT", "SfBL") == "SfBL"
+    if smooth:
+        reach = max(height, 2) + 1.5 if size > 0 else 2.0
+    else:
+        reach = height + 4
+    softening = float(instance.get("Sftn", 0))
+    if softening > 0:
+        reach += max(softening, 2) - 0.5
+    shift = -1.0 if softening == 0 and (not smooth or size == 0) else 0.0
+    anti_aliased = bool(instance.get("useShape", False)) and bool(
+        instance.get("AntA", False)
     )
+    return _pads(reach, anti_aliased, shift)
+
+
+def _instance_box(
+    key: str, instance: dict[str, Any], bounds: _Box, global_angle: float, name: str
+) -> _Box | None:
+    left, top, right, bottom = bounds
+    dx = dy = 0
+    if key in ("DrSh", "OrGl"):
+        precise = key == "OrGl" and instance.get("GlwT") == "PrBL"
+        reach = _blur_reach(
+            float(instance.get("blur", 0)), float(instance.get("Ckmt", 0)), precise
+        )
+        lead, trail = _pads(reach, bool(instance.get("AntA", False)))
+        if key == "DrSh":
+            angle = math.radians(
+                global_angle if instance.get("uglg") else float(instance.get("lagl", 0))
+            )
+            distance = float(instance.get("Dstn", 0))
+            dx = _round_away(-math.cos(angle) * distance)
+            dy = _round_away(math.sin(angle) * distance)
+    elif key == "FrFX":
+        size = float(instance.get("Sz  ", 0))
+        position = instance.get("Styl", "OutF")
+        if position == "InsF":
+            return None
+        reach = size if position == "OutF" else float(math.ceil(size / 2))
+        lead = trail = int(reach) + 2
+    elif key == "ebbl":
+        pads = _bevel_pads(instance, name)
+        if pads is None:
+            return None
+        lead, trail = pads
+    else:
+        # Shadows, glows, satin and overlays inside the layer stay inside it.
+        return None
+    return (left + dx - lead, top + dy - lead, right + dx + trail, bottom + dy + trail)
+
+
+def merged_styles_bounds(node: PsdLayer, global_angle: float) -> _Box:
+    """The layer's content box once its enabled styles are merged into it.
+
+    Args:
+        node: A `PsdLayer` from `read_psd_layers`, its `bounds` the content
+            the styles grow from (`psd_bounds.psd_layer_box` passes the
+            masked content: AE grows merged styles from it).
+        global_angle: The document's global light angle (`read_global_light`).
+
+    Returns:
+        `(left, top, right, bottom)` in canvas pixels; `node.bounds` when the
+        layer has no enabled style.
+
+    Raises:
+        NotImplementedError: If the layer has a Stroke Emboss bevel, whose
+            merged bounds are not known, or its styles cannot be decoded.
+    """
+    bounds = node.bounds
+    blocks = node.style_blocks
+    if blocks is None or blocks.effects is None:
+        return bounds
+    try:
+        descriptor = _parse_effects_descriptor(blocks.effects)
+    except ValueError as exc:
+        raise NotImplementedError(
+            f"layer {node.name!r}: its layer-styles descriptor cannot be "
+            "decoded, so the merged bounds are not known"
+        ) from exc
+    left, top, right, bottom = bounds
+    for key, instance in _enabled_instances(descriptor):
+        box = _instance_box(key, instance, bounds, global_angle, node.name)
+        if box is not None:
+            left, top = min(left, box[0]), min(top, box[1])
+            right, bottom = max(right, box[2]), max(bottom, box[3])
+    return left, top, right, bottom

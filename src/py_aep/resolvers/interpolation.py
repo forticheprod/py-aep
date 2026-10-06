@@ -3,7 +3,7 @@
 Implements HOLD, LINEAR, and BEZIER interpolation for
 `Property.value_at_time()`.  Pure Python with no external dependencies.
 
-The structure follows `lottie-web <https://github.com/airbnb/
+The temporal structure follows `lottie-web <https://github.com/airbnb/
 lottie-web>`_, the industry-standard renderer for Lottie/bodymovin
 animations exported from After Effects, with the numerics adjusted to
 match AE's own output:
@@ -11,21 +11,23 @@ match AE's own output:
 - **Temporal ease** uses a normalised [0, 1] -> [0, 1] cubic-bezier
   easing function (`BezierEasing`), whose curve parameter is solved in
   closed form (Cardano).
-- **Spatial paths** are pre-sampled into a 128-sample polyline with
-  per-segment partial lengths (after lottie's `bez.js`).
-- **Arc-length reparameterisation** walks the segment table linearly,
-  interpolating between adjacent sample points.
+- **Spatial paths** follow AE's own arc-length model instead: an ease curve
+  in (seconds, distance) space gives the distance travelled, and a spline
+  fitted to the segment's sampled arc length turns it into the curve
+  parameter (see `_ArcSpline`).
 """
 
 from __future__ import annotations
 
+import functools
 import math
 from collections import deque
-from typing import TYPE_CHECKING, Tuple, cast
+from typing import TYPE_CHECKING, NamedTuple, Tuple, cast
 
 from py_aep.enums import KeyframeInterpolationType
 from py_aep.models.properties.parallel import ORIENTATION_KIND, SHAPE_KIND
 from py_aep.models.properties.shape import Shape
+from py_aep.resolvers.roto_bezier import keyframe_tensions
 from py_aep.resolvers.transform import _euler_xyz
 
 if TYPE_CHECKING:
@@ -34,13 +36,6 @@ if TYPE_CHECKING:
     from ..models.properties.parallel import ParallelKind
 
 _DEFAULT_INFLUENCE = 100.0 / 6.0  # 16.6667 %
-
-# Number of samples in the arc-length table for a spatial bezier segment.
-# After Effects takes 128 samples, walking t uniformly in 1/(N-1) steps and
-# summing the straight chords between consecutive samples. AE's arc length is
-# that polyline, so matching the sample count matters more than sampling more
-# finely.
-_CURVE_SEGMENTS = 128
 
 
 # ---------------------------------------------------------------------------
@@ -370,117 +365,512 @@ def split_segment_influences(
 
 
 def _clamp_influence(value: float) -> float:
-    """Keep an influence inside the 0.1-100 % range AE stores."""
-    return min(max(value, 0.1), 100.0)
+    """Keep an influence inside the 0-100 % range the field holds.
 
-
-# ---------------------------------------------------------------------------
-# Spatial bezier path - port of lottie-web bez.js buildBezierData
-# ---------------------------------------------------------------------------
-
-
-def _cubic_bezier_nd(
-    p0: list[float],
-    p1: list[float],
-    p2: list[float],
-    p3: list[float],
-    t: float,
-) -> list[float]:
-    """Evaluate N-dimensional cubic bezier at parameter t.
-
-    Uses same formula as lottie-web:
-    (1-t)^3 * P0 + 3*(1-t)^2*t * P1 + 3*(1-t)*t^2 * P2 + t^3 * P3
-
-    Note: In lottie-web, P1 = pt1 + outTangent (absolute control point),
-    P2 = pt2 + inTangent (absolute control point). We follow the same
-    convention here.
+    Not AE's 0.1 % dialog minimum: splitting a segment whose far side has a
+    blank (0) influence leaves that side at 0 in AE's own files (AE 2026).
     """
-    u = 1.0 - t
-    u2 = u * u
-    u3 = u2 * u
+    return min(max(value, 0.0), 100.0)
+
+
+# ---------------------------------------------------------------------------
+# Spatial motion path - arc length
+# ---------------------------------------------------------------------------
+# A spatial property travels along its motion path at the pace its temporal
+# ease sets, so evaluating one means finding the curve parameter at a given
+# DISTANCE along the path. AE's positions are not those of the exact arc
+# length: they sit up to ~0.01 px off the curve, even on a straight segment,
+# whose parameter still eases in and out (AE 2026: a LINEAR 100 px segment
+# over 5 s reports 26.6774826 at 1.333 s, where the line gives 26.6667).
+# This module reproduces them with an arc-length model: each segment sampled
+# `_ARC_SAMPLES` times, uniformly in the curve parameter, the straight chords
+# between the samples summed, a bezier spline fitted through the
+# (parameter * length, distance) samples with Schneider's algorithm (P. J.
+# Schneider, "An Algorithm for Automatically Fitting Digitized Curves",
+# Graphics Gems, 1990) to the property's stored arc accuracy, and that
+# spline inverted.
+#
+# The model matches only as written. A straight segment's samples are
+# symmetric, so the fitter's split points are near-ties that rounding
+# decides, and a different split moves the result by up to 6e-3 px: AE
+# itself reports (0,0)->(100,100) and (20,0)->(120,100) that far apart. As
+# written, this reproduces both - and every sampled frame of the
+# value_at_time fixtures - to 1e-12, so keep the products and sums in the
+# order they are in.
+
+_ARC_SAMPLES = 128
+# The `tdb4` arc accuracy of a property stored in pixels, and the one a
+# keyed normalized point (effect point, a footage layer's Anchor Point,
+# layer-style point) stores: 6.25e-12, exactly this double in AE's files.
+_DEFAULT_ARC_ACCURACY = 1e-4
+NORMALIZED_ARC_ACCURACY = float.fromhex("0x1.b7cdfd9d7bdbcp-38")
+# The fit's handle length for a two-sample run: 0.333333333333333, not 1/3 -
+# the value that reproduces AE's sampled positions.
+_FIT_THIRD = 0.333333333333333
+# A LINEAR side's handle on the distance curve, as a fraction of the span on
+# both axes: 0.16666666667, not 1/6, for the same reason.
+_LINEAR_HANDLE = 0.16666666667
+# Largest coordinate measured as is; a farther curve is fitted scaled down so
+# its squared chords stay finite.
+_HUGE_COORDINATE = 1e150
+
+# Four control points of an N-dimensional cubic; tuples so a curve can key
+# the spline cache.
+_Curve = Tuple[Tuple[float, ...], ...]
+_Point2 = Tuple[float, float]
+
+
+class ArcMetric(NamedTuple):
+    """How AE measures one spatial property's motion path.
+
+    AE measures a path in the property's STORED units, each dimension scaled
+    by a per-property multiplier, and fits its arc spline to a per-property
+    accuracy; both live in the property's `tdb4`. A layer's Position scales
+    X by the composition's pixel aspect, so it measures in square pixels. A
+    normalized point (stored as a fraction of the layer) scales X by the
+    layer's width / height, so both axes measure in layer heights.
+    """
+
+    accuracy: float = _DEFAULT_ARC_ACCURACY
+    # Per-dimension scale on a stored value before it is measured.
+    multipliers: tuple[float, ...] = (1.0, 1.0, 1.0)
+    # Reported / stored ratio per dimension, for a normalized point.
+    divisors: tuple[float, ...] | None = None
+    # Reported / stored ratio of a temporal ease speed.
+    speed_divisor: float = 1.0
+
+
+_DEFAULT_ARC_METRIC = ArcMetric()
+
+
+def _cubic_1d(a: float, b: float, c: float, d: float, t: float) -> float:
+    """One coordinate of a cubic bezier, evaluated the way AE evaluates it."""
+    mt = 1.0 - t
     t2 = t * t
-    t3 = t2 * t
+    return ((3.0 * b * t + mt * a) * mt + 3.0 * c * t2) * mt + t2 * t * d
+
+
+def _cubic_point(curve: _Curve, t: float) -> list[float]:
+    p0, p1, p2, p3 = curve
+    return [_cubic_1d(p0[d], p1[d], p2[d], p3[d], t) for d in range(len(p0))]
+
+
+def _spatial_curve(
+    v0: list[float],
+    v1: list[float],
+    out_tangent: list[float],
+    in_tangent: list[float],
+) -> _Curve:
+    """A spatial segment's control points, in reported units."""
+    ndim = len(v0)
+    return (
+        tuple(v0),
+        tuple(v0[d] + out_tangent[d] for d in range(ndim)),
+        tuple(v1[d] + in_tangent[d] for d in range(ndim)),
+        tuple(v1),
+    )
+
+
+def _measured(values: list[float], metric: ArcMetric) -> list[float]:
+    """A reported vector in the space AE measures arc length in."""
+    divisors = metric.divisors
+    result = []
+    for d, value in enumerate(values):
+        if divisors is not None and d < len(divisors) and divisors[d]:
+            value = value / divisors[d]
+        result.append(metric.multipliers[d] * value)
+    return result
+
+
+def _measured_curve(
+    v0: list[float],
+    v1: list[float],
+    out_tangent: list[float],
+    in_tangent: list[float],
+    metric: ArcMetric,
+) -> _Curve:
+    """A spatial segment's control points, in the space AE measures arc
+    length in."""
+    return _spatial_curve(
+        _measured(v0, metric),
+        _measured(v1, metric),
+        _measured(out_tangent, metric),
+        _measured(in_tangent, metric),
+    )
+
+
+def _arc_samples(curve: _Curve) -> tuple[list[_Point2], float]:
+    """`(parameter, distance)` samples along `curve`, and its length."""
+    p0 = curve[0]
+    step = 1.0 / (_ARC_SAMPLES - 1)
+    samples = [(0.0, 0.0)]
+    previous: tuple[float, ...] | list[float] = p0
+    total = 0.0
+    t = step
+    for _ in range(1, _ARC_SAMPLES):
+        point = _cubic_point(curve, t)
+        squared = 0.0
+        for d in range(len(point)):
+            delta = point[d] - previous[d]
+            squared = squared + delta * delta
+        total = math.sqrt(squared) + total
+        samples.append((t, total))
+        previous = point
+        # Accumulated, not `i * step`: the samples' low bits steer the fit.
+        t = t + step
+    return samples, total
+
+
+def _unit(x: float, y: float) -> _Point2:
+    length = math.sqrt(x * x + y * y)
+    if length == 0.0:
+        return (x, y)
+    inverse = 1.0 / length
+    return (inverse * x, inverse * y)
+
+
+def _fit_point(curve: list[_Point2], u: float) -> _Point2:
+    p0, p1, p2, p3 = curve
+    return (
+        _cubic_1d(p0[0], p1[0], p2[0], p3[0], u),
+        _cubic_1d(p0[1], p1[1], p2[1], p3[1], u),
+    )
+
+
+def _chord_parameters(points: list[_Point2], first: int, last: int) -> list[float]:
+    """Schneider's chord-length parameterization of `points[first:last+1]`."""
+    u = [0.0]
+    for i in range(first + 1, last + 1):
+        dx = points[i][0] - points[i - 1][0]
+        dy = points[i][1] - points[i - 1][1]
+        u.append(math.sqrt(dy * dy + dx * dx) + u[-1])
+    inverse = 1.0 / u[-1] if u[-1] != 0.0 else 0.0
+    return [inverse * value for value in u]
+
+
+def _fit_bezier(
+    points: list[_Point2],
+    first: int,
+    last: int,
+    u: list[float],
+    tangent_1: _Point2,
+    tangent_2: _Point2,
+) -> list[_Point2]:
+    """Schneider's least-squares cubic through `points[first:last+1]`.
+
+    Two departures from the published code, both needed to reproduce AE's
+    sampled positions: a near-singular system is regularized against 1e-4
+    rather than tested for exactly 0, and only a NEGATIVE handle length
+    falls back to the Wu/Barsky heuristic.
+    """
+    p0 = points[first]
+    p3 = points[last]
+    c00 = c01 = c11 = x0 = x1 = 0.0
+    for i, ui in enumerate(u):
+        mu = 1.0 - ui
+        u3 = ui * 3.0
+        b1 = mu * mu * u3
+        b2 = u3 * ui * mu
+        a0x = tangent_1[0] * b1
+        a0y = b1 * tangent_1[1]
+        a1x = b2 * tangent_2[0]
+        a1y = b2 * tangent_2[1]
+        c00 += a0x * a0x + a0y * a0y
+        c01 += a0x * a1x + a0y * a1y
+        c11 += a1x * a1x + a1y * a1y
+        b0 = mu * mu * mu
+        b3 = ui * ui * ui
+        point = points[first + i]
+        tx = point[0] - (b1 * p0[0] + b0 * p0[0] + b2 * p3[0] + b3 * p3[0])
+        ty = point[1] - (b1 * p0[1] + b0 * p0[1] + b2 * p3[1] + b3 * p3[1])
+        x0 += a0x * tx + a0y * ty
+        x1 += a1x * tx + ty * a1y
+    det = c11 * c00 - c01 * c01
+    if det < 1e-4:
+        if det > -1e-4:
+            det = c11 * c00 * 10.0 * 1e-4
+        if det < 1e-4 and det > -1e-4:
+            det = 1e-3
+    alpha_l = (x0 * c11 - x1 * c01) / det
+    alpha_r = (x1 * c00 - x0 * c01) / det
+    if alpha_l < 0.0 or alpha_r < 0.0:
+        dx = p3[0] - p0[0]
+        dy = p3[1] - p0[1]
+        alpha_l = alpha_r = math.sqrt(dx * dx + dy * dy) * _FIT_THIRD
     return [
-        u3 * p0[d] + 3.0 * u2 * t * p1[d] + 3.0 * u * t2 * p2[d] + t3 * p3[d]
-        for d in range(len(p0))
+        p0,
+        (alpha_l * tangent_1[0] + p0[0], alpha_l * tangent_1[1] + p0[1]),
+        (alpha_r * tangent_2[0] + p3[0], alpha_r * tangent_2[1] + p3[1]),
+        p3,
     ]
 
 
-class _BezierPathData:
-    """Pre-sampled spatial bezier path with arc-length data.
+def _fit_error(
+    points: list[_Point2],
+    first: int,
+    last: int,
+    curve: list[_Point2],
+    u: list[float],
+) -> tuple[float, int]:
+    """The worst squared distance from `curve`, and where it is.
 
-    Mirrors AE's arc-length table: `_CURVE_SEGMENTS` samples taken
-    uniformly in the curve parameter, carrying the straight chord to the
-    previous sample, which lets arc length be reparameterized by linear
-    interpolation within the table.
+    A tie goes to the LATER sample, which is what decides the split on a
+    symmetric run.
     """
-
-    __slots__ = ("points", "partial_lengths", "segment_length")
-
-    def __init__(
-        self,
-        v0: list[float],
-        v1: list[float],
-        out_tangent: list[float],
-        in_tangent: list[float],
-    ) -> None:
-        ndim = len(v0)
-        # Convert to absolute control points
-        p1 = [v0[d] + out_tangent[d] for d in range(ndim)]
-        p2 = [v1[d] + in_tangent[d] for d in range(ndim)]
-
-        # AE takes no straight-line shortcut, whereas lottie collapses any
-        # segment whose handles are COLLINEAR with the chord to two samples -
-        # which also discards the easing such a segment still carries along
-        # that line. Handles sitting exactly ON the endpoints
-        # are the only genuinely uniform case, and those never reach here:
-        # `_interpolate_spatial_bezier` lerps them as `straight_path`.
-        n_segs = _CURVE_SEGMENTS
-
-        self.points: list[list[float]] = []
-        self.partial_lengths: list[float] = []
-        total_length = 0.0
-        last_point: list[float] | None = None
-
-        for k in range(n_segs):
-            perc = k / (n_segs - 1) if n_segs > 1 else 0.0
-            point = _cubic_bezier_nd(v0, p1, p2, v1, perc)
-
-            pt_dist = 0.0
-            if last_point is not None:
-                pt_dist = math.sqrt(
-                    sum((point[d] - last_point[d]) ** 2 for d in range(ndim))
-                )
-            total_length += pt_dist
-
-            self.points.append(point)
-            self.partial_lengths.append(pt_dist)
-            last_point = point
-
-        self.segment_length = total_length
+    worst = 0.0
+    split = (first + last + 1) // 2
+    for i in range(first + 1, last):
+        q = _fit_point(curve, u[i - first])
+        dx = q[0] - points[i][0]
+        dy = q[1] - points[i][1]
+        squared = dy * dy + dx * dx
+        if squared >= worst:
+            worst = squared
+            split = i
+    return worst, split
 
 
-def path_parameter_at_progress(data: _BezierPathData, progress: float) -> float:
-    """The curve parameter `u` at an arc-length fraction of the path.
+def _fit_cubics(
+    points: list[_Point2],
+    first: int,
+    last: int,
+    tangent_1: _Point2,
+    tangent_2: _Point2,
+    error: float,
+    knots: list[_Point2],
+) -> None:
+    """Fit `points[first:last+1]`, appending the cubics' control points.
 
-    `_BezierPathData` samples uniformly in `u`, so the sample index carries
-    the parameter; this walks the same partial-length table
-    `_get_point_on_path` walks and interpolates within the hit segment.
+    Schneider's fitter tries a few Newton reparameterizations before
+    splitting, but only while the error is under the tolerance SQUARED. For
+    every tolerance below 1 - all AE writes - that bound lies under the
+    tolerance itself, so the fit always splits.
     """
-    n_pts = len(data.points)
-    if n_pts < 2 or progress <= 0.0:
+    if last - first == 1:
+        start = points[first]
+        end = points[last]
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        reach = math.sqrt(dx * dx + dy * dy) * _FIT_THIRD
+        curve = [
+            start,
+            (reach * tangent_1[0] + start[0], reach * tangent_1[1] + start[1]),
+            (reach * tangent_2[0] + end[0], reach * tangent_2[1] + end[1]),
+            end,
+        ]
+    else:
+        u = _chord_parameters(points, first, last)
+        curve = _fit_bezier(points, first, last, u, tangent_1, tangent_2)
+        worst, split = _fit_error(points, first, last, curve, u)
+        if worst >= error:
+            before, at, after = points[split - 1], points[split], points[split + 1]
+            center = _unit(
+                (before[0] - at[0] + (at[0] - after[0])) * 0.5,
+                (before[1] - at[1] + (at[1] - after[1])) * 0.5,
+            )
+            _fit_cubics(points, first, split, tangent_1, center, error, knots)
+            _fit_cubics(
+                points, split, last, (-center[0], -center[1]), tangent_2, error, knots
+            )
+            return
+    if not knots:
+        knots.append(curve[0])
+    knots.extend(curve[1:])
+
+
+def _t_on_axis(curve: list[_Point2], axis: int, value: float) -> float:
+    """The parameter at which `curve`'s `axis` coordinate reaches `value`.
+
+    Snaps to either end within `_EPS`, and clamps outside them.
+    """
+    v0 = curve[0][axis]
+    if v0 > value or abs(value - v0) < _EPS:
         return 0.0
-    if progress >= 1.0:
+    v3 = curve[3][axis]
+    if value > v3 or abs(value - v3) < _EPS:
         return 1.0
-    distance = data.segment_length * progress
-    added = 0.0
-    for j in range(n_pts - 1):
-        added += data.partial_lengths[j]
-        nxt = data.partial_lengths[j + 1]
-        if added <= distance < added + nxt:
-            local = (distance - added) / nxt if nxt else 0.0
-            return (j + local) / (n_pts - 1)
-    return 1.0
+    v1 = curve[1][axis]
+    v2 = curve[2][axis]
+    t = _solve_cubic(
+        ((v1 - v2) * 3.0 - v0) + v3,
+        ((v0 - (v1 + v1)) + v2) * 3.0,
+        (v1 - v0) * 3.0,
+        v0 - value,
+    )
+    # No root in [0, 1] only happens on a degenerate curve; AE's result is
+    # undefined there, so take the linear estimate instead.
+    return (value - v0) / (v3 - v0) if t is None else t
+
+
+def _non_decreasing(curve: list[_Point2]) -> list[_Point2]:
+    """Pull an overshooting handle back to the curve's range on the y axis.
+
+    The handle is shortened along its own slope, not just clamped.
+    """
+    p0, p1, p2, p3 = curve
+    if p3[1] < p1[1]:
+        p1 = ((p3[1] - p0[1]) / (p1[1] - p0[1]) * (p1[0] - p0[0]) + p0[0], p3[1])
+    if p2[1] < p0[1]:
+        p2 = ((p3[1] - p0[1]) / (p3[1] - p2[1]) * (p2[0] - p3[0]) + p3[0], p0[1])
+    return [p0, p1, p2, p3]
+
+
+def _is_non_decreasing(curve: list[_Point2]) -> bool:
+    y0, y1, y2, y3 = (point[1] for point in curve)
+    return not (
+        (y1 < y0 and abs(y1 - y0) >= _EPS)
+        or (y3 < y1 and abs(y1 - y3) >= _EPS)
+        or (y2 < y0 and abs(y2 - y0) >= _EPS)
+        or (y3 < y2 and abs(y2 - y3) >= _EPS)
+    )
+
+
+class _ArcSpline:
+    """AE's arc-length model of one spatial segment.
+
+    Built from the segment's control points in measured units.
+    """
+
+    __slots__ = ("length", "_knots")
+
+    def __init__(self, curve: _Curve, accuracy: float) -> None:
+        # Squared chords overflow past ~1e154, which any f64 value can reach:
+        # fit a scaled copy instead (arc length scales linearly, the squared
+        # tolerance quadratically) and scale the distances back.
+        reach = max(abs(c) for point in curve for c in point)
+        scale = _HUGE_COORDINATE / reach if reach > _HUGE_COORDINATE else 1.0
+        if scale != 1.0:
+            curve = tuple(tuple(c * scale for c in point) for point in curve)
+            accuracy = accuracy * scale * scale
+        samples, self.length = _arc_samples(curve)
+        points = [(self.length * t, s) for t, s in samples]
+        last = len(points) - 1
+        knots: list[_Point2] = []
+        _fit_cubics(
+            points,
+            0,
+            last,
+            _unit(points[1][0] - points[0][0], points[1][1] - points[0][1]),
+            _unit(
+                points[last - 1][0] - points[last][0],
+                points[last - 1][1] - points[last][1],
+            ),
+            accuracy,
+            knots,
+        )
+        inverse = 1.0 / self.length if self.length != 0.0 else 0.0
+        self._knots = [(inverse * x, y / scale) for x, y in knots[:-1]]
+        self._knots.append((1.0, knots[-1][1] / scale))
+        self.length = self.length / scale
+
+    def parameter_at(self, distance: float) -> float:
+        """The curve parameter `distance` along the segment."""
+        knots = self._knots
+        total = knots[-1][1]
+        if distance < 0.0 or abs(distance) < _EPS:
+            return 0.0
+        if distance > total or abs(distance - total) < _EPS:
+            return 1.0
+        end = 3
+        while end < len(knots):
+            if abs(distance - knots[end][1]) < _EPS:
+                return knots[end][0]
+            if distance < knots[end][1]:
+                break
+            end += 3
+        cubic = knots[end - 3 : end + 1]
+        if not _is_non_decreasing(cubic):
+            cubic = _non_decreasing(cubic)
+        t = _t_on_axis(cubic, 1, distance)
+        return _cubic_1d(cubic[0][0], cubic[1][0], cubic[2][0], cubic[3][0], t)
+
+
+@functools.lru_cache(maxsize=1024)
+def _arc_spline(curve: _Curve, accuracy: float) -> _ArcSpline:
+    """A cached `_ArcSpline`: every evaluated frame rebuilds the same one."""
+    return _ArcSpline(curve, accuracy)
+
+
+def motion_path_length(
+    v0: list[float],
+    v1: list[float],
+    out_tangent: list[float],
+    in_tangent: list[float],
+    metric: ArcMetric,
+) -> float:
+    """A spatial segment's arc length, in the units its ease speeds report."""
+    curve = _measured_curve(v0, v1, out_tangent, in_tangent, metric)
+    return _arc_spline(curve, metric.accuracy).length * metric.speed_divisor
+
+
+def _distance_curve(
+    duration: float,
+    distance: float,
+    kf_start: Keyframe,
+    kf_end: Keyframe,
+    out_type: KeyframeInterpolationType,
+    in_type: KeyframeInterpolationType,
+    speed_divisor: float,
+) -> list[_Point2]:
+    """The ease curve of a spatial span, in (seconds, distance).
+
+    Absolute units, not a unit square: an eased side's handle reaches
+    `influence * duration` along time at its stored speed, and a LINEAR
+    side's sits `_LINEAR_HANDLE` along the chord whatever its stored ease
+    (so it is not read: a LINEAR ease derives from the path's arc length).
+    An overshooting handle is pulled back so the distance never reverses.
+    """
+    if out_type == KeyframeInterpolationType.LINEAR:
+        out_handle = (duration * _LINEAR_HANDLE, distance * _LINEAR_HANDLE)
+    else:
+        out_ease = kf_start.out_temporal_ease[0]
+        reach = duration * (out_ease.influence / 100.0)
+        out_handle = (reach, reach * (out_ease.speed / speed_divisor))
+    if in_type == KeyframeInterpolationType.LINEAR:
+        in_handle = (
+            duration - duration * _LINEAR_HANDLE,
+            distance - distance * _LINEAR_HANDLE,
+        )
+    else:
+        in_ease = kf_end.in_temporal_ease[0]
+        reach = -(in_ease.influence / 100.0) * duration
+        in_handle = (
+            reach + duration,
+            reach * (in_ease.speed / speed_divisor) + distance,
+        )
+    return _non_decreasing([(0.0, 0.0), out_handle, in_handle, (duration, distance)])
+
+
+def _spatial_distance(
+    elapsed: float,
+    duration: float,
+    distance: float,
+    kf_start: Keyframe,
+    kf_end: Keyframe,
+    speed_divisor: float,
+) -> float:
+    """Distance travelled `elapsed` seconds into a spatial span.
+
+    The span runs from `kf_start` to `kf_end`, a single segment or a whole
+    roving run. HOLD on either side keeps it at the start.
+    """
+    out_type = kf_start.out_interpolation_type
+    in_type = kf_end.in_interpolation_type
+    if KeyframeInterpolationType.HOLD in (out_type, in_type):
+        return 0.0
+    if (
+        out_type == KeyframeInterpolationType.LINEAR
+        and in_type == KeyframeInterpolationType.LINEAR
+    ):
+        return elapsed / duration * distance
+    curve = _distance_curve(
+        duration, distance, kf_start, kf_end, out_type, in_type, speed_divisor
+    )
+    y0, y1, y2, y3 = (point[1] for point in curve)
+    if y0 == y1 == y2 == y3:
+        return y0
+    t = _t_on_axis(curve, 0, elapsed)
+    return _cubic_1d(y0, y1, y2, y3, t)
 
 
 def split_spatial_path(
@@ -518,44 +908,6 @@ def split_spatial_path(
         [e[i] - split[i] for i in range(ndim)],
         [c[i] - p3[i] for i in range(ndim)],
     )
-
-
-def _get_point_on_path(
-    bezier_data: _BezierPathData,
-    eased_perc: float,
-) -> list[float]:
-    """Get position along a pre-sampled bezier path at arc-length fraction.
-
-    Port of lottie-web's PropertyFactory interpolateValue (spatial branch).
-    Walks the precomputed polyline segments to find the point at the
-    given arc-length distance.
-    """
-    if eased_perc <= 0.0:
-        return list(bezier_data.points[0])
-    if eased_perc >= 1.0:
-        return list(bezier_data.points[-1])
-
-    distance = bezier_data.segment_length * eased_perc
-    added_length = 0.0
-    n_pts = len(bezier_data.points)
-
-    for j in range(n_pts):
-        added_length += bezier_data.partial_lengths[j]
-
-        if distance == 0.0 or eased_perc == 0.0 or j == n_pts - 1:
-            return list(bezier_data.points[j])
-
-        if (
-            distance >= added_length
-            and distance < added_length + bezier_data.partial_lengths[j + 1]
-        ):
-            seg_perc = (distance - added_length) / bezier_data.partial_lengths[j + 1]
-            pt_a = bezier_data.points[j]
-            pt_b = bezier_data.points[j + 1]
-            return [pt_a[d] + (pt_b[d] - pt_a[d]) * seg_perc for d in range(len(pt_a))]
-
-    # Fallback: return last point
-    return list(bezier_data.points[-1])
 
 
 def _tangents_are_zero(tangent: list[float] | None) -> bool:
@@ -640,21 +992,17 @@ def auto_temporal_speeds(
     return through, list(through)
 
 
-def _spatial_progress_easing(
-    dt: float,
-    arc_length: float,
+def _progress_easing(
     out_ease: KeyframeEase | None,
     in_ease: KeyframeEase | None,
     *,
     out_linear: bool = False,
     in_linear: bool = False,
 ) -> _BezierEasing | None:
-    """Ease curve mapping a time fraction to an arc-length fraction.
-
-    A spatial ease carries a speed in units per second, which becomes
-    progress per second once divided by the path's own arc length - one
-    divisor for the whole segment. `None` means "no explicit ease", i.e.
-    constant progress.
+    """Ease curve mapping a time fraction to a progress fraction, for eases
+    whose speed is dimensionless (1 = the chord slope, see
+    `_single_progress`). `None` means "no explicit ease", i.e. constant
+    progress.
     """
     if out_ease is None or in_ease is None:
         return None
@@ -663,12 +1011,11 @@ def _spatial_progress_easing(
 
     out_inf_frac = out_ease.influence / 100.0
     in_inf_frac = in_ease.influence / 100.0
-    ds_dt = 1.0 / arc_length if arc_length > 1e-12 else 0.0
 
     cx1 = out_inf_frac
-    cy1 = out_ease.speed * ds_dt * out_inf_frac * dt
+    cy1 = out_ease.speed * out_inf_frac
     cx2 = 1.0 - in_inf_frac
-    cy2 = 1.0 - in_ease.speed * ds_dt * in_inf_frac * dt
+    cy2 = 1.0 - in_ease.speed * in_inf_frac
 
     # A LINEAR side carries no ease: its handle sits on the diagonal, so
     # progress advances at a constant rate on that side. The side's
@@ -679,129 +1026,150 @@ def _spatial_progress_easing(
     if in_linear:
         cy2 = cx2
 
-    # A handle that reaches past the unit square is shortened ALONG ITS OWN
-    # SLOPE, which keeps the speed the user asked for and spends influence
-    # instead. Clamping y alone would silently change the speed (AE 2026:
-    # clamping is 0.15 out on the measured overshoot fixture, shortening
-    # 3e-5).
-    if cy1 > 1.0:
-        cx1, cy1 = cx1 / cy1, 1.0
-    elif cy1 < 0.0:
-        cy1 = 0.0
-    if cy2 < 0.0:
-        cx2, cy2 = 1.0 - (1.0 - cx2) / (1.0 - cy2), 0.0
-    elif cy2 > 1.0:
-        cy2 = 1.0
+    # Between two eased sides, a handle that reaches past the unit square is
+    # shortened ALONG ITS OWN SLOPE, which keeps the speed the user asked for
+    # and spends influence instead (AE 2026: Orientation eases at speed 5 to
+    # 200 against an eased far side). Facing a LINEAR side it is kept and
+    # the progress overshoots instead: an Orientation eased at speed 50 /
+    # influence 50 % into a LINEAR key reads [203.94, 60.25, 293.25] 0.125 s
+    # in - about 2.9 times the way - and a mask path bows past its end shape
+    # the same way (AE 2026).
+    if not (out_linear or in_linear):
+        if cy1 > 1.0:
+            cx1, cy1 = cx1 / cy1, 1.0
+        elif cy1 < 0.0:
+            cy1 = 0.0
+        if cy2 < 0.0:
+            cx2, cy2 = 1.0 - (1.0 - cx2) / (1.0 - cy2), 0.0
+        elif cy2 > 1.0:
+            cy2 = 1.0
 
     return _get_bezier_easing(cx1, cy1, cx2, cy2)
 
 
-def _time_fraction_for_progress(easing: _BezierEasing, progress: float) -> float:
-    """Invert `easing`: the time fraction at which it reaches `progress`."""
-    lo, hi = 0.0, 1.0
-    for _ in range(60):
-        mid = (lo + hi) * 0.5
-        if easing.get(mid) < progress:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) * 0.5
+def roving_keyframe_times(
+    keyframes: list[Keyframe], metric: ArcMetric
+) -> dict[int, int]:
+    """Time units for every roving keyframe, spaced along the motion path.
 
+    A roving keyframe's time is derived, not stored: AE places it where the
+    enclosing anchors' eased span has travelled the path up to it. The
+    anchors' ease applies ONCE across the whole run, so the time is read
+    off the same (seconds, distance) curve the run's value is evaluated on,
+    then rounded half up to the layer's units - truncated instead when both
+    anchors are LINEAR, whose time is computed in units directly. Each
+    result is clamped so the run keeps one unit per keyframe inside its
+    anchors.
 
-def roving_keyframe_times(keyframes: list[Keyframe]) -> dict[int, float]:
-    """Times for every roving keyframe, spaced by arc length.
-
-    A roving keyframe's time is derived, not stored: AE places it so the
-    speed along the spatial path is constant between the enclosing
-    non-roving anchors, `t = t_a + (t_b - t_a) * arc_so_far / arc_total`.
-
-    The metric is the length of the actual curve, not the chord between
-    keyframes - measured on AE 2026 with one segment bowed by +/-400 px
+    The spacing follows the length of the actual curve, not the chord
+    between keyframes - measured on AE 2026 with one segment bowed by +/-400 px
     tangents, where chord length predicts 0.667 s and AE produced 2.2205 s.
-    The 128-sample table in `_BezierPathData` reproduces AE's stored
-    times to the exact timebase unit for both that case and a flattened one.
+    A 4-point run over 8 s with 0/80 ease on both anchors puts the two
+    roving keys at 3.54484 and 4.308594.
 
     Returns:
-        A `{keyframe index: time in LAYER seconds}` mapping covering only
-        the roving keyframes that sit between two anchors - the same axis
-        the ticks count, so a stretched layer needs no further conversion.
+        A `{keyframe index: time units}` mapping covering only the roving
+        keyframes that sit between two anchors. Units count LAYER time, so
+        a stretched layer needs no further conversion.
     """
-    result: dict[int, float] = {}
-    anchors = [i for i, kf in enumerate(keyframes) if not kf.roving]
+    result: dict[int, int] = {}
+    # The first and last keys bound a run even when flagged roving: removing
+    # the first anchor leaves the flag on the key that becomes first, and AE
+    # 2026 keeps it there and times the run from that key.
+    final = len(keyframes) - 1
+    anchors = [i for i, kf in enumerate(keyframes) if not kf.roving or i in (0, final)]
     if len(anchors) < 2:
         return result
-
     for start, end in zip(anchors, anchors[1:]):
         if end - start < 2:
             continue
-        lengths: list[float] = []
-        for i in range(start, end):
-            first, second = keyframes[i].value, keyframes[i + 1].value
-            if not isinstance(first, list) or not isinstance(second, list):
-                lengths = []
-                break
-            out_tangent = keyframes[i].out_spatial_tangent or [0.0] * len(first)
-            in_tangent = keyframes[i + 1].in_spatial_tangent or [0.0] * len(second)
-            lengths.append(
-                _BezierPathData(first, second, out_tangent, in_tangent).segment_length
-            )
-        total = sum(lengths)
-        if not lengths or total <= 0:
+        if not all(
+            isinstance(keyframes[i]._stored_value, list) for i in range(start, end + 1)
+        ):
             continue
-        span_start = keyframes[start]._layer_time
-        span_end = keyframes[end]._layer_time
-        span = span_end - span_start
-        # The enclosing anchors' ease applies ONCE across the whole roving
-        # run, and the keys are spaced along that single eased span - not
-        # eased per sub-segment. Measured on AE 2026: a 4-point run over 8 s
-        # with 0/80 ease on both anchors puts the two roving keys at 3.54484
-        # and 4.308594, which this reproduces to 7e-6 s (AE's own timebase
-        # unit is 4e-5 s at 24 fps).
-        easing = _spatial_progress_easing(
-            span,
-            total,
-            keyframes[start].out_temporal_ease[0]
-            if keyframes[start].out_temporal_ease
-            else None,
-            keyframes[end].in_temporal_ease[0]
-            if keyframes[end].in_temporal_ease
-            else None,
-            out_linear=keyframes[start].out_interpolation_type
-            == KeyframeInterpolationType.LINEAR,
-            in_linear=keyframes[end].in_interpolation_type
-            == KeyframeInterpolationType.LINEAR,
-        )
+        splines, total = _run_splines(keyframes, start, end, metric)
+        if total <= 0:
+            continue
+        first = keyframes[start]
+        last = keyframes[end]
+        units0 = first.time_units
+        units1 = last.time_units
+        out_type = first.out_interpolation_type
+        in_type = last.in_interpolation_type
+        # HOLD on either anchor keeps the whole run at its start.
+        held = KeyframeInterpolationType.HOLD in (out_type, in_type)
+        # The anchors' ease curve is the run's, shared by all its keys.
+        curve: list[_Point2] | None = None
+        timebase = 0.0
+        if not held and not (
+            out_type == KeyframeInterpolationType.LINEAR
+            and in_type == KeyframeInterpolationType.LINEAR
+        ):
+            timebase = first._timebase
+            curve = _distance_curve(
+                (units1 - units0) / timebase,
+                total,
+                first,
+                last,
+                out_type,
+                in_type,
+                metric.speed_divisor,
+            )
         travelled = 0.0
-        for offset, index in enumerate(range(start + 1, end)):
-            travelled += lengths[offset]
-            progress = travelled / total
-            if easing is not None:
-                progress = _time_fraction_for_progress(easing, progress)
-            result[index] = span_start + span * progress
+        for index in range(start + 1, end):
+            travelled += splines[index - start - 1].length
+            units = (
+                units0
+                if held
+                else _roving_units(curve, timebase, units0, units1, travelled, total)
+            )
+            result[index] = min(
+                max(units, units0 + index - start), units1 - (end - index)
+            )
     return result
 
 
-def _compute_auto_spatial_tangents(
-    keyframes: list[Keyframe],
-) -> list[tuple[list[float] | None, list[float] | None]]:
-    """Resolve spatial tangents for interpolation, deriving auto-bezier ones.
+def _roving_units(
+    curve: list[_Point2] | None,
+    timebase: float,
+    units0: int,
+    units1: int,
+    travelled: float,
+    total: float,
+) -> int:
+    """The time unit at which a roving run has travelled `travelled`, read
+    off the run's ease `curve` (`None` when both anchors are LINEAR)."""
+    if curve is None:
+        return int((units1 - units0) * (travelled / total) + units0)
+    t = _t_on_axis(curve, 1, travelled)
+    seconds = _cubic_1d(curve[0][0], curve[1][0], curve[2][0], curve[3][0], t)
+    return units0 + math.floor(timebase * seconds + 0.5)
 
-    Unlike the old implementation this does NOT defer to the stored tangents
-    when they are non-zero: AE recomputes them from the flag and ignores what
-    is on disk, so its own files legitimately carry stale values.
+
+def _spatial_tangents(
+    keyframes: list[Keyframe], first: int, last: int
+) -> dict[int, tuple[list[float], list[float]]]:
+    """The `(out, in)` spatial tangents of `keyframes[first]` to
+    `keyframes[last]`, by index, auto-bezier ones derived.
+
+    An auto-bezier keyframe's stored tangents are NOT used even when they
+    are non-zero: AE recomputes them from the flag and ignores what is on
+    disk, so its own files legitimately carry stale values. Only the keys
+    asked for (and an auto-bezier key's neighbours) are read: evaluating
+    one segment must not walk every keyframe of a long track.
     """
-    values = [kf.value for kf in keyframes]
-    all_vectors = all(isinstance(value, list) for value in values)
-    result: list[tuple[list[float] | None, list[float] | None]] = []
-    for i, kf in enumerate(keyframes):
-        value = values[i]
-        if not kf.spatial_auto_bezier or not isinstance(value, list):
-            result.append((kf.out_spatial_tangent, kf.in_spatial_tangent))
+    result: dict[int, tuple[list[float], list[float]]] = {}
+    for i in range(first, last + 1):
+        kf = keyframes[i]
+        if kf.spatial_auto_bezier:
+            low = max(i - 1, 0)
+            window = [
+                cast("list[float]", k._stored_value) for k in keyframes[low : i + 2]
+            ]
+            result[i] = auto_spatial_tangents(window, i - low)
             continue
-        if not all_vectors:
-            result.append(([0.0] * len(value), [0.0] * len(value)))
-            continue
-        result.append(auto_spatial_tangents(cast("list[list[float]]", values), i))
+        zero = [0.0] * len(cast("list[float]", kf._stored_value))
+        result[i] = (kf.out_spatial_tangent or zero, kf.in_spatial_tangent or zero)
     return result
 
 
@@ -851,148 +1219,182 @@ def _interpolate_bezier_1d(
     )
 
 
-def _interpolate_spatial_bezier(
-    t: float,
-    t0: float,
-    t1: float,
-    kf0: Keyframe,
-    kf1: Keyframe,
-    out_tan_override: list[float] | None = None,
-    in_tan_override: list[float] | None = None,
-) -> list[float]:
-    """Interpolate spatial property using lottie-web's approach.
-
-    1. Builds a polyline approximation of the spatial bezier path
-    2. Converts temporal ease to a BezierEasing function
-    3. Maps time -> eased arc-length fraction
-    4. Walks the polyline to find the position
-    """
-    v0 = kf0.value
-    v1 = kf1.value
-    if not isinstance(v0, list) or not isinstance(v1, list):
-        if isinstance(v0, list):
-            return [float(x) for x in v0]
-        if isinstance(v0, (int, float)):
-            return [float(v0)]
-        return []
-
-    dt = t1 - t0
-    if dt == 0:
-        return list(v0)
-
-    ndim = len(v0)
-    out_tan = out_tan_override or kf0.out_spatial_tangent or [0.0] * ndim
-    in_tan = in_tan_override or kf1.in_spatial_tangent or [0.0] * ndim
-    straight_path = _tangents_are_zero(out_tan) and _tangents_are_zero(in_tan)
-
-    # Build temporal easing function
-    out_ease = kf0.out_temporal_ease[0] if kf0.out_temporal_ease else None
-    in_ease = kf1.in_temporal_ease[0] if kf1.in_temporal_ease else None
-
-    has_explicit_ease = (
-        out_ease is not None
-        and in_ease is not None
-        and (out_ease.influence > 0 or in_ease.influence > 0)
-    )
-
-    # `perc` is consumed as a fraction of ARC LENGTH along the path, so the
-    # speed an ease carries (pixels per second) converts to progress per
-    # second by dividing by the path's own length - one number for the whole
-    # segment, not one per end. Measured on AE 2026: a 700 px segment eased
-    # at 900 px/s reproduces AE's sampled positions to 3e-5 of progress with
-    # this divisor, and is 0.086 out with `3 * |tangent|`.
-    bezier_data = None if straight_path else _BezierPathData(v0, v1, out_tan, in_tan)
-    if straight_path:
-        arc_length = math.sqrt(sum((v1[d] - v0[d]) ** 2 for d in range(ndim)))
-    else:
-        assert bezier_data is not None
-        arc_length = bezier_data.segment_length
-
-    easing = (
-        _spatial_progress_easing(
-            dt,
-            arc_length,
-            out_ease,
-            in_ease,
-            out_linear=kf0.out_interpolation_type == KeyframeInterpolationType.LINEAR,
-            in_linear=kf1.in_interpolation_type == KeyframeInterpolationType.LINEAR,
-        )
-        if has_explicit_ease
-        else None
-    )
-    x = (t - t0) / dt
-    perc = easing.get(x) if easing is not None else x
-
-    # For straight paths, just lerp
-    if straight_path:
-        return [v0[d] + (v1[d] - v0[d]) * perc for d in range(ndim)]
-
-    # Walk the path to get the position at the eased arc-length fraction
-    assert bezier_data is not None
-    return _get_point_on_path(bezier_data, perc)
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
-
-def _interpolate_roving_run(
-    t: float,
+def _segment_spline(
     keyframes: list[Keyframe],
-    start: int,
-    end: int,
-) -> list[float] | None:
-    """Position inside a roving run, eased once across the whole span.
-
-    A roving keyframe has no time of its own to ease against: AE applies the
-    enclosing anchors' ease ONCE over the run and reads the position at that
-    single progress along the concatenated path. Easing each sub-segment on
-    its own instead (with the per-segment speeds AE leaves on the roving
-    keys) is 99 px out on the measured 4-point fixture.
-    """
-    values = [keyframes[i].value for i in range(start, end + 1)]
-    if not all(isinstance(v, list) for v in values):
-        return None
-    datas: list[_BezierPathData] = []
-    for i in range(start, end):
-        first = cast("list[float]", keyframes[i].value)
-        second = cast("list[float]", keyframes[i + 1].value)
-        out_tangent = keyframes[i].out_spatial_tangent or [0.0] * len(first)
-        in_tangent = keyframes[i + 1].in_spatial_tangent or [0.0] * len(second)
-        datas.append(_BezierPathData(first, second, out_tangent, in_tangent))
-    total = sum(d.segment_length for d in datas)
-    if total <= 0:
-        return None
-
-    span_start = keyframes[start]._layer_time
-    span = keyframes[end]._layer_time - span_start
-    if span <= 0:
-        return list(cast("list[float]", keyframes[start].value))
-
-    easing = _spatial_progress_easing(
-        span,
-        total,
-        keyframes[start].out_temporal_ease[0]
-        if keyframes[start].out_temporal_ease
-        else None,
-        keyframes[end].in_temporal_ease[0] if keyframes[end].in_temporal_ease else None,
-        out_linear=keyframes[start].out_interpolation_type
-        == KeyframeInterpolationType.LINEAR,
-        in_linear=keyframes[end].in_interpolation_type
-        == KeyframeInterpolationType.LINEAR,
+    index: int,
+    tangents: dict[int, tuple[list[float], list[float]]],
+    metric: ArcMetric,
+) -> _ArcSpline:
+    """The arc spline of the segment from `keyframes[index]` to the next."""
+    curve = _measured_curve(
+        cast("list[float]", keyframes[index]._stored_value),
+        cast("list[float]", keyframes[index + 1]._stored_value),
+        tangents[index][0],
+        tangents[index + 1][1],
+        metric,
     )
-    x = (t - span_start) / span
-    progress = easing.get(x) if easing is not None else x
+    return _arc_spline(curve, metric.accuracy)
 
-    target = progress * total
-    travelled = 0.0
-    for data in datas:
-        if travelled + data.segment_length >= target or data is datas[-1]:
-            local = (target - travelled) / data.segment_length
-            return _get_point_on_path(data, min(max(local, 0.0), 1.0))
-        travelled += data.segment_length
-    return None
+
+def _run_splines(
+    keyframes: list[Keyframe], start: int, end: int, metric: ArcMetric
+) -> tuple[list[_ArcSpline], float]:
+    """The arc splines of the segments from `keyframes[start]` to
+    `keyframes[end]`, and their total length (summed left to right)."""
+    tangents = _spatial_tangents(keyframes, start, end)
+    splines = [
+        _segment_spline(keyframes, i, tangents, metric) for i in range(start, end)
+    ]
+    total = 0.0
+    for spline in splines:
+        total += spline.length
+    return splines, total
+
+
+def _segment_curve(keyframes: list[Keyframe], index: int) -> _Curve:
+    """The control points of the segment from `keyframes[index]` to the
+    next, in reported units."""
+    tangents = _spatial_tangents(keyframes, index, index + 1)
+    return _spatial_curve(
+        cast("list[float]", keyframes[index]._stored_value),
+        cast("list[float]", keyframes[index + 1]._stored_value),
+        tangents[index][0],
+        tangents[index + 1][1],
+    )
+
+
+def auto_path_speed(keyframes: list[Keyframe], index: int, metric: ArcMetric) -> float:
+    """AE's temporal auto-bezier speed for `keyframes[index]` on a motion path.
+
+    One speed along the path, not one per dimension: the arc distance
+    between the neighbouring anchors (roving keys skipped) over their time
+    span - at either end, the single segment's. AE derives it rather than
+    storing it: its own files hold speed 0 and influence 0 there (AE 2026,
+    three auto-bezier keys on Position).
+    """
+    low = _run_bounds(keyframes, index - 1)[0] if index > 0 else index
+    high = _run_bounds(keyframes, index)[1] if index < len(keyframes) - 1 else index
+    return _path_speed(keyframes, low, high, metric)
+
+
+def linear_path_speed(
+    keyframes: list[Keyframe], index: int, metric: ArcMetric
+) -> float:
+    """The speed AE reports for a LINEAR side of the segment that starts at
+    `keyframes[index]` on a motion path.
+
+    The arc length - not the chord - over the time span, taken across the
+    whole roving run the segment belongs to (measured on AE 2026: a LINEAR
+    segment bowed by its tangents reports 263.41 where the chord gives 200,
+    one with coincident keys but non-zero tangents 188.63, and every side
+    of a roving run the run's length over its span).
+    """
+    return _path_speed(keyframes, *_run_bounds(keyframes, index), metric)
+
+
+def _run_bounds(keyframes: list[Keyframe], left: int) -> tuple[int, int]:
+    """The anchors enclosing the segment that starts at `keyframes[left]`:
+    the ends of the roving run it belongs to."""
+    start = left
+    end = left + 1
+    while start > 0 and keyframes[start].roving:
+        start -= 1
+    while end < len(keyframes) - 1 and keyframes[end].roving:
+        end += 1
+    return start, end
+
+
+def _path_speed(
+    keyframes: list[Keyframe], low: int, high: int, metric: ArcMetric
+) -> float:
+    """The arc distance from `keyframes[low]` to `keyframes[high]` over their
+    time span, in the units ease speeds report."""
+    span = keyframes[high]._layer_time - keyframes[low]._layer_time
+    if span <= 0:
+        return 0.0
+    _, distance = _run_splines(keyframes, low, high, metric)
+    return distance / span * metric.speed_divisor
+
+
+def spatial_location(
+    time: float,
+    keyframes: list[Keyframe],
+    left: int,
+    metric: ArcMetric,
+) -> tuple[int, float]:
+    """Where a motion path is at `time`: a segment and its curve parameter.
+
+    `time` is in the owning layer's seconds, strictly inside the segment
+    starting at `keyframes[left]`. A roving keyframe is not an ease
+    boundary: AE eases a whole roving run once, between its anchors, and
+    walks the run's segments by distance - so the segment returned can be
+    another one of the run. Easing each sub-segment on its own instead (with
+    the per-segment speeds AE leaves on the roving keys) is 99 px out on
+    the measured 4-point fixture.
+
+    Returns:
+        `(index, u)`: the segment starting at `keyframes[index]`, and the
+        curve parameter along it.
+    """
+    start, end = _run_bounds(keyframes, left)
+    splines, total = _run_splines(keyframes, start, end, metric)
+    first = keyframes[start]
+    last = keyframes[end]
+    t0 = first._layer_time
+    distance = _spatial_distance(
+        time - t0, last._layer_time - t0, total, first, last, metric.speed_divisor
+    )
+    index = 0
+    while index < len(splines) - 1 and distance > splines[index].length:
+        distance -= splines[index].length
+        index += 1
+    return start + index, splines[index].parameter_at(distance)
+
+
+def motion_path_direction(
+    time: float, keyframes: list[Keyframe], metric: ArcMetric
+) -> list[float] | None:
+    """The direction a motion path heads at `time`, in layer seconds.
+
+    What auto-orientation along a path follows. At a keyframe it is the
+    outgoing segment's start, before the first key the first segment's
+    start and past the last the last segment's end (measured on AE 2026).
+    `None` without a path to follow, and inside a held segment: AE 2026
+    turns a layer whose current segment starts on a HOLD key not at all,
+    while past the last key it still follows the last segment.
+    """
+    # Every keyframe of a property holds the same kind of value.
+    if len(keyframes) < 2 or not isinstance(keyframes[0]._stored_value, list):
+        return None
+    last = len(keyframes) - 2
+    if time >= keyframes[-1]._layer_time:
+        index, u = last, 1.0
+    else:
+        index = 0
+        while index < last and keyframes[index + 1]._layer_time <= time:
+            index += 1
+        if time <= keyframes[index]._layer_time:
+            u = 0.0
+        else:
+            index, u = spatial_location(time, keyframes, index, metric)
+        if keyframes[index].out_interpolation_type == KeyframeInterpolationType.HOLD:
+            return None
+    p0, p1, p2, p3 = _segment_curve(keyframes, index)
+    mt = 1 - u
+    direction = [
+        3 * mt * mt * (p1[d] - p0[d])
+        + 6 * mt * u * (p2[d] - p1[d])
+        + 3 * u * u * (p3[d] - p2[d])
+        for d in range(len(p0))
+    ]
+    # A handle of zero length stalls the curve at its end: the path then
+    # heads toward the next control point along.
+    fallbacks = ((p2, p0), (p3, p0)) if u < 0.5 else ((p3, p1), (p3, p0))
+    for head, tail in fallbacks:
+        if any(abs(c) > 1e-9 for c in direction):
+            break
+        direction = [head[d] - tail[d] for d in range(len(p0))]
+    return direction
 
 
 # ---------------------------------------------------------------------------
@@ -1034,9 +1436,7 @@ def _single_progress(
     # read, and this runs once per interpolated frame.
     out_ease = kf_left.out_temporal_ease
     in_ease = kf_right.in_temporal_ease
-    easing = _spatial_progress_easing(
-        1.0,
-        1.0,
+    easing = _progress_easing(
         out_ease[0] if out_ease else None,
         in_ease[0] if in_ease else None,
         out_linear=kf_left.out_interpolation_type == KeyframeInterpolationType.LINEAR,
@@ -1293,10 +1693,25 @@ def interpolate_shapes(start: Shape, end: Shape, progress: float) -> Shape | Non
     shorter one has no segment to subdivide - and the caller holds the
     left keyframe's value instead.
     """
-    verts_a, in_a, out_a = start.vertices, start.in_tangents, start.out_tangents
-    verts_b, in_b, out_b = end.vertices, end.in_tangents, end.out_tangents
+    # The stored handles blend (what a new keyframe stores); a RotoBezier
+    # mask's drawn tangents are derived from the result instead.
+    verts_a = start.vertices
+    in_a, out_a = start._stored_tangents(-1), start._stored_tangents(1)
+    verts_b = end.vertices
+    in_b, out_b = end._stored_tangents(-1), end._stored_tangents(1)
     if not verts_a or not verts_b:
         return None
+    # A RotoBezier mask draws the in-between with the keyframes' tensions
+    # blended at the same progress (measured on AE 2026); each key's come
+    # from its handles as stored, before any resampling.
+    tensions = (
+        (
+            keyframe_tensions(start._own_tensions(), in_a, out_a),
+            keyframe_tensions(end._own_tensions(), in_b, out_b),
+        )
+        if start._is_roto_bezier()
+        else None
+    )
     target = max(len(verts_a), len(verts_b))
     if len(verts_a) < target:
         verts_a, in_a, out_a = _resample_path(
@@ -1308,12 +1723,94 @@ def interpolate_shapes(start: Shape, end: Shape, progress: float) -> Shape | Non
         # `_resample_path` could not reach the target: a one-vertex open
         # path has no segment to subdivide.
         return None
-    return Shape(
+    blended = Shape(
         _lerp_points(verts_a, verts_b, progress),
         _lerp_points(in_a, in_b, progress),
         _lerp_points(out_a, out_b, progress),
         closed=start.closed,
     )
+    blended._mask_path = start._mask_path
+    if tensions is not None and len(tensions[0]) == len(tensions[1]) == len(verts_a):
+        blended._tensions = [
+            a + (b - a) * progress for a, b in zip(tensions[0], tensions[1])
+        ]
+    return blended
+
+
+# A colour's ease speed is a rate along the straight line between its keys,
+# in 0-255 channel units: the 0-1 channel distance times this.
+_COLOR_SPEED_SCALE = 255.0
+
+
+def color_distance(start: list[float], end: list[float]) -> float:
+    """The distance between two colours in the units their ease speeds use.
+
+    Euclidean over the channels, in 0-255 units (measured on AE 2026: a
+    LINEAR segment from [1, 0, 0, 1] to [0, 0.5, 1, 1] over 2 s reports a
+    speed of 1.5 * 255 / 2 = 191.25).
+    """
+    squared = 0.0
+    for a, b in zip(start, end):
+        squared += (b - a) * (b - a)
+    return math.sqrt(squared) * _COLOR_SPEED_SCALE
+
+
+def color_auto_speed(
+    values: list[list[float]], times: list[float], index: int
+) -> float:
+    """AE's temporal auto-bezier speed for the colour `values[index]`.
+
+    The colour distance travelled from the previous key to the next one
+    over their time span; at either end, the single segment's (measured on
+    AE 2026: [1,0,0,1] / [0,0.5,1,1] / [0.2,1,0.3,1] at 0 / 1 / 2 s reports
+    382.5, 303.85 and 225.21).
+    """
+    low = max(index - 1, 0)
+    high = min(index + 1, len(values) - 1)
+    span = times[high] - times[low]
+    if span <= 0:
+        return 0.0
+    distance = 0.0
+    for i in range(low, high):
+        distance += color_distance(values[i], values[i + 1])
+    return distance / span
+
+
+def _interpolate_color(
+    kf_left: Keyframe,
+    kf_right: Keyframe,
+    time: float,
+    t0: float,
+    t1: float,
+    v0: list[float],
+    v1: list[float],
+) -> list[float]:
+    """A colour segment: one eased progress along the straight line.
+
+    The progress is a bezier in (time, fraction of the colour distance):
+    an eased side's handle reaches `influence` of the span at its speed
+    divided by the distance, and a LINEAR side's handle sits on the
+    diagonal. Fitted to AE 2026, which it reproduces to 1e-12 on LINEAR,
+    eased and mixed segments, and with stored speeds of 0 it is the
+    influence-only curve measured earlier.
+    """
+    duration = t1 - t0
+    distance = color_distance(v0, v1)
+    if kf_left.out_interpolation_type == KeyframeInterpolationType.LINEAR:
+        cx1 = cy1 = _DEFAULT_INFLUENCE / 100.0
+    else:
+        out_ease = kf_left.out_temporal_ease[0]
+        cx1 = out_ease.influence / 100.0
+        cy1 = out_ease.speed * cx1 * duration / distance if distance else cx1
+    if kf_right.in_interpolation_type == KeyframeInterpolationType.LINEAR:
+        cx2 = cy2 = 1.0 - _DEFAULT_INFLUENCE / 100.0
+    else:
+        in_ease = kf_right.in_temporal_ease[0]
+        reach = in_ease.influence / 100.0
+        cx2 = 1.0 - reach
+        cy2 = 1.0 - in_ease.speed * reach * duration / distance if distance else cx2
+    progress = _get_bezier_easing(cx1, cy1, cx2, cy2).get((time - t0) / duration)
+    return [v0[d] + (v1[d] - v0[d]) * progress for d in range(len(v0))]
 
 
 def interpolate_keyframes(
@@ -1322,13 +1819,10 @@ def interpolate_keyframes(
     is_spatial: bool,
     inert_dimensions: frozenset[int] = frozenset(),
     value_kind: ParallelKind | None = None,
+    metric: ArcMetric = _DEFAULT_ARC_METRIC,
+    is_color: bool = False,
 ) -> list[float] | float | Shape | None:
     """Compute the interpolated value at `time` from a keyframe list.
-
-    Uses lottie-web's algorithms:
-    - BezierEasing for temporal ease (normalized unit-square bezier)
-    - Polyline path approximation for spatial bezier
-    - Linear arc-length interpolation along sampled path
 
     Args:
         time: Time in the owning LAYER's seconds, not composition seconds.
@@ -1345,6 +1839,10 @@ def interpolate_keyframes(
         value_kind: `SHAPE_KIND` or `ORIENTATION_KIND` for the two kinds
             AE blends as one eased quantity rather than per component;
             `None` for an ordinary numeric property.
+        metric: How the property's motion path is measured, from its
+            `tdb4`; only a spatial property reads it.
+        is_color: Whether the value is a colour, which AE blends along one
+            eased progress (see `_interpolate_color`).
 
     Returns:
         Interpolated value, or `None` if no keyframes.
@@ -1356,11 +1854,11 @@ def interpolate_keyframes(
 
     # Before first keyframe or single keyframe
     if n == 1 or time <= keyframes[0]._layer_time:
-        return cast("list[float] | float | None", keyframes[0].value)
+        return cast("list[float] | float | None", keyframes[0]._stored_value)
 
     # After last keyframe
     if time >= keyframes[-1]._layer_time:
-        return cast("list[float] | float | None", keyframes[-1].value)
+        return cast("list[float] | float | None", keyframes[-1]._stored_value)
 
     # Find the segment
     right_idx = 0
@@ -1378,42 +1876,48 @@ def interpolate_keyframes(
 
     # At exactly a keyframe time
     if abs(time - t0) < 1e-12:
-        return cast("list[float] | float | None", kf_left.value)
+        return cast("list[float] | float | None", kf_left._stored_value)
     if abs(time - t1) < 1e-12:
-        return cast("list[float] | float | None", kf_right.value)
+        return cast("list[float] | float | None", kf_right._stored_value)
 
-    # A roving keyframe is not an ease boundary: the whole run between its
-    # enclosing anchors is eased as one span.
-    if is_spatial and (kf_left.roving or kf_right.roving):
-        anchor_start = left_idx
-        while anchor_start > 0 and keyframes[anchor_start].roving:
-            anchor_start -= 1
-        anchor_end = right_idx
-        while anchor_end < n - 1 and keyframes[anchor_end].roving:
-            anchor_end += 1
-        roving_value = _interpolate_roving_run(
-            time, keyframes, anchor_start, anchor_end
-        )
-        if roving_value is not None:
-            return roving_value
-
-    # Determine interpolation type
+    v0 = kf_left._stored_value
+    v1 = kf_right._stored_value
     out_type = kf_left.out_interpolation_type
     in_type = kf_right.in_interpolation_type
 
-    # HOLD
-    if out_type == KeyframeInterpolationType.HOLD:
-        return cast("list[float] | float | None", kf_left.value)
-    if in_type == KeyframeInterpolationType.HOLD:
-        return cast("list[float] | float | None", kf_right.value)
+    # A motion path is evaluated by distance, through AE's arc-length model.
+    # A LINEAR key still follows the cubic its tangents define - only the
+    # EASE is linear (AE 2026: a LINEAR/LINEAR segment from (50,50) to
+    # (350,50) with tangents (100,200)/(-100,200) passes through (200,200),
+    # not the straight line's (200,50)) - and a roving run is eased by its
+    # anchors alone, whatever its roving keys' own interpolation says.
+    if (
+        is_spatial
+        and value_kind is None
+        and isinstance(v0, list)
+        and isinstance(v1, list)
+    ):
+        index, u = spatial_location(time, keyframes, left_idx, metric)
+        return _cubic_point(_segment_curve(keyframes, index), u)
 
-    v0 = kf_left.value
-    v1 = kf_right.value
+    # HOLD
+    holds = KeyframeInterpolationType.HOLD in (out_type, in_type)
+    if out_type == KeyframeInterpolationType.HOLD and value_kind is None:
+        return cast("list[float] | float | None", v0)
+    if in_type == KeyframeInterpolationType.HOLD and value_kind is None:
+        # A scalar or vector jumps to the next key's value straight away,
+        # but a colour holds the start, as a motion path does (measured on
+        # AE 2026).
+        held = v0 if is_color else v1
+        return cast("list[float] | float | None", held)
 
     # A path and an Orientation blend as ONE eased quantity, so they skip
-    # the per-dimension machinery below entirely.
+    # the per-dimension machinery below entirely. A HOLD on either side
+    # holds the start, but still as the blend at progress 0: AE reports a
+    # held Orientation in its canonical angles and a held path resampled to
+    # the next key's vertex count (measured on AE 2026).
     if value_kind is not None:
-        progress = _single_progress(kf_left, kf_right, time, t0, t1)
+        progress = 0.0 if holds else _single_progress(kf_left, kf_right, time, t0, t1)
         if value_kind is SHAPE_KIND and isinstance(v0, Shape) and isinstance(v1, Shape):
             blended = interpolate_shapes(v0, v1, progress)
             return blended if blended is not None else v0
@@ -1424,62 +1928,19 @@ def interpolate_keyframes(
         ):
             return slerp_orientation(v0, v1, progress)
 
-    # LINEAR
-    if out_type == KeyframeInterpolationType.LINEAR:
-        if isinstance(v0, list) and isinstance(v1, list) and is_spatial:
-            if not (
-                _tangents_are_zero(kf_left.out_spatial_tangent)
-                and _tangents_are_zero(kf_right.in_spatial_tangent)
-            ):
-                # A LINEAR key still carries spatial tangents, and AE follows
-                # the cubic they define - measured on AE 2026: a LINEAR/LINEAR
-                # segment from (50,50) to (350,50) with tangents
-                # (100,200)/(-100,200) passes through (200,200), not the
-                # straight line's (200,50). Only the EASE is linear.
-                return _interpolate_spatial_bezier(time, t0, t1, kf_left, kf_right)
-            ratio = (time - t0) / (t1 - t0)
-            return [v0[d] + (v1[d] - v0[d]) * ratio for d in range(len(v0))]
-        # Non-spatial: AE stores a LINEAR side as a diagonal handle - speed
-        # equal to the chord slope, influence 100/6 - so the ordinary bezier
-        # path below reproduces it exactly, including the case AE cares
-        # about: a LINEAR out side facing an EASED in side still gets that
-        # ease (measured on AE 2026: Opacity 0->100 over 2 s with a LINEAR
-        # out and a 90 % influence in side reaches 87.5 at t=1, where a lerp
-        # gives 50). Fall through rather than lerping.
-
-    # Pre-compute auto-bezier tangents. Temporal ease needs no equivalent:
-    # `Keyframe.in/out_temporal_ease` already derives the auto-bezier speeds
-    # per dimension, and a single scalar override applied across dimensions
-    # would drive every dimension at dimension 0's speed.
-    auto_tangents: list[tuple[list[float] | None, list[float] | None]] | None
-
-    has_auto_spatial = is_spatial and any(kf.spatial_auto_bezier for kf in keyframes)
-    auto_tangents = (
-        _compute_auto_spatial_tangents(keyframes) if has_auto_spatial else None
-    )
-
-    # BEZIER (and the non-spatial LINEAR sides that fell through above)
+    # AE stores a LINEAR side as a diagonal handle - speed equal to the
+    # chord slope, influence 100/6 - so the ordinary bezier path below
+    # reproduces it exactly, including the case AE cares about: a LINEAR out
+    # side facing an EASED in side still gets that ease (measured on AE
+    # 2026: Opacity 0->100 over 2 s with a LINEAR out and a 90 % influence in
+    # side reaches 87.5 at t=1, where a lerp gives 50).
     if out_type in (
         KeyframeInterpolationType.BEZIER,
         KeyframeInterpolationType.LINEAR,
     ):
-        if is_spatial and isinstance(v0, list) and isinstance(v1, list):
-            out_tan_ov: list[float] | None = None
-            in_tan_ov: list[float] | None = None
-            if auto_tangents:
-                out_tan_ov = auto_tangents[left_idx][0]
-                in_tan_ov = auto_tangents[right_idx][1]
-            return _interpolate_spatial_bezier(
-                time,
-                t0,
-                t1,
-                kf_left,
-                kf_right,
-                out_tan_override=out_tan_ov,
-                in_tan_override=in_tan_ov,
-            )
-
         # Non-spatial: per-dimension 1D bezier
+        if is_color and isinstance(v0, list) and isinstance(v1, list):
+            return _interpolate_color(kf_left, kf_right, time, t0, t1, v0, v1)
         if isinstance(v0, list) and isinstance(v1, list):
             # One stored ease for a multi-dimensional value means AE drives
             # the whole value with a single progress rather than a bezier per

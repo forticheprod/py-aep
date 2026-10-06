@@ -142,6 +142,40 @@ class TestOutputModule:
         om = project.render_queue.items[0].output_modules[0]
         assert om.settings["Convert to Linear Light"] == expected_value
 
+    @pytest.mark.parametrize(
+        "sample_name, expected_value",
+        [("preserve_rgb_off", False), ("preserve_rgb_on", True)],
+    )
+    def test_preserve_rgb(self, sample_name: str, expected_value: bool) -> None:
+        # The two AE samples differ in one byte of the settings record, 0x5E.
+        project = parse_project(OM_SAMPLES_DIR / f"{sample_name}.aep")
+        om = project.render_queue.items[0].output_modules[0]
+        assert om.settings["Preserve RGB"] is expected_value
+
+
+class TestRouuFrameRateAndDepth:
+    """`Rouu` holds the output frame rate as 16.16 fixed point at 0x42 and the
+    depth as a signed 2-byte value at 0x46."""
+
+    @pytest.mark.parametrize(
+        "sample_name, item_index, frame_rate",
+        [
+            ("frame_rate", 2, 29.97),  # 00 1D F8 52
+            ("skip_frames", 1, 15.0),  # 00 0F 00 00
+            ("skip_frames", 3, 7.5),  # 00 07 80 00
+        ],
+    )
+    def test_frame_rate_and_depth(
+        self, sample_name: str, item_index: int, frame_rate: float
+    ) -> None:
+        expected = load_expected(SAMPLES_DIR, sample_name)
+        project = parse_project(SAMPLES_DIR / f"{sample_name}.aep")
+        om = project.render_queue.items[item_index].output_modules[0]
+        exp_om = expected["renderQueue"]["items"][item_index]["outputModules"][0]
+        assert om._roou.frame_rate == pytest.approx(frame_rate, abs=1e-4)
+        assert om._roou.depth == exp_om["settings"]["Depth"] == 24
+        assert om.get_settings(GetSettingsFormat.NUMBER)["Depth"] == 24
+
 
 class TestCompLinking:
     """Tests for render queue item composition linking."""
@@ -184,24 +218,20 @@ class TestRenderQueueItemAttributes:
 
 
 class TestSkipFrames:
-    """Tests for skip_frames calculation from frame rate ratio."""
+    """skip_frames of a parsed project.
 
-    @pytest.mark.skip(
-        reason="FIXME: Could not find parameter in UI and jsx"
-        " script does not set this properly"
-    )
+    The sample's items render at 30 fps ("Use this frame rate") and their
+    output modules store 30 / (n + 1) fps; its JSON was exported in the
+    session that set the skip. After Effects does not save the value: it
+    reads 0 for every item of a project it opens (`skip_frames_1.json`,
+    exported after reopening) and renders all frames whatever output rate
+    is stored (AE 2026, rendered), so a parsed item reads 0 too.
+    """
+
     @pytest.mark.parametrize("n", [0, 1, 2, 3])
     def test_skip_frames(self, n: int) -> None:
-        sample_name = f"skip_frames_{n}"
-        expected = load_expected(SAMPLES_DIR, "skip_frames")
         project = parse_project(SAMPLES_DIR / "skip_frames.aep")
-        rqi = get_rqi(project, sample_name)
-        exp_rqi = next(
-            item
-            for item in expected["renderQueue"]["items"]
-            if item["compName"] == sample_name
-        )
-        assert rqi.skip_frames == exp_rqi["skipFrames"] == n
+        assert get_rqi(project, f"skip_frames_{n}").skip_frames == 0
 
 
 class TestOutputModuleSettings:

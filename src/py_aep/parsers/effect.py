@@ -94,9 +94,8 @@ def _resolve_effect_value(
 ) -> tuple[Any, Any]:
     """Resolve value and default_value for a synthesized effect property.
 
-    Returns pre-rescale values - 2D point coordinate scaling from parT's
-    0-512 range to pixel coordinates is handled separately by
-    `_scale_point_to_pixels`.
+    Returns pre-rescale values - point defaults stay in percent of the
+    layer size; `_scale_point_to_pixels` converts them to pixels.
 
     Args:
         match_name: The property's match name.
@@ -107,12 +106,25 @@ def _resolve_effect_value(
         A (value, default_value) tuple.
     """
     if control_type == PropertyControlType.ENUM:
-        # parT stores 0-indexed default; ExtendScript uses 1-indexed.
-        # last_value from parT is already 1-indexed and reflects the
-        # current value even when the property is absent from tdgp.
-        raw_default = param_def.get("default_value", 0)
-        fallback = raw_default + 1
-        value = param_def.get("last_value", fallback)
+        # An omitted popup holds its pard default (1-based), not the value
+        # cached in the definition: ExtendScript reports the default for
+        # S_BlurDirectional's Edge Mode (cached 1, default 3). A cached
+        # value beyond the choice count is managed by the plug-in (the OCIO
+        # transforms keep hashed ids there, which ExtendScript reports) and
+        # is kept.
+        value = param_def.get("default_value")
+        last = param_def.get("last_value")
+        if last is not None and (
+            value is None or last > param_def.get("nb_options", 0)
+        ):
+            value = last
+        return value, value
+    if control_type in (PropertyControlType.TWO_D, PropertyControlType.THREE_D):
+        # An omitted point is its pard default, a percentage of the layer
+        # size. The cached value is that same percentage or a 16.16-rounded
+        # fraction: Path Text's 80 % caches 0.7999878, ExtendScript reports
+        # exactly 80 on a 100-pixel layer.
+        value = param_def.get("default_value")
         return value, value
     if control_type == PropertyControlType.BOOLEAN:
         value = param_def.get("default_value", param_def.get("last_value"))
@@ -174,44 +186,35 @@ def _apply_param_def_metadata(
         prop._expressions_disabled = True
 
 
-def _point_default_pixels(
-    prop: Property, raw: Any, size: tuple[float, float] | None = None
-) -> list[float] | None:
+def _point_default_pixels(raw: Any, size: tuple[float, float]) -> list[float] | None:
     """A point parameter's parT default, converted to pixel coordinates.
 
-    parT stores 2D/3D point defaults in a 0-512 range normalized against
-    the LAYER, the same reference the instance `cdat` uses - so the
-    conversion is `raw / 512 * layer_size`, with a 3D point's Z sharing
-    the height divisor (`Property._effect_scale`).
+    `raw` is the pard default, in percent of the LAYER size - the same
+    reference the instance `cdat` uses - so the conversion is
+    `raw / 100 * layer_size`, with a 3D point's Z sharing the height
+    divisor (`Property._effect_scale`).
 
-    Measured in AE 2026: an untouched Gradient Ramp `End of Ramp` (parT
-    default 256, 512) reports [100, 100] on a 200x100 layer in an 800x600
-    comp, and [128, 256] on a 256x256 layer in a 512x512 comp. Only the
-    layer reproduces both; normalizing against the composition gives
-    [400, 600] and [128, 256] - right only when layer and comp match,
+    Measured in AE 2026: an untouched Gradient Ramp `End of Ramp` (pard
+    default 50 %, 100 %) reports [100, 100] on a 200x100 layer in an
+    800x600 comp, and [128, 256] on a 256x256 layer in a 512x512 comp.
+    Only the layer reproduces both; normalizing against the composition
+    gives [400, 600] and [128, 256] - right only when layer and comp match,
     which is why this went unnoticed.
 
-    Returns `None` when the value is not a point or the layer has no
-    pixel size.
+    Returns `None` when the value is not a point.
     """
-    if size is not None:
-        scale = [size[0], size[1], size[1]]
-    else:
-        # `size` comes from the parse path, which has the layer in hand but
-        # not yet a property attached to it. An already-attached effect
-        # leaves it None and lets `_effect_scale` resolve the layer itself.
-        scale = prop._effect_scale or []
-    if not scale or not isinstance(raw, list) or len(raw) < 2:
+    if not isinstance(raw, list) or len(raw) < 2:
         return None
-    return [v / 512.0 * factor for v, factor in zip(raw, scale)]
+    scale = [size[0], size[1], size[1]]
+    return [v / 100.0 * factor for v, factor in zip(raw, scale)]
 
 
 def _scale_point_to_pixels(prop: Property, size: tuple[float, float]) -> None:
     """Convert a synthesized point property's value and default in place."""
-    value = _point_default_pixels(prop, prop._value, size)
+    value = _point_default_pixels(prop._value, size)
     if value is not None:
         prop._value = value
-    default = _point_default_pixels(prop, prop.default_value, size)
+    default = _point_default_pixels(prop.default_value, size)
     if default is not None:
         prop.default_value = default
 
@@ -243,7 +246,9 @@ def parse_effect_param_defs(
     return param_defs
 
 
-def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
+def _merge_param_def(
+    prop: Property, param_def: dict[str, Any], point_size: tuple[float, float]
+) -> None:
     """Merge parameter definition values into a parsed property.
 
     Overrides auto-detected property attributes with the more precise
@@ -252,6 +257,8 @@ def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
     Args:
         prop: The property to update in place.
         param_def: The parameter definition dict.
+        point_size: The layer size a point parameter's default is
+            relative to.
     """
     prop._auto_name = param_def["name"] or prop._auto_name
     prop._property_control_type = param_def["property_control_type"]
@@ -270,12 +277,9 @@ def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
         PropertyControlType.TWO_D,
         PropertyControlType.THREE_D,
     ):
-        # A point pard carries no `default` field, and the parT `last_value`
-        # is the instance's own coordinate, not a plugin default - claiming
-        # it here would make every unedited-looking point report
-        # is_modified=False. `_reset_to_default_values` reads `last_value`
-        # directly for the one case that needs it (a cloned EfdG effect).
-        prop.default_value = None
+        prop.default_value = _point_default_pixels(
+            param_def.get("default_value"), point_size
+        )
     elif param_def["property_control_type"] != PropertyControlType.LAYER:
         prop.default_value = param_def.get("default_value")
     _apply_param_def_metadata(prop, param_def)
@@ -398,7 +402,7 @@ def _parse_effect_properties(
         existing = parsed_by_mn.get(match_name)
         if existing is not None:
             if isinstance(existing, Property):
-                _merge_param_def(existing, param_def)
+                _merge_param_def(existing, param_def, point_size)
             ordered.append(existing)
         elif match_name == "ADBE Force CPU GPU":
             # Belongs inside ADBE Effect Built In Params, not here.
@@ -597,12 +601,10 @@ def _extract_color(body: Any, result: dict[str, Any]) -> None:
 @_pard_extractor(PropertyControlType.ENUM)
 def _extract_enum(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = body.last_value
-    # nb_options is stored with the count in the high 16 bits
-    nb_options = body.nb_options >> 16
-    result["nb_options"] = nb_options
+    result["nb_options"] = body.nb_options
     result["default_value"] = body.default
     result["min_value"] = 1
-    result["max_value"] = nb_options
+    result["max_value"] = body.nb_options
 
 
 def _intify(value: float) -> int | float:
@@ -652,12 +654,15 @@ def _extract_slider(body: Any, result: dict[str, Any]) -> None:
 @_pard_extractor(PropertyControlType.THREE_D)
 def _extract_three_d(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = [body.last_value_x, body.last_value_y, body.last_value_z]
+    # Percent of the layer size; `_point_default_pixels` converts it.
+    result["default_value"] = body.default
     result["property_value_type"] = PropertyValueType.ThreeD_SPATIAL
 
 
 @_pard_extractor(PropertyControlType.TWO_D)
 def _extract_two_d(body: Any, result: dict[str, Any]) -> None:
     result["last_value"] = [body.last_value_x, body.last_value_y]
+    result["default_value"] = body.default
     result["property_value_type"] = PropertyValueType.TwoD_SPATIAL
 
 

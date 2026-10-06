@@ -9,7 +9,9 @@ import pytest
 from py_aep.models.properties.gradient import Gradient
 from py_aep.resolvers.psd_layers import read_psd_layers
 from py_aep.resolvers.psd_styles import (
+    _instance_box,
     has_enabled_styles,
+    merged_styles_bounds,
     parse_layer_styles,
     read_global_light,
 )
@@ -236,3 +238,109 @@ class TestHasEnabledStyles:
 
     def test_style_less_layer(self) -> None:
         assert has_enabled_styles(_leaves(ASSETS / "choose_layer.psd")["solo"]) is False
+
+
+# Pads (left, top, right, bottom) After Effects 2026 gave a 24x25 layer carrying
+# one merged style, measured by importing byte-patched copies of
+# psd_layer_styles.psd as COMP_CROPPED_LAYERS.
+_DS = {
+    "enab": True,
+    "Dstn": 0.0,
+    "Ckmt": 5.0,
+    "uglg": False,
+    "lagl": 90.0,
+    "AntA": True,
+}
+_OG = {"enab": True, "Ckmt": 0.0, "GlwT": "SfBL", "AntA": True}
+_BV = {"enab": True, "Sftn": 0.0, "useShape": True, "AntA": True}
+
+
+class TestMergedStylesBounds:
+    @pytest.mark.parametrize(
+        ("key", "instance", "pads"),
+        [
+            ("DrSh", {**_DS, "blur": 10.0}, (12, 12, 12, 12)),
+            ("DrSh", {**_DS, "blur": 0.0}, (5, 5, 4, 4)),
+            ("DrSh", {**_DS, "blur": 1.0, "Ckmt": 50.0}, (8, 8, 7, 7)),
+            ("DrSh", {**_DS, "blur": 10.0, "Ckmt": 0.0, "AntA": False}, (9, 9, 10, 10)),
+            # Distance 11 along a 30 degree light: offsets (-9.53, 5.5) round
+            # half away from zero to (-10, 6).
+            (
+                "DrSh",
+                {**_DS, "blur": 35.0, "Dstn": 11.0, "lagl": 30.0},
+                (47, 31, 27, 43),
+            ),
+            (
+                "OrGl",
+                {**_OG, "blur": 7.0, "Ckmt": 8.0, "GlwT": "PrBL"},
+                (12, 12, 11, 11),
+            ),
+            ("OrGl", {**_OG, "blur": 43.0, "Ckmt": 50.0}, (45, 45, 45, 45)),
+            ("FrFX", {"enab": True, "Styl": "CtrF", "Sz  ": 5.0}, (5, 5, 5, 5)),
+            ("FrFX", {"enab": True, "Styl": "OutF", "Sz  ": 12.0}, (14, 14, 14, 14)),
+            (
+                "ebbl",
+                {**_BV, "bvlS": "Embs", "bvlT": "PrBL", "blur": 27.0},
+                (19, 19, 17, 17),
+            ),
+            (
+                "ebbl",
+                {**_BV, "bvlS": "OtrB", "bvlT": "SfBL", "blur": 0.0},
+                (3, 3, 1, 1),
+            ),
+            (
+                "ebbl",
+                {**_BV, "bvlS": "OtrB", "bvlT": "SfBL", "blur": 9.0, "Sftn": 5.0},
+                (15, 15, 15, 15),
+            ),
+            (
+                "ebbl",
+                {**_BV, "bvlS": "Embs", "bvlT": "SfBL", "blur": 9.0, "useShape": False},
+                (6, 6, 6, 6),
+            ),
+        ],
+    )
+    def test_style_pads_match_ae(self, key: str, instance: dict, pads: tuple) -> None:
+        left, top, right, bottom = pads
+        box = _instance_box(key, instance, (0, 0, 24, 25), 120.0, "Layer 1")
+        assert box == (-left, -top, 24 + right, 25 + bottom)
+
+    @pytest.mark.parametrize(
+        ("key", "instance"),
+        [
+            ("FrFX", {"enab": True, "Styl": "InsF", "Sz  ": 6.0}),
+            ("ebbl", {**_BV, "bvlS": "InrB", "bvlT": "SfBL", "blur": 9.0, "Sftn": 5.0}),
+            ("IrSh", {"enab": True, "blur": 21.0, "Dstn": 10.0}),
+            ("ChFX", {"enab": True, "blur": 101.0, "Dstn": 69.0}),
+        ],
+    )
+    def test_styles_inside_the_layer_do_not_grow_it(
+        self, key: str, instance: dict
+    ) -> None:
+        assert _instance_box(key, instance, (0, 0, 24, 25), 120.0, "Layer 1") is None
+
+    def test_global_light_moves_the_shadow(self) -> None:
+        instance = {**_DS, "blur": 10.0, "Dstn": 11.0, "uglg": True, "lagl": 0.0}
+        box = _instance_box("DrSh", instance, (0, 0, 24, 25), 90.0, "Layer 1")
+        assert box == (-12, -1, 36, 48)  # straight down, as the 90 degree global light
+
+    def test_stroke_emboss_is_refused(self) -> None:
+        instance = {**_BV, "bvlS": "strokeEmboss", "bvlT": "SfBL", "blur": 9.0}
+        with pytest.raises(NotImplementedError, match="strokeEmboss"):
+            _instance_box("ebbl", instance, (0, 0, 24, 25), 120.0, "Layer 1")
+
+    def test_sample_document_matches_ae(self) -> None:
+        # Every style of the sample at once: AE's merged box (-45, -45, 69, 70)
+        # (samples/models/import/psd_layer_styles.aep).
+        angle = read_global_light(STYLED)[0]
+        for name in ("Layer 1", "Layer 1 copy"):
+            assert merged_styles_bounds(_leaves(STYLED)[name], angle) == (
+                -45,
+                -45,
+                69,
+                70,
+            )
+
+    def test_style_less_layer_keeps_its_bounds(self) -> None:
+        leaf = _leaves(ASSETS / "choose_layer.psd")["solo"]
+        assert merged_styles_bounds(leaf, 120.0) == leaf.bounds

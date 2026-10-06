@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import (
-    AutoOrientType,
     BlendingMode,
     FrameBlendingType,
     LayerQuality,
@@ -16,6 +16,8 @@ from ...ae_version import requires_version
 from ...binary.layer_chunks import LdtaChunk
 from ...resolvers.essential_properties import resolve_essential_property_controllers
 from ...resolvers.motion_graphics import can_add_layer
+from ...resolvers.shape_bounds import shape_layer_rect
+from ...resolvers.text_ink import text_ink_rect
 from ...resolvers.transform import (
     build_world_matrix,
     camera_ray,
@@ -37,8 +39,19 @@ from ..validators import (
 from .layer import Layer
 
 if TYPE_CHECKING:
+    from ...resolvers.transform import Mat4
     from ..essential_graphics import EssentialGraphicsController
     from ..items.composition import CompItem
+    from ..properties.property_group import PropertyGroup
+    from ..text.text_document import TextDocument
+
+
+def _finite(point: list[float]) -> list[float]:
+    """`point`, or `ValueError` when a coordinate overflowed to inf / nan
+    (an input near the float limit)."""
+    if not all(math.isfinite(v) for v in point):
+        raise ValueError(f"the converted point overflows: {point}")
+    return point
 
 
 def _would_create_cycle(target_comp: CompItem, new_source: AVItem) -> bool:
@@ -213,6 +226,16 @@ class AVLayer(Layer):
             return float(width), float(height)
         return None
 
+    @property
+    def _mask_scale(self) -> tuple[float, float]:
+        """The size mask paths are stored normalized to: the source's pixel
+        size, or 1 x 1 for a source-less (text / shape) layer, whose mask
+        paths AE stores in layer pixels (measured on AE 2026)."""
+        source = self.source
+        if source is None:
+            return 1.0, 1.0
+        return float(source.width), float(source.height)
+
     three_d_per_char = ChunkField.bool(
         "_ldta",
         "three_d_per_char",
@@ -239,7 +262,6 @@ class AVLayer(Layer):
         root_tdgp_extra: list[Any] | None = None,
         effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> AVLayer:
-        ae_major = containing_comp._project._head.ae_version_major
         ldta = LdtaChunk(
             layer_id=layer_id,
             quality=2,
@@ -247,7 +269,6 @@ class AVLayer(Layer):
             label=label,
             blending_mode=2,
             layer_type=LayerType.AV,
-            matte_layer_id=0 if ae_major >= 23 else None,
             layer_name=name[:31] if len(name) > 31 else name,
         )
         ldta.out_point = duration
@@ -369,9 +390,12 @@ class AVLayer(Layer):
         """The "in" point of the layer, expressed in composition time
         (seconds). Clamped to `start_time` for non-still footage layers.
         Read / Write.
+
+        On a time-reversed layer the in point is the later end, and sits
+        `|stretch| / 100 / 3000` s before the start time (1.2995 s for a
+        -150 % layer starting at 1.3 s), as After Effects reports it.
         """
-        raw_in_point = self._ldta.in_point
-        raw = float(self.start_time + raw_in_point * self._stretch_factor)
+        raw = super().in_point
         if not self._should_clamp_times():
             return raw
         return max(raw, self.start_time)
@@ -386,9 +410,11 @@ class AVLayer(Layer):
         """The "out" point of the layer, expressed in composition time
         (seconds). Clamped to `start_time + source.duration * stretch` for
         non-still footage layers without time remapping. Read / Write.
+
+        On a time-reversed layer the out point is the earlier end (see
+        [in_point][]).
         """
-        raw_out_point = self._ldta.out_point
-        raw = float(self.start_time + raw_out_point * self._stretch_factor)
+        raw = super().out_point
         if not self._should_clamp_times():
             return raw
         assert self.source is not None  # _should_clamp_times guards
@@ -558,19 +584,6 @@ class AVLayer(Layer):
             return time
         return self.time
 
-    def _guard_auto_orient(self) -> None:
-        """The transform math does not model auto-orientation; refuse
-        rather than silently return wrong values."""
-        current: Layer | None = self
-        while current is not None:
-            if current.auto_orient != AutoOrientType.NO_AUTO_ORIENT:
-                raise NotImplementedError(
-                    f"layer {current.name!r} uses auto-orient "
-                    f"({current.auto_orient.name}), which the point "
-                    "conversion math does not model"
-                )
-            current = current.parent
-
     def source_point_to_comp(
         self, point: list[float], time: float | None = None
     ) -> list[float]:
@@ -583,7 +596,12 @@ class AVLayer(Layer):
         to evaluate at another time (py_aep extension). 3D layers project
         through AE's DEFAULT comp camera: `sourcePointToComp()` is
         camera-independent (verified against AE 2026 across one-node,
-        two-node and keyframed-zoom rigs).
+        two-node and keyframed-zoom rigs). A 2D layer ignores the
+        out-of-plane part of 3D ancestors, as After Effects does.
+
+        Transform values are read before expressions: a layer whose
+        transform chain is driven by expressions converts with the values
+        the expressions replace, where After Effects uses their results.
 
         Args:
             point: A position array of `[x, y]` layer coordinates.
@@ -594,16 +612,26 @@ class AVLayer(Layer):
             A position array of `[x, y]` composition coordinates.
 
         Raises:
-            NotImplementedError: If a layer in the parent chain uses
-                auto-orientation.
+            NotImplementedError: If a layer in the parent chain uses an
+                auto-orientation the transform math does not model (see
+                `resolvers.transform.build_world_matrix`).
+            ValueError: If the result overflows a float.
         """
         validate_vector2(point)
         eval_time = self._geometry_time(time)
-        self._guard_auto_orient()
         comp = self.containing_comp
-        world = build_world_matrix(self, eval_time)
+        world = self._world_matrix(eval_time)
         world_point = world.transform_point([point[0], point[1], 0.0])
-        return project_to_comp(world_point, comp.width, comp.height, comp.pixel_aspect)
+        return _finite(
+            project_to_comp(world_point, comp.width, comp.height, comp.pixel_aspect)
+        )
+
+    def _world_matrix(self, time: float) -> Mat4:
+        """World matrix for the point conversions at comp `time`: a 2D
+        layer is placed as AE places it, its 3D ancestors flattened."""
+        return build_world_matrix(
+            self, time, flatten_2d=not self.three_d_layer, auto_orient=True
+        )
 
     def comp_point_to_source(
         self, point: list[float], time: float | None = None
@@ -619,7 +647,9 @@ class AVLayer(Layer):
         enabled camera layer active at that time, else AE's default comp
         camera) and intersected with the layer's plane - unlike
         `sourcePointToComp()`, this direction IS camera-dependent
-        (verified against AE 2026).
+        (verified against AE 2026). The camera is placed by its own parent
+        chain. Transform values are read before expressions, as in
+        [source_point_to_comp][].
 
         Args:
             point: A position array of `[x, y]` composition coordinates.
@@ -630,19 +660,21 @@ class AVLayer(Layer):
             A position array of `[x, y]` layer coordinates.
 
         Raises:
-            NotImplementedError: If a layer in the parent chain uses
-                auto-orientation.
+            NotImplementedError: If a layer in the parent chain uses an
+                auto-orientation the transform math does not model (see
+                `resolvers.transform.build_world_matrix`).
             ValueError: If the camera ray does not reach the layer plane
                 going forward - it is parallel to the plane, or the layer
                 is at or behind the camera. After Effects returns a literal
                 `[0, 0]` for these; py_aep raises instead, because that
-                sentinel cannot be told apart from a real result.
+                sentinel cannot be told apart from a real result. Also when
+                the layer plane is degenerate (an X or Y scale of 0) or the
+                result overflows a float.
         """
         validate_vector2(point)
         eval_time = self._geometry_time(time)
-        self._guard_auto_orient()
         comp = self.containing_comp
-        world = build_world_matrix(self, eval_time)
+        world = self._world_matrix(eval_time)
         camera = self._active_camera_at(eval_time) if self.three_d_layer else None
         origin, direction = camera_ray(
             camera,
@@ -652,7 +684,7 @@ class AVLayer(Layer):
             comp.pixel_aspect,
             eval_time,
         )
-        return intersect_layer_plane(world, origin, direction)
+        return _finite(intersect_layer_plane(world, origin, direction))
 
     def _active_camera_at(self, time: float) -> Layer | None:
         """The front-most enabled camera layer active at `time`, or `None`."""
@@ -713,41 +745,72 @@ class AVLayer(Layer):
         For footage, solid, precomposition and adjustment layers this is
         `(0, 0, width, height)` of the layer source at every time
         (verified against AE 2026 - the layer transform never affects it).
+        For a shape layer it is the box of its painted paths, grown by the
+        strokes with `extents` (rules in `resolvers.shape_bounds`); for a
+        text layer the tight box of its glyph outlines, from the fonts
+        installed on this machine (rules in `resolvers.text_ink`). Values
+        are read before expressions.
 
-        Note:
-            Text layers (the tight ink bounding box, which requires glyph
-            extents) and shape layers (geometry bounds with
-            under-determined `extents` growth) are not implemented yet and
-            raise `NotImplementedError`.
+        `time` is in the layer's own time, not composition time: After
+        Effects neither offsets it by the layer's start time nor applies
+        its stretch (measured on AE 2026 - a layer starting at 0.5 s and
+        stretched to 200 % reports its layer-second-1 content at `time=1`).
 
         Args:
-            time: The time index, in seconds.
+            time: The time index, in seconds of layer time.
             extents: `True` to include the extents. Only relevant for
-                shape layers (not implemented).
+                shape layers.
 
         Returns:
             A dict with `top`, `left`, `width` and `height` keys.
+
+        Raises:
+            NotImplementedError: For a shape layer using a path operation
+                other than Trim Paths and Repeater, a text layer using a
+                feature outside the measured envelope (text animators, text
+                on a path, faux styles, a font that is not installed, ...),
+                or a 3D model layer (whose box is the model's bounds).
         """
         validate_number(time)
         validate_bool(extents)
         layer_type = self._ldta.layer_type
+        if layer_type == LayerType.THREE_D_MODEL:
+            raise NotImplementedError(
+                "source_rect_at_time does not model 3D model layers: After "
+                "Effects reports the bounds of the model geometry"
+            )
+        # Property values are evaluated at composition time.
+        comp_time = self.start_time + time * self.stretch / 100.0
         if layer_type == LayerType.TEXT:
-            raise NotImplementedError(
-                "source_rect_at_time is not implemented for text layers: the "
-                "content bounds require glyph ink extents from the "
-                "composition engine"
-            )
+            return self._text_ink_rect(comp_time)
         if layer_type == LayerType.SHAPE:
-            raise NotImplementedError(
-                "source_rect_at_time is not implemented for shape layers: "
-                "the content bounds require shape geometry evaluation"
-            )
+            contents = cast("PropertyGroup", self["ADBE Root Vectors Group"])
+            return shape_layer_rect(contents, comp_time, extents)
         return {
             "top": 0.0,
             "left": 0.0,
             "width": float(self.width),
             "height": float(self.height),
         }
+
+    def _text_ink_rect(self, time: float) -> dict[str, float]:
+        text = cast("PropertyGroup", self["ADBE Text Properties"])
+        animators = cast("PropertyGroup", text["ADBE Text Animators"])
+        if animators.properties:
+            raise NotImplementedError(
+                "source_rect_at_time does not model text animators"
+            )
+        path_options = cast("PropertyGroup", text["ADBE Text Path Options"])
+        if path_options["ADBE Text Path"].value:
+            raise NotImplementedError(
+                "source_rect_at_time does not model text on a path"
+            )
+        if self._ldta.three_d_per_char:
+            raise NotImplementedError(
+                "source_rect_at_time does not model per-character 3D text"
+            )
+        document = cast("Property", text["ADBE Text Document"]).value_at_time(time)
+        return text_ink_rect(cast("TextDocument", document))
 
     @property
     def can_set_collapse_transformation(self) -> bool:

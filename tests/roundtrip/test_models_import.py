@@ -15,6 +15,7 @@ from py_aep import AlphaMode, FieldSeparationType, ImportAsType, PulldownPhase
 from py_aep import parse as parse_aep
 from py_aep.binary.footage_chunks import (
     build_ai_layer_opti_data,
+    build_generic_opti_data,
     build_psd_flattened_opti_data,
     build_psd_layer_opti_data,
     build_text_opti_data,
@@ -23,10 +24,10 @@ from py_aep.models.import_options import CURRENT_VALUE, ImportOptions
 from py_aep.models.items.composition import CompItem
 from py_aep.models.items.folder import FolderItem
 from py_aep.models.items.footage import FootageItem
-from py_aep.models.sources.file import FileSource
+from py_aep.models.project import _ai_cropped_transform
+from py_aep.models.sources.file import FileSource, ai_document_profile
 from py_aep.resolvers.ai_layers import (
     UnsupportedAiLayersError,
-    read_ai_color_profile,
     read_ai_layers,
 )
 from py_aep.resolvers.media_probe import probe_media
@@ -116,6 +117,65 @@ def _cropped_opts(file: Path) -> ImportOptions:
     return opts
 
 
+def _gide_tree(item: FootageItem) -> list[list[str]]:
+    """The chunk types inside a footage item's `LIST:Gide` (and its list)."""
+    gide = next(
+        c for c in item._item_list.chunks if getattr(c, "list_type", None) == "Gide"
+    )
+    return [
+        [c.chunk_type for c in getattr(child, "chunks", [])] or [child.chunk_type]
+        for child in gide.chunks
+    ]
+
+
+def test_new_footage_guides_container_matches_after_effects(tmp_path: Path) -> None:
+    """A new footage item's guide list holds no `ldat` until it has guides,
+    as in After Effects' own import (`ocio_replace_sergb.aep`)."""
+    ae = next(
+        item
+        for item in parse_aep(IMPORT_DIR / "ocio_replace_sergb.aep").project.footages
+        if item.name == "ae_png_unchanged"
+    )
+    project = parse_aep(BASE).project
+    project.import_file(ImportOptions(ASSETS / "image_with_alpha.png"))
+    out = tmp_path / "imported.aep"
+    project.save(out)
+    ours = next(
+        item
+        for item in parse_aep(out).project.footages
+        if item.name == "image_with_alpha.png"
+    )
+    assert _gide_tree(ours) == _gide_tree(ae) == [["gdta"], ["lhd3"]]
+
+
+@pytest.mark.parametrize(
+    "name", ["psd_gray8_layered.psd", "psd_rgb8_bg_layer.psd", "psd_rgb16_bg_layer.psd"]
+)
+def test_comp_import_layer_optis_match_after_effects(name: str) -> None:
+    """Each layer of a layered PSD imported as a composition records the
+    document's channels and colour mode and its own channel count, as After
+    Effects does (`footage_depth.aep`): a gray document counts 1 colour
+    channel, a document with a Background layer 3 for that layer. The layer
+    name (from 0x158) is left out: AE names a Background layer in its own UI
+    language."""
+    ae = {
+        item.main_source._sspc.layer_index: item.main_source._opti.tobytes()[:0x158]
+        for item in parse_aep(IMPORT_DIR / "footage_depth.aep").project.footages
+        if isinstance(item.main_source, FileSource)
+        and Path(str(item.main_source._file).replace("\\", "/")).name == name
+        and item.main_source._sspc.layer_index != 0xFFFFFFFF
+    }
+    project = parse_aep(BASE, platform="windows").project
+    project.import_file(_comp_opts(ASSETS / "depth" / name))
+    ours = {
+        item.main_source._sspc.layer_index: item.main_source._opti.tobytes()[:0x158]
+        for item in project.footages
+        if isinstance(item.main_source, FileSource)
+        and item.main_source._sspc.layer_index != 0xFFFFFFFF
+    }
+    assert ae and ours == ae
+
+
 class TestImportFileSingle:
     """Project.import_file for single files."""
 
@@ -131,6 +191,24 @@ class TestImportFileSingle:
         assert item.main_source.has_alpha is True
         assert item.main_source.alpha_mode == AlphaMode.STRAIGHT
         assert item.main_source.file == str(ASSETS / "image_with_alpha.png")
+
+    def test_import_png_writes_generic_opti(self, tmp_path: Path) -> None:
+        # AE 2026 opens a PNG still with an empty opti but crashes as soon as
+        # it renders it; with the generic header it renders like AE's own
+        # import of the same file.
+        project = parse_aep(BASE).project
+        project.import_file(ImportOptions(ASSETS / "image_with_alpha.png"))
+        out = tmp_path / "png.aep"
+        project.save(out)
+        item = next(
+            i
+            for i in parse_project_fresh(out).items.values()
+            if i.name == "image_with_alpha.png"
+        )
+        assert isinstance(item.main_source, FileSource)
+        assert item.main_source._opti.tobytes() == build_generic_opti_data(
+            "png!", sequence=False
+        )
 
     def test_import_wav(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
@@ -220,13 +298,20 @@ class TestImportFileSingle:
         assert item.main_source.has_alpha is False
 
     def test_import_heic_alpha(self) -> None:
-        project = parse_aep(BASE).project
+        project = parse_aep(BASE, platform="macos").project
         item = project.import_file(ImportOptions(ASSETS / "heic_alpha.heic"))
         assert isinstance(item.main_source, FileSource)
         assert item.main_source.is_still is True
         assert item.main_source._sspc.source_format_type == "AIDE"
         assert item.main_source.has_alpha is True
         assert item.main_source.alpha_mode == AlphaMode.STRAIGHT
+
+    def test_import_heic_alpha_windows(self) -> None:
+        # AE on Windows stores a HEIC without alpha (windows_stills.aep).
+        project = parse_aep(BASE, platform="windows").project
+        item = project.import_file(ImportOptions(ASSETS / "heic_alpha.heic"))
+        assert isinstance(item.main_source, FileSource)
+        assert item.main_source.has_alpha is False
 
     def test_roundtrip_m4v_aiff(self, tmp_path: Path) -> None:
         project = parse_aep(BASE).project
@@ -577,6 +662,73 @@ class TestReplaceAndProxy:
         assert item.main_source.file_attributes["psd_layer_index"] == 0xFFFFFFFF
 
 
+class TestRelativePaths:
+    """A relative footage path is stored absolute, resolved against the
+    working directory - as ExtendScript's `new File()` resolves one against
+    the current folder. AE 2026 opens a project storing a relative path
+    with the footage missing."""
+
+    @staticmethod
+    def _absolute(path: Path) -> str:
+        return os.path.abspath(path)
+
+    def test_import_file_stores_absolute_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(ASSETS)
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(Path("image_with_alpha.png")))
+        expected = self._absolute(ASSETS / "image_with_alpha.png")
+        assert item.main_source.file == expected
+        out = tmp_path / "relative.aep"
+        project.save(out)
+        reparsed = next(
+            it
+            for it in parse_aep(out).project.items.values()
+            if isinstance(it, FootageItem) and it.name == "image_with_alpha.png"
+        )
+        assert reparsed.main_source.file == expected
+
+    def test_dot_dot_is_normalized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(ASSETS)
+        project = parse_aep(BASE).project
+        item = project.import_file(
+            ImportOptions(Path("..") / "assets" / "image_with_alpha.png")
+        )
+        assert item.main_source.file == self._absolute(ASSETS / "image_with_alpha.png")
+
+    def test_replace_and_proxy_store_absolute_paths(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "image_with_alpha.png"))
+        monkeypatch.chdir(ASSETS)
+        item.replace(Path("wav.wav"))
+        assert item.main_source.file == self._absolute(ASSETS / "wav.wav")
+        item.replace_with_sequence(Path("new_exr.0002.exr"))
+        assert item.main_source.file == self._absolute(ASSETS / "new_exr.0002.exr")
+        item.set_proxy(Path("image_with_alpha.png"))
+        assert item.proxy_source.file == self._absolute(ASSETS / "image_with_alpha.png")
+
+    def test_layered_comp_import_stores_absolute_paths(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(ASSETS)
+        project = parse_aep(BASE).project
+        opts = ImportOptions(Path("choose_layer.psd"))
+        opts.import_as = ImportAsType.COMP
+        project.import_file(opts)
+        expected = self._absolute(ASSETS / "choose_layer.psd")
+        files = {
+            it.main_source.file
+            for it in project.items.values()
+            if isinstance(it, FootageItem)
+            and isinstance(it.main_source, FileSource)
+            and it.main_source.file.endswith("choose_layer.psd")
+        }
+        assert files == {expected}
+
+
 class TestReplaceKeepsInterpretation:
     """A replace keeps the Interpret Footage settings (issue #223).
 
@@ -665,6 +817,73 @@ class TestReplaceKeepsInterpretation:
         assert source.remove_pulldown == PulldownPhase.WSSWW
         assert source.loop == 3
 
+    @staticmethod
+    def _twelve_frame_sequence(folder: Path) -> Path:
+        """A folder holding only a 12-frame sequence, so `force_alphabetical`
+        gathers the same frames as AE (which takes every file of the type)."""
+        folder.mkdir()
+        frame = (ASSETS / "image_with_alpha.png").read_bytes()
+        for number in range(1, 13):
+            (folder / f"frame_{number:04d}.png").write_bytes(frame)
+        return folder / "frame_0001.png"
+
+    @pytest.mark.parametrize(
+        ("rate", "dividend", "divisor"),
+        [(24.0, 12, 24), (29.97, 1200, 2997), (23.976, 1500, 2997), (12.5, 24, 25)],
+    )
+    def test_placeholder_rate_carries_to_a_sequence(
+        self, tmp_path: Path, rate: float, dividend: int, divisor: int
+    ) -> None:
+        """A placeholder's rate is assumed like a sequence's, so the sequence
+        replacing it plays at that rate. The stored durations are AE 2026's
+        for the same replace: 12 frames over the rate to the nearest
+        thousandth, unreduced."""
+        project = parse_aep(BASE).project
+        item = project.import_placeholder("PH", 640, 480, rate, 10.0)
+        item.replace_with_sequence(self._twelve_frame_sequence(tmp_path / "seq"), True)
+        out = tmp_path / "placeholder.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == item.id)
+        sspc = reparsed.main_source._sspc
+        assert reparsed.frame_rate == pytest.approx(rate, abs=1e-4)
+        assert sspc.conform_frame_rate == 0.0
+        assert (sspc.duration_dividend, sspc.duration_divisor) == (dividend, divisor)
+
+    def test_placeholder_conform_carries_to_a_sequence(self, tmp_path: Path) -> None:
+        # AE 2026: a 24 fps placeholder conformed to 25 fps hands 25 fps on.
+        project = parse_aep(BASE).project
+        item = project.import_placeholder("PH", 640, 480, 24.0, 10.0)
+        item.main_source.conform_frame_rate = 25.0
+        item.replace_with_sequence(self._twelve_frame_sequence(tmp_path / "seq"), True)
+        assert item.frame_rate == 25.0
+        assert item.duration == 0.48
+
+    @pytest.mark.parametrize("conform", [None, 25.0])
+    def test_placeholder_rate_does_not_carry_to_a_movie(
+        self, conform: float | None
+    ) -> None:
+        """Like a sequence's assumed rate, a placeholder's is not a conform,
+        even one set through `conform_frame_rate`."""
+        project = parse_aep(BASE).project
+        item = project.import_placeholder("PH", 640, 480, 24.0, 10.0)
+        if conform is not None:
+            item.main_source.conform_frame_rate = conform
+        item.replace(ASSETS / "mov_480.mov")
+        assert item.main_source.conform_frame_rate == 0.0
+        assert item.frame_rate == 30.0
+
+    def test_conform_does_not_carry_to_a_placeholder(self) -> None:
+        # AE 2026: a movie conformed to 25 fps, replaced with a 30 fps
+        # placeholder, plays at the placeholder's 30 fps.
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "mov_480.mov"))
+        item.main_source.conform_frame_rate = 25.0
+        item.replace_with_placeholder("PH", 100, 100, 30.0, 5.0)
+        sspc = item.main_source._sspc
+        assert (sspc.native_frame_rate, sspc.conform_frame_rate) == (30.0, 0.0)
+        assert item.frame_rate == 30.0
+        assert item.duration == 5.0
+
 
 class TestImportGapFormats:
     """import_file for formats AE handles that py-aep newly supports.
@@ -686,6 +905,7 @@ class TestImportGapFormats:
             ("swf.swf", "SWF ", 640, 360),
             ("mpeg.mpeg", "MPEO", 640, 360),
             ("hdr.hdr", "RHDR", 640, 426),
+            ("crw.crw", "Craw", 1536, 1024),
             ("ai.ai", "TEXT", 612, 792),
             ("eps.eps", "TEXT", 1921, 2881),
             ("pdf.pdf", "TEXT", 595, 842),
@@ -787,7 +1007,8 @@ class TestImportGapFormats:
         truth_project = parse_aep(fixture_dir / "base.aep").project
         truth_items = {f.name: f for f in truth_project.footages}
 
-        project = parse_aep(BASE).project
+        # The fixture was saved by AE on macOS.
+        project = parse_aep(BASE, platform="macos").project
         for filename in ("heic.heic", "heic_alpha.heic"):
             item = project.import_file(ImportOptions(ASSETS / filename))
             truth = truth_items[item.name]
@@ -817,16 +1038,13 @@ class TestImportGapFormats:
 
     def test_generic_still_imports_match_ae_fixtures(self) -> None:
         # AE 2026 macOS tags BMP/GIF stills and sequences IMIO
-        # (imio_stills.aep, imio_sequence.aep). Windows opens IMIO stills but
-        # not IMIO sequences, so a sequence takes the host's importer code
-        # while stills stay IMIO everywhere.
-        seq_code = "STIL" if os.name == "nt" else "IMIO"
+        # (imio_stills.aep, imio_sequence.aep).
         truth_items = {}
         for fixture in ("imio_stills.aep", "imio_sequence.aep"):
             for f in parse_aep(IMPORT_DIR / fixture).project.footages:
                 truth_items[f.name] = f
 
-        project = parse_aep(BASE).project
+        project = parse_aep(BASE, platform="macos").project
         for filename, seq in [
             ("bmp.bmp", False),
             ("sequence_001.gif", False),
@@ -837,34 +1055,50 @@ class TestImportGapFormats:
             item = project.import_file(opts)
             truth = truth_items[item.name]
             ours, ae = item.main_source, truth.main_source
-            assert ae._sspc.source_format_type == "IMIO"
-            assert ours._sspc.source_format_type == (seq_code if seq else "IMIO")
+            assert (
+                ours._sspc.source_format_type == ae._sspc.source_format_type == "IMIO"
+            )
             assert (item.width, item.height) == (truth.width, truth.height)
             assert len(ours._opti.data) == len(ae._opti.data) == 58
+            assert ours._opti.data[:4] == b"IMIO"
             if seq:
-                # AE zeroes the importer block for a generic-still sequence;
-                # only the leading 4-char code is platform-specific.
-                assert ours._opti.data[:4] == seq_code.encode("ascii")
-                assert ours._opti.data[4:] == ae._opti.data[4:]
+                # AE zeroes the importer block for a generic-still sequence.
+                assert ours._opti.data == ae._opti.data
                 assert (
                     (ours._sspc.duration_dividend, ours._sspc.duration_divisor)
                     == (ae._sspc.duration_dividend, ae._sspc.duration_divisor)
                     == (3, 30)
                 )
 
-    def test_generic_still_sequence_code_follows_path_platform(self) -> None:
-        # A Windows-style sequence folder takes the Windows importer (STIL,
-        # as in media_replacement.aep); stills stay IMIO on both platforms.
-        from py_aep.data.file_formats import get_file_format, sequence_source_format
+    def test_windows_stills_match_ae_fixture(self) -> None:
+        # windows_stills.aep: AE 2026 on Windows imports BMP/GIF stills with
+        # its STIL importer, and HEIC without alpha (macOS keeps it).
+        truth_items = {
+            f.name: f
+            for f in parse_aep(IMPORT_DIR / "windows_stills.aep").project.footages
+        }
+        project = parse_aep(BASE, platform="windows").project
+        for filename in ("bmp.bmp", "sequence_001.gif", "heic_alpha.heic"):
+            item = project.import_file(ImportOptions(ASSETS / filename))
+            ours, ae = item.main_source, truth_items[item.name].main_source
+            assert ours._sspc.source_format_type == ae._sspc.source_format_type
+            assert ours._opti.data[:4] == ae._opti.data[:4]
+            assert ours.has_alpha == ae.has_alpha
+            assert ours._sspc.alpha_mode_raw == ae._sspc.alpha_mode_raw
+            assert ours._sspc._alpha_flags == ae._sspc._alpha_flags
+
+    def test_generic_still_code_follows_platform(self) -> None:
+        # The generic still importer is the only platform-specific code:
+        # STIL on Windows (windows_stills.aep, media_replacement.aep), IMIO
+        # on macOS, for stills and sequences alike.
+        from py_aep.data.file_formats import get_file_format, platform_source_format
 
         for ext in (".bmp", ".gif"):
             fmt = get_file_format(ext)
-            assert fmt.source_format == "IMIO"
-            assert sequence_source_format(fmt, windows=False) == "IMIO"
-            assert sequence_source_format(fmt, windows=True) == "STIL"
-        # Only the generic still importer is platform-specific.
+            assert platform_source_format(fmt, windows=False) == "IMIO"
+            assert platform_source_format(fmt, windows=True) == "STIL"
         png = get_file_format(".png")
-        assert sequence_source_format(png, windows=True) == "png!"
+        assert platform_source_format(png, windows=True) == "png!"
 
     def test_media_gap_formats_matches_ae_fixture(self) -> None:
         truth_project = parse_aep(IMPORT_DIR / "media_gap_formats.aep").project
@@ -980,12 +1214,12 @@ class TestImportAiComp:
             assert layer._ldta.name_set is ae_layer._ldta.name_set is True
 
     def test_embedded_profile_name_extraction(self) -> None:
-        assert (
-            read_ai_color_profile(ASSETS / "ai.ai")
-            == "Coated FOGRA39 (ISO 12647-2:2004)"
+        assert ai_document_profile(ASSETS / "ai.ai") == (
+            None,
+            "Coated FOGRA39 (ISO 12647-2:2004)",
         )
         # A non-PDF file has no extractable embedded profile.
-        assert read_ai_color_profile(ASSETS / "txt.txt") is None
+        assert ai_document_profile(ASSETS / "txt.txt") == (None, None)
 
     def test_comp_footage_records_embedded_profile(self) -> None:
         comp = parse_aep(BASE).project.import_file(_comp_opts(ASSETS / "ai.ai"))
@@ -1037,6 +1271,249 @@ class TestImportAiComp:
         for layer in comp.layers:
             mine = layer.source.main_source._opti.tobytes()
             assert mine == ae[layer.name]
+
+
+def _three_layer_pdf(path: Path, order: tuple[int, ...]) -> None:
+    """A PDF with OCGs A, B, C (in `/OCGs` order) listed in `/D /Order` as
+    `order` (indices into A, B, C), one filled rect per layer."""
+    objs = {
+        1: "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R "
+        "7 0 R] /D << /Order ["
+        + " ".join(f"{5 + i} 0 R" for i in order)
+        + "] /ON [5 0 R 6 0 R 7 0 R] >> >> >>",
+        2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R "
+        "/Resources << /Properties << /MC0 5 0 R /MC1 6 0 R /MC2 7 0 R >> >> >>",
+    }
+    content = "".join(
+        f"/OC /MC{i} BDC 1 0 0 rg {20 + 100 * i} 50 40 40 re f EMC\n" for i in range(3)
+    )
+    objs[4] = f"<< /Length {len(content)} >>\nstream\n{content}endstream"
+    for i, name in enumerate("ABC"):
+        objs[5 + i] = f"<< /Type /OCG /Name ({name}) >>"
+    out = b"%PDF-1.5\n"
+    offsets = {}
+    for number in sorted(objs):
+        offsets[number] = len(out)
+        out += f"{number} 0 obj\n{objs[number]}\nendobj\n".encode("latin-1")
+    xref = len(out)
+    out += b"xref\n0 8\n0000000000 65535 f \n"
+    out += b"".join(f"{offsets[n]:010d} 00000 n \n".encode() for n in range(1, 8))
+    out += f"trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    path.write_bytes(out)
+
+
+class TestImportAiLayerOrder:
+    """AE 2026 stacks a layered PDF's layers top-down in `/D /Order`
+    sequence and stores each footage's layer index counted from the bottom
+    of that stack, whatever the `/OCGs` and paint order (measured with
+    `/Order` permutations that are neither `/OCGs` nor its reverse)."""
+
+    @pytest.mark.parametrize(
+        ("order", "stack", "indices"),
+        [
+            ((1, 2, 0), ["B", "C", "A"], {"B": 2, "C": 1, "A": 0}),
+            ((2, 0, 1), ["C", "A", "B"], {"C": 2, "A": 1, "B": 0}),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "import_as", [ImportAsType.COMP, ImportAsType.COMP_CROPPED_LAYERS]
+    )
+    def test_order_decides_stacking_and_layer_index(
+        self,
+        tmp_path: Path,
+        order: tuple[int, ...],
+        stack: list[str],
+        indices: dict[str, int],
+        import_as: ImportAsType,
+    ) -> None:
+        path = tmp_path / "order.pdf"
+        _three_layer_pdf(path, order)
+        options = ImportOptions(path)
+        options.import_as = import_as
+        comp = parse_aep(BASE).project.import_file(options)
+        assert [layer.name for layer in comp.layers] == stack
+        assert {
+            layer.name: layer.source.main_source._sspc.layer_index
+            for layer in comp.layers
+        } == indices
+
+
+class TestImportAiCroppedComp:
+    """Layered Illustrator / PDF import as Composition - Retain Layer Sizes.
+
+    Expected values are AE 2026's own `importFile(COMP_CROPPED_LAYERS)` of
+    the same files, read back through ExtendScript (15 significant digits):
+    `{layer: ((source w, h), (anchor x, y), (position x, y))}`.
+    """
+
+    AE_AI = {
+        "Calque 2": ((1, 1), (7.62939453e-06, 7.62939453e-06), (0, 792)),
+        "Calque 1": (
+            (482, 437),
+            (240.591522216797, 218.245864868164),
+            (353.339508056641, 334.246841430664),
+        ),
+    }
+    AE_PROBE = {
+        "q_ctm_uniform2x": ((80, 20), (40, 10), (50, 40)),
+        "q_ctm_nonuniform": ((160, 10), (80, 5), (80, 100)),
+        "q_miter_m4": ((80, 60), (40, 30), (70, 180)),
+        "q_evenodd": ((101, 61), (50.25, 30.25), (250, 170)),
+        "q_font_no_descriptor": (
+            (31, 28),
+            (15.3359985351562, 13.8719940185547),
+            (55.3359985351562, 291.52799987793),
+        ),
+        "q_font_widths_only": (
+            (29, 28),
+            (14.4000015258789, 13.8719940185547),
+            (214.399993896484, 291.52799987793),
+        ),
+        "q_tz200": (
+            (58, 28),
+            (28.8000030517578, 13.8719940185547),
+            (68.8000030517578, 341.52799987793),
+        ),
+        "q_tw20": (
+            (127, 28),
+            (63.1999969482422, 13.8719940185547),
+            (263.199996948242, 341.52799987793),
+        ),
+        "q_tr3_invisible": (
+            (58, 28),
+            (28.8000030517578, 13.8719940185547),
+            (68.8000030517578, 391.52799987793),
+        ),
+        "q_tr1_stroke": (
+            (68, 38),
+            (33.8000030517578, 18.8719940185547),
+            (228.800003051758, 391.52799987793),
+        ),
+        "q_huge_coords": (
+            (1, 1),
+            (0.12500762939453, 0.12500762939453),
+            (-0.12501525878906, 600.125015258789),
+        ),
+        "q_fill_stroke_thin": (
+            (61, 61),
+            (30.0399780273438, 30.0399780273438),
+            (430, 370),
+        ),
+        "q_ascent_vs_fontbbox": (
+            (58, 34),
+            (28.8200073242188, 16.8200073242188),
+            (68.8000030517578, 492.800003051758),
+        ),
+        "q_open_fill": ((61, 61), (30.25, 30.25), (430, 270)),
+        "q_stroke_re": (
+            (75, 55),
+            (37.0710754394531, 27.0710754394531),
+            (510, 540),
+        ),
+        "q_wild_cubic": ((301, 151), (150.25, 75.25), (90, 45)),
+        "q_form_bbox": ((80, 60), (40, 30), (60, 550)),
+        "q_image": ((50, 40), (25, 20), (225, 540)),
+        "q_shading": ((81, 61), (40.25, 30.25), (340, 530)),
+        "q_two_islands": ((211, 431), (105.25, 215.25), (125, 225)),
+        "q_mixed_regimes": ((281, 261), (140.125, 130.125), (239.875, 370.125)),
+        "q_empty": ((1, 1), (7.62939453e-06, 7.62939453e-06), (0, 600)),
+    }
+
+    @staticmethod
+    def _import(path: Path) -> CompItem:
+        options = ImportOptions(path)
+        options.import_as = ImportAsType.COMP_CROPPED_LAYERS
+        return parse_aep(BASE).project.import_file(options)
+
+    @staticmethod
+    def _measure(comp: CompItem) -> dict[str, tuple]:
+        out = {}
+        for layer in comp.layers:
+            anchor = layer.transform["ADBE Anchor Point"].value
+            position = layer.transform["ADBE Position"].value
+            out[layer.name] = (
+                (layer.source.width, layer.source.height),
+                (anchor[0], anchor[1]),
+                (position[0], position[1]),
+            )
+        return out
+
+    @pytest.mark.parametrize(
+        ("raw_box", "page_height", "anchor", "position"),
+        [
+            # AE's own stored opti box (16.16 edges) and the anchor / position
+            # it gave the layer (read from AE's saved project, full precision).
+            ((0, 0, 1, 1), 792, (7.62939453125e-06,) * 2, (0.0, 792.0)),
+            (
+                (7389053, 15696350, 38923864, 44302272),
+                792,
+                (240.59152221679688, 218.24586486816406),
+                (353.3395080566406, 334.24684143066406),
+            ),
+            (
+                (2621440, 19306906, 4631560, 21125136),
+                600,
+                (15.33599853515625, 13.871994018554688),
+                (55.33599853515625, 291.5279998779297),
+            ),
+            (
+                (30993870, 2158030, 35852850, 5706290),
+                600,
+                (37.071075439453125, 27.071075439453125),
+                (510.0, 540.0),
+            ),
+            (
+                (6537216, 6537216, 24903680, 23592960),
+                600,
+                (140.125, 130.125),
+                (239.875, 370.125),
+            ),
+        ],
+    )
+    def test_placement_rule_on_after_effects_boxes(
+        self,
+        raw_box: tuple[int, int, int, int],
+        page_height: int,
+        anchor: tuple[float, float],
+        position: tuple[float, float],
+    ) -> None:
+        box = tuple(v / 65536 for v in raw_box)
+        assert _ai_cropped_transform(box, page_height) == (anchor, position)
+
+    @pytest.mark.parametrize(
+        ("asset", "expected"),
+        [("ai.ai", AE_AI), ("ai_bounds_probe.pdf", AE_PROBE)],
+    )
+    def test_layers_match_after_effects(self, asset: str, expected: dict) -> None:
+        options = ImportOptions(ASSETS / asset)
+        assert options.can_import_as(ImportAsType.COMP_CROPPED_LAYERS)
+        got = self._measure(self._import(ASSETS / asset))
+        assert list(got) == list(expected)
+        for name, (size, anchor, position) in expected.items():
+            assert got[name][0] == size, name
+            # py's measured artwork box can sit up to 2 16.16 quanta off AE's
+            # (see `resolvers.ai_bounds`), hence the 4e-5 tolerance.
+            assert got[name][1] == pytest.approx(anchor, abs=4e-5), name
+            if name == "q_huge_coords":
+                # AE sums the box edges near 32768 pt in 32 bits and wraps the
+                # centre to (-0.125, 600.125); py keeps the true centre.
+                continue
+            assert got[name][2] == pytest.approx(position, abs=4e-5), name
+
+    def test_cropped_import_round_trips(self, tmp_path: Path) -> None:
+        comp = self._import(ASSETS / "ai.ai")
+        out = tmp_path / "ai_cropped.aep"
+        comp._project.save(out)
+        reparsed = next(
+            item
+            for item in parse_aep(out).project.items.values()
+            if isinstance(item, CompItem) and item.name == "ai"
+        )
+        assert self._measure(reparsed) == pytest.approx(self._measure(comp))
+        assert {
+            layer.name: layer.source.main_source.layer_name for layer in reparsed.layers
+        } == {"Calque 2": "Calque 2", "Calque 1": "Calque 1"}
 
 
 class TestImportAiHiddenLayerComp:
@@ -1341,7 +1818,7 @@ class TestImportPsdFlattened:
         assert isinstance(source, FileSource)
         mine = _opti_bytes(source)
         assert mine == build_psd_flattened_opti_data(
-            info.width, info.height, info.bit_depth, info.channels
+            info.width, info.height, info.bit_depth, info.pixel_channels
         )
         # Gold standard: byte-identical to AE 2026's own flattened-import opti.
         fixture = parse_aep(IMPORT_DIR / "flattened_rgb_comp.aep").project
@@ -1643,15 +2120,15 @@ class TestLayeredImportFolderOrder:
 # ---------------------------------------------------------------------------
 
 # sspc byte offsets where py's still-image imports are known to diverge from
-# AE 2026: time divisors (0x2C-0x2D), undecoded still-import flag bytes
-# (0x3F-0x41, 0x4F), the _reserved_6f region (0x6F-0x73, an unknown byte AE
-# moves between 0x71 and 0x72 across import/replace), and the _reserved_74
-# filesystem fingerprint (0x74-0x7C). The layer-binding region (0xBC-0xD3)
-# is deliberately NOT masked.
+# AE 2026: time divisors (0x2C-0x2D), an undecoded still-import flag byte
+# (0x4F), an unknown byte AE moves between 0x71 and 0x72 across
+# import/replace, and the source-modified stamp (0x74-0x7C). The depth
+# (0x3E-0x41), the media flag (0x70) and the layer-binding region (0xBC-0xD3)
+# are deliberately NOT masked.
 _SSPC_NOISE = (
     frozenset(range(0x2C, 0x2E))
-    | frozenset({0x3F, 0x40, 0x41, 0x4F})
-    | frozenset(range(0x6F, 0x7D))
+    | frozenset({0x4F, 0x71, 0x72})
+    | frozenset(range(0x74, 0x7D))
 )
 
 
@@ -1998,9 +2475,9 @@ class TestChooseLayerReplace:
         name, sspc, _opti, utf8 = _footage_parts(project)
         assert name == ae[0] == "image_with_alpha.png"
         assert utf8 == ae[3] == ""
-        # py's empty opti and unwritten 0xD0 cache size for plain stills are
-        # pre-existing accepted divergences, so mask 0xD0-0xD3 here.
-        _assert_sspc_matches(ae[1], sspc, frozenset(range(0xD0, 0xD4)))
+        # py writes the generic opti header, not AE's PNG-specific one (an
+        # accepted divergence); the 0xD0 cache size matches (the file's size).
+        _assert_sspc_matches(ae[1], sspc)
         source = item.main_source
         assert isinstance(source, FileSource)
         assert source.layer_name == ""
@@ -2280,6 +2757,15 @@ class TestFileSourceReload:
         assert (item.width, item.height) == (640, 346)
         assert item.main_source._sspc.data_size == len(new_content)
         assert item.name == "reload_src.png"  # reload never renames
+
+    def test_reload_keeps_the_stored_importer_code(self) -> None:
+        # AE 2026 on Windows keeps a BMP's STIL code in the reloaded opti;
+        # re-deriving it from the extension wrote the macOS IMIO.
+        project = parse_aep(BASE, platform="windows").project
+        source = project.import_file(ImportOptions(ASSETS / "bmp.bmp")).main_source
+        assert source._sspc.source_format_type == "STIL"
+        source.reload()
+        assert source._opti.tobytes()[:4] == b"STIL"
 
     def test_reload_survives_save_and_reparse(self, tmp_path: Path) -> None:
         project, item, target = self._import_png(tmp_path)
@@ -2660,9 +3146,45 @@ class TestLayerStylesModes:
             if child.match_name.endswith("/enabled")
         )
 
-    def test_cropped_merge_on_styled_layer_raises(self) -> None:
-        with pytest.raises(NotImplementedError, match="layer styles"):
-            _styles_import(SINGLE_PSD, ImportAsType.COMP_CROPPED_LAYERS, "merge")
+    @pytest.mark.parametrize(
+        ("import_as", "fixture_comp"),
+        [
+            (
+                ImportAsType.COMP_CROPPED_LAYERS,
+                "COMP_CROPPED_LAYERS Merge layer styles into footage",
+            ),
+            (ImportAsType.COMP, "COMP Merge layer styles into footage"),
+        ],
+    )
+    def test_merged_styles_box_matches_ae(
+        self, import_as: ImportAsType, fixture_comp: str
+    ) -> None:
+        # Merged styles grow each layer's footage to their rasterized box:
+        # AE stores it in the opti (with the matching data_size) and, cropped,
+        # sizes and places the layer from it (24x25 layer -> 114x115).
+        ae_project = parse_aep(IMPORT_DIR / "psd_layer_styles.aep").project
+        ae_comp = next(
+            item
+            for item in ae_project.items.values()
+            if isinstance(item, CompItem) and item.name == fixture_comp
+        )
+        _, comp = _styles_import(STYLED_PSD, import_as, "merge")
+        assert isinstance(comp, CompItem)
+        for name in ("Layer 1", "Layer 1 copy"):
+            ae_layer, py_layer = ae_comp.layer(name=name), comp.layer(name=name)
+            ae_source = ae_layer.source.main_source
+            py_source = py_layer.source.main_source
+            _assert_sspc_matches(_sspc_bytes(ae_source), _sspc_bytes(py_source))
+            assert py_source._opti.tobytes() == ae_source._opti.tobytes()
+            assert (py_layer.source.width, py_layer.source.height) == (
+                ae_layer.source.width,
+                ae_layer.source.height,
+            )
+            for match_name in ("ADBE Anchor Point", "ADBE Position"):
+                assert (
+                    py_layer.transform.property(match_name).value
+                    == ae_layer.transform.property(match_name).value
+                ), (name, match_name)
 
     def test_cropped_merge_on_style_less_psd_works(self) -> None:
         _, comp = _styles_import(
@@ -2689,33 +3211,40 @@ class TestLayerStylesModes:
         assert py_source._opti.tobytes() == ae_source._opti.tobytes()
         assert py_source.layer_styles == "ignore"
 
-    def test_footage_merge_on_styled_layer_keeps_raw_bounds(self) -> None:
-        # Documented divergence: AE stores the style-EXPANDED raster bounds
-        # for merge mode; py writes the raw content box and AE restores the
-        # expanded opti bbox on open (self-healing; data_size is a tolerated
-        # stale cache). See docs/limitations.md.
+    def test_footage_merge_matches_ae_fixture_item(self) -> None:
+        ae_project = parse_aep(IMPORT_DIR / "psd_layer_styles.aep").project
+        ae_item = next(
+            item
+            for item in ae_project.items.values()
+            if isinstance(item, FootageItem)
+            and item.name == "FOOTAGE Layer 1 Merge layer styles into footage"
+        )
         project = parse_aep(BASE).project
         opts = ImportOptions(STYLED_PSD)
         opts.layer_index = 1
         item = project.import_file(opts)  # merge is the FOOTAGE default
-        source = item.main_source
-        assert isinstance(source, FileSource)
-        assert source._sspc._reserved_c8 == b"\x00\x01"
-        opti = source._opti
+        ae_source, py_source = ae_item.main_source, item.main_source
+        assert isinstance(py_source, FileSource)
+        _assert_sspc_matches(_sspc_bytes(ae_source), _sspc_bytes(py_source))
+        assert py_source._opti.tobytes() == ae_source._opti.tobytes()
+        assert py_source.layer_styles == "merge"
+
+    def test_layer_size_merge_takes_the_merged_box(self) -> None:
+        project = parse_aep(BASE).project
+        opts = ImportOptions(STYLED_PSD)
+        opts.layer_index = 1
+        opts.layer_dimensions = "layer"
+        item = project.import_file(opts)
+        # The cropped-layer footage AE writes for the same layer (fixture).
+        assert (item.width, item.height) == (114, 115)
+        opti = item.main_source._opti
         assert (
             opti.psd_layer_left,
             opti.psd_layer_top,
             opti.psd_layer_right,
             opti.psd_layer_bottom,
-        ) == (0, 0, 24, 25)
-
-    def test_layer_size_merge_on_styled_layer_raises(self) -> None:
-        project = parse_aep(BASE).project
-        opts = ImportOptions(STYLED_PSD)
-        opts.layer_index = 1
-        opts.layer_dimensions = "layer"
-        with pytest.raises(NotImplementedError, match="layer styles"):
-            project.import_file(opts)
+        ) == (-45, -45, 69, 70)
+        assert item.main_source._sspc.data_size == 114 * 115 * 4 * 2
 
     def test_layer_size_ignore_on_styled_layer_works(self) -> None:
         project = parse_aep(BASE).project
@@ -2846,6 +3375,83 @@ def _mask_parade_bytes(project: object, comp_name: str, layer_name: str) -> byte
             mkif._reserved_0c = bytes(33)
             mkif.color_r = mkif.color_g = mkif.color_b = 0
     return _serialize_tree(parade._tdgp)
+
+
+_PSD_MASK_BASES = (
+    "psd_raster_mask",
+    "psd_shape_layer",
+    "psd_vector_mask",
+    "psd_vector_mask_curves",
+    "psd_vector_mask_multi",
+)
+_PSD_MASK_PROBES = tuple(sorted(p.stem for p in ASSETS.glob("psd_mask_*.psd")))
+_PSD_MASK_CASES = (
+    [("editable", s, "cropped") for s in _PSD_MASK_BASES + _PSD_MASK_PROBES]
+    + [("merge", s, "cropped") for s in _PSD_MASK_BASES + _PSD_MASK_PROBES]
+    + [("merge", s, "comp") for s in _PSD_MASK_BASES]
+)
+
+
+def _layer_geometry(layer: object) -> tuple:
+    """A comp layer's size, anchor, position and mask vertices."""
+    transform = layer.transform  # type: ignore[attr-defined]
+    parade = layer.masks  # type: ignore[attr-defined]
+    return (
+        layer.width,  # type: ignore[attr-defined]
+        layer.height,  # type: ignore[attr-defined]
+        [round(v, 3) for v in transform.property("ADBE Anchor Point").value[:2]],
+        [round(v, 3) for v in transform.property("ADBE Position").value[:2]],
+        [
+            [
+                [round(c, 3) for c in vertex]
+                for vertex in mask.property("ADBE Mask Shape").value.vertices
+            ]
+            for mask in (parade.properties if parade else [])
+        ],
+    )
+
+
+class TestPsdMaskContentBoxes:
+    """Per-layer footage content boxes of masked, fill and styled PSD layers
+    (`resolvers.psd_bounds`) vs AE 2026 importing the same files
+    (`psd_mask_crops_<mode>.aep`, one comp per import named
+    `<stem>|<cropped or comp>`). The `psd_mask_*` assets are byte-patched
+    probes, one per rule. Compares the opti and sspc bytes of every
+    per-layer footage, and each comp layer's size, anchor, position and
+    masks."""
+
+    @pytest.fixture(scope="class")
+    def fixtures(self) -> dict[str, object]:
+        return {
+            mode: parse_aep(IMPORT_DIR / f"psd_mask_crops_{mode}.aep").project
+            for mode in ("editable", "merge")
+        }
+
+    @pytest.mark.parametrize("mode,stem,how", _PSD_MASK_CASES)
+    def test_matches_ae(
+        self, fixtures: dict[str, object], mode: str, stem: str, how: str
+    ) -> None:
+        ae_comp = next(
+            item
+            for item in fixtures[mode].items.values()  # type: ignore[attr-defined]
+            if isinstance(item, CompItem) and item.name == f"{stem}|{how}"
+        )
+        project = parse_aep(BASE).project
+        opts = ImportOptions(ASSETS / f"{stem}.psd")
+        opts.import_as = (
+            ImportAsType.COMP_CROPPED_LAYERS if how == "cropped" else ImportAsType.COMP
+        )
+        opts.layer_styles = mode
+        comp = project.import_file(opts)
+        layers = {layer.name: layer for layer in comp.layers}
+        assert set(layers) == {layer.name for layer in ae_comp.layers}
+        for ae_layer in ae_comp.layers:
+            layer = layers[ae_layer.name]
+            ae_source = ae_layer.source.main_source
+            source = layer.source.main_source
+            assert source._opti.tobytes() == ae_source._opti.tobytes(), layer.name
+            _assert_sspc_matches(_sspc_bytes(ae_source), _sspc_bytes(source))
+            assert _layer_geometry(layer) == _layer_geometry(ae_layer), layer.name
 
 
 class TestVectorMaskImport:
@@ -3091,3 +3697,72 @@ class TestImportChoicePrefsWiring:
         source = project.import_file(_layer_opts(ASSETS / "ai.ai", 0)).main_source
         assert isinstance(source, FileSource)
         assert source._sspc.full_frame is True
+
+
+@pytest.mark.parametrize(
+    "import_as", [ImportAsType.COMP, ImportAsType.COMP_CROPPED_LAYERS]
+)
+def test_layered_comp_takes_the_file_pixel_aspect(import_as: ImportAsType) -> None:
+    # psd_layer_styles.psd is 4:3; AE 2026 gives the import comp that aspect
+    # (footage_depth.aep "comp:psd_layer_styles.psd"; the render matrix shows
+    # the same for COMP_CROPPED_LAYERS).
+    truth = next(
+        c
+        for c in parse_aep(IMPORT_DIR / "footage_depth.aep").project.compositions
+        if c.name == "comp:psd_layer_styles.psd"
+    )
+    project = parse_aep(BASE).project
+    options = ImportOptions(ASSETS / "psd_layer_styles.psd")
+    options.import_as = import_as
+    comp = project.import_file(options)
+    assert isinstance(comp, CompItem)
+    assert comp.pixel_aspect == pytest.approx(truth.pixel_aspect)
+    assert truth.pixel_aspect == pytest.approx(4 / 3)
+
+
+# AE 2026 refuses these as an image sequence ("files of type ... cannot be
+# used as sequences"); it accepts exr png tif dpx cin jpg tga bmp gif hdr crw
+# eps pdf psd psb ai.
+_NO_SEQUENCE_ASSETS = [
+    "mov_480.mov",
+    "m4v.m4v",
+    "mp4_640x360.mp4",
+    "wmv.wmv",
+    "mpeg.mpeg",
+    "swf.swf",
+    "click.aiff",
+    "aif.aif",
+    "wav.wav",
+    "mp3.mp3",
+    "aac.aac",
+    "m4a.m4a",
+    "heic.heic",
+    "crystal.fbx",
+    "txt.txt",
+    "csv.csv",
+    "json.json",
+    "mgjson.mgjson",
+]
+
+
+class TestSequenceRefusedFormats:
+    @pytest.mark.parametrize("name", _NO_SEQUENCE_ASSETS)
+    def test_import_as_sequence_raises(self, name: str) -> None:
+        project = parse_aep(BASE).project
+        options = ImportOptions(ASSETS / name)
+        options.sequence = True
+        count = len(project.items)
+        with pytest.raises(ValueError, match="sequence"):
+            project.import_file(options)
+        assert len(project.items) == count
+
+    @pytest.mark.parametrize("name", ["mov_480.mov", "wav.wav", "json.json"])
+    def test_replace_and_proxy_with_sequence_raise(self, name: str) -> None:
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "tga_24.tga"))
+        with pytest.raises(ValueError, match="sequence"):
+            item.replace_with_sequence(ASSETS / name)
+        with pytest.raises(ValueError, match="sequence"):
+            item.set_proxy_with_sequence(ASSETS / name)
+        assert str(item.main_source.file).endswith("tga_24.tga")
+        assert item.proxy_source is None

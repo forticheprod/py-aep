@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Iterator
 
 from ...binary.chunk import ListChunk
-from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
+from ...binary.item_chunks import IdtaChunk
 from ...binary.misc_chunks import SfdtChunk
+from ...binary.mutations import build_item_id_chunks
 from ...binary.scalar_chunks import Utf8Chunk
 from ..naming import auto_name
 from ..preferences import label_index
@@ -122,8 +123,6 @@ class FolderItem(Item):
         validate_string(name)
         new_id = project._allocate_id()
 
-        iide = IideChunk(value=new_id)
-        idpc = IdpcChunk()
         # AE labels new folders with the "Folder Label Index 2" preference
         # (factory 2, probed in AE 2026).
         idta = IdtaChunk(
@@ -137,7 +136,13 @@ class FolderItem(Item):
 
         item_list = ListChunk(
             list_type="Item",
-            chunks=[iide, idpc, idta, name_utf8, sfdt, sfdr],
+            chunks=[
+                *build_item_id_chunks(new_id, project._head.ae_version_major),
+                idta,
+                name_utf8,
+                sfdt,
+                sfdr,
+            ],
         )
 
         folder = cls(
@@ -215,6 +220,21 @@ class FolderItem(Item):
         Returns:
             The newly created [CompItem][].
         """
+        return self._add_comp(name, width, height, pixel_aspect, duration, frame_rate)
+
+    def _add_comp(
+        self,
+        name: str | None,
+        width: int,
+        height: int,
+        pixel_aspect: float,
+        duration: float,
+        frame_rate: float,
+        *,
+        min_dimension: int = 4,
+    ) -> CompItem:
+        """`add_comp` with the smallest width / height to accept (see
+        `CompItem._new`)."""
         from .composition import CompItem
 
         if name is None:
@@ -230,6 +250,7 @@ class FolderItem(Item):
             frame_rate,
             project=self._project,
             parent_folder=self,
+            min_dimension=min_dimension,
         )
 
         # AE places a newly created/imported comp (its Item plus view-data

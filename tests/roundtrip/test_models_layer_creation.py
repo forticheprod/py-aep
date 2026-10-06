@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from py_aep import new
 from py_aep import parse as parse_aep
 from py_aep.enums import LineOrientation
 from py_aep.models.layers.av_layer import AVLayer
@@ -83,6 +84,21 @@ class TestAddNull:
         layer = comp.add_null()
         assert layer.source is not None
         assert layer.source.name == "Null 1"
+
+    def test_source_matches_ae_null_solid(self, tmp_path: Path) -> None:
+        # layer_misc.aep holds a null made by AE's addNull: a white 100x100
+        # solid.
+        app = parse_aep(SAMPLES_DIR / "layer" / "layer_misc.aep")
+        ae_solid = next(f for f in app.project.footages if f.name == "Null 1")
+        layer = app.project.compositions[0].add_null()
+        app.project.save(tmp_path / "out.aep")
+        solid = next(
+            f
+            for f in parse_aep(tmp_path / "out.aep").project.footages
+            if f.id == layer.source.id
+        )
+        assert solid.main_source.color == ae_solid.main_source.color == [1.0, 1.0, 1.0]
+        assert (solid.width, solid.height) == (ae_solid.width, ae_solid.height)
 
     def test_unique_ids_across_layers(self) -> None:
         app = parse_aep(EMPTY_COMP_AEP)
@@ -364,6 +380,36 @@ class TestAddSolid:
                 break
         assert solids_folder is not None
         assert layer.source in solids_folder.items
+
+    def test_solids_folder_tracked_by_id(self, tmp_path: Path) -> None:
+        """AE 2026 records the Solids folder it creates in `sfid` and keeps
+        filling it once renamed or moved into another folder."""
+        app = new()
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 1.0, 24.0)
+        first = comp.add_solid([1.0, 0.0, 0.0], "A")
+        folder = first.source.parent_folder
+        assert app.project._solids_folder_id == folder.id
+        folder.name = "Renamed"
+        holder = app.project.root_folder.add_folder("Holder")
+        folder.parent_folder = holder
+        out = tmp_path / "solids.aep"
+        app.project.save(out)
+
+        project = parse_aep(out).project
+        comp = project.compositions[0]
+        second = comp.add_solid([0.0, 1.0, 0.0], "B")
+        assert second.source.parent_folder.name == "Renamed"
+        assert [f.name for f in project.root_folder.folders] == ["Holder"]
+
+    def test_solids_folder_found_by_name_keeps_id_unset(self) -> None:
+        """With no recorded id, AE 2026 reuses a root folder carrying the
+        Solids name and leaves `sfid` at 0."""
+        app = new()
+        existing = app.project.root_folder.add_folder("Solids")
+        comp = app.project.root_folder.add_comp("C", 100, 100, 1.0, 1.0, 24.0)
+        layer = comp.add_solid([1.0, 0.0, 0.0], "A")
+        assert layer.source.parent_folder is existing
+        assert app.project._solids_folder_id == 0
 
     def test_roundtrip(self, tmp_path: Path) -> None:
         app = parse_aep(EMPTY_COMP_AEP)

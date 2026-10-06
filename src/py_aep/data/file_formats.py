@@ -24,37 +24,52 @@ class FileFormat(NamedTuple):
     opti: str
     """`opti` asset-info strategy, verified against AE 2026:
 
-    - `"empty"`: AE re-reads the located file (PNG, EXR); an empty `opti` works.
+    - `"empty"`: AE re-reads the located file (FBX); an empty `opti` works.
+    - `"exr"`: AE needs the `oEXR` header (see `build_exr_opti_data`) to
+      place an EXR's data window.
     - `"generic"`: AE's generic media importer needs the 58-byte `opti` header
-      (JPEG, TGA, MOV, WAV, HEIC).
+      (PNG, JPEG, TGA, MOV, WAV, HEIC). AE opens a PNG still with an empty
+      `opti` but crashes as soon as it renders it.
     - `"tiff"`: AE needs the 602-byte TIFF-specific header (see
       `build_tiff_opti_data`).
-    - `"psd"`: AE itself writes an empty opti for PSD (AE 2026 measured);
-      py-aep generates a `PsdOptiChunk` with layer metadata, which AE
-      accepts on re-open. The 602-byte body is produced by `build_psd_opti_data`.
+    - `"psd"`: the 602-byte Photoshop header AE writes for the merged
+      document (see `build_psd_opti_data`).
+    - `"text"`: the 596-byte Illustrator/PDF/EPS header (see
+      `build_ai_document_opti_data` and `build_text_opti_data`).
     - `"dpx"`: AE needs the 48-byte DPX/Cineon format-options header (see
       `build_dpx_opti_data`).
     - `"unsupported"`: AE requires a format-specific `opti` not yet
       reverse-engineered; import is refused rather than crashing AE."""
+
+    sequence: bool = True
+    """`False` for formats AE 2026 refuses to import as an image sequence
+    ("files of type ... cannot be used as sequences"): movies, audio, HEIC,
+    3D scenes and data files."""
+
+    media_flag: bool = False
+    """`True` for the formats whose footage AE 2026's import marks in `sspc`
+    (`SspcChunk.media_format`, and `media_file` for a single file): JPEG,
+    BMP/GIF, HEIC, movies, audio and data files."""
 
 
 #: `sspc.source_format_type` of a 3D model scene (`.fbx`).
 FORMAT_3D_MODEL_SCENE = "LDOM"
 
 #: BMP/GIF have no dedicated importer; AE tags them with the platform's
-#: generic still importer. Measured in AE 2026 on both platforms: an IMIO
-#: still opens on either, but an IMIO sequence never opens on Windows and
-#: a STIL sequence never opens on macOS, so sequences follow the path's
-#: platform (imio_*.aep vs media_replacement.aep fixtures).
+#: generic still importer: AE 2026 macOS writes IMIO, Windows STIL, for
+#: stills and sequences alike (imio_*.aep vs media_replacement.aep
+#: fixtures, plus a Windows import of bmp.bmp/gif.gif). An IMIO still opens
+#: on either platform, but an IMIO sequence never opens on Windows and a
+#: STIL sequence never opens on macOS.
 GENERIC_STILL_FORMATS = {"macos": "IMIO", "windows": "STIL"}
 
 
-def sequence_source_format(fmt: FileFormat, *, windows: bool) -> str:
-    """The `sspc` code for an image sequence of `fmt`.
+def platform_source_format(fmt: FileFormat, *, windows: bool) -> str:
+    """The `sspc` code AE on the target platform writes for `fmt`.
 
     Args:
-        fmt: The frame file's format.
-        windows: `True` to tag the sequence for AE on Windows (see
+        fmt: The file's format (a still or a sequence frame).
+        windows: `True` to tag the source for AE on Windows (see
             `GENERIC_STILL_FORMATS`).
     """
     if windows and fmt.source_format == GENERIC_STILL_FORMATS["macos"]:
@@ -63,19 +78,19 @@ def sequence_source_format(fmt: FileFormat, *, windows: bool) -> str:
 
 
 _FILE_FORMATS: dict[str, FileFormat] = {
-    ".exr": FileFormat("oEXR", True, "empty"),
-    ".mov": FileFormat("MOoV", False, "generic"),
-    ".m4v": FileFormat("MOoV", False, "generic"),
+    ".exr": FileFormat("oEXR", True, "exr"),
+    ".mov": FileFormat("MOoV", False, "generic", sequence=False, media_flag=True),
+    ".m4v": FileFormat("MOoV", False, "generic", sequence=False, media_flag=True),
     # AE 2026 imports .mp4 through its Media Core importer, which stamps
     # "XCEX" rather than the QuickTime family's "MOoV" (older AE releases
     # wrote "MPEG"/"MOoV" for the same files).
-    ".mp4": FileFormat("XCEX", False, "generic"),
-    ".aiff": FileFormat("AIFC", False, "generic"),
+    ".mp4": FileFormat("XCEX", False, "generic", sequence=False, media_flag=True),
+    ".aiff": FileFormat("AIFC", False, "generic", sequence=False, media_flag=True),
     # AIFF alias; verified: AE 2026 imports aif.aif as AIFC footage
     # (media_gap_formats.aep fixture).
-    ".aif": FileFormat("AIFC", False, "generic"),
-    ".wav": FileFormat("WAVE", False, "generic"),
-    ".png": FileFormat("png!", False, "empty"),
+    ".aif": FileFormat("AIFC", False, "generic", sequence=False, media_flag=True),
+    ".wav": FileFormat("WAVE", False, "generic", sequence=False, media_flag=True),
+    ".png": FileFormat("png!", False, "generic"),
     ".tif": FileFormat("TIF ", False, "tiff"),
     ".tiff": FileFormat("TIF ", False, "tiff"),
     # DPX and Cineon still frames and sequences; verified: AE 2026 imports
@@ -83,37 +98,45 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     # (media_gap_formats.aep fixture).
     ".dpx": FileFormat("sDPX", False, "dpx"),
     ".cin": FileFormat("sDPX", False, "dpx"),
-    ".heic": FileFormat("AIDE", False, "generic"),
-    ".heif": FileFormat("AIDE", False, "generic"),
-    ".jpg": FileFormat("ZPEG", False, "generic"),
-    ".jpeg": FileFormat("ZPEG", False, "generic"),
+    ".heic": FileFormat("AIDE", False, "generic", sequence=False, media_flag=True),
+    ".heif": FileFormat("AIDE", False, "generic", sequence=False, media_flag=True),
+    ".jpg": FileFormat("ZPEG", False, "generic", media_flag=True),
+    ".jpeg": FileFormat("ZPEG", False, "generic", media_flag=True),
     ".tga": FileFormat("TPIC", False, "generic"),
     # Platform-specific generic still importer; see GENERIC_STILL_FORMATS.
-    ".bmp": FileFormat(GENERIC_STILL_FORMATS["macos"], False, "generic"),
-    ".gif": FileFormat(GENERIC_STILL_FORMATS["macos"], False, "generic"),
+    ".bmp": FileFormat(
+        GENERIC_STILL_FORMATS["macos"], False, "generic", media_flag=True
+    ),
+    ".gif": FileFormat(
+        GENERIC_STILL_FORMATS["macos"], False, "generic", media_flag=True
+    ),
     ".psd": FileFormat("8BPS", False, "psd"),
     ".psb": FileFormat("8BPS", False, "psd"),
     # Video/audio containers (generic opti; codec bytes re-derived by AE).
-    ".m4a": FileFormat("MOoV", False, "generic"),
-    ".mp3": FileFormat("MP3A", False, "generic"),
+    ".m4a": FileFormat("MOoV", False, "generic", sequence=False, media_flag=True),
+    ".mp3": FileFormat("MP3A", False, "generic", sequence=False, media_flag=True),
     # AAC in an ADTS stream (audio only); source code confirmed against an
     # AE 2026 import of samples/assets/aac.aac.
-    ".aac": FileFormat("MPEG", False, "generic"),
-    ".swf": FileFormat("SWF ", False, "generic"),
-    ".mpeg": FileFormat("MPEO", False, "generic"),
-    ".mpg": FileFormat("MPEO", False, "generic"),
+    ".aac": FileFormat("MPEG", False, "generic", sequence=False, media_flag=True),
+    ".swf": FileFormat("SWF ", False, "generic", sequence=False, media_flag=True),
+    ".mpeg": FileFormat("MPEO", False, "generic", sequence=False, media_flag=True),
+    ".mpg": FileFormat("MPEO", False, "generic", sequence=False, media_flag=True),
     # Motion-graphics data stream (duration from the sampled time range).
-    ".mgjson": FileFormat("sjgm", False, "generic"),
+    ".mgjson": FileFormat("sjgm", False, "generic", sequence=False, media_flag=True),
     # 3D scene - empty opti; AE re-reads the scene and uses default render dims.
-    ".fbx": FileFormat(FORMAT_3D_MODEL_SCENE, False, "empty"),
-    # Data footage - 0x0 items; empty source code for txt/csv, reversed-ext code
-    # for json.
-    ".txt": FileFormat("", False, "generic"),
-    ".csv": FileFormat("", False, "generic"),
-    ".json": FileFormat("nosj", False, "generic"),
-    ".wmv": FileFormat("WMED", False, "generic"),
+    ".fbx": FileFormat(FORMAT_3D_MODEL_SCENE, False, "empty", sequence=False),
+    # Data footage - 0x0 items; a reversed code: "nosj" for json, and for
+    # txt / csv the tab- / comma-separated-values importer's NUL-led
+    # "\0vst" / "\0vsc" (AE 2026 import; it reads back as "" - the text
+    # before the NUL).
+    ".txt": FileFormat("\x00vst", False, "generic", sequence=False, media_flag=True),
+    ".csv": FileFormat("\x00vsc", False, "generic", sequence=False, media_flag=True),
+    ".json": FileFormat("nosj", False, "generic", sequence=False, media_flag=True),
+    ".wmv": FileFormat("WMED", False, "generic", sequence=False, media_flag=True),
     # Radiance HDR - format-specific 30-byte opti.
     ".hdr": FileFormat("RHDR", False, "hdr"),
+    # Canon CRW, developed by Camera Raw - format-specific 30-byte opti.
+    ".crw": FileFormat("Craw", False, "craw"),
     # Vector / PostScript / PDF - shared 596-byte TEXT opti.
     ".ai": FileFormat("TEXT", False, "text"),
     ".eps": FileFormat("TEXT", False, "text"),
@@ -122,10 +145,12 @@ _FILE_FORMATS: dict[str, FileFormat] = {
 
 
 # Formats AE imports as footage but py-aep does NOT support, with reasons:
-#   .c4d  -> "C4DC" - opti is a ~357KB blob embedding the absolute file path and
-#            Cineware render state; not reconstructable without Cineware
-#   .crw / .nef -> "Craw" - opti embeds per-file Camera Raw XMP decode settings;
-#            not reconstructable without Adobe Camera Raw
+#   .c4d  -> "C4DC" - AE accepts the generic opti (it rebuilds its own on
+#            save), but the footage size, frame rate and duration come from the
+#            scene's render settings and document timeline, which need a Cinema
+#            4D scene parser
+#   .nef  -> "Craw" - Camera Raw develops it at a per-camera crop the file
+#            does not record (a Nikon D1's 2012x1324 sensor opens 2000x1312)
 # AE refuses .avi (codec), .flv/.ps (invalid type) on import. .ma imports
 # only as a cropped comp (not footage) - a separate comp-conversion feature.
 
@@ -172,6 +197,7 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".bmp": frozenset({_FOOTAGE}),
     ".gif": frozenset({_FOOTAGE}),
     ".hdr": frozenset({_FOOTAGE}),
+    ".crw": frozenset({_FOOTAGE}),
     # Video - footage or project.
     ".mov": frozenset({_FOOTAGE, _PROJECT}),
     ".m4v": frozenset({_FOOTAGE}),

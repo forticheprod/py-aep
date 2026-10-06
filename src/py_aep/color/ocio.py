@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import platform
 import re
+from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple
@@ -167,8 +168,14 @@ def require_ocio_config(config: str | None, purpose: str) -> Path:
     return resolved
 
 
-def _builtin_config_roots() -> list[Path]:
-    """Candidate `OpenColorIO-Configs` directories in standard AE installs."""
+@lru_cache(maxsize=None)
+def _builtin_config_roots() -> tuple[Path, ...]:
+    """Candidate `OpenColorIO-Configs` directories in standard AE installs.
+
+    Cached for the process: listing the installs takes ~2ms, and an import
+    into an OCIO project resolves the config once per file (every layer of
+    a layered PSD), so an install added while it runs goes unseen.
+    """
     if platform.system() == "Windows":
         bases = [Path(r"C:\Program Files\Adobe"), Path(r"C:\Program Files (x86)\Adobe")]
     else:  # macOS
@@ -186,7 +193,7 @@ def _builtin_config_roots() -> list[Path]:
             reverse=True,
         ):
             roots.append(ae_dir / "Support Files" / "OpenColorIO-Configs")
-    return roots
+    return tuple(roots)
 
 
 def _install_year(install_dir: Path) -> tuple[int, str]:
@@ -221,7 +228,7 @@ class _ConfigIndex(NamedTuple):
     """A `.ocio` config indexed for output-color-space resolution."""
 
     families: dict[str, str]  # color-space name -> family
-    aliases: set[str]  # alias names
+    aliases: dict[str, str]  # alias name -> family of its color space
     roles: dict[str, str]  # role -> target name
     displays: dict[str, list[str]]  # display -> its view names
 
@@ -235,7 +242,7 @@ def _config_index(config_path: Path) -> _ConfigIndex:
     """
     stamp = _config_stamp(config_path)
     if stamp is None:
-        return _ConfigIndex({}, set(), {}, {})
+        return _ConfigIndex({}, {}, {}, {})
     return _config_index_cached(config_path, stamp)
 
 
@@ -243,16 +250,17 @@ def _config_index(config_path: Path) -> _ConfigIndex:
 def _config_index_cached(config_path: Path, _stamp: tuple[int, int]) -> _ConfigIndex:
     doc = _load_config_cached(config_path, _stamp)
     if doc is None:
-        return _ConfigIndex({}, set(), {}, {})
+        return _ConfigIndex({}, {}, {}, {})
     families: dict[str, str] = {}
-    aliases: set[str] = set()
+    aliases: dict[str, str] = {}
     for key in ("colorspaces", "display_colorspaces"):
         for cs in doc.get(key) or []:
             if isinstance(cs, dict) and isinstance(cs.get("name"), str):
-                families[cs["name"]] = cs.get("family") or ""
+                family = cs.get("family") or ""
+                families[cs["name"]] = family
                 for alias in cs.get("aliases") or []:
                     if isinstance(alias, str):
-                        aliases.add(alias)
+                        aliases[alias] = family
     roles = {r: t for r, t in (doc.get("roles") or {}).items() if isinstance(t, str)}
     displays: dict[str, list[str]] = {}
     for display, items in (doc.get("displays") or {}).items():
@@ -405,3 +413,65 @@ def ocio_output_profile_id(config_path: Path, color_space: str) -> bytes:
     """
     name, data = _output_envelope(_config_index(config_path), color_space)
     return _color_space_guid(name, data)
+
+
+def _rule_matches(rule: dict, file_path: str) -> bool:
+    """Whether an OCIO file rule applies to `file_path`: the `Default` rule
+    always, a `regex` rule by search, a `pattern` + `extension` rule by glob
+    (the extension case-insensitively)."""
+    if rule.get("name") == "Default":
+        return True
+    regex = rule.get("regex")
+    if isinstance(regex, str):
+        return re.search(regex, file_path) is not None
+    pattern, extension = rule.get("pattern"), rule.get("extension")
+    if isinstance(pattern, str) and isinstance(extension, str):
+        stem, dot, ext = file_path.rpartition(".")
+        return (
+            bool(dot)
+            and fnmatchcase(stem, pattern)
+            and fnmatchcase(ext.lower(), extension.lower())
+        )
+    return False
+
+
+def ocio_input_envelope(config_path: Path, file_path: str) -> str | None:
+    """The color-profile envelope After Effects assigns a file it imports
+    into a project managed by this OCIO config.
+
+    Measured on AE 2026 (ACES 1.2, ACES 1.3 CG and a studio config with an
+    extension rule): the first matching file rule decides, its color space
+    recorded as a direct pick named after the family of the color space it
+    resolves to (`"Utility/scene_linear"` with `{"colorSpace1":
+    "scene_linear"}` for a role); a config without file rules gets its
+    `default` role, recorded as a role pick. A `ColorSpaceNamePathSearch`
+    rule is not modelled (it is skipped).
+
+    Args:
+        config_path: The resolved `.ocio` config path.
+        file_path: The imported file's path.
+
+    Returns:
+        The envelope, or `None` when no rule matches and the config has no
+        `default` role.
+    """
+    doc = _load_config(config_path)
+    if doc is None:
+        return None
+    index = _config_index(config_path)
+    rules = doc.get("file_rules")
+    if rules:
+        for rule in rules:
+            if not isinstance(rule, dict) or not _rule_matches(rule, file_path):
+                continue
+            color_space = rule.get("colorspace")
+            if not isinstance(color_space, str):
+                return None
+            target = index.roles.get(color_space, color_space)
+            family = index.families.get(target) or index.aliases.get(target) or ""
+            name = f"{family}/{color_space}" if family else color_space
+            return build_ocio_envelope(name, _compact({"colorSpace1": color_space}))
+        return None
+    if "default" not in index.roles:
+        return None
+    return build_ocio_envelope(*_output_envelope(index, "default"))

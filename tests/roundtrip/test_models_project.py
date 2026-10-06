@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from py_aep import Project
 from py_aep import parse as parse_aep
+from py_aep.color.envelope import parse_envelope
 from py_aep.enums import (
     BitsPerChannel,
     ColorManagementSystem,
@@ -622,6 +626,82 @@ class TestRoundtripGpuAccelType:
 
         assert project2.gpu_accel_type == GpuAccelType.CUDA
 
+    def test_unrecognized_uuid_roundtrips(self, tmp_path: Path) -> None:
+        """A renderer id py_aep does not map reads back as its UUID string,
+        and that string can be written back."""
+        uuid = "01234567-89ab-cdef-0123-456789abcdef"
+        project = parse_aep(
+            SAMPLES_DIR / "gpuAccelType_mercury_software_only.aep"
+        ).project
+        project.gpu_accel_type = uuid  # type: ignore[assignment]
+        assert project.gpu_accel_type == uuid
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+        assert project2.gpu_accel_type == uuid
+        project2.gpu_accel_type = project2.gpu_accel_type
+
+    def test_rejects_malformed_uuid(self) -> None:
+        project = parse_aep(
+            SAMPLES_DIR / "gpuAccelType_mercury_software_only.aep"
+        ).project
+        with pytest.raises(ValueError, match="UUID"):
+            project.gpu_accel_type = "not-a-uuid"  # type: ignore[assignment]
+        assert project.gpu_accel_type == GpuAccelType.SOFTWARE
+
+
+class TestRoundtripWorkingSpaceProfileId:
+    """`cpid` holds the ICC profile id of the working space.
+
+    AE 2026 rewrites it when a script sets `workingSpace` (the id of the
+    new profile; all 0xFF for "None"), and every AE-saved project whose
+    working space is an ICC profile has `cpid` equal to that profile's id.
+    OCIO projects store all 0xFF.
+    """
+
+    ACESCCT_DONOR = (
+        Path(__file__).parent.parent.parent
+        / "samples"
+        / "models"
+        / "footage"
+        / "override_media_colorspace_working_colorspace_-aces_cg_or_cct.aep"
+    )
+
+    @staticmethod
+    def _cpid(project: Project) -> bytes:
+        return next(c.tobytes() for c in project._rifx.chunks if c.chunk_type == "cpid")
+
+    def test_adobe_working_space_writes_profile_id(self, tmp_path: Path) -> None:
+        # The ACEScct ICC exactly as AE embedded it, next to the cpid AE
+        # wrote for it.
+        donor = parse_aep(self.ACESCCT_DONOR).project
+        assert donor._ws_utf8 is not None
+        icc = parse_envelope(donor._ws_utf8.value).data
+        assert self._cpid(donor).hex() == "ae27d1e66d65c5a0a50fe0ec149a24fa"
+        icc_dir = tmp_path / "icc"
+        icc_dir.mkdir()
+        (icc_dir / "ACEScct.icc").write_bytes(icc)
+
+        project = parse_aep(SAMPLES_DIR / "workingSpace_sRGB.aep").project
+        project.icc_profile_dirs = [icc_dir]
+        project.working_space = "ACEScct"
+        out = tmp_path / "ws.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+        assert project2.working_space == "ACEScct"
+        assert self._cpid(project2) == self._cpid(donor)
+
+    def test_ocio_working_space_writes_no_profile_id(self, tmp_path: Path) -> None:
+        config = (
+            Path(__file__).parent.parent.parent / "samples" / "assets" / "config.ocio"
+        )
+        project = parse_aep(SAMPLES_DIR / "workingSpace_sRGB.aep").project
+        assert self._cpid(project) != b"\xff" * 16
+        project.color_management_system = ColorManagementSystem.OCIO
+        project.ocio_configuration_file = str(config)
+        project.working_space = "ACEScg"
+        assert self._cpid(project) == b"\xff" * 16
+
 
 class TestRoundtripRevision:
     """Roundtrip tests for Project.revision."""
@@ -638,8 +718,15 @@ class TestRoundtripRevision:
 
         assert project2.revision == original + 10
 
+    def test_set_revision_above_16_bits(self, tmp_path: Path) -> None:
+        project = parse_aep(SAMPLES_DIR / "save_01.aep").project
+        project.revision = 70_000
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        assert parse_aep(out).project.revision == 70_000
+        with pytest.raises(ValueError):
+            project.revision = 1 << 32
 
-class TestRoundtripXmpPacket:
     """Roundtrip tests for Project.xmp_packet."""
 
     def test_set_xmp_packet(self, tmp_path: Path) -> None:

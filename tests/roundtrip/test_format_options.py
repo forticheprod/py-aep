@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -19,6 +20,8 @@ from py_aep.enums import (
     MPEGMuxStreamCompatibility,
     MPEGProfile,
     OpenExrCompression,
+    OutputChannels,
+    OutputColorDepth,
     PngCompression,
     VideoCodec,
 )
@@ -31,6 +34,9 @@ from py_aep.models.renderqueue.format_options import (
     TiffFormatOptions,
     XmlFormatOptions,
 )
+
+if TYPE_CHECKING:
+    from py_aep.models.renderqueue.output_module import OutputModule
 
 FORMAT_DIR = (
     Path(__file__).parent.parent.parent / "samples" / "models" / "format_options"
@@ -538,11 +544,14 @@ class TestRoundtripPngFormatOptions:
             opts.bit_depth = 24
 
     def test_bit_depth_accepts_valid(self, tmp_path: Path) -> None:
+        # The only values AE writes (8 / 16 bits per channel; no 32-bit PNG).
         project, opts = _parse_fresh(FORMAT_DIR / "png" / "base.aep")
         assert isinstance(opts, PngFormatOptions)
-        for depth in (8, 16, 32):
+        for depth in (8, 16):
             opts.bit_depth = depth
             assert opts.bit_depth == depth
+        with pytest.raises(ValueError, match="must be one of"):
+            opts.bit_depth = 32
 
 
 class TestRoundtripPngHdr10:
@@ -754,3 +763,64 @@ class TestRoundtripXmlParamsDict:
         assert isinstance(opts, XmlFormatOptions)
         assert opts.params.setdefault("BitRate", "1") == "320"
         assert opts.bitrate == 320
+
+
+def _png_option_fields(om: OutputModule) -> tuple[bool, int, int]:
+    body = om.format_options._body
+    return body.has_alpha, body.channel_count, body.bit_depth
+
+
+# The PNG options' alpha flag, channel count and bits per channel AE stores
+# for each Channels / Depth pair (format_options/png samples, AE 2026).
+_PNG_LOCKSTEP = [
+    (OutputChannels.RGB, OutputColorDepth.MILLIONS_OF_COLORS, (False, 3, 8)),
+    (OutputChannels.RGB, OutputColorDepth.TRILLIONS_OF_COLORS, (False, 3, 16)),
+    (OutputChannels.RGBA, OutputColorDepth.MILLIONS_OF_COLORS_PLUS, (True, 4, 8)),
+    (OutputChannels.RGBA, OutputColorDepth.TRILLIONS_OF_COLORS_PLUS, (True, 4, 16)),
+]
+
+
+class TestPngOptionsFollowTheModule:
+    @pytest.mark.parametrize(
+        ("sample", "channels", "depth", "expected"),
+        [
+            (sample, *row)
+            for sample in ("base.aep", "compression_none.aep")
+            for row in _PNG_LOCKSTEP
+        ],
+    )
+    def test_channels_and_depth_update_the_png_options(
+        self,
+        sample: str,
+        channels: OutputChannels,
+        depth: OutputColorDepth,
+        expected: tuple[bool, int, int],
+        tmp_path: Path,
+    ) -> None:
+        # AE renders from the module's Channels / Depth either way (a stale
+        # PNG option renders the module's choice), but stores them in step.
+        app = parse(FORMAT_DIR / "png" / sample)
+        om = app.project.render_queue.items[0].output_modules[0]
+        with om.batch_edit():
+            om.settings["Channels"] = channels
+            om.settings["Depth"] = depth
+        assert _png_option_fields(om) == expected
+        out = tmp_path / "png.aep"
+        app.project.save(out)
+        reread = parse(out).project.render_queue.items[0].output_modules[0]
+        assert _png_option_fields(reread) == expected
+
+    def test_single_writes_update_the_png_options(self) -> None:
+        app = parse(FORMAT_DIR / "png" / "base.aep")  # RGB + Alpha, Trillions+
+        om = app.project.render_queue.items[0].output_modules[0]
+        om.settings["Channels"] = OutputChannels.RGB  # pairs Depth to Trillions
+        assert _png_option_fields(om) == (False, 3, 16)
+        om.settings["Depth"] = OutputColorDepth.MILLIONS_OF_COLORS
+        assert _png_option_fields(om) == (False, 3, 8)
+
+    def test_after_effects_samples_are_in_step(self) -> None:
+        lockstep = {(int(c), int(d)): fields for c, d, fields in _PNG_LOCKSTEP}
+        for path in sorted((FORMAT_DIR / "png").glob("*.aep")):
+            om = parse(path).project.render_queue.items[0].output_modules[0]
+            key = (int(om.settings["Channels"]), int(om.settings["Depth"]))
+            assert _png_option_fields(om) == lockstep[key], path.name

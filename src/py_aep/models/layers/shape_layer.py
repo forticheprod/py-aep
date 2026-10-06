@@ -54,6 +54,8 @@ class ShapeLayer(AVLayer):
             ),
         )
         layer._ldta.layer_type = LayerType.SHAPE
+        # The base factory named the layer from the AV type it started with.
+        layer._match_name = layer._LAYER_MATCH_NAMES[LayerType.SHAPE]
         layer._ldta.label = label_index(
             containing_comp._project._preferences, "Shape Label Index 2", 8
         )

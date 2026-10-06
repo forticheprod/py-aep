@@ -756,12 +756,12 @@ class TestTdsbChunk:
         chunk = TdsbChunk.read(buf, 4, chunk_type="tdsb")
         assert isinstance(chunk, TdsbChunk)
         assert chunk.roto_bezier == 0
-        assert chunk.locked_ratio is True
-        # Separation is lock-byte bit 3; enable-byte bit 1 is the cosmetic
-        # group-collapse flag (AE sets it on a collapsed but UNSEPARATED
-        # position, e.g. an ambient light).
+        assert chunk.ratio_unlinked is False
+        # Separation is lock-byte bit 3; enable-byte bit 1 is the Timeline
+        # hidden flag (AE sets it on an UNSEPARATED position that does not
+        # apply, e.g. an ambient light's).
         assert chunk.dimensions_separated is False
-        assert chunk.collapsed is True
+        assert chunk.hidden is True
         assert chunk.enabled is True
         out = BytesIO()
         chunk.write(out)
@@ -775,8 +775,8 @@ class TestTdsbChunk:
         chunk = TdsbChunk.read(BytesIO(raw), 4, chunk_type="tdsb")
         assert isinstance(chunk, TdsbChunk)
         assert chunk.dimensions_separated is True
-        assert chunk.locked_ratio is False
-        assert chunk.collapsed is True
+        assert chunk.ratio_unlinked is False
+        assert chunk.hidden is True
         out = BytesIO()
         chunk.write(out)
         assert out.getvalue() == raw
@@ -800,7 +800,7 @@ class TestTdsbChunk:
 
         chunk = TdsbChunk(chunk_type="tdsb")
         chunk.enabled = True
-        chunk.collapsed = True
+        chunk.hidden = True
         assert chunk._enable_flags == 0x03
         chunk.enabled = False
         assert chunk._enable_flags == 0x02
@@ -1154,6 +1154,101 @@ class TestRouuChunk:
         assert chunk.audio_channels == 0  # last required field still parsed
         assert chunk.tobytes() == short
 
+    def test_audio_format_is_three_big_endian_words(self) -> None:
+        # After Effects stores encoding / bytes per sample / channels as
+        # whole words: `ffff ffff 0000` while unset, `0002 0001 0001` for
+        # 8-bit mono (audio_settings_matrix.aep, item E9_on_mono_8).
+        from py_aep.binary.render_chunks import RouuChunk
+
+        chunk = RouuChunk()
+        assert chunk.tobytes()[0x6C:0x72] == bytes.fromhex("ffffffff0000")
+        assert chunk.audio_encoding == 0xFFFF
+        assert chunk.audio_bit_depth == 0xFFFF
+        assert chunk.audio_channels == 0
+        chunk.audio_encoding = 2
+        chunk.audio_bit_depth = 1
+        chunk.audio_channels = 1
+        assert chunk.tobytes()[0x6C:0x72] == bytes.fromhex("000200010001")
+
+
+class TestLhd3ChunkWordWidths:
+    def test_count_and_item_size_are_32_bit_words(self) -> None:
+        # Lists of more than 65535 items (dense baked keyframes) keep their
+        # count: the header stores it as one 32-bit word at 0x08, the item
+        # size as one at 0x10 (upper halves 0 in every sample).
+        from py_aep.binary.ldat_chunks import Lhd3Chunk
+
+        chunk = Lhd3Chunk(count=70_000, item_size=0x10000 + 16)
+        body = chunk.tobytes()
+        assert body[0x08:0x0C] == (70_000).to_bytes(4, "big")
+        assert body[0x10:0x14] == (0x10000 + 16).to_bytes(4, "big")
+        reread = Lhd3Chunk.frombytes(body, chunk_type="lhd3")
+        assert (reread.count, reread.item_size) == (70_000, 0x10000 + 16)
+        assert Lhd3Chunk(count=3, item_size=16).tobytes()[:0x14] == bytes.fromhex(
+            "00d00bee00000000000000030000000100000010"
+        )
+
+
+class TestTextOptiChunk:
+    def test_layer_count_is_a_32_bit_word_at_0x30(self) -> None:
+        # A document with more than 255 layers keeps its count (AE 2026's
+        # fixtures store 2 / 8 / 22 / 48 in the low byte, upper bytes 0).
+        from py_aep.binary.footage_chunks import (
+            TextOptiChunk,
+            build_ai_layer_opti_data,
+        )
+
+        data = build_ai_layer_opti_data(612, 792, "Layer 300", 300)
+        assert data[0x30:0x34] == (300).to_bytes(4, "big")
+        chunk = TextOptiChunk.frombytes(data, chunk_type="opti")
+        assert chunk.text_document_layers == 300
+
+
+class TestSspcChunk:
+    def test_depth_is_a_signed_word_at_0x3e(self) -> None:
+        # Grayscale depths are negative (16-bit gray = -16, `ff f0`), as in
+        # footage_depth.aep's png_g16.png.
+        from py_aep.binary.footage_chunks import SspcChunk
+
+        chunk = SspcChunk()
+        assert chunk.depth == 0
+        assert chunk.tobytes()[0x3E:0x45] == bytes(7)  # solids and placeholders
+        chunk.depth = -16
+        assert chunk.tobytes()[0x3E:0x40] == b"\xff\xf0"
+        reread = SspcChunk.frombytes(chunk.tobytes(), chunk_type="sspc")
+        assert reread.depth == -16
+
+    def test_flag_bytes_keep_their_other_bits(self) -> None:
+        # The HQ field separation flag is bit 0 of byte 0x9F, which AE also
+        # sets bit 3 of for container media (footage_depth.aep: mov_480.mov
+        # stores 0x08); the missing flag is bit 0 of byte 0x73.
+        from py_aep.binary.footage_chunks import SspcChunk
+
+        body = bytearray(SspcChunk().tobytes())
+        body[0x9F] = 0x08
+        body[0x73] = 0x10
+        chunk = SspcChunk.frombytes(bytes(body), chunk_type="sspc")
+        assert chunk.high_quality_field_separation is False
+        assert chunk.footage_missing_at_save is False
+        chunk.high_quality_field_separation = True
+        chunk.footage_missing_at_save = True
+        assert chunk.tobytes()[0x9F] == 0x09
+        assert chunk.tobytes()[0x73] == 0x11
+        chunk.high_quality_field_separation = False
+        chunk.footage_missing_at_save = False
+        assert chunk.tobytes()[0x9F] == 0x08
+        assert chunk.tobytes()[0x73] == 0x10
+
+    def test_data_size_is_a_64_bit_word_at_0xcc(self) -> None:
+        # AE 2026 caches 14,729,427,240 for a 14.7 GB image sequence.
+        from py_aep.binary.footage_chunks import SspcChunk
+
+        chunk = SspcChunk()
+        chunk.data_size = 14_729_427_240
+        assert chunk.tobytes()[0xCC:0xD4] == (14_729_427_240).to_bytes(8, "big")
+        reread = SspcChunk.frombytes(chunk.tobytes(), chunk_type="sspc")
+        assert reread.data_size == 14_729_427_240
+
 
 # ---------------------------------------------------------------------------
 # OptiChunk variants
@@ -1386,11 +1481,14 @@ class TestPardChunk:
 
         from py_aep.binary.misc_chunks import ColorPardChunk, PardChunk
 
+        # The SDK colour definition is value + default; AE leaves leftover
+        # memory after them (here a pointer-like pattern seen in AE 2022
+        # samples), which must round-trip but is not a field.
         body = (
             struct.pack(">4B", 255, 0, 0, 255)
             + struct.pack(">4B", 128, 128, 128, 255)
             + b"\x00" * 64
-            + struct.pack(">4B", 255, 255, 255, 255)
+            + bytes.fromhex("ffffffff0000000046696c6c0000000024f70a7e")
         )
         data = self._build_pard(5, body)
         buf = BytesIO(data)
@@ -1398,7 +1496,7 @@ class TestPardChunk:
         assert isinstance(chunk, ColorPardChunk)
         assert chunk.last_color == [255, 0, 0, 255]
         assert chunk.default_color == [128, 128, 128, 255]
-        assert chunk.max_color == [255, 255, 255, 255]
+        assert not hasattr(chunk, "max_color")
         assert chunk.name == "Test"
 
         out = BytesIO()
@@ -1490,18 +1588,43 @@ class TestPardChunk:
 
         from py_aep.binary.misc_chunks import EnumPardChunk, PardChunk
 
-        body = struct.pack(">Iii", 2, 5, 0)
+        # SDK popup layout: s4 value, s2 choice count, s2 default (1-based),
+        # then the choice-names pointer AE leaves as leftover bytes.
+        body = struct.pack(">ihh", 2, 5, 4) + bytes.fromhex("e0af37a4d0e2d700")
+        body += b"\x00" * (92 - len(body))
         data = self._build_pard(7, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, EnumPardChunk)
         assert chunk.last_value == 2
         assert chunk.nb_options == 5
-        assert chunk.default == 0
+        assert chunk.default == 4
 
         out = BytesIO()
         chunk.write(out)
         assert out.getvalue() == data
+
+    def test_enum_ae_edge_mode(self) -> None:
+        """The pard bytes of S_BlurDirectional's Edge Mode (sample
+        `29.97_fps_time_scale_3.125.aep`): cached value 1, 3 choices,
+        default 3 - the value ExtendScript reports for the omitted
+        parameter."""
+        from py_aep.binary.misc_chunks import EnumPardChunk, PardChunk
+
+        body = bytes.fromhex(
+            "00000001"  # value
+            "0003"  # choice count
+            "0003"  # default
+            "00000000"
+            "0000000040337cd1"
+            "00000000d0e2d700"  # leftovers
+        )
+        body += b"\x00" * (92 - len(body))
+        data = self._build_pard(7, body)
+        chunk = PardChunk.read(BytesIO(data), len(data), chunk_type="pard")
+        assert isinstance(chunk, EnumPardChunk)
+        assert (chunk.last_value, chunk.nb_options, chunk.default) == (1, 3, 3)
+        assert chunk.tobytes() == data
 
     def test_slider_roundtrip(self) -> None:
         import struct
@@ -1531,17 +1654,22 @@ class TestPardChunk:
         assert out.getvalue() == data
 
     def test_twod_roundtrip(self) -> None:
-        import struct
 
         from py_aep.binary.misc_chunks import PardChunk, TwoDPardChunk
 
-        body = struct.pack(">ii", 100, 200)
+        # SDK point layout (Fixed 16.16): value x/y, 3 reserved bytes,
+        # restrict_bounds, then the default x/y in percent of the layer
+        # size. Bytes of Bezier Warp's "Tangent 1/Circle Point" in sample
+        # `effects_canvary.aep`: value (0.25, 0.4), default (25 %, 40 %).
+        body = bytes.fromhex("0000400000006666000000000019000000280000")
+        body += b"\x00" * (92 - len(body))
         data = self._build_pard(6, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, TwoDPardChunk)
-        assert chunk.last_value_x_raw == 100
-        assert chunk.last_value_y_raw == 200
+        assert chunk.last_value_x_raw == 0x4000
+        assert chunk.last_value_y_raw == 0x6666
+        assert chunk.default == [25.0, 40.0]
 
         out = BytesIO()
         chunk.write(out)
@@ -1552,14 +1680,18 @@ class TestPardChunk:
 
         from py_aep.binary.misc_chunks import PardChunk, ThreeDPardChunk
 
-        body = struct.pack(">ddd", 1.0, 2.0, 3.0)
+        # SDK 3D point layout: f8 value x/y/z then f8 default x/y/z in
+        # percent of the layer size (sample `geometry_probe.aep`).
+        body = struct.pack(">6d", 0.5, 0.5, 0.0, 50.0, 50.0, 0.0)
+        body += b"\x00" * (92 - len(body))
         data = self._build_pard(18, body)
         buf = BytesIO(data)
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, ThreeDPardChunk)
-        assert chunk.last_value_x_raw == 1.0
-        assert chunk.last_value_y_raw == 2.0
-        assert chunk.last_value_z_raw == 3.0
+        assert chunk.last_value_x_raw == 0.5
+        assert chunk.last_value_y_raw == 0.5
+        assert chunk.last_value_z_raw == 0.0
+        assert chunk.default == [50.0, 50.0, 0.0]
 
         out = BytesIO()
         chunk.write(out)
@@ -1628,6 +1760,42 @@ class TestPardChunk:
         chunk = PardChunk.read(buf, len(data), chunk_type="pard")
         assert isinstance(chunk, GenericPardChunk)
         assert chunk.name == "Master"
+
+
+class TestNmhdChunk:
+    """Marker header: duration = u4 at 0x08 / u4 at 0x0C."""
+
+    def test_duration_divisor(self) -> None:
+        from py_aep.binary.misc_chunks import NmhdChunk
+
+        # AE 2026 opens a marker storing 36 over 24 with duration 1.5 s.
+        data = bytes.fromhex("0000000400000000000000240000001800000000")
+        chunk = NmhdChunk.frombytes(data, chunk_type="NmHd")
+        assert chunk.duration_seconds == 1.5
+        assert chunk.tobytes() == data
+
+    def test_zero_divisor_reads_as_600ths(self) -> None:
+        from py_aep.binary.misc_chunks import NmhdChunk
+
+        # AE 2026 opens a marker storing 1500 over 0 with duration 2.5 s.
+        data = bytes.fromhex("0000000000000000000005dc0000000000000000")
+        assert NmhdChunk.frombytes(data, chunk_type="NmHd").duration_seconds == 2.5
+
+    def test_set_duration_writes_600ths(self) -> None:
+        from py_aep.binary.misc_chunks import NmhdChunk
+
+        # AE 2026 rewrites a 36-over-24 marker whose duration a script sets
+        # to 1.25 s as 750 over 600.
+        data = bytes.fromhex("0000000400000000000000240000001800000000")
+        chunk = NmhdChunk.frombytes(data, chunk_type="NmHd")
+        chunk.duration_seconds = 1.25
+        assert chunk.tobytes()[8:16] == bytes.fromhex("000002ee00000258")
+
+    def test_new_chunk_divisor(self) -> None:
+        from py_aep.binary.misc_chunks import NmhdChunk
+
+        # Every marker a script creates in AE 2026 stores divisor 600.
+        assert NmhdChunk().tobytes()[12:16] == bytes.fromhex("00000258")
 
 
 # -----------------------------------------------------------------------
@@ -1786,6 +1954,18 @@ class TestKfColor:
         assert kf.value == pytest.approx([0.5, 0.6, 0.7, 1.0])
         assert kf.tobytes() == data
 
+    def test_channels_are_stored_argb(self) -> None:
+        """A colour keyframe stores alpha first (0-255 units): the opaque
+        pure blue AE keys on an effect colour reads 255, 0, 0, 255."""
+        import struct
+
+        from py_aep.binary.ldat_chunks import KfColor
+
+        vals = [0, 0.0, 0.0, 16.0, 0.0, 16.0, 255.0, 0.0, 0.0, 255.0]
+        data = struct.pack(">Qd" + "d" * 16, *(vals + [0.0] * 8))
+        kf = KfColor.frombytes(data)
+        assert (kf.a, kf.r, kf.g, kf.b) == (255.0, 0.0, 0.0, 255.0)
+
 
 # -----------------------------------------------------------------------
 # Group 21: ldat_chunks - KfMultiDimensional
@@ -1939,6 +2119,41 @@ class TestLdatItem:
         assert item.roving
         assert item.temporal_auto_bezier
         assert not item.temporal_continuous
+        assert item.tobytes() == data
+
+    def test_label_is_bits_6_to_10_of_key_flags(self) -> None:
+        """Bytes 6-7 are one big-endian u2 of key flags, the label in bits
+        6-10: After Effects stores labels 1 / 5 / 16 as 00 40 / 01 40 / 04 00
+        (keyframe_labels.aep)."""
+        import struct
+
+        from py_aep.binary.ldat_chunks import LdatItem, LdatItemType
+
+        payload = struct.pack(">Qddddd", 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        for raw, label in ((b"\x00\x40", 1), (b"\x01\x40", 5), (b"\x04\x00", 16)):
+            data = struct.pack(">iBB", 0, 2, 2) + raw + payload
+            item = LdatItem.frombytes(data, item_type=LdatItemType.no_value)
+            assert item.label == label
+            assert item.tobytes() == data
+
+    def test_label_write_keeps_the_other_flag_bits(self) -> None:
+        import struct
+
+        from py_aep.binary.ldat_chunks import LdatItem, LdatItemType
+
+        # bits 0-2 plus continuous / auto-bezier / roving (bits 3-5) set
+        payload = struct.pack(">Qddddd", 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        data = struct.pack(">iBB", 0, 2, 2) + b"\x00\x3f" + payload
+        item = LdatItem.frombytes(data, item_type=LdatItemType.no_value)
+
+        item.label = 16
+        assert item.tobytes()[6:8] == b"\x04\x3f"
+        item.label = 5
+        assert item.tobytes()[6:8] == b"\x01\x7f"
+        assert item.roving
+        assert item.temporal_auto_bezier
+        assert item.temporal_continuous
+        item.label = 0
         assert item.tobytes() == data
 
     def test_marker_raw_bytes(self) -> None:
@@ -2112,10 +2327,8 @@ class TestLdatContextResolver:
 
         lhd3 = Lhd3Chunk(
             chunk_type="lhd3",
-            prefix=b"\x00" * 10,
             count=3,
             count_b=3,
-            gap_b=b"\x00" * 2,
             item_size=48,
             gap2=b"\x00" * 3,
             item_type_raw=4,
@@ -2132,10 +2345,8 @@ class TestLdatContextResolver:
 
         lhd3 = Lhd3Chunk(
             chunk_type="lhd3",
-            prefix=b"\x00" * 10,
             count=1,
             count_b=1,
-            gap_b=b"\x00" * 2,
             item_size=128,
             gap2=b"\x00" * 3,
             item_type_raw=4,

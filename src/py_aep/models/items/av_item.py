@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ...binary.chunk import ListChunk
 from ...binary.mutations import build_pin_list
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import index_by_identity
+from ...binary.utils import find_by_list_type, find_by_type, index_by_identity
 from ..descriptors import ChunkField
 from ..naming import auto_name
 from ..preferences import default_sequence_fps
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     import os
 
     from ...binary.item_chunks import CmtaChunk, IdtaChunk
+    from ...binary.scalar_chunks import U1Chunk
     from ..project import Project
     from ..sources.file import FileSource
     from ..sources.placeholder import PlaceholderSource
@@ -34,8 +35,12 @@ def _validate_use_proxy(value: bool, obj: AVItem) -> None:
 
 
 def _sync_proxy_active(obj: AVItem) -> None:
+    # idta 0x38 records that a proxy is assigned, not that it is in use:
+    # AE 2026 keeps 1 after `useProxy = false` and writes 0 only on
+    # `setProxyToNone()` (as in sample proxy.aep's `proxy_disabled` items).
     assert obj._idta is not None
-    obj._idta._proxy_active = int(obj._idta.use_proxy)
+    obj._idta._proxy_active = int(obj._proxy_source is not None)
+    obj._sync_modified_time()
 
 
 class AVItem(Item):
@@ -218,6 +223,14 @@ class AVItem(Item):
         """
         return 1
 
+    def _sync_modified_time(self) -> None:
+        """Keep the `idta` time stamp in step with the source in use.
+
+        Overridden by [FootageItem][]. A comp's stamp is the time of its
+        last edit (measured on AE 2026, also with a proxy in use), which
+        py_aep does not track.
+        """
+
     def set_proxy_to_none(self) -> None:
         """Remove the proxy source from this item."""
         if self._proxy_source:
@@ -314,7 +327,7 @@ class AVItem(Item):
         """
         from ..sources.file import FileSource
 
-        self._set_proxy(FileSource._from_file(file))
+        self._set_proxy(FileSource._from_file(file, windows=self._project._windows))
 
     def set_proxy_with_sequence(
         self, file: str | os.PathLike[str], force_alphabetical: bool = False
@@ -334,11 +347,14 @@ class AVItem(Item):
         Args:
             file: Path to a representative frame; sibling frames in the same
                 folder are gathered into the sequence.
-            force_alphabetical: Order frames alphabetically rather than
-                numerically.
+            force_alphabetical: Take every file of the same type in the
+                folder, in alphabetical order, rather than the numbered
+                frames (see `ImportOptions.force_alphabetical`).
 
         Raises:
-            ValueError: If the extension is not a supported footage format.
+            ValueError: If the extension is not a supported footage format,
+                or one After Effects does not import as a sequence (movies,
+                audio, HEIC, FBX, data files).
             NotImplementedError: If After Effects requires a format-specific
                 `opti` header not implemented for this format.
         """
@@ -349,6 +365,7 @@ class AVItem(Item):
                 file,
                 sequence=True,
                 force_alphabetical=force_alphabetical,
+                windows=self._project._windows,
                 default_sequence_fps=default_sequence_fps(self._project._preferences),
             )
         )
@@ -368,11 +385,18 @@ class AVItem(Item):
 
         if isinstance(source, FileSource):
             return source._pin
-        return build_pin_list(
+        pin = build_pin_list(
             source._sspc,
             source._opti,
             is_solid=isinstance(source, SolidSource),
         )
+        # Link the source to its color record, as parsing does, so the
+        # version fit and the color-management setters reach it.
+        source._clrs = find_by_list_type(chunks=pin.chunks, list_type="CLRS")
+        source._linl = cast(
+            "U1Chunk", find_by_type(chunks=source._clrs.chunks, chunk_type="linl")
+        )
+        return pin
 
     def _replace_pin(self, pin_index: int, new_pin: ListChunk) -> None:
         """Replace or append a LIST:Pin chunk at the given index."""
@@ -392,5 +416,5 @@ class AVItem(Item):
         """Set a proxy LIST:Pin chunk (add or replace)."""
         self._replace_pin(self._proxy_pin_index, self._pin_for_source(source))
         self._proxy_source = source
-        source._project = self._project
+        source._join_project(self._project)
         self.use_proxy = True

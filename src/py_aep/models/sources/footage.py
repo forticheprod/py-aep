@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, cast
 
+from ...binary.bin_utils import to_dividend_divisor
 from ...binary.utils import (
     ChunkNotFoundError,
     find_by_type,
@@ -43,6 +44,13 @@ if TYPE_CHECKING:
 #: `apid` value meaning "no profile assigned" (the media's own profile wins).
 _UNASSIGNED_PROFILE = b"\xff" * 16
 
+#: `LIST:CLRS` records and the first file version (format, minor) that has
+#: them; each is a marker chunk and the `Utf8` that follows it. AE 2025
+#: (96.9) added `hdrm` - AE 2022-2024 drop it when they save a file that has
+#: it (clrs_ae20XX.aep fixtures) - and `Mcsp`/`ocsp` arrived with 93.40
+#: (samples/versions: absent from the AE 2018 project, present from AE 2022).
+_CLRS_RECORDS_SINCE = (("hdrm", (96, 9)), ("Mcsp", (93, 40)), ("ocsp", (93, 40)))
+
 
 def _validate_has_alpha(value: object, instance: object | None = None) -> None:
     """Reject an alpha interpretation for footage that has no alpha channel.
@@ -56,6 +64,36 @@ def _validate_has_alpha(value: object, instance: object | None = None) -> None:
             "cannot set alpha_mode: the footage has no alpha channel "
             "(has_alpha is False)"
         )
+
+
+#: The smallest non-zero conform rate After Effects can open a project with.
+_MIN_CONFORM_FRAME_RATE = 0.0005
+
+
+def _retime_sequence(sspc: SspcChunk, rate: float) -> None:
+    """Move an image sequence to `rate`, keeping its frame count.
+
+    A sequence's stored duration is its frame count over its rate. AE takes
+    the rate to the nearest thousandth (29.97, not the 16.16 slot's
+    29.9700012) and leaves the fraction unreduced: 12 frames is 12/24 at
+    24 fps, 1200/2997 at 29.97 (measured on AE 2026).
+    """
+    frames = round(sspc.duration * sspc.native_frame_rate)
+    sspc.native_frame_rate = rate
+    _store_frames_over_rate(sspc, frames, round(rate, 3))
+
+
+def _store_frames_over_rate(sspc: SspcChunk, frames: int, rate: float) -> None:
+    """Store a sequence's duration as AE does: `frames` over `rate`, the
+    fraction unreduced (3/30, not 1/10, in every AE-authored sequence)."""
+    rate_num, rate_den = to_dividend_divisor(rate)
+    if frames * rate_den <= 0xFFFFFFFF:
+        sspc.duration_dividend = frames * rate_den
+        sspc.duration_divisor = rate_num
+    else:
+        # Too many frames for the unreduced form in the u4 dividend (a huge
+        # frame range at a fractional rate): store it reduced.
+        sspc.duration = frames / rate
 
 
 class FootageSource:
@@ -101,10 +139,7 @@ class FootageSource:
     footage. Read-only."""
 
     high_quality_field_separation = ChunkField.bool(
-        "_sspc",
-        "high_quality_field_separation",
-        transform=lambda v: v % 2 != 0,
-        reverse=int,
+        "_sspc", "high_quality_field_separation"
     )
     """When `True`, After Effects uses special algorithms to determine how to
     perform high-quality field separation. Read / Write."""
@@ -157,23 +192,43 @@ class FootageSource:
         A sequence of stills has no rate of its own, so its assumed rate is
         kept as the native rate and reads back here; setting one rescales
         the duration over the new rate, and `0` is ignored (a sequence
-        always runs at some assumed rate). Matches After Effects.
+        always runs at some assumed rate). A placeholder keeps its rate the
+        same way, but its duration stays in seconds. Matches After Effects.
+
+        Raises:
+            ValueError: If the rate is outside 0-999 or between 0 and 0.0005
+                (After Effects cannot open a project holding such a rate).
         """
-        if self._is_sequence:
-            return self._sspc.native_frame_rate
-        return self._sspc.conform_frame_rate
+        sspc = self._sspc
+        if self._rate_is_assumed:
+            return sspc.conform_frame_rate or sspc.native_frame_rate
+        return sspc.conform_frame_rate
 
     @conform_frame_rate.setter
     def conform_frame_rate(self, value: float) -> None:
         validate_conform_frame_rate(value)
-        if not self._is_sequence:
-            self._sspc.conform_frame_rate = value
+        if 0 < value < _MIN_CONFORM_FRAME_RATE:
+            # AE 2026 takes the rate to the nearest thousandth: below 0.0005
+            # that is 0, and AE refuses to open the project ("zero
+            # denominator in ratio multiply"); 0.0005 opens, as a 3000 s
+            # 3-frame sequence.
+            raise ValueError(
+                f"conform_frame_rate must be 0 or at least "
+                f"{_MIN_CONFORM_FRAME_RATE}, got {value}"
+            )
+        sspc = self._sspc
+        if not self._rate_is_assumed:
+            sspc.conform_frame_rate = value
             return
         if not value:
             return
-        frames = round(self._sspc.duration * self._sspc.native_frame_rate)
-        self._sspc.native_frame_rate = value
-        self._sspc.duration = frames / value
+        # AE keeps an assumed rate in the native slot and the conform slot
+        # at 0.
+        sspc.conform_frame_rate = 0.0
+        if self._is_sequence:
+            _retime_sequence(sspc, value)
+        else:
+            sspc.native_frame_rate = value
 
     display_frame_rate = ChunkField[float](
         "_sspc",
@@ -197,12 +252,15 @@ class FootageSource:
     def _on_alpha_mode_set(self) -> None:
         """Co-set the `sspc` premultiplied flag bit with the alpha mode.
 
-        AE writes the mode byte and bit 0 of the alpha flags together
-        (premultiplied = 1/set, straight = 0/clear, ignore = 2/clear). It
-        rejects the interpretation outright - resetting the footage to
-        straight alpha when the file is opened - if the two disagree.
+        AE writes the mode byte and bit 0 of the alpha flags together:
+        premultiplied (1) sets the bit, straight (0) clears it, and ignore
+        (2) leaves it as it was (AE 2026, a PNG and an FBX alike). It
+        rejects a premultiplied interpretation - resetting the footage to
+        straight alpha when the file is opened - if the bit is clear.
         """
-        self._sspc.premultiplied = self.alpha_mode == AlphaMode.PREMULTIPLIED
+        mode = self.alpha_mode
+        if mode != AlphaMode.IGNORE:
+            self._sspc.premultiplied = mode == AlphaMode.PREMULTIPLIED
 
     def _on_remove_pulldown_set(self) -> None:
         """Co-set a field order when a 3:2 pulldown phase is applied.
@@ -242,17 +300,21 @@ class FootageSource:
     def _duration(self) -> float:
         """Total duration in seconds (with conform and loop)."""
         sspc = self._sspc
-        source_duration = sspc.duration
         conform = sspc.conform_frame_rate
-        if conform != 0:
-            conform_factor = sspc.native_frame_rate / conform
-        else:
-            conform_factor = 1.0
-        return source_duration * conform_factor * sspc.loop
+        if conform == 0:
+            return sspc.duration * sspc.loop
+        # A conform plays the same frames at another rate, so AE's duration
+        # is the frame count over that rate: exactly 48 / 24 = 2.0 s for a
+        # 48-frame 23.976 movie. Rescaling the stored duration instead drifts
+        # by the 16.16 error of the stored native rate (1.999998 s).
+        frames = round(sspc.duration * sspc.native_frame_rate)
+        return frames / conform * sspc.loop
 
     @property
     def _frame_duration(self) -> int:
-        return int(self._duration * self.display_frame_rate)
+        # Rounded, not truncated: a 48-frame 23.976 movie lasts 48 frames,
+        # though its 16.16 stored rate puts the product at 47.99995.
+        return round(self._duration * self.display_frame_rate)
 
     def __init__(
         self,
@@ -275,6 +337,25 @@ class FootageSource:
         """
         return False
 
+    @property
+    def _windows(self) -> bool:
+        """Whether this source's project is for After Effects on Windows
+        (see `py_aep.parse`'s `platform`)."""
+        return self._project is not None and self._project._windows
+
+    _rate_from_media: bool = False
+    """Whether a newly built image sequence takes its rate from its first
+    frame (an animated GIF). A replace then keeps that rate: neither a
+    placeholder's or sequence's assumed rate nor a movie's conform carries
+    over (AE 2026)."""
+
+    @property
+    def _rate_is_assumed(self) -> bool:
+        """Whether the native-rate slot holds a rate the user chose rather
+        than one measured from media: a sequence's "assume this frame rate",
+        or the rate a placeholder was created with."""
+        return self._is_sequence
+
     def _carry_interpretation_to(self, new: FootageSource) -> None:
         """Copy the Interpret Footage settings AE carries over to `new`.
 
@@ -284,8 +365,9 @@ class FootageSource:
         interpretation (re-estimated per file) and the embedded colour
         profile record. Verified against AE 2026 for `replace()`,
         `replace_with_sequence()` and `replace_with_placeholder()` over
-        movie, sequence and still sources. Replacing with a solid carries
-        nothing - AE builds that source from the call's arguments.
+        movie, sequence, still and placeholder sources. Replacing with a
+        solid carries nothing - AE builds that source from the call's
+        arguments.
         """
         old_sspc, new_sspc = self._sspc, new._sspc
         new_sspc.field_separation_type = old_sspc.field_separation_type
@@ -296,33 +378,67 @@ class FootageSource:
 
         # A sequence of stills has no rate of its own, so AE keeps its
         # "assume this frame rate" as the native rate and leaves the conform
-        # slot at 0. That assumed rate is not a conform: it carries to
-        # another sequence, but replacing the sequence with a movie leaves
-        # the movie playing at its own rate. A real conform carries either
-        # way, and a still keeps no rate at all.
-        conform = old_sspc.conform_frame_rate
+        # slot at 0; a placeholder keeps its rate the same way. That assumed
+        # rate is not a conform: it carries to another sequence, but
+        # replacing with a movie leaves the movie playing at its own rate. A
+        # real conform carries to either. A still keeps no rate at all, and
+        # a new placeholder takes its rate from the call's arguments.
+        rate = self.conform_frame_rate
         if new._is_sequence:
-            if not conform and self._is_sequence:
-                conform = old_sspc.native_frame_rate
-            if conform:
+            if rate and not new._rate_from_media:
                 # A sequence's stored duration is its frame count over its
                 # rate, so it has to move with the rate; a movie keeps the
                 # duration it measured and gets the conform factor applied.
-                frames = round(new_sspc.duration * new_sspc.native_frame_rate)
-                new_sspc.native_frame_rate = conform
-                new_sspc.duration = frames / conform
-        elif conform and not new.is_still:
-            new_sspc.conform_frame_rate = conform
+                _retime_sequence(new_sspc, rate)
+        elif (
+            rate
+            and not self._rate_is_assumed
+            and not new._rate_is_assumed
+            and not new.is_still
+        ):
+            new_sspc.conform_frame_rate = rate
 
         self._carry_color_management_to(new)
+
+    def _join_project(self, project: Project) -> None:
+        """Attach a newly built source to `project` and fit its colour
+        records to it.
+
+        Every path that attaches a new source to a project calls this
+        (`FootageItem._new`, a replace, a proxy). A source is built with the
+        `LIST:CLRS` records of the latest release (`build_pin_list`); After
+        Effects writes the older layout when it saves an older version, so
+        the records the project's file version predates are dropped
+        (`_CLRS_RECORDS_SINCE`). A file source also records the input colour
+        space of an OCIO-managed project (see `FileSource._join_project`).
+        """
+        self._project = project
+        if self._clrs is None:
+            return
+        head = project._head
+        version = (head.file_format_version, head._format_subversion)
+        dropped = {marker for marker, since in _CLRS_RECORDS_SINCE if version < since}
+        chunks = self._clrs.chunks
+        kept = []
+        index = 0
+        while index < len(chunks):
+            if chunks[index].chunk_type in dropped:
+                index += 2  # the marker and the Utf8 that follows it
+                continue
+            kept.append(chunks[index])
+            index += 1
+        chunks[:] = kept
 
     def _carry_color_management_to(self, new: FootageSource) -> None:
         """Copy the Color Management choices AE carries over to `new`.
 
         The assigned profile (`apid` plus the `ocsp` envelope that holds its
         bytes) only carries when one is assigned; when it is not, the new
-        source keeps the profile AE derives from the new file. The embedded
-        profile record is always the new file's.
+        source keeps the profile AE derives from the new file. In an OCIO
+        project every file has an assigned space - the one the config's file
+        rules gave it or one the user picked - and it carries even when the
+        new file's rules would pick another (AE 2026). The embedded profile
+        record is always the new file's.
         """
         old_clrs, new_clrs = self._clrs, new._clrs
         if old_clrs is None or new_clrs is None:
@@ -339,7 +455,9 @@ class FootageSource:
 
         old_apid = find_by_type(chunks=old_clrs.chunks, chunk_type="apid")
         if old_apid.data == _UNASSIGNED_PROFILE:
-            return
+            old_profile = self._ocsp_profile()
+            if old_profile is None or not old_profile.is_ocio:
+                return
         find_by_type(chunks=new_clrs.chunks, chunk_type="apid").data = old_apid.data
         old_ocsp, new_ocsp = self._ocsp_utf8(), new._ocsp_utf8()
         if old_ocsp is not None and new_ocsp is not None:

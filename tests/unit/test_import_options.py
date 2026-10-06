@@ -116,9 +116,16 @@ class TestImportOptions:
             opts = ImportOptions(Path("asset" + ext))
             for t in all_types:
                 # PROJECT import is unimplemented for every format, so
-                # can_import_as never returns True for it (even where AE can).
+                # can_import_as never returns True for it (even where AE can);
+                # a cropped import is implemented for SVG and PSD/PSB only.
+                cropped_ok = ext in COMP_CONVERSION_EXTENSIONS or ext in (
+                    ".psd",
+                    ".psb",
+                )
                 want = (
-                    t in expected and t != ImportAsType.PROJECT
+                    t in expected
+                    and t != ImportAsType.PROJECT
+                    and (t != ImportAsType.COMP_CROPPED_LAYERS or cropped_ok)
                     if implemented
                     else False
                 )

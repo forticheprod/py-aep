@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -303,6 +304,44 @@ class TestProbeFormatVariants:
         with pytest.raises(ValueError):
             _probe_hdr(BytesIO(data))
 
+    @pytest.mark.parametrize(
+        ("rotation", "size"),
+        [
+            (0, (1536, 1024)),
+            (90, (1024, 1536)),
+            (180, (1536, 1024)),
+            (270, (1024, 1536)),
+        ],
+    )
+    def test_crw_image_info_rotation(self, rotation: int, size: tuple) -> None:
+        """Camera Raw develops a CRW turned by its ImageInfo rotation: AE 2026
+        reports the sample marked 90 or 270 degrees as 1024x1536."""
+        import struct
+
+        data = (ASSETS / "crw.crw").read_bytes()
+        record = struct.pack("<IIfi", 1536, 1024, 1.0, 0)
+        assert data.count(record) == 1
+        rotated = data.replace(record, struct.pack("<IIfi", 1536, 1024, 1.0, rotation))
+        info = probe_media(ASSETS / "crw.crw", data=rotated)
+        assert (info.width, info.height) == size
+
+    def test_crw_bad_signature_raises_valueerror(self) -> None:
+        with pytest.raises(ValueError):
+            probe_media(
+                Path("x.crw"), data=b"II\x1a\x00\x00\x00NOTACIFF" + b"\x00" * 16
+            )
+
+    def test_crw_self_containing_heap_raises_valueerror(self) -> None:
+        """A sub-heap spanning its whole parent heap is malformed: reject it
+        rather than recurse forever."""
+        # Heap after the 14-byte header: a one-entry table at offset 0 whose
+        # sub-heap entry (tag 0x2800) covers the heap itself, then the table
+        # offset.
+        heap = struct.pack("<HHII", 1, 0x2800, 16, 0) + struct.pack("<I", 0)
+        data = b"II" + struct.pack("<I", 14) + b"HEAPCCDR" + heap
+        with pytest.raises(ValueError):
+            probe_media(Path("x.crw"), data=data)
+
     def test_mgjson_tolerant_timestamps(self) -> None:
         """Sample times with sub-second precision / offsets that Python 3.7's
         strict fromisoformat rejects must parse, not crash the probe."""
@@ -336,11 +375,45 @@ class TestTiffOpti:
 
         from py_aep.binary.footage_chunks import build_tiff_opti_data
 
-        data = build_tiff_opti_data(25, 26)
+        data = build_tiff_opti_data(
+            25, 26, bit_depth=16, channels=2, color_mode=1, layer_count=1
+        )
         assert len(data) == 602
         assert data[:4] == b"TIF "
+        assert data[0x1E] == 2  # channels: gray + alpha
         assert struct.unpack_from("<I", data, 32)[0] == 26  # height
         assert struct.unpack_from("<I", data, 36)[0] == 25  # width
+        assert struct.unpack_from("<H", data, 0x28)[0] == 16  # bits per sample
+        assert struct.unpack_from("<H", data, 0x2A)[0] == 1  # grayscale
+        assert struct.unpack_from("<H", data, 0x30)[0] == 1  # layers
+
+    @pytest.mark.parametrize(
+        ("name", "color_mode", "layer_count"),
+        [
+            ("depth/tif_bilevel.tif", 0, 0),
+            ("depth/tif_g16_be.tif", 1, 0),
+            ("depth/tif_pal8.tif", 2, 0),
+            ("depth/tif_rgb8.tif", 3, 0),
+            ("depth/tif_cmyk8.tif", 4, 0),
+            # An alpha sample counts as one layer; an unspecified extra
+            # sample does not.
+            ("depth/tif_ga8.tif", 1, 1),
+            ("depth/tif_rgba8_unassoc.tif", 3, 1),
+            ("depth/tif_rgb8_extra0.tif", 3, 0),
+            # Photoshop layer data (tag 37724) in a little-endian TIFF.
+            ("8bits.tif", 3, 2),
+            ("depth/tif_ps_no34377.tif", 3, 2),
+        ],
+    )
+    def test_probe_reads_photoshop_mode_and_layers(
+        self, name: str, color_mode: int, layer_count: int
+    ) -> None:
+        # The colour mode and layer count AE records for a TIFF
+        # (footage_depth.aep, AE 2026).
+        from py_aep.resolvers.media_probe import probe_media
+
+        info = probe_media(ASSETS / name)
+        assert (info.color_mode, info.layer_count) == (color_mode, layer_count)
 
 
 class TestPsdOpti:
@@ -351,22 +424,41 @@ class TestPsdOpti:
 
         from py_aep.binary.footage_chunks import build_psd_opti_data
 
-        data = build_psd_opti_data(25, 26, bit_depth=8, layer_count=2)
+        data = build_psd_opti_data(
+            25, 26, bit_depth=8, channels=4, color_mode=3, layer_count=2
+        )
         assert len(data) == 602
         assert data[:4] == b"8BPS"
         assert data[0x12:0x16] == b"SPB8"  # reversed code
-        assert data[0x1E] == 4  # channels (always RGBA)
+        assert data[0x1E] == 4  # channels: RGB + alpha
         assert struct.unpack_from("<I", data, 0x20)[0] == 26  # height
         assert struct.unpack_from("<I", data, 0x24)[0] == 25  # width
         assert struct.unpack_from("<H", data, 0x28)[0] == 8  # bit depth
+        assert struct.unpack_from("<H", data, 0x2A)[0] == 3  # RGB
         assert data[0x30] == 2  # layer count
 
-    def test_flattened_psd_stores_one_layer(self) -> None:
+    def test_flattened_psd_stores_no_layers(self) -> None:
         from py_aep.binary.footage_chunks import build_psd_opti_data
 
-        # A flattened PSD (0 layers) is stored as 1, matching AE.
-        data = build_psd_opti_data(1000, 1000, bit_depth=16, layer_count=0)
-        assert data[0x30] == 1
+        # A flattened gray PSD: one channel, grayscale, 0 layers (AE 2026,
+        # footage_depth.aep psd_gray16_flat.psd).
+        data = build_psd_opti_data(
+            8, 8, bit_depth=16, channels=1, color_mode=1, layer_count=0
+        )
+        assert (data[0x1E], data[0x2A], data[0x30]) == (1, 1, 0)
+
+    @pytest.mark.parametrize(
+        ("name", "color_mode"),
+        [
+            ("depth/psd_gray8_flat.psd", 1),
+            ("depth/psd_cmyk8_flat.psd", 4),
+            ("8bits.psd", 3),
+        ],
+    )
+    def test_probe_reads_the_color_mode(self, name: str, color_mode: int) -> None:
+        from py_aep.resolvers.media_probe import probe_media
+
+        assert probe_media(ASSETS / name).color_mode == color_mode
 
     def test_layer_name_truncates_on_utf8_boundary(self) -> None:
         """A >255-byte layer name is cut on a char boundary, not mid-sequence."""
@@ -398,6 +490,13 @@ class TestGapOptiBuilders:
         assert len(data) == 30
         assert data[:4] == b"RHDR"
 
+    def test_build_craw_opti_data(self) -> None:
+        from py_aep.binary.footage_chunks import build_craw_opti_data
+
+        # What AE 2026 writes back for a camera raw file without develop
+        # settings (its heap-address tail zeroed).
+        assert build_craw_opti_data() == b"Craw\x00\x2e\x00\x00\x00\x1e" + b"\x00" * 20
+
     def test_build_text_opti_data(self) -> None:
         import struct
 
@@ -409,3 +508,17 @@ class TestGapOptiBuilders:
         assert struct.unpack_from(">H", data, 24)[0] == 612  # width
         assert struct.unpack_from(">H", data, 28)[0] == 792  # height
         assert data[40:44] == b"\xff\xff\xff\xff"
+
+    def test_build_ai_document_opti_data(self) -> None:
+        import struct
+
+        from py_aep.binary.footage_chunks import build_ai_document_opti_data
+
+        # ai.ai imported whole (AE 2026, footage_depth.aep): its layer
+        # count, one page, no chosen layer, and the page-size tail.
+        data = build_ai_document_opti_data(612, 792, 2)
+        assert len(data) == 596
+        assert struct.unpack_from(">I", data, 0x30)[0] == 2
+        assert (data[0x3C], data[0x3D]) == (1, 0)
+        assert data[0x44] == 0  # no layer name
+        assert struct.unpack_from(">HxxH", data, 0x248) == (792, 612)

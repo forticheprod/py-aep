@@ -27,3 +27,7 @@
 ::: py_aep.resolvers.media_probe.probe_media
     options:
       heading_level: 3
+
+::: py_aep.resolvers.platform_paths.platform_path
+    options:
+      heading_level: 3
