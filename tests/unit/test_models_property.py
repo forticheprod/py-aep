@@ -31,26 +31,35 @@ class TestResolveEffectValue:
         ("param_def", "control_type", "expected"),
         [
             pytest.param(
-                {"property_control_type": PropertyControlType.ENUM, "default_value": 0},
+                {"property_control_type": PropertyControlType.ENUM, "default_value": 1},
                 PropertyControlType.ENUM,
                 (1, 1),
-                id="enum_default_0_becomes_1",
+                id="enum_default_is_1_based",
             ),
             pytest.param(
-                {"property_control_type": PropertyControlType.ENUM, "default_value": 2},
-                PropertyControlType.ENUM,
-                (3, 3),
-                id="enum_default_2_becomes_3",
-            ),
-            pytest.param(
+                # S_BlurDirectional Edge Mode: ExtendScript reports 3.
                 {
                     "property_control_type": PropertyControlType.ENUM,
-                    "default_value": 0,
-                    "last_value": 5,
+                    "default_value": 3,
+                    "last_value": 1,
+                    "nb_options": 3,
                 },
                 PropertyControlType.ENUM,
-                (5, 5),
-                id="enum_last_value_takes_precedence",
+                (3, 3),
+                id="enum_default_over_cached_value",
+            ),
+            pytest.param(
+                # OCIO Look Transform: a plug-in-managed id, which
+                # ExtendScript reports.
+                {
+                    "property_control_type": PropertyControlType.ENUM,
+                    "default_value": 1,
+                    "last_value": 459,
+                    "nb_options": 1,
+                },
+                PropertyControlType.ENUM,
+                (459, 459),
+                id="enum_cached_value_beyond_choices",
             ),
             pytest.param(
                 {

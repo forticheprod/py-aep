@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..binary.chunk import Chunk, ListChunk
+    from ..binary.scalar_chunks import U4Chunk
 
 
 def _color_profile_utf8(root_chunks: list[Chunk], marker: str) -> Utf8Chunk | None:
@@ -147,7 +148,7 @@ def parse_project(
 
     try:
         fcid_chunk = cast(
-            "U1Chunk", find_by_type(chunks=root_chunks, chunk_type="fcid")
+            "U4Chunk", find_by_type(chunks=root_chunks, chunk_type="fcid")
         )
         # `fcid` can name an item that no longer exists (After Effects leaves
         # the id behind when the active item is deleted outside its own

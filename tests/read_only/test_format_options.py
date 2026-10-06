@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from conftest import parse_project
 
+from py_aep.binary.render_chunks import CineonRoptChunk, OpenExrRoptChunk
+from py_aep.binary.utils import find_by_type
 from py_aep.enums import (
     AudioCodec,
     CineonFileFormat,
@@ -34,6 +36,19 @@ FORMAT_DIR = (
 )
 CINEON_DIR = FORMAT_DIR / "cineon"
 AVI_DIR = FORMAT_DIR / "avi"
+
+
+@pytest.mark.parametrize(
+    ("folder", "chunk_cls"),
+    [("cineon", CineonRoptChunk), ("openexr", OpenExrRoptChunk)],
+)
+def test_ropt_defaults_are_after_effects_bytes(folder: str, chunk_cls: type) -> None:
+    # A fresh chunk reproduces the Ropt AE 2026 writes for the format's
+    # default output module (black point 0; DWA compression level 45).
+    project = parse_project(FORMAT_DIR / folder / "base.aep")
+    lom = project.render_queue.items[0].output_modules[0]._parent_rqi._lom
+    ae_ropt = find_by_type(chunks=lom.chunks, chunk_type="Ropt")
+    assert chunk_cls().tobytes() == ae_ropt.tobytes()
 
 
 def _cineon_opts(name: str) -> CineonFormatOptions:

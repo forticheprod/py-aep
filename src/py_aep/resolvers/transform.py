@@ -21,12 +21,15 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, cast
 
-from ..enums import AutoOrientType
+from ..enums import AutoOrientType, LayerType, LightType
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ..models.items.composition import CompItem
+    from ..models.layers.av_layer import AVLayer
     from ..models.layers.layer import Layer
+    from ..models.layers.light_layer import LightLayer
     from ..models.properties.property import Property
     from ..models.properties.property_group import PropertyGroup
 
@@ -125,7 +128,11 @@ class Mat4:
         c0 = s[8] * s[13] - s[9] * s[12]
 
         det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0
-        if abs(det) < _EPSILON:
+        # Relative to the linear part's magnitude: a layer uniformly scaled
+        # to 0.03 % has a determinant of 2.7e-11 and is perfectly invertible
+        # (AE 2026 compensates a parent that small).
+        scale = max(abs(s[r * 4 + c]) for r in range(3) for c in range(3))
+        if det == 0.0 or abs(det) <= _EPSILON * 1e-2 * scale**3:
             raise ValueError("Singular matrix, cannot invert.")
 
         inv_det = 1.0 / det
@@ -231,8 +238,17 @@ def build_local_matrix(
     orientation: list[float] | None = None,
     rotate_x: float = 0.0,
     rotate_y: float = 0.0,
+    auto_rotation: Mat4 | None = None,
+    source_aspect: float = 1.0,
+    space_aspect: float = 1.0,
 ) -> Mat4:
     """Build the local transform matrix for an AE layer.
+
+    After Effects scales and rotates in square pixels: a layer's own
+    pixels are widened by its source's pixel aspect first, and the result
+    narrowed by the pixel aspect of the space its Position lives in (its
+    parent's source, or the composition) - `T(pos) . Sp^-1 . R . S . Sl .
+    T(-anchor)` (measured on AE 2026 in a 2:1 pixel-aspect comp).
 
     Args:
         position: `[x, y, z]` position in pixels.
@@ -243,6 +259,11 @@ def build_local_matrix(
             (3D layers only).
         rotate_x: X-axis rotation in degrees (3D layers only).
         rotate_y: Y-axis rotation in degrees (3D layers only).
+        auto_rotation: A 3D layer's auto-orientation, applied after its own
+            rotations (before the translation).
+        source_aspect: The pixel aspect of the layer's own pixels (`Sl`).
+        space_aspect: The pixel aspect of the space the layer's Position
+            lives in (`Sp`).
 
     Returns:
         A 4x4 matrix representing the layer's local transform.
@@ -253,6 +274,8 @@ def build_local_matrix(
 
     # Start from right: T(-anchor)
     m = _translation(-anchor[0], -anchor[1], -anchor[2] if len(anchor) > 2 else 0.0)
+    if source_aspect != 1.0:
+        m = _scale(source_aspect, 1.0, 1.0) @ m
 
     # Scale
     m = _scale(sx, sy, sz) @ m
@@ -269,6 +292,12 @@ def build_local_matrix(
         m = _rotate_y(oy) @ m
         m = _rotate_x(ox) @ m
 
+    if auto_rotation is not None:
+        m = auto_rotation @ m
+
+    if space_aspect != 1.0:
+        m = _scale(1.0 / space_aspect, 1.0, 1.0) @ m
+
     # Position
     px = position[0]
     py = position[1]
@@ -284,7 +313,12 @@ def build_local_matrix(
 
 
 def build_world_matrix(
-    layer: Layer, time: float | None = None, flatten_2d: bool = False
+    layer: Layer,
+    time: float | None = None,
+    flatten_2d: bool = False,
+    *,
+    as_parent: bool = False,
+    auto_orient: bool = False,
 ) -> Mat4:
     """Build the world transform matrix by composing the parent chain.
 
@@ -292,10 +326,23 @@ def build_world_matrix(
 
         world = root_local @ ... @ parent_local @ layer_local
 
+    A camera or light ancestor contributes its rig: its position and
+    rotations (a two-node rig's look-at toward its point of interest
+    first), with no anchor point or scale - what After Effects parents to
+    (measured on AE 2026).
+
     Args:
         layer: The layer whose world matrix to build.
         time: Composition time in seconds to evaluate animated transform
             properties at; `None` uses each property's static `value`.
+        flatten_2d: Drop the out-of-plane terms (see `_layer_local_matrix`).
+        as_parent: Treat `layer` itself as a parent too - a camera or light
+            then contributes its rig.
+        auto_orient: Apply the layers' auto-orientation (needs `time`).
+
+    Raises:
+        NotImplementedError: With `auto_orient`, for an orientation the
+            math does not model (see `_auto_rotation`).
     """
     chain = []
     current: Layer | None = layer
@@ -303,11 +350,65 @@ def build_world_matrix(
         chain.append(current)
         current = current.parent
 
-    # Compose from root (last in chain) down to the layer itself.
+    # Compose from root (last in chain) down to the layer itself. Each
+    # Position lives in its parent's pixels (the comp's for the root).
     m = Mat4.identity()
+    comp = layer.containing_comp
+    space_aspect = float(comp.pixel_aspect)
     for lyr in reversed(chain):
-        m @= _layer_local_matrix(lyr, time, flatten_2d)
+        if (lyr is not layer or as_parent) and lyr._ldta.layer_type in _RIG_TYPES:
+            if flatten_2d:
+                # Under a 2D layer a rig acts as a 2D layer anchored on the
+                # comp centre, turned by Rotate Z alone (AE 2026: children
+                # of a camera, a spot and a point light all fit
+                # `T(pos.xy) . Rz . T(-w/2, -h/2)` exactly).
+                position = cast(
+                    "list[float]", _prop_value(lyr.transform, "ADBE Position", time)
+                )
+                rz = cast("float", _prop_value(lyr.transform, "ADBE Rotate Z", time))
+                m @= (
+                    _translation(position[0], position[1], 0.0)
+                    @ _rotate_z(rz)
+                    @ _translation(-comp.width / 2.0, -comp.height / 2.0, 0.0)
+                )
+            else:
+                m @= _rig_matrix(lyr, time, space_aspect)
+            space_aspect = 1.0
+        else:
+            source_aspect = layer_source_aspect(lyr)
+            m @= _layer_local_matrix(
+                lyr, time, flatten_2d, auto_orient, source_aspect, space_aspect
+            )
+            space_aspect = source_aspect
     return m
+
+
+def layer_source_aspect(layer: Layer) -> float:
+    """Pixel aspect of a layer's own pixels: its source's, else square."""
+    source = getattr(layer, "source", None)
+    aspect = getattr(source, "pixel_aspect", None)
+    return float(aspect) if aspect else 1.0
+
+
+def position_space_aspect(parent: Layer | None, comp: CompItem) -> float:
+    """Pixel aspect of the space a child of `parent` keeps its Position in:
+    the comp's at the root, square under a camera or light."""
+    if parent is None:
+        return float(comp.pixel_aspect)
+    if parent._ldta.layer_type in _RIG_TYPES:
+        return 1.0
+    return layer_source_aspect(parent)
+
+
+def aspect_scale(aspect: float) -> Mat4:
+    """`diag(aspect, 1, 1)`: widens pixels of that aspect to square ones."""
+    return _scale(aspect, 1.0, 1.0)
+
+
+def square_pixels(matrix: Mat4, comp_aspect: float, space_aspect: float) -> Mat4:
+    """A world matrix from a `space_aspect` space into comp pixels, made to
+    map square pixels to square pixels (so its rotation can be read)."""
+    return aspect_scale(comp_aspect) @ matrix @ aspect_scale(1.0 / space_aspect)
 
 
 def _prop_value(group: PropertyGroup, match_name: str, time: float | None) -> Any:
@@ -320,15 +421,22 @@ def _prop_value(group: PropertyGroup, match_name: str, time: float | None) -> An
 
 
 def _layer_local_matrix(
-    layer: Layer, time: float | None = None, flatten_2d: bool = False
+    layer: Layer,
+    time: float | None = None,
+    flatten_2d: bool = False,
+    auto_orient: bool = False,
+    source_aspect: float = 1.0,
+    space_aspect: float = 1.0,
 ) -> Mat4:
     """Build the local matrix for a single layer from its properties.
 
     With `flatten_2d`, the out-of-plane terms are dropped - X/Y rotation,
-    the X/Y orientation angles and the Z translation. That is how After
-    Effects treats an ancestor when compensating a 2D child, which has no
-    way to store them: a 2D layer parented to a null rotated 20/-35/30 gets
-    exactly the compensation of a null rotated 0/0/30.
+    the whole Orientation and the Z translation. That is how After Effects
+    places a 2D layer under 3D ancestors, for its point conversions as well
+    as when compensating a reparent: a 2D layer parented to a null rotated
+    20/-35/30 gets exactly the compensation of a null rotated 0/0/30, and
+    a parent's Orientation does not turn it at all (measured on AE 2026: a
+    parent with Orientation [0, 0, 30] leaves the child's Rotate Z at 0).
     """
     transform = layer.transform
 
@@ -347,8 +455,12 @@ def _layer_local_matrix(
         position = position[:2] + [0.0]
         rx = 0.0
         ry = 0.0
-        rz = rz + (orientation[2] if len(orientation) > 2 else 0.0)
         orientation = [0.0, 0.0, 0.0]
+
+    auto_rotation = None
+    if auto_orient and time is not None:
+        auto_rotation, auto_rz = _auto_rotation(layer, time, position)
+        rz += auto_rz
 
     is_3d = rx != 0.0 or ry != 0.0 or any(v != 0.0 for v in orientation)
 
@@ -360,7 +472,133 @@ def _layer_local_matrix(
         orientation=orientation if is_3d else None,
         rotate_x=rx,
         rotate_y=ry,
+        auto_rotation=auto_rotation,
+        source_aspect=source_aspect,
+        space_aspect=space_aspect,
     )
+
+
+# Layer types (`ldta.layer_type`) a child parents to as a rig: light, camera.
+_RIG_TYPES = frozenset({LayerType.LIGHT, LayerType.CAMERA})
+_AIMED_LIGHTS = frozenset({LightType.SPOT, LightType.PARALLEL})
+
+
+def rig_aims_at_poi(layer: Layer) -> bool:
+    """Whether a camera or light layer is a two-node rig that looks at its
+    point of interest: a camera, spot or parallel light orienting towards it
+    (a point light keeps the flag but AE applies no look-at)."""
+    layer_type = layer._ldta.layer_type
+    if layer_type not in _RIG_TYPES:
+        return False
+    aims = layer_type == LayerType.CAMERA or (
+        cast("LightLayer", layer).light_type in _AIMED_LIGHTS
+    )
+    return aims and layer.auto_orient == AutoOrientType.CAMERA_OR_POINT_OF_INTEREST
+
+
+def _rig_rotation(layer: Layer, time: float | None, space_aspect: float) -> Mat4:
+    """A camera or light's rotation: the two-node look-at toward its point
+    of interest (stored in the anchor-point slot), then Orientation and the
+    per-axis rotations.
+
+    Only a camera and a light that aims (spot, parallel) look at their
+    point of interest: a point light keeps the auto-orient flag and a point
+    of interest but After Effects applies no look-at (measured on AE 2026).
+    The look-at aims in square pixels, its Position and point of interest
+    widened by the pixel aspect of the space they live in.
+    """
+    transform = layer.transform
+
+    def value(match_name: str) -> Any:
+        return _prop_value(transform, match_name, time)
+
+    rotation = Mat4.identity()
+    if rig_aims_at_poi(layer):
+        eye = list(cast("list[float]", value("ADBE Position")))
+        target = list(cast("list[float]", value("ADBE Anchor Point")))
+        eye[0] *= space_aspect
+        target[0] *= space_aspect
+        rotation = _look_at_rotation(eye, target)
+    orientation = cast("list[float]", value("ADBE Orientation"))
+    return (
+        rotation
+        @ _rotate_x(orientation[0])
+        @ _rotate_y(orientation[1])
+        @ _rotate_z(orientation[2])
+        @ _rotate_x(cast("float", value("ADBE Rotate X")))
+        @ _rotate_y(cast("float", value("ADBE Rotate Y")))
+        @ _rotate_z(cast("float", value("ADBE Rotate Z")))
+    )
+
+
+def _rig_matrix(layer: Layer, time: float | None, space_aspect: float) -> Mat4:
+    """A camera or light's rig, turning in square pixels like a layer (see
+    `build_local_matrix`)."""
+    position = cast("list[float]", _prop_value(layer.transform, "ADBE Position", time))
+    m = _rig_rotation(layer, time, space_aspect)
+    if space_aspect != 1.0:
+        m = _scale(1.0 / space_aspect, 1.0, 1.0) @ m
+    return _translation(position[0], position[1], position[2]) @ m
+
+
+def _auto_rotation(
+    layer: Layer, time: float, position: list[float]
+) -> tuple[Mat4 | None, float]:
+    """A layer's auto-orientation at comp `time`: `(3D rotation, 2D Rotate Z
+    increment)`, measured on AE 2026.
+
+    - Along its path, a 2D layer turns its X axis to the motion direction;
+      a 3D layer aims its Z axis along it (a two-node camera's look-at).
+      A layer whose Position is not animated does not turn.
+    - Towards the camera, a 3D layer aims its Z axis away from the active
+      camera (the comp's default camera without one).
+
+    Raises:
+        NotImplementedError: For separated Position dimensions along a
+            path, a parented layer turned towards the camera, and characters
+            turned towards the camera.
+    """
+    mode = layer.auto_orient
+    three_d = bool(layer._ldta.three_d_layer)
+    if mode == AutoOrientType.ALONG_PATH:
+        prop = cast("Property", layer.transform["ADBE Position"])
+        if prop.dimensions_separated:
+            raise NotImplementedError(
+                f"layer {layer.name!r} auto-orients along a path with separated "
+                "Position dimensions, which the transform math does not model"
+            )
+        direction = prop._motion_direction_at(time)
+        if direction is None:
+            return None, 0.0
+        if three_d:
+            forward = (list(direction) + [0.0, 0.0])[:3]
+            return _look_at_rotation([0.0, 0.0, 0.0], forward), 0.0
+        return None, math.degrees(math.atan2(direction[1], direction[0]))
+    if mode == AutoOrientType.CAMERA_OR_POINT_OF_INTEREST and three_d:
+        if layer.parent is not None:
+            raise NotImplementedError(
+                f"layer {layer.name!r} is parented and turned towards the "
+                "camera, which the transform math does not model"
+            )
+        return _look_at_rotation(_camera_position(layer, time), position), 0.0
+    if mode == AutoOrientType.CHARACTERS_TOWARD_CAMERA:
+        raise NotImplementedError(
+            f"layer {layer.name!r} turns its characters towards the camera, "
+            "which the transform math does not model"
+        )
+    return None, 0.0
+
+
+def _camera_position(layer: Layer, time: float) -> list[float]:
+    """World position of the camera active at `time` in `layer`'s comp:
+    the front-most enabled camera layer, else the comp's default camera."""
+    comp = layer.containing_comp
+    camera = cast("AVLayer", layer)._active_camera_at(time)
+    if camera is not None:
+        world = build_world_matrix(camera, time, as_parent=True)
+        return world.transform_point([0.0, 0.0, 0.0])
+    zoom = default_camera_zoom(comp.width, comp.pixel_aspect)
+    return [comp.width / 2.0, comp.height / 2.0, -zoom]
 
 
 # ------------------------------------------------------------------
@@ -784,38 +1022,18 @@ def camera_ray(
         direction = [comp_point[0] - cx, comp_point[1] - cy, zoom]
         return origin, direction
 
-    transform = camera.transform
-
-    def value(match_name: str) -> Any:
-        return _prop_value(transform, match_name, time)
-
-    position = cast("list[float]", value("ADBE Position"))
-    orientation = cast("list[float]", value("ADBE Orientation"))
-    rx = cast("float", value("ADBE Rotate X"))
-    ry = cast("float", value("ADBE Rotate Y"))
-    rz = cast("float", value("ADBE Rotate Z"))
-
-    rotation = Mat4.identity()
-
-    if camera.auto_orient == AutoOrientType.CAMERA_OR_POINT_OF_INTEREST:
-        # The camera's point of interest lives in the anchor-point slot.
-        poi = cast("list[float]", value("ADBE Anchor Point"))
-        rotation = _look_at_rotation(position, poi)
-    rotation = (
-        rotation
-        @ _rotate_x(orientation[0])
-        @ _rotate_y(orientation[1])
-        @ _rotate_z(orientation[2])
-        @ _rotate_x(rx)
-        @ _rotate_y(ry)
-        @ _rotate_z(rz)
-    )
+    # The camera's whole parent chain places it (AE 2026: a camera parented
+    # to a turned null casts its rays from where the null carries it).
+    world = build_world_matrix(camera, time, as_parent=True)
+    position = world.transform_point([0.0, 0.0, 0.0])
 
     camera_options = cast("PropertyGroup", camera["ADBE Camera Options Group"])
     zoom = cast("float", _prop_value(camera_options, "ADBE Camera Zoom", time))
 
-    direction = rotation.transform_vector(
-        [comp_point[0] - cx, comp_point[1] - cy, zoom]
+    # The image plane is in square pixels; the rig matrix narrows the ray
+    # back into comp pixels (see `build_local_matrix`).
+    direction = world.transform_vector(
+        [(comp_point[0] - cx) * pixel_aspect, comp_point[1] - cy, zoom]
     )
     return list(position), direction
 
@@ -825,8 +1043,10 @@ def intersect_layer_plane(
 ) -> list[float]:
     """Intersect a world-space ray with a layer's source plane.
 
-    Transforms the ray into layer space with the inverse world matrix and
-    solves against the `z=0` source plane.
+    Solves `origin + t * direction = world(u, v, 0)` for the layer
+    coordinates `(u, v)` directly, without inverting `world`: the plane
+    only needs the layer's X and Y axes, so a layer whose Z scale is 0
+    still resolves (AE 2026 answers for one).
 
     Only the FORWARD ray counts, like AE: a plane at or behind the ray's
     origin is not hit. Probed AE 2026 over a sub-0.001-unit sweep through
@@ -843,14 +1063,27 @@ def intersect_layer_plane(
     Raises:
         ValueError: If the forward ray does not meet the layer plane - it
             is parallel to the plane, or the plane is at or behind the ray
-            origin - or if the world matrix is singular.
+            origin - or if the layer plane is degenerate (an X or Y scale
+            of 0).
     """
-    inverse = world.inverse()
-    o_l = inverse.transform_point(origin)
-    d_l = inverse.transform_vector(direction)
-    if abs(d_l[2]) < _EPSILON:
+    axis_u = [world[r][0] for r in range(3)]
+    axis_v = [world[r][1] for r in range(3)]
+    rhs = [origin[r] - world[r][3] for r in range(3)]
+    neg_d = [-direction[r] for r in range(3)]
+    normal = _vec3_cross(axis_u, axis_v)
+    normal_len = _vec3_norm(normal)
+    if normal_len == 0.0:
+        raise ValueError("the layer plane is degenerate")
+    det = _det3(axis_u, axis_v, neg_d)
+    if abs(det) <= _EPSILON * normal_len * _vec3_norm(direction):
         raise ValueError("ray is parallel to the layer plane")
-    t = -o_l[2] / d_l[2]
+    t = _det3(axis_u, axis_v, rhs) / det
     if t <= 0.0:
         raise ValueError("the layer plane is not in front of the camera")
-    return [o_l[0] + t * d_l[0], o_l[1] + t * d_l[1]]
+    return [_det3(rhs, axis_v, neg_d) / det, _det3(axis_u, rhs, neg_d) / det]
+
+
+def _det3(a: list[float], b: list[float], c: list[float]) -> float:
+    """Determinant of the 3x3 matrix with columns `a`, `b`, `c`."""
+    cross = _vec3_cross(b, c)
+    return a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]

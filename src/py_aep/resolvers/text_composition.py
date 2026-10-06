@@ -256,8 +256,9 @@ def _char_styles(doc: TextDocument, raw: str) -> list[_CharStyle]:
     return out
 
 
-def _shape_stretch(text: str, style: _CharStyle) -> list[float]:
-    """Per-character advances for one same-style stretch."""
+def _shape_glyphs(text: str, style: _CharStyle) -> tuple[Any, float]:
+    """Shape one same-style stretch: the HarfBuzz buffer (one cluster per
+    character) and the font-unit-to-pixel scale."""
     font, upem = _hb_font(style.font)
     shaped_text = text.upper() if style.caps in (1, 2) else text
     if len(shaped_text) != len(text):
@@ -268,13 +269,25 @@ def _shape_stretch(text: str, style: _CharStyle) -> list[float]:
     buf.add_str(shaped_text)
     buf.guess_segment_properties()
     hb.shape(font, buf, {"liga": False, "clig": False})
-    scale = style.size / upem
-    per_cluster = [0.0] * len(shaped_text)
-    for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
+    for info in buf.glyph_infos:
         if info.codepoint == 0:
             raise CompositionUnsupported(
                 f"glyph missing from {style.font!r} for a character in {text!r}"
             )
+    return buf, style.size / upem
+
+
+def _shape_stretch(text: str, style: _CharStyle) -> list[float]:
+    """Per-character advances for one same-style stretch."""
+    return _glyph_advances(text, style, *_shape_glyphs(text, style))
+
+
+def _glyph_advances(
+    text: str, style: _CharStyle, buf: Any, scale: float
+) -> list[float]:
+    """Per-character advances of a stretch shaped by `_shape_glyphs`."""
+    per_cluster = [0.0] * len(text)
+    for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
         per_cluster[info.cluster] += pos.x_advance * scale
     advances: list[float] = []
     for i, advance in enumerate(per_cluster):

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from helpers import parse_project_fresh
 
+from py_aep.binary.composition_chunks import frame_grid
 from py_aep.models import Layer, Project, Property
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "property"
@@ -134,7 +135,7 @@ class TestRoundtripRovingTriggers:
     def test_roved_times_are_not_whole_frames(self) -> None:
         prop = _position("keyframe_roving.aep")
         prop.keyframes[3].frame_time = 199
-        units_per_frame = prop.keyframes[0]._time_scale * 256.0
+        units_per_frame = frame_grid(prop.keyframes[0]._frame_rate)[1]
         # A whole-frame-only implementation could not produce a remainder.
         assert any(time % units_per_frame != 0 for time in _times(prop)[1:3]), (
             "roved times should not all land on frame boundaries"

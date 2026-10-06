@@ -44,12 +44,14 @@ INHERITABLE = frozenset(_TRACKED) - {"opacity", "display"}
 
 
 class CssRule(NamedTuple):
-    """A parsed CSS rule: one selector with its declarations."""
+    """A parsed CSS rule: one selector with its declarations (`important`:
+    those flagged `!important`, which outrank the inline style)."""
 
     specificity: tuple[int, int, int]
     order: int
     selector: str
     declarations: dict[str, str]
+    important: dict[str, str]
 
 
 _RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
@@ -66,14 +68,14 @@ def parse_css(text: str) -> list[CssRule]:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     order = 0
     for sel_group, body in _RULE_RE.findall(text):
-        decls = _parse_declarations(body)
+        decls, important = _split_declarations(body)
         if not decls:
             continue
         for sel in sel_group.split(","):
             sel = sel.strip()
             if not sel:
                 continue
-            rules.append(CssRule(_specificity(sel), order, sel, decls))
+            rules.append(CssRule(_specificity(sel), order, sel, decls, important))
             order += 1
     return rules
 
@@ -81,10 +83,12 @@ def parse_css(text: str) -> list[CssRule]:
 _IMPORTANT_RE = re.compile(r"\s*!\s*important\s*$", re.IGNORECASE)
 
 
-def _parse_declarations(
+def _split_declarations(
     body: str, tracked: Collection[str] = _TRACKED
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str]]:
+    """`(declarations, the !important ones)` of a declaration block."""
     out: dict[str, str] = {}
+    important: dict[str, str] = {}
     for decl in body.split(";"):
         if ":" not in decl:
             continue
@@ -93,8 +97,11 @@ def _parse_declarations(
         if key in tracked:
             # Drop the CSS `!important` priority flag so it does not leak into
             # the value and break downstream color/number parsing.
-            out[key] = _IMPORTANT_RE.sub("", val).strip()
-    return out
+            flag = _IMPORTANT_RE.search(val)
+            out[key] = (val[: flag.start()] if flag else val).strip()
+            if flag:
+                important[key] = out[key]
+    return out, important
 
 
 _SEL_TOKEN_RE = re.compile(r"([#.]?)([A-Za-z0-9_*-]+)")
@@ -167,11 +174,19 @@ def resolve_properties(
     matched = [
         r for r in css_rules if selector_matches(r.selector, tag, elem_id, classes)
     ]
-    for rule in sorted(matched, key=lambda r: (r.specificity, r.order)):
+    ordered = sorted(matched, key=lambda r: (r.specificity, r.order))
+    for rule in ordered:
         style.update(rule.declarations)
 
-    # Inline style attribute (strongest).
-    if "style" in attrs:
-        style.update(_parse_declarations(attrs["style"]))
+    # Inline style attribute (strongest normal declarations).
+    inline, inline_important = _split_declarations(attrs.get("style", ""))
+    style.update(inline)
+
+    # `!important` declarations outrank every normal one: a stylesheet's
+    # over the inline style (AE 2026 imports `rect{fill:red !important}`
+    # with `style="fill:blue"` red), and an inline one over all.
+    for rule in ordered:
+        style.update(rule.important)
+    style.update(inline_important)
 
     return style

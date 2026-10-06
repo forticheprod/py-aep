@@ -43,9 +43,12 @@ def build_pdf(*layers: str, extra_objects: str = "", resources: str = "") -> byt
     ocg_first = 5
     objs: dict[int, str] = {}
     refs = " ".join(f"{ocg_first + i} 0 R" for i in range(count))
+    # Like Illustrator: `/Order` lists the layers top first, the reverse of
+    # `/OCGs`, so layer i is document index i (bottom first).
+    order = " ".join(f"{ocg_first + i} 0 R" for i in reversed(range(count)))
     objs[1] = (
         f"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [{refs}] "
-        f"/D << /ON [{refs}] /Order [{refs}] >> >> >>"
+        f"/D << /ON [{refs}] /Order [{order}] >> >> >>"
     )
     objs[2] = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
     props = " ".join(f"/MC{i} {ocg_first + i} 0 R" for i in range(count))

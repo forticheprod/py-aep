@@ -88,6 +88,7 @@ class TestSequenceFrameBoundsDerivation:
             start_frame=101,
             end_frame=148,
             frame_padding=4,
+            windows=True,
         )
         sspc = source._sspc
         sspc.start_frame = UNDEFINED_FRAME
@@ -145,6 +146,7 @@ class TestSequenceFrameBoundsDerivation:
             start_frame=101,
             end_frame=148,
             frame_padding=4,
+            windows=True,
         )
         source._sspc.start_frame = UNDEFINED_FRAME
         source._sspc.end_frame = UNDEFINED_FRAME
@@ -183,6 +185,17 @@ class TestAlphaModeWrites:
         assert source._sspc.alpha_mode_raw == raw
         assert source._sspc.premultiplied is premultiplied
         assert source.alpha_mode == mode
+
+    def test_ignore_keeps_the_flag_bit(self) -> None:
+        # AE 2026 leaves the bit as it was on Ignore: set after
+        # Premultiplied, clear after Straight (a PNG and an FBX alike).
+        source = self._png_source()
+        source.alpha_mode = AlphaMode.PREMULTIPLIED
+        source.alpha_mode = AlphaMode.IGNORE
+        assert source._sspc.premultiplied is True
+        source.alpha_mode = AlphaMode.STRAIGHT
+        source.alpha_mode = AlphaMode.IGNORE
+        assert source._sspc.premultiplied is False
 
     def test_rejected_without_an_alpha_channel(self) -> None:
         project = parse_aep(SAMPLES / "project" / "emptier.aep").project
@@ -227,6 +240,7 @@ class TestSourceModifiedStamp:
             height=64,
             duration=0.0,
             frame_rate=0.0,
+            windows=True,
         )
         assert source._sspc.source_modified == 0
 

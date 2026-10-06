@@ -244,6 +244,15 @@ class _ShapeKind(ParallelKind):
     aliases_static_value = True
     linear_ease_speed = 1.0
 
+    def held_value(self, prop: Property, time: float) -> Any:
+        # A path interpolates: a key added between two keys takes the
+        # in-between shape, not a copy of the nearest key (AE 2026: added at
+        # 0.7 s on a 0 -> 2 s LINEAR segment, [[7, 3.5], [117.5, 0],
+        # [107, 114]]).
+        if not prop.keyframes:
+            return prop._value
+        return prop.value_at_time(time)
+
     def build_value_chunk(self, prop: Property, value: Any) -> Chunk:
         if not isinstance(value, Shape):
             raise TypeError("shape value must be a Shape")
@@ -253,9 +262,10 @@ class _ShapeKind(ParallelKind):
         # Deferred import: models <-> parsers is a cycle.
         from ...parsers.specialized_properties import _parse_shape_shap
 
-        is_mask = prop.match_name == "ADBE Mask Shape"
         return _parse_shape_shap(
-            cast("ListChunk", value_chunk), prop._containing_layer, is_mask
+            cast("ListChunk", value_chunk),
+            prop._containing_layer,
+            prop if prop.match_name == "ADBE Mask Shape" else None,
         )
 
 

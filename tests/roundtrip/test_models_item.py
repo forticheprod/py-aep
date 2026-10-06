@@ -136,3 +136,42 @@ class TestProxySource:
             if getattr(i, "name", "") == "proxy_enabled" and isinstance(i, FootageItem)
         )
         assert item2.use_proxy is False
+
+    def test_proxy_assigned_byte_matches_ae(self, proxy_project: Project) -> None:
+        """idta 0x38 is 1 whenever a proxy is assigned, in use or not:
+        AE's `proxy_disabled` items store 1 with `use_proxy` False."""
+        for cls in (FootageItem, CompItem):
+            for name, assigned in (
+                ("proxy_enabled", 1),
+                ("proxy_disabled", 1),
+                ("no_proxy", 0),
+            ):
+                item = self._find(proxy_project, name, cls)
+                assert item._idta.tobytes()[0x38] == assigned, (name, cls)
+
+    def test_disable_proxy_keeps_assigned_byte(
+        self, proxy_project: Project, tmp_path: Path
+    ) -> None:
+        # AE 2026: `useProxy = false` on an item with a proxy keeps 0x38 = 1.
+        item = self._find(proxy_project, "proxy_enabled", FootageItem)
+        item.use_proxy = False
+        out = tmp_path / "proxy_disabled.aep"
+        proxy_project.save(out)
+        item2 = self._find(parse_aep(out).project, "proxy_enabled", FootageItem)
+        assert item2.use_proxy is False
+        assert item2._idta.tobytes()[0x38] == 1
+
+    def test_set_proxy_then_disable(self, proxy_project: Project) -> None:
+        # AE 2026: `setProxy(file)` then `useProxy = false` stores 0x38 = 1.
+        item = self._find(proxy_project, "no_proxy", CompItem)
+        item.set_proxy(SAMPLES_DIR.parent.parent / "assets" / "image_with_alpha.png")
+        item.use_proxy = False
+        assert item._idta.tobytes()[0x38] == 1
+
+    def test_set_proxy_to_none_clears_assigned_byte(
+        self, proxy_project: Project
+    ) -> None:
+        # AE 2026: `setProxyToNone()` stores 0x38 = 0.
+        item = self._find(proxy_project, "proxy_disabled", FootageItem)
+        item.set_proxy_to_none()
+        assert item._idta.tobytes()[0x38] == 0

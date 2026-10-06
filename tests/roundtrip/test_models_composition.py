@@ -224,8 +224,9 @@ class TestRoundtripFrameRate:
         comp = get_comp(
             parse_project_fresh(SAMPLES_DIR / "frameRate.aep"), "frameRate_30"
         )
-        with pytest.raises(ValueError, match="must be <= 99.0"):
-            comp.frame_rate = 100.0
+        # AE 2026's range is 1 to 999 ("out of range 1 to 999").
+        with pytest.raises(ValueError, match="must be <= 999.0"):
+            comp.frame_rate = 1000.0
 
 
 class TestRoundtripPixelAspect:
@@ -488,8 +489,9 @@ class TestRoundtripDisplayStartTime:
         comp = get_comp(
             parse_project_fresh(SAMPLES_DIR / "displayStart.aep"), "displayStartTime_10"
         )
-        with pytest.raises(ValueError, match="must be <= 86339.0"):
-            comp.display_start_time = 86341.0
+        # AE 2026's range is -10800 to 86400.
+        with pytest.raises(ValueError, match="must be <= 86400.0"):
+            comp.display_start_time = 86400.01
 
 
 class TestRoundtripDuration:
@@ -538,6 +540,59 @@ class TestRoundtripDuration:
         with pytest.raises(ValueError, match="must be >= 1"):
             comp.frame_duration = 0
 
+    @pytest.mark.parametrize(
+        ("fps", "frames", "dividend", "divisor"),
+        [
+            # The cdta duration AE 2026 stores after `comp.duration = frames /
+            # fps` on a new comp: the nearest frame, half a frame rounding up,
+            # in timebase units.
+            (24.0, 52.0479, 53248, 24576),
+            (24.0, 52.4, 53248, 24576),
+            (24.0, 52.5, 54272, 24576),
+            (24.0, 0.5, 1024, 24576),
+            (25.0, 52.5, 54272, 25600),
+            (29.97, 52.5, 42400, 23976),
+            (23.976, 52.0479, 52000, 23976),
+            (23.976, 52.5, 53000, 23976),
+            (59.94, 52.6, 21200, 23976),
+        ],
+    )
+    def test_duration_snaps_to_nearest_frame(
+        self, tmp_path: Path, fps: float, frames: float, dividend: int, divisor: int
+    ) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "comp_misc.aep")
+        comp = project.root_folder.add_comp("snapped", 100, 100, 1.0, 10.0, fps)
+        comp.duration = frames / fps
+        out = tmp_path / "snapped.aep"
+        project.save(out)
+        cdta = get_comp(parse_aep(out).project, "snapped")._cdta
+        assert (cdta.duration_dividend, cdta.duration_divisor) == (dividend, divisor)
+
+    def test_duration_snaps_on_a_parsed_comp(self) -> None:
+        """The reported case: an out point 52.0479 frames in at 24 fps."""
+        comp = get_comp(
+            parse_project_fresh(SAMPLES_DIR / "comp_misc.aep"), "duration_60"
+        )
+        fps = comp.frame_rate
+        comp.duration = 52.0479 / fps
+        assert comp.duration == 52 / fps
+
+    def test_duration_under_half_a_frame_keeps_one_frame(self) -> None:
+        # AE stores a zero-length composition here; py_aep keeps one frame.
+        project = parse_project_fresh(SAMPLES_DIR / "comp_misc.aep")
+        comp = project.root_folder.add_comp("short", 100, 100, 1.0, 10.0, 24.0)
+        comp.duration = 0.3 / 24
+        assert comp.duration == 1 / 24
+
+    def test_add_comp_rounds_half_a_frame_up(self) -> None:
+        # AE 2026: addComp with 52.5 frames of duration makes a 53-frame comp.
+        project = parse_project_fresh(SAMPLES_DIR / "comp_misc.aep")
+        comp = project.root_folder.add_comp("half", 100, 100, 1.0, 52.5 / 24, 24.0)
+        assert (comp._cdta.duration_dividend, comp._cdta.duration_divisor) == (
+            54272,
+            24576,
+        )
+
     def test_frame_duration_validation_rejects_non_int(self) -> None:
         comp = get_comp(
             parse_project_fresh(SAMPLES_DIR / "comp_misc.aep"), "duration_60"
@@ -546,12 +601,190 @@ class TestRoundtripDuration:
             comp.frame_duration = 300.5  # type: ignore[assignment]
 
     def test_frame_duration_validation_rejects_too_large(self) -> None:
+        # The bound is the 3-hour duration limit, not the current duration.
         comp = get_comp(
             parse_project_fresh(SAMPLES_DIR / "comp_misc.aep"), "duration_60"
         )
-        max_frames = int(comp.duration * comp.frame_rate)
-        with pytest.raises(ValueError, match="must be <="):
-            comp.frame_duration = max_frames + 1
+        with pytest.raises(ValueError, match="must be <= 10800.0"):
+            comp.frame_duration = round(10800 * comp.frame_rate) + 1
+
+    def test_frame_duration_counts_every_frame_at_ntsc(self) -> None:
+        # 52 frames at 23.976 fps: duration x the 16.16 stored rate is
+        # 51.999995, which truncation would make 51.
+        project = parse_project_fresh(SAMPLES_DIR / "comp_misc.aep")
+        comp = project.root_folder.add_comp("ntsc", 100, 100, 1.0, 10.0, 23.976)
+        comp.duration = 52 / 23.976
+        assert comp.frame_duration == 52
+
+    def test_frame_duration_can_grow(self) -> None:
+        comp = get_comp(
+            parse_project_fresh(SAMPLES_DIR / "comp_misc.aep"), "duration_60"
+        )
+        comp.frame_duration = 2000
+        assert comp.frame_duration == 2000
+        # Stored in timebase units, like AE's own durations.
+        assert (comp._cdta.duration_dividend, comp._cdta.duration_divisor) == (
+            2000 * 1024,
+            24576,
+        )
+
+
+class TestCompTimeWrites:
+    """Work area, current time and display start writes store what AE 2026
+    stores for the same call on a new 24 fps comp (timebase 24576, 1024
+    units a frame): whole timebase units, snapped to the nearest frame with
+    half a frame rounding up."""
+
+    @staticmethod
+    def _comp(fps: float = 24.0) -> CompItem:
+        project = parse_project_fresh(SAMPLES_DIR / "comp_misc.aep")
+        return project.root_folder.add_comp("timed", 100, 100, 1.0, 10.0, fps)
+
+    @pytest.mark.parametrize(
+        ("frames", "units"), [(12.24, 12288), (12.5, 13312), (12.6, 13312), (0.4, 0)]
+    )
+    def test_work_area_start(self, frames: float, units: int) -> None:
+        comp = self._comp()
+        comp.work_area_start = frames / 24
+        cdta = comp._cdta
+        assert (cdta.work_area_start_dividend, cdta.work_area_start_divisor) == (
+            units,
+            24576,
+        )
+        # A work area that ran to the end of the comp still does.
+        assert (cdta.work_area_end_dividend, cdta.work_area_end_divisor) == (
+            0xFFFFFFFF,
+            24576,
+        )
+
+    @pytest.mark.parametrize(
+        ("frames", "end"),
+        [(24.24, 36864), (24.5, 37888), (24.6, 37888), (228, 0xFFFFFFFF)],
+    )
+    def test_work_area_duration(self, frames: float, end: int) -> None:
+        # From frame 12; 228 frames reach the end, which AE stores as such.
+        comp = self._comp()
+        comp.work_area_start = 12 / 24
+        comp.work_area_duration = frames / 24
+        cdta = comp._cdta
+        assert (cdta.work_area_end_dividend, cdta.work_area_end_divisor) == (
+            end,
+            24576,
+        )
+
+    def test_work_area_start_keeps_the_duration(self) -> None:
+        comp = self._comp()
+        comp.work_area_duration = 5.0
+        comp.work_area_start = 1.0
+        assert comp.work_area_duration == 5.0
+        assert comp._cdta.work_area_end_dividend == 6 * 24576
+
+    def test_work_area_start_past_the_end(self) -> None:
+        # AE 2026 moves the start back (to frame 119, a frame short of what
+        # fits); py_aep keeps the start and ends the work area with the comp.
+        comp = self._comp()
+        comp.work_area_duration = 5.0
+        comp.work_area_start = 8.0
+        assert comp.work_area_start == 8.0
+        assert comp._cdta.work_area_end_dividend == 0xFFFFFFFF
+        assert comp.work_area_duration == 2.0
+
+    @pytest.mark.parametrize(
+        ("frames", "units"), [(12.24, 12288), (12.5, 13312), (12.6, 13312)]
+    )
+    def test_time(self, frames: float, units: int) -> None:
+        comp = self._comp()
+        comp.time = frames / 24
+        assert (comp._cdta.time_dividend, comp._cdta.time_divisor) == (units, 24576)
+
+    def test_time_may_precede_the_display_start(self) -> None:
+        # AE 2026 takes 0 to 10800 s whatever the display start.
+        comp = self._comp()
+        comp.display_start_time = 0.5
+        comp.time = 0.26
+        assert comp.time == 0.25
+
+    def test_ntsc(self) -> None:
+        comp = self._comp(23.976)
+        comp.work_area_start = 52.5 / 23.976
+        comp.work_area_duration = 24.5 / 23.976
+        comp.time = 52.5 / 23.976
+        cdta = comp._cdta
+        assert (
+            cdta.work_area_start_dividend,
+            cdta.work_area_end_dividend,
+            cdta.time_dividend,
+        ) == (53000, 78000, 53000)
+
+    @pytest.mark.parametrize(
+        ("fps", "frames", "expected"),
+        [
+            # AE 2026's displayStartFrame for the same display start time:
+            # away from zero, but 52 frames at 29.97 or 59.94 fps (a hair
+            # over 52 once stored as float32) stay 52.
+            (24.0, 12.24, 13),
+            (24.0, 12.00001, 13),
+            (24.0, 11.9999, 12),
+            (24.0, -12.24, -13),
+            (24.0, -11.9999, -12),
+            (24.0, 0.00002, 1),
+            (29.97, 52, 52),
+            (59.94, 52, 52),
+            (23.976, 52, 52),
+        ],
+    )
+    def test_display_start_frame(
+        self, fps: float, frames: float, expected: int
+    ) -> None:
+        comp = self._comp(fps)
+        comp.display_start_time = frames / fps
+        assert comp.display_start_frame == expected
+
+    @pytest.mark.parametrize(
+        ("seconds", "ratio"),
+        [(0.51, (2139095, 4194304)), (0.5, (1, 2)), (0.00002 / 24, (330, 396000001))],
+    )
+    def test_display_start_time_is_stored_as_float32(
+        self, seconds: float, ratio: tuple[int, int]
+    ) -> None:
+        comp = self._comp()
+        comp.display_start_time = seconds
+        cdta = comp._cdta
+        assert (
+            cdta.display_start_time_dividend,
+            cdta.display_start_time_divisor,
+        ) == ratio
+        # AE re-stores the work area start and current time over the
+        # timebase alongside.
+        assert (cdta.work_area_start_divisor, cdta.time_divisor) == (24576, 24576)
+
+    @pytest.mark.parametrize(
+        ("fps", "frames", "ratio"),
+        [(24.0, 13, (13312, 24576)), (29.97, 52, (41600, 23976))],
+    )
+    def test_display_start_frame_write(
+        self, fps: float, frames: int, ratio: tuple[int, int]
+    ) -> None:
+        comp = self._comp(fps)
+        comp.display_start_frame = frames
+        cdta = comp._cdta
+        assert (
+            cdta.display_start_time_dividend,
+            cdta.display_start_time_divisor,
+        ) == ratio
+        assert comp.display_start_frame == frames
+
+    def test_frame_writes_land_on_their_frame(self) -> None:
+        comp = self._comp(23.976)
+        comp.work_area_start_frame = 52
+        comp.work_area_duration_frame = 25
+        comp.frame_time = 53
+        assert (
+            comp.work_area_start_frame,
+            comp.work_area_duration_frame,
+            comp.frame_time,
+        ) == (52, 25, 53)
+        assert comp._cdta.work_area_start_dividend == 52000
 
 
 class TestRoundtripMotionBlurSamples:
@@ -1301,3 +1534,59 @@ class TestRoundtripFrameRateRetiming:
         assert [
             k._ldat_item.time_units for p in self._keyed(comp) for k in p.keyframes
         ] == before_units
+
+    @pytest.mark.parametrize(
+        ("fps", "frames", "new_fps", "dividend", "divisor"),
+        [
+            # The cdta duration AE 2026 stores after the same rate change:
+            # the nearest frame, half a frame rounding up, in units of the
+            # new timebase.
+            (24.0, 12, 25.0, 13312, 25600),
+            (24.0, 253, 25.0, 270336, 25600),
+            (30.0, 300, 23.976, 240000, 23976),
+            (23.976, 52, 24.0, 53248, 24576),
+            (24.0, 12, 30.0, 15360, 30720),
+        ],
+    )
+    def test_duration_snaps_like_ae(
+        self,
+        tmp_path: Path,
+        fps: float,
+        frames: int,
+        new_fps: float,
+        dividend: int,
+        divisor: int,
+    ) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "comp_misc.aep")
+        comp = project.root_folder.add_comp("retimed", 100, 100, 1.0, 10.0, fps)
+        comp.duration = frames / fps
+        comp.frame_rate = new_fps
+        out = tmp_path / "retimed.aep"
+        project.save(out)
+        cdta = get_comp(parse_aep(out).project, "retimed")._cdta
+        assert (cdta.duration_dividend, cdta.duration_divisor) == (dividend, divisor)
+
+    def test_work_area_and_time_snap_like_ae(self) -> None:
+        """AE 2026, 24 -> 25 fps: the work area's start (frame 12) and end
+        (frame 73) snap on their own - 13 and 76, so its 61 frames become 63,
+        not the 64 they would round to alone - and the current time snaps
+        with them. The display start is left alone."""
+        project = parse_project_fresh(SAMPLES_DIR / "comp_misc.aep")
+        comp = project.root_folder.add_comp("retimed", 100, 100, 1.0, 10.0, 24.0)
+        comp.work_area_start = 12 / 24
+        comp.work_area_duration = 61 / 24
+        comp.display_start_time = 12 / 24
+        comp.time = 12 / 24
+        comp.frame_rate = 25.0
+        cdta = comp._cdta
+        assert (cdta.work_area_start_dividend, cdta.work_area_start_divisor) == (
+            13312,
+            25600,
+        )
+        assert (cdta.work_area_end_dividend, cdta.work_area_end_divisor) == (
+            77824,
+            25600,
+        )
+        assert (cdta.time_dividend, cdta.time_divisor) == (13312, 25600)
+        assert comp.work_area_duration == pytest.approx(2.52)
+        assert comp.display_start_time == 0.5

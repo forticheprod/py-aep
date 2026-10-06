@@ -18,6 +18,7 @@ from py_aep import (
     AlphaMode,
     FieldSeparationType,
 )
+from py_aep.binary.utils import find_by_list_type
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "footage"
 
@@ -311,6 +312,18 @@ class TestFootageSettings:
         assert footage is not None
         assert footage.main_source.conform_frame_rate == 2.5
 
+    def test_conformed_duration_is_frame_count_over_rate(self) -> None:
+        # A 48-frame 23.976 movie conformed to 2.5 fps lasts exactly 48 / 2.5
+        # seconds in AE; rescaling the stored duration by the 16.16 native
+        # rate gives 19.1999983.
+        expected = load_expected(SAMPLES_DIR, "conform_frame_rate_2.5")
+        footage_json = get_footage_from_json_by_name(expected, "mov_23_976.mov")
+        footage = get_first_footage(
+            parse_project(SAMPLES_DIR / "conform_frame_rate_2.5.aep")
+        )
+        assert footage is not None
+        assert footage.duration == footage_json["duration"] == 19.2
+
     def test_loop_3(self) -> None:
         expected = load_expected(SAMPLES_DIR, "footage_misc")
         footage_json = get_footage_from_json_by_name(expected, "loop_3")
@@ -481,3 +494,31 @@ class TestImageSequenceSource:
         assert footage.main_source.file == exp_source["filePath"]
         # This sample is Windows-authored: no stray forward slash on any host.
         assert "/" not in footage.main_source.file
+
+
+class TestAlphabeticalSequence:
+    """AE 2026 imported `new_exr.0002.exr` with `forceAlphabetical`, which
+    takes every EXR in `samples/assets`, numbered alike or not."""
+
+    SAMPLE = SAMPLES_DIR / "sequence_alphabetical.aep"
+
+    def test_matches_extendscript(self) -> None:
+        expected = load_expected(SAMPLES_DIR, "sequence_alphabetical")
+        footage_json = get_footage_from_json_by_name(expected, "assets")
+        footage = get_footage(parse_project(self.SAMPLE), "assets")
+        # Named after its folder.
+        assert footage.name == footage_json["name"] == "assets"
+        assert footage.duration == footage_json["duration"]
+        assert footage.frame_rate == footage_json["frameRate"]
+        assert footage.main_source.file == footage_json["mainSource"]["filePath"]
+
+    def test_lists_its_files(self) -> None:
+        source = get_footage(parse_project(self.SAMPLE), "assets").main_source
+        assert source.file_names == [
+            "new_exr.0002.exr",
+            "new_exr.0003.exr",
+            "old_exr.00004.exr",
+        ]
+        # The StVc list's little-endian file count.
+        stvc = find_by_list_type(chunks=source._pin.chunks, list_type="StVc")
+        assert stvc.chunks[0].value == 3

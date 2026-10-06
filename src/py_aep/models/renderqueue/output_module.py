@@ -23,6 +23,7 @@ from py_aep.enums import (
     PostRenderAction,
     PostRenderActionSetting,
     ResizeQuality,
+    RQItemStatus,
 )
 from py_aep.enums.mappings import (
     map_output_audio,
@@ -44,7 +45,14 @@ from ...binary.render_chunks import (
     TiffRoptChunk,
 )
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import find_by_type, index_by_identity
+from ...binary.utils import (
+    PENDING_ASCENDCOUNT,
+    alas_platform,
+    build_als2_list,
+    dump_alas,
+    find_by_type,
+    index_by_identity,
+)
 from ...color.ocio import (
     ocio_color_space_for_profile_id,
     ocio_output_profile_id,
@@ -59,6 +67,7 @@ from ...resolvers.output import (
     resolve_output_filename,
     resolve_time_span,
 )
+from ...resolvers.platform_paths import platform_path
 from ..descriptors import ChunkField
 from ..items.composition import CompItem
 from ..validators import (
@@ -120,6 +129,20 @@ def _validate_crop(
 # Depth pairs: no-alpha <-> alpha
 _DEPTH_PLUS = {24: 32, 48: 64, 96: 128}
 _DEPTH_MINUS = {32: 24, 64: 48, 128: 96}
+
+# Audio sample encoding (1=unsigned PCM, 2=signed PCM, 3=float) AE stores
+# for each bytes-per-sample while the audio format has no channel count yet.
+_AUDIO_ENCODINGS = {1: 1, 2: 2, 4: 3}
+
+
+def _reject_24_bit_audio(value: Any, obj: OutputModule) -> None:
+    """After Effects has no 24-bit audio output: AE 2026 crashes when a
+    script sets it and reads a stored 24-bit format back as 16 Bit."""
+    if value == AudioBitDepth.TWENTY_FOUR_BIT:
+        raise ValueError(
+            "Audio Bit Depth 24 Bit is not available: After Effects has no "
+            "24-bit audio output. Use 8, 16 or 32 Bit."
+        )
 
 
 def _validate_for_format(
@@ -235,7 +258,8 @@ class OutputModule:
         AudioBitDepth,
         "_roou",
         "audio_bit_depth",
-        validate=_validate_for_format("Audio Bit Depth"),
+        validate=_validate_for_format("Audio Bit Depth", pre=_reject_24_bit_audio),
+        post_set="_sync_audio_format",
     )
 
     _audio_channels = ChunkField.enum(
@@ -308,8 +332,8 @@ class OutputModule:
         post_set="_update_output_dimensions",
     )
 
-    # Forgiving read transforms: AE-saved files can hold an out-of-enum
-    # depth (garbage bytes observed in dpx_fido.aep, frame_rate.aep) or an
+    # Forgiving read transforms: a file can hold an out-of-enum depth (AE
+    # 2026 loads a stored -16 and reports it with an empty label) or an
     # unknown format id (third-party output plugins); reads fall back to
     # the raw value, writes stay strict via validate_enum.
     _depth = ChunkField.enum(
@@ -318,6 +342,7 @@ class OutputModule:
         "depth",
         allow_out_of_enum_values=True,
         validate=_validate_for_format("Depth", pre=validate_enum(OutputColorDepth)),
+        post_set="_sync_png_options",
     )
 
     _format = ChunkField.enum(
@@ -466,7 +491,9 @@ class OutputModule:
             parent=parent,
             format_options=None,
         )
-        om._finalize_roou()  # resolve output dimensions to the comp
+        # Resolve the output rate and dimensions; a module added next to
+        # others keeps the item's skip frames.
+        om._finalize_roou()
 
         return om, lom_chunks
 
@@ -592,22 +619,22 @@ class OutputModule:
 
     @property
     def _output_audio(self) -> OutputAudio:
-        """Output audio setting (derived from two binary sources)."""
-        audio_enabled = self._roou.audio_disabled_hi != 0xFF
-        return map_output_audio(audio_enabled, bool(self._om_ldat.output_audio))
+        """Output audio setting (the On and Auto flags of the settings)."""
+        ldat = self._om_ldat
+        return map_output_audio(bool(ldat.output_audio), bool(ldat.output_audio_auto))
 
     @_output_audio.setter
     def _output_audio(self, value: OutputAudio) -> None:
         _validate_for_format("Output Audio")(value, self)
         if value == OutputAudio.OFF:
-            self._roou.audio_disabled_hi = 0xFF
+            # AE keeps the Auto flag when audio is switched off.
             self._om_ldat.output_audio = 0
         elif value == OutputAudio.AUTO:
-            self._roou.audio_disabled_hi = 0x00
             self._om_ldat.output_audio = 1
+            self._om_ldat.output_audio_auto = 1
         elif value == OutputAudio.ON:
-            self._roou.audio_disabled_hi = 0x00
-            self._om_ldat.output_audio = 0
+            self._om_ldat.output_audio = 1
+            self._om_ldat.output_audio_auto = 0
         else:
             raise ValueError(
                 f"Unsupported OutputAudio value: {value}. Expected "
@@ -705,11 +732,11 @@ class OutputModule:
         ),
         "Audio Channels": (
             lambda om: om._audio_channels,
-            lambda om, v: setattr(om._roou, "audio_channels", int(v)),
+            lambda om, v: om._write_audio_format_raw("audio_channels", int(v)),
         ),
         "Audio Bit Depth": (
             lambda om: om._audio_bit_depth,
-            lambda om, v: setattr(om._roou, "audio_bit_depth", int(v)),
+            lambda om, v: om._write_audio_format_raw("audio_bit_depth", int(v)),
         ),
         "Audio Format": (
             lambda om: _xml_options_of(om, "mpeg_audio_format"),
@@ -957,6 +984,7 @@ class OutputModule:
         if self._om_ldat.channels != old_channels:
             self._pair_depth_to_channels()
             self._apply_singleton_clamps(("Color",))
+        self._sync_png_options()
         violations = self.validate_state()
         if violations:
             self._restore_state(snapshot)
@@ -993,10 +1021,55 @@ class OutputModule:
             return
         self._pair_depth_to_channels()
         self._apply_singleton_clamps(("Color",))
+        self._sync_png_options()
+
+    def _sync_png_options(self) -> None:
+        """Keep the PNG options' alpha flag, channel count and bits per
+        channel in step with the module's Channels / Depth, as AE stores them
+        (format_options/png samples). AE 2026 renders the module's choice
+        either way. An Alpha-only module is left alone (no AE sample)."""
+        fo = self._format_options
+        if not isinstance(fo, PngFormatOptions):
+            return
+        channels = self._om_ldat.channels
+        body = fo._body
+        if channels in (int(OutputChannels.RGB), int(OutputChannels.RGBA)):
+            body.has_alpha = channels == int(OutputChannels.RGBA)
+            body.channel_count = 4 if body.has_alpha else 3
+        depth = self._roou.depth
+        if depth in (24, 32):
+            body.bit_depth = 8
+        elif depth in (48, 64):
+            body.bit_depth = 16
 
     def _clamp_audio_dependents(self) -> None:
         """Re-resolve audio settings after an `_audio_channels` write."""
+        self._sync_audio_format()
         self._apply_singleton_clamps(("Audio Sample Rate", "Audio Bit Depth"))
+
+    def _sync_audio_format(self) -> None:
+        """Fill in the `Rouu` audio-format fields AE derives from the others.
+
+        Measured on AE 2026: the format is complete once it has a channel
+        count; setting one fills an unset sample rate (48 kHz) and sample
+        size (16 Bit), and the encoding then follows the size (float for
+        32 Bit, signed PCM otherwise). Without a channel count, writing a
+        bit depth stores its encoding alone (8 Bit -> unsigned PCM).
+        """
+        roou = self._roou
+        if roou.audio_channels:
+            if roou.audio_sample_rate == -1.0:
+                roou.audio_sample_rate = 48000.0
+            if roou.audio_bit_depth not in _AUDIO_ENCODINGS:
+                roou.audio_bit_depth = int(AudioBitDepth.SIXTEEN_BIT)
+            roou.audio_encoding = 3 if roou.audio_bit_depth == 4 else 2
+        elif roou.audio_bit_depth in _AUDIO_ENCODINGS:
+            roou.audio_encoding = _AUDIO_ENCODINGS[roou.audio_bit_depth]
+
+    def _write_audio_format_raw(self, field: str, value: int) -> None:
+        """Clamp writer for a `Rouu` audio-format field (no validation)."""
+        setattr(self._roou, field, value)
+        self._sync_audio_format()
 
     @property
     def _effective_dimensions(self) -> tuple[int, int]:
@@ -1050,14 +1123,23 @@ class OutputModule:
 
         self._roou.width, self._roou.height = self._effective_dimensions
 
+    def _set_frame_rate(self) -> None:
+        """Store the output frame rate: the render frame rate divided by
+        (the item's skip frames + 1)."""
+        skip = self._parent_rqi.skip_frames
+        self._roou.frame_rate = self._effective_frame_rate / (skip + 1)
+
     def _finalize_roou(self) -> None:
         """Apply the runtime touches AE adds to a freshly built/applied Rouu.
 
-        After Effects writes two things on top of the stored format header:
-        the `applied_marker` byte, and the comp-resolved output dimensions
-        for video formats (audio-only formats keep width/height=0).
+        After Effects writes these on top of the stored format header: the
+        `applied_marker` byte, the output frame rate once the item is
+        prepared for output (AE 2026 then stores the comp rate of a 60 or
+        12.5 fps comp), and the comp-resolved output dimensions for video
+        formats (audio-only formats keep width/height=0).
         """
         self._roou.applied_marker = 1
+        self._set_frame_rate()
         if self._roou.width > 0:  # video format; audio keeps 0
             self._update_output_dimensions()
 
@@ -1262,7 +1344,10 @@ class OutputModule:
     @property
     def file_template(self) -> str:
         """The raw file path template, may contain `[compName]` and
-        `[fileExtension]` variables. Read / Write."""
+        `[fileExtension]` variables. Read / Write.
+
+        py_aep extension: a folder path set here is stored in the style of
+        the project's platform (see [parse][py_aep.parse])."""
         return self._build_file_template(
             self._folder_path, self._file_name_template, self._is_folder
         )
@@ -1270,6 +1355,9 @@ class OutputModule:
     @file_template.setter
     def file_template(self, value: str) -> None:
         validate_string(value)
+        alas = self._alas_utf8
+        if alas is None:
+            alas = self._add_output_path_record()
         if self._is_folder:
             path_sep = "\\" if "\\" in value else "/"
             last_sep = value.rfind(path_sep)
@@ -1283,16 +1371,35 @@ class OutputModule:
             folder_path = value
             file_name = ""
 
-        if self._alas_utf8 is not None:
-            text = self._alas_utf8.value
-            data = json.loads(text) if text else {}
-            if not isinstance(data, dict):
-                data = {}
-            data["fullpath"] = folder_path
-            self._alas_utf8.value = json.dumps(data)
+        data = self._alas_data
+        folder_path = platform_path(folder_path, windows=self._project._windows)
+        data["fullpath"] = folder_path
+        data["platform"] = alas_platform(folder_path)
+        data["ascendcount_base"] = PENDING_ASCENDCOUNT
+        data["ascendcount_target"] = PENDING_ASCENDCOUNT
+        alas.value = dump_alas(data)
 
         if self._file_name_utf8 is not None:
             self._file_name_utf8.value = file_name
+
+    def _add_output_path_record(self) -> Utf8Chunk:
+        """Give a module that has no output path yet (a fresh
+        `RenderQueue.add()` item) the folder `alas` record AE writes when a
+        script sets its file: a `LIST:Als2` just before the module name, the
+        settings' has-output-file bit (AE ignores the record without it), and
+        the item leaves "Needs Output" for "Queued" (measured on AE 2026)."""
+        lom_chunks = self._parent_rqi._lom.chunks
+        als2 = build_als2_list("", target_is_folder=True)
+        if self._name_utf8 is not None:
+            position = index_by_identity(lom_chunks, self._name_utf8)
+        else:
+            position = self._block_span(lom_chunks)[1]
+        lom_chunks.insert(position, als2)
+        alas = self._alas_utf8 = cast("Utf8Chunk", als2.chunks[0])
+        self._om_ldat.has_output_file = True
+        if self._parent_rqi.status == RQItemStatus.NEEDS_OUTPUT:
+            self._parent_rqi.status = RQItemStatus.QUEUED
+        return alas
 
     @property
     def _project(self) -> Project:
@@ -1467,7 +1574,7 @@ class OutputModule:
             assert isinstance(new_roou, RouuChunk)
             lom_chunks[roou_idx] = new_roou
             self._roou = new_roou
-            self._finalize_roou()  # marker bit + comp-resolved dimensions
+            self._finalize_roou()
 
         # Replace the Ropt with the template's format options (or an empty
         # Ropt for formats that have none, e.g. AIFF). Scope the search to

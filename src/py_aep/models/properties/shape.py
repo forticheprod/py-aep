@@ -5,19 +5,25 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from ...binary.ldat_chunks import ShapePoint
-from ...binary.misc_chunks import ShphChunk
+from ...binary.misc_chunks import ShphChunk, TensionItem
+from ...resolvers.roto_bezier import (
+    DEFAULT_TENSION,
+    roto_bezier_tangents,
+)
 from ..descriptors import ChunkField
 from ..validators import (
     validate_bool,
+    validate_f4_point,
     validate_normalized_float,
     validate_positive_int,
-    validate_vector2,
 )
 
 if TYPE_CHECKING:
-    from ...binary.misc_chunks import FeatherPointItem
+    from ...binary.misc_chunks import FeatherPointItem, OmtnChunk
     from ..layers.av_layer import AVLayer
     from ..layers.layer import Layer
+    from .mask_property_group import MaskPropertyGroup
+    from .property import Property
 
 
 def _interp_transform(raw: int) -> int:
@@ -151,7 +157,7 @@ class Shape:
 
         Coordinates are absolute (pixel-space), matching a shape-layer
         path. When this shape is later assigned to a mask property, the
-        property normalizes the coordinates to the composition.
+        property normalizes the coordinates to the layer.
 
         Args:
             vertices: Anchor points as `[x, y]` pairs.
@@ -163,12 +169,29 @@ class Shape:
                 line out) for every vertex.
             closed: When `True`, the first and last vertices are connected.
             feather_points: Variable-width mask feather points.
+
+        Raises:
+            ValueError: If the tangent lists do not match the vertices, or a
+                coordinate (or a vertex plus its tangent) is not a finite
+                float32: paths are stored as single-precision floats.
         """
+        validate_bool(closed)
+        if feather_points is not None and not (
+            isinstance(feather_points, list)
+            and all(isinstance(fp, FeatherPoint) for fp in feather_points)
+        ):
+            raise TypeError("feather_points must be a list of FeatherPoint")
         self._shph: ShphChunk | None = ShphChunk()
         self._shph.open = not closed
         self._is_mask = False
         self._layer: Layer | None = None
+        self._omtn: OmtnChunk | None = None
+        self._mask_path: Property | None = None
+        self._tensions: list[float] | None = None
         self._closed_fallback = closed
+        # A shape built here owns its points, so a different vertex count
+        # can rebuild them; a parsed one shares them with its file chunks.
+        self._detached = True
         self.feather_points = feather_points if feather_points is not None else []
         """List of variable-width mask feather points."""
 
@@ -176,46 +199,72 @@ class Shape:
         n = len(verts)
         in_t = in_tangents if in_tangents is not None else [[0.0, 0.0]] * n
         out_t = out_tangents if out_tangents is not None else [[0.0, 0.0]] * n
-        if len(in_t) != n or len(out_t) != n:
-            raise ValueError(
-                "in_tangents and out_tangents must match the number of vertices"
-            )
-        # Validate the coordinate pairs up front so the bounding-box pass
-        # below fails cleanly rather than on a tuple-unpack error.
-        for coords in (verts, in_t, out_t):
-            for pt in coords:
-                validate_vector2(pt)
         # Three points per vertex: vertex, out-tangent, in-tangent-of-next.
-        self._points: list[ShapePoint] | None = [ShapePoint() for _ in range(3 * n)]
-        if n:
-            self._init_bounding_box(verts, in_t, out_t)
-            # Vertices first - tangent setters read back the vertex positions.
-            self.vertices = verts
-            self.in_tangents = in_t
-            self.out_tangents = out_t
+        self._points: list[ShapePoint] | None = []
+        self._write_geometry(verts, in_t, out_t)
 
-    def _init_bounding_box(
+    def _write_geometry(
         self,
         vertices: list[list[float]],
         in_tangents: list[list[float]],
         out_tangents: list[list[float]],
     ) -> None:
-        """Set the shph bounding box to span all absolute control points.
+        """Store `vertices` (absolute) and their relative tangents.
 
-        Vertex coordinates are stored normalized to this box, so it must
-        be non-degenerate in any axis that carries a tangent offset for
-        the normalize / denormalize round-trip to be lossless.
+        The points are stored normalized to a bounding box spanning every
+        control point, so the box is recomputed from the whole new geometry:
+        a box kept from an earlier geometry cannot hold a coordinate along
+        an axis it has no extent in (a flat or single-point path would keep
+        its old values). Everything is validated before anything is written.
         """
-        assert self._shph is not None
-        xs: list[float] = []
-        ys: list[float] = []
-        for (vx, vy), (ix, iy), (ox, oy) in zip(vertices, in_tangents, out_tangents):
-            xs.extend([vx, vx + ix, vx + ox])
-            ys.extend([vy, vy + iy, vy + oy])
-        self._shph.top_left_x = min(xs)
-        self._shph.top_left_y = min(ys)
-        self._shph.bottom_right_x = max(xs)
-        self._shph.bottom_right_y = max(ys)
+        for coords in (vertices, in_tangents, out_tangents):
+            if not isinstance(coords, (list, tuple)):
+                raise ValueError("vertices and tangents must be lists of [x, y] pairs")
+            for pt in coords:
+                validate_f4_point(pt)
+        count = len(vertices)
+        if len(in_tangents) != count or len(out_tangents) != count:
+            raise ValueError(
+                "in_tangents and out_tangents must match the number of vertices"
+            )
+        assert self._shph is not None and self._points is not None
+        if 3 * count != len(self._points) and not self._detached:
+            raise ValueError(
+                f"this path has {len(self._points) // 3} vertices; to change "
+                "the vertex count assign a new Shape to the property"
+            )
+        mask_size = self._comp_size if self._is_mask else None
+        sx, sy = mask_size if mask_size is not None else (1.0, 1.0)
+        verts = [[x / sx, y / sy] for x, y in vertices]
+        ins = [
+            [vx + x / sx, vy + y / sy] for (vx, vy), (x, y) in zip(verts, in_tangents)
+        ]
+        outs = [
+            [vx + x / sx, vy + y / sy] for (vx, vy), (x, y) in zip(verts, out_tangents)
+        ]
+        for pt in ins + outs:
+            # A vertex plus its tangent can overflow even when both fit.
+            validate_f4_point(pt)
+        if 3 * count != len(self._points):
+            self._points[:] = [ShapePoint() for _ in range(3 * count)]
+        if not count:
+            return
+        xs = [p[0] for p in verts + ins + outs]
+        ys = [p[1] for p in verts + ins + outs]
+        shph = self._shph
+        shph.top_left_x, shph.top_left_y = min(xs), min(ys)
+        shph.bottom_right_x, shph.bottom_right_y = max(xs), max(ys)
+        total = len(self._points)
+        for j in range(count):
+            i = 3 * j
+            for index, (x, y) in (
+                (i, verts[j]),
+                (i + 1, outs[j]),
+                ((i - 1) % total, ins[j]),
+            ):
+                self._points[index].x, self._points[index].y = self._normalize_point(
+                    x, y
+                )
 
     @classmethod
     def _from_binary(
@@ -225,16 +274,70 @@ class Shape:
         _points: list[ShapePoint],
         _is_mask: bool = False,
         _layer: Layer | None = None,
+        _omtn: OmtnChunk | None = None,
+        _mask_path: Property | None = None,
         feather_points: list[FeatherPoint] | None = None,
     ) -> Shape:
-        """Wrap parsed shape chunks as a `Shape` view."""
+        """Wrap parsed shape chunks as a `Shape` view.
+
+        `_mask_path` is the owning Mask Path: its mask's RotoBezier switch
+        decides which tangents the shape reports.
+        """
         obj = cls.__new__(cls)
         obj._shph = _shph
         obj._points = _points
         obj._is_mask = _is_mask
         obj._layer = _layer
+        obj._omtn = _omtn
+        obj._mask_path = _mask_path
+        obj._tensions = None
+        obj._detached = False
         obj.feather_points = feather_points if feather_points is not None else []
         return obj
+
+    def _is_roto_bezier(self) -> bool:
+        """Whether this is the path of a mask whose RotoBezier switch is on."""
+        prop = self._mask_path
+        if prop is None or prop._tdb4 is None:
+            return False
+        mask = prop._parent_property
+        return (
+            mask is not None
+            and mask._is_mask
+            and cast("MaskPropertyGroup", mask).roto_bezier
+        )
+
+    def _roto_tangents(self) -> tuple[list[list[float]], list[list[float]]] | None:
+        """The tangents AE draws the path with when its mask is RotoBezier
+        (`resolvers.roto_bezier`), or `None` for any other shape."""
+        if not self._is_roto_bezier():
+            return None
+        prop = cast("Property", self._mask_path)
+        width, height = cast("AVLayer", prop._containing_layer)._mask_scale
+        vertices = self.vertices
+        tensions = self._tensions
+        if tensions is None or len(tensions) != len(vertices):
+            tensions = self._own_tensions()
+            if len(tensions) != len(vertices):
+                tensions = [DEFAULT_TENSION] * len(vertices)
+        return roto_bezier_tangents(
+            vertices,
+            self.closed,
+            tensions,
+            prop._tdb4.pixel_aspect / width,
+            1.0 / height,
+        )
+
+    def _own_tensions(self) -> list[float]:
+        """The tensions stored with this shape value (the `omtn` chunk)."""
+        if self._omtn is None:
+            return []
+        return [item.value for item in self._omtn.tensions]
+
+    def _set_tensions(self, tensions: list[float]) -> None:
+        """Store per-vertex RotoBezier tensions in this value's `omtn`."""
+        if self._omtn is not None:
+            self._omtn.tensions = [TensionItem(value=t) for t in tensions]
 
     @property
     def _comp_size(self) -> tuple[float, float] | None:
@@ -242,13 +345,13 @@ class Shape:
 
         Mask space is LAYER space, so this is the owning layer's source
         size (pinned by the psd_vector_mask_cropped fixture: a 56 px layer
-        in a 64 px comp). Read on demand rather than snapshotted at parse
-        time, so it follows the layer if its source is later replaced.
+        in a 64 px comp), or 1 x 1 on a text or shape layer (see
+        `AVLayer._mask_scale`). Read on demand rather than snapshotted at
+        parse time, so it follows the layer if its source is later replaced.
         """
         if self._layer is None:
             return None
-        layer = cast("AVLayer", self._layer)
-        return (float(layer.width), float(layer.height))
+        return cast("AVLayer", self._layer)._mask_scale
 
     def _denormalize_point(self, pt: ShapePoint) -> list[float]:
         """Convert a normalized [0,1] shape point to absolute coordinates."""
@@ -274,6 +377,11 @@ class Shape:
         The anchor points of the shape. Specify each point as an array of two
         floating-point values, and collect the point pairs into an array for the
         complete set of points.
+
+        Moving the vertices keeps each tangent relative to its vertex. A
+        shape built with `Shape()` can take a different number of vertices
+        (its tangents then reset to `[0, 0]`); one read from a project keeps
+        its vertex count, so assign a new `Shape` to the property instead.
         """
         if self._points is None or self._shph is None:
             return []
@@ -292,18 +400,16 @@ class Shape:
             return
         if not isinstance(value, (list, tuple)):
             raise ValueError("vertices must be a list of [x,y] pairs")
-        for pt in value:
-            validate_vector2(pt)
-        coords = value
-        mask_size = self._comp_size if self._is_mask else None
-        if mask_size is not None:
-            w, h = mask_size
-            coords = [[x / w, y / h] for x, y in coords]
-        for j, (x, y) in enumerate(coords):
-            i = j * 3
-            nx, ny = self._normalize_point(x, y)
-            self._points[i].x = nx
-            self._points[i].y = ny
+        if not value:
+            # AE 2026 refuses it too: "Value array does not have at least 1
+            # element(s)".
+            raise ValueError("vertices needs at least one [x, y] pair")
+        if len(value) == len(self._points) // 3:
+            in_t, out_t = self._stored_tangents(-1), self._stored_tangents(1)
+        else:
+            # A new vertex count: the old tangents belonged to other vertices.
+            in_t = out_t = [[0.0, 0.0]] * len(value)
+        self._write_geometry(list(value), in_t, out_t)
 
     @property
     def in_tangents(self) -> list[list[float]]:
@@ -318,19 +424,8 @@ class Shape:
         If the shape is in a roto_bezier mask, all tangent values are ignored and the
         tangents are automatically calculated.
         """
-        if self._points is None or self._shph is None:
-            return []
-        result: list[list[float]] = []
-        for i in range(0, len(self._points), 3):
-            v = self._denormalize_point(self._points[i])
-            in_idx = (i - 1) % len(self._points)
-            t = self._denormalize_point(self._points[in_idx])
-            result.append([t[0] - v[0], t[1] - v[1]])
-        mask_size = self._comp_size if self._is_mask else None
-        if mask_size is not None:
-            w, h = mask_size
-            result = [[x * w, y * h] for x, y in result]
-        return result
+        roto = self._roto_tangents()
+        return roto[0] if roto is not None else self._stored_tangents(-1)
 
     @in_tangents.setter
     def in_tangents(self, value: list[list[float]]) -> None:
@@ -338,21 +433,24 @@ class Shape:
             return
         if not isinstance(value, (list, tuple)):
             raise ValueError("in_tangents must be a list of [x,y] pairs")
-        for pt in value:
-            validate_vector2(pt)
-        tangents = value
+        self._write_geometry(self.vertices, list(value), self._stored_tangents(1))
+
+    def _stored_tangents(self, offset: int) -> list[list[float]]:
+        """The stored handles (which a RotoBezier mask ignores): the
+        incoming ones for `offset` -1, the outgoing ones for +1 (each handle
+        point sits beside its vertex in `_points`)."""
+        if self._points is None or self._shph is None:
+            return []
+        result: list[list[float]] = []
+        for i in range(0, len(self._points), 3):
+            v = self._denormalize_point(self._points[i])
+            t = self._denormalize_point(self._points[(i + offset) % len(self._points)])
+            result.append([t[0] - v[0], t[1] - v[1]])
         mask_size = self._comp_size if self._is_mask else None
         if mask_size is not None:
             w, h = mask_size
-            tangents = [[x / w, y / h] for x, y in tangents]
-        for j, (tx, ty) in enumerate(tangents):
-            i = j * 3
-            v = self._denormalize_point(self._points[i])
-            abs_x, abs_y = v[0] + tx, v[1] + ty
-            nx, ny = self._normalize_point(abs_x, abs_y)
-            in_idx = (i - 1) % len(self._points)
-            self._points[in_idx].x = nx
-            self._points[in_idx].y = ny
+            result = [[x * w, y * h] for x, y in result]
+        return result
 
     @property
     def out_tangents(self) -> list[list[float]]:
@@ -367,18 +465,8 @@ class Shape:
         If the shape is in a roto_bezier mask, all tangent values are ignored and the
         tangents are automatically calculated.
         """
-        if self._points is None or self._shph is None:
-            return []
-        result: list[list[float]] = []
-        for i in range(0, len(self._points), 3):
-            v = self._denormalize_point(self._points[i])
-            t = self._denormalize_point(self._points[i + 1])
-            result.append([t[0] - v[0], t[1] - v[1]])
-        mask_size = self._comp_size if self._is_mask else None
-        if mask_size is not None:
-            w, h = mask_size
-            result = [[x * w, y * h] for x, y in result]
-        return result
+        roto = self._roto_tangents()
+        return roto[1] if roto is not None else self._stored_tangents(1)
 
     @out_tangents.setter
     def out_tangents(self, value: list[list[float]]) -> None:
@@ -386,20 +474,7 @@ class Shape:
             return
         if not isinstance(value, (list, tuple)):
             raise ValueError("out_tangents must be a list of [x,y] pairs")
-        for pt in value:
-            validate_vector2(pt)
-        tangents = value
-        mask_size = self._comp_size if self._is_mask else None
-        if mask_size is not None:
-            w, h = mask_size
-            tangents = [[x / w, y / h] for x, y in tangents]
-        for j, (tx, ty) in enumerate(tangents):
-            i = j * 3
-            v = self._denormalize_point(self._points[i])
-            abs_x, abs_y = v[0] + tx, v[1] + ty
-            nx, ny = self._normalize_point(abs_x, abs_y)
-            self._points[i + 1].x = nx
-            self._points[i + 1].y = ny
+        self._write_geometry(self.vertices, self._stored_tangents(-1), list(value))
 
     @property
     def closed(self) -> bool:

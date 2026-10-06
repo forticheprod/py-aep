@@ -4,7 +4,8 @@ from __future__ import annotations
 
 
 class UnsupportedSVGError(ValueError):
-    """Raised when an SVG uses a feature py_aep cannot import.
+    """Raised when an SVG uses a feature py_aep cannot import, or cannot be
+    read at all (not well-formed XML, an unusable canvas size).
 
     The message names the offending element or feature so callers can
     report exactly what is unsupported (e.g. an unimplemented path

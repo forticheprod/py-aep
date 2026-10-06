@@ -2,26 +2,23 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import pytest
+from helpers import project_bytes
 
 import py_aep
-from py_aep.binary.chunk import write_aep
-from py_aep.binary.utils import find_by_list_type, find_by_type
-from py_aep.enums import BitsPerChannel
+from py_aep.binary.utils import find_by_type, recursive_find
+from py_aep.enums import BitsPerChannel, GpuAccelType
 
-
-def _serialize(app: py_aep.Application) -> bytes:
-    buf = io.BytesIO()
-    write_aep(buf, app.project._rifx, app.project._xmp)
-    return buf.getvalue()
-
-
-def _gpu_uuid(app: py_aep.Application) -> str:
-    gpug = find_by_list_type(chunks=app.project._rifx.chunks, list_type="gpuG")
-    return find_by_type(chunks=gpug.chunks, chunk_type="Utf8").value  # type: ignore[attr-defined]
+EMPTIER = (
+    Path(__file__).parent.parent.parent
+    / "samples"
+    / "models"
+    / "project"
+    / "emptier.aep"
+)
+VERSIONS = Path(__file__).parent.parent.parent / "samples" / "versions"
 
 
 class TestNewEmpty:
@@ -70,9 +67,42 @@ class TestNewEmpty:
         result = to_dict(py_aep.new().project)
         assert result["xmp_packet"] is None
 
-    def test_fresh_gpu_uuid(self) -> None:
-        # Each new project gets its own gpuG id rather than a baked one.
-        assert _gpu_uuid(py_aep.new()) != _gpu_uuid(py_aep.new())
+    @pytest.mark.parametrize(
+        ("platform", "gpu", "os_code", "nnhd_byte", "code_page"),
+        [
+            # AE's own File > New on Windows (emptier.aep): CUDA, AE 26
+            # writes the UTF-8 code page.
+            ("windows", GpuAccelType.CUDA, 12, 0x00, "fde9"),
+            ("macos", GpuAccelType.METAL, 14, 0x08, "0100"),
+        ],
+    )
+    def test_platform_stamps(
+        self,
+        platform: str,
+        gpu: GpuAccelType,
+        os_code: int,
+        nnhd_byte: int,
+        code_page: str,
+    ) -> None:
+        project = py_aep.new("26.0x67", platform=platform).project
+        assert project._platform == platform
+        assert project.gpu_accel_type == gpu
+        assert project._head.ae_version_os == os_code
+        assert project._nnhd._saving_platform == nnhd_byte
+        assert project._nnhd._system_code_page.to_bytes(2, "big").hex() == code_page
+
+    def test_windows_stamps_match_ae_new_project(self) -> None:
+        ae = py_aep.parse(EMPTIER).project
+        ours = py_aep.new(ae._head.version, platform="windows").project
+        assert ours.gpu_accel_type == ae.gpu_accel_type == GpuAccelType.CUDA
+        assert ours._head.ae_version_os == ae._head.ae_version_os
+        assert ours._nnhd._saving_platform == ae._nnhd._saving_platform
+        assert ours._nnhd._system_code_page == ae._nnhd._system_code_page
+
+    def test_pre_26_windows_code_page(self) -> None:
+        # Windows AE up to 25 writes code page 1252 (every AE 15-25 sample).
+        project = py_aep.new("25.6x101", platform="windows").project
+        assert project._nnhd._system_code_page == 1252
 
 
 class TestNewVersion:
@@ -120,32 +150,88 @@ class TestNewVersion:
         assert proj.expression_engine == "extendscript"  # ExEn absent -> default
 
     @pytest.mark.parametrize(
-        ("version", "format_version"),
+        ("version", "stamp"),
         [
-            ("26.0x67", 26 + 71),
-            ("25.0x1", 25 + 71),
-            ("24.0x1", 24 + 71),
-            ("23.0x1", 23 + 71),
-            ("22.0x1", 22 + 71),
+            ("26.0x67", (97, 2)),
+            ("25.0x1", (96, 9)),
+            ("24.0x1", (95, 6)),
+            ("23.0x1", (94, 9)),
+            ("22.0x1", (93, 43)),
+            ("18.0x1", (93, 29)),
+            ("17.0x1", (93, 22)),
+            ("16.0x1", (93, 5)),
+            ("15.1x69", (92, 14)),
         ],
     )
-    def test_format_version_deduced(self, version: str, format_version: int) -> None:
-        # AE gates opening on head.file_format_version (= major + 71), so
-        # new(old_version) must stamp that version's format byte.
-        head = find_by_type(
-            chunks=py_aep.new(version).project._rifx.chunks, chunk_type="head"
+    def test_format_version_per_release(
+        self, version: str, stamp: tuple[int, int]
+    ) -> None:
+        # AE gates opening on the format version and reads a file with the
+        # rules of its (format, minor) pair, so new(version) stamps the pair
+        # After Effects writes for that release.
+        head = py_aep.new(version).project._head
+        assert (head.file_format_version, head._format_subversion) == stamp
+
+    @pytest.mark.parametrize("year", ["ae2018", "ae2023", "ae2024", "ae2025", "ae2026"])
+    def test_format_version_matches_after_effects_samples(self, year: str) -> None:
+        sample = py_aep.parse(VERSIONS / year / "complete.aep")
+        head = py_aep.new(sample.version).project._head
+        saved = sample.project._head
+        assert (head.file_format_version, head._format_subversion) == (
+            saved.file_format_version,
+            saved._format_subversion,
         )
-        assert head.file_format_version == format_version  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize(
+        ("version", "has_mrid"), [("17.0x1", True), ("16.0x1", False)]
+    )
+    def test_mrid_from_ae_17(self, version: str, has_mrid: bool) -> None:
+        chunks = py_aep.new(version).project._rifx.chunks
+        assert any(c.chunk_type == "mrid" for c in chunks) is has_mrid
+
+    @pytest.mark.parametrize(
+        ("source", "ldta_size"),
+        [("new 22", 160), ("ae2022 sample", 160), ("new 23", 164)],
+    )
+    def test_new_comp_layer_records_fit_the_release(
+        self, source: str, ldta_size: int, tmp_path: Path
+    ) -> None:
+        # AE 22 writes 160-byte layer records (samples/versions/ae2022); the
+        # matte-layer field that makes them 164 arrived with AE 23. AE refuses
+        # a 22-format file holding the longer record ("chunk in file too big").
+        if source == "ae2022 sample":
+            app = py_aep.parse(VERSIONS / "ae2022" / "complete.aep")
+        else:
+            app = py_aep.new(source.split()[1] + ".0x1")
+        comp = app.project.root_folder.add_comp("Depth", 320, 240, 1.0, 2.0, 25.0)
+        comp.add_solid([1.0, 0.0, 0.0], "Red", 320, 240)
+        path = tmp_path / "comp.aep"
+        app.project.save(path)
+        reread = py_aep.parse(path).project
+        new_comp = next(c for c in reread.compositions if c.name == "Depth")
+        records = recursive_find(new_comp._item_list.chunks, chunk_type="ldta")
+        assert {len(record.tobytes()) for record in records} == {ldta_size}
+
+    def test_layer_copied_across_comps_keeps_a_22_record(self, tmp_path: Path) -> None:
+        app = py_aep.parse(VERSIONS / "ae2022" / "complete.aep")
+        source = app.project.root_folder.add_comp("Source", 320, 240, 1.0, 2.0, 25.0)
+        target = app.project.root_folder.add_comp("Target", 320, 240, 1.0, 2.0, 25.0)
+        source.add_solid([1.0, 0.0, 0.0], "Red", 320, 240).copy_to_comp(target)
+        path = tmp_path / "copy.aep"
+        app.project.save(path)
+        reread = py_aep.parse(path).project
+        copied = next(c for c in reread.compositions if c.name == "Target").layers[0]
+        assert len(copied._ldta.tobytes()) == 160
 
 
 class TestNewRoundTrip:
     def test_byte_stable(self, tmp_path: Path) -> None:
         app = py_aep.new()
-        original = _serialize(app)
+        original = project_bytes(app.project)
         path = tmp_path / "empty.aep"
         app.project.save(path)
         reparsed = py_aep.parse(path)
-        assert _serialize(reparsed) == original
+        assert project_bytes(reparsed.project) == original
 
     def test_reparse_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "empty.aep"

@@ -9,9 +9,14 @@ expressions evaluated at build time with the comp's parameters (see
 - `TB`: `cdta.internal_timebase` - `DUR_UNITS`: `round(duration * TB)`
 - `W2` / `H2`: comp center - `ZV`: `width * pixel_aspect / 0.72`
 - `PAR`: pixel aspect ratio - `FPS`: frame rate
+- `SHADOW_ALPHA`: the Markers layer's Shadow Color alpha (0 in AE 24)
+
+A `"gate"` key (in a view-layer spec or a node body) names the
+`py_aep.ae_version.ae_writes` part that node belongs to; releases that do
+not write it leave the node out.
 
 The ten viewer pseudo-layers (`DLay` / `SLay` / `CLay`) share one
-template and differ only in name, the secondary-view flag inside
+template and differ only in name, the secondary-view flag
 `ldta.reserved_8c`, the per-view `ADBE Position` value, and the
 presence of `ADBE Scale`. The `Markers` (`SecL`) layer is unique.
 
@@ -60,8 +65,8 @@ _TDB4_SPATIAL: dict[str, Any] = {
     "time_base": "$TB",
     "type_flags": 8,
     "property_category": 9,
-    "pad7b": 3,
-    "pad7c": 768,
+    "reserved_4c": 3,
+    "reserved_4d": 3,
     "spatial_marker": True,
     "expr_flags": 1,
 }
@@ -183,6 +188,15 @@ _ENVIR_APPEAR: tuple[str, str, dict[str, Any]] = _bool_prop(
     "ADBE Envir Appear in Reflect", 1.0
 )
 
+
+def _gated(
+    node: tuple[str, str, dict[str, Any]], gate: str
+) -> tuple[str, str, dict[str, Any]]:
+    """`node` restricted to the releases that write the `gate` part."""
+    kind, match_name, body = node
+    return kind, match_name, {**body, "gate": gate}
+
+
 # ---------------------------------------------------------------------------
 # Viewer layer template (Default + Front/Left/Top/Back/Right/Bottom +
 # Custom View 1-3)
@@ -203,8 +217,8 @@ def _view_layer(
     if has_scale:
         children.append(_SCALE)
     children.extend([_ROTATE_Z, _OPACITY, _ENVIR_APPEAR])
-    # reserved_8c byte 3 marks the six secondary (SLay) views.
-    secondary = b"\x01" if list_type == "SLay" else b"\x00"
+    # reserved_8c marks the six secondary (SLay) views.
+    secondary = 1 if list_type == "SLay" else 0
     return {
         "list_type": list_type,
         "name": name,
@@ -218,8 +232,10 @@ def _view_layer(
             "label": 4,
             "layer_name": name,
             "layer_type": 2,
-            "reserved_8c": b"\x00\x00\x00" + secondary + b"\x01\x00\x00\x00"
-            b"\x00\x00\x00\x01@Y\x83\x06\x0c\x180b",
+            "reserved_8c": secondary,
+            "reserved_90": 0x01000000,
+            "reserved_94": 1,
+            "reserved_98": 102.0472440944882,
             "matte_layer_id": 0,
         },
         "tdgp": {
@@ -273,7 +289,7 @@ _MARKERS_LAYER: dict[str, Any] = {
         "layer_name": "Markers",
         "blending_mode": 2,
         "layer_type": 4,
-        "reserved_8c": b"\x00\x00\x00\x00\x01" + b"\x00" * 15,
+        "reserved_90": 0x01000000,
         "matte_layer_id": 0,
     },
     "tdgp": {
@@ -397,36 +413,48 @@ _MARKERS_LAYER: dict[str, Any] = {
                 "ADBE Material Options Group",
                 {
                     "children": [
-                        _bool_prop("ADBE Casts Shadows", 0.0),
-                        _coefficient_prop("ADBE Light Transmission", 0.0),
-                        _bool_prop("ADBE Accepts Shadows", 1.0),
-                        _bool_prop("ADBE Accepts Lights", 1.0),
-                        (
-                            "prop",
-                            "ADBE Shadow Color",
-                            {
-                                "tdsb": {"enable_flags": 3},
-                                "tdsn": "-_0_/-",
-                                "tdb4": {
-                                    "dimensions": 4,
-                                    "spatial_static_flags": 7,
-                                    "value_hint_type": 2,
-                                    "value_hint_flag": 255,
-                                    "cvot_flags": 255,
-                                    "time_base": "$TB",
-                                    "type_flags": 1,
-                                    "property_category": 1,
-                                    "spatial_marker": True,
-                                },
-                                "cdat": [255.0] + [0.0] * 11,
-                            },
+                        *(
+                            _gated(node, "markers material")
+                            for node in (
+                                _bool_prop("ADBE Casts Shadows", 0.0),
+                                _coefficient_prop("ADBE Light Transmission", 0.0),
+                                _bool_prop("ADBE Accepts Shadows", 1.0),
+                                _bool_prop("ADBE Accepts Lights", 1.0),
+                                (
+                                    "prop",
+                                    "ADBE Shadow Color",
+                                    {
+                                        "tdsb": {"enable_flags": 3},
+                                        "tdsn": "-_0_/-",
+                                        "tdb4": {
+                                            "dimensions": 4,
+                                            "spatial_static_flags": 7,
+                                            "value_hint_type": 2,
+                                            "value_hint_flag": 255,
+                                            "cvot_flags": 255,
+                                            "time_base": "$TB",
+                                            "type_flags": 1,
+                                            "property_category": 1,
+                                            "spatial_marker": True,
+                                        },
+                                        "cdat": ["$SHADOW_ALPHA"] + [0.0] * 11,
+                                    },
+                                ),
+                            )
                         ),
                         _bool_prop("ADBE Appears in Reflections", 1.0),
-                        _coefficient_prop("ADBE Ambient Coefficient", 100.0),
-                        _coefficient_prop("ADBE Diffuse Coefficient", 50.0),
-                        _coefficient_prop("ADBE Specular Coefficient", 50.0),
-                        _coefficient_prop("ADBE Shininess Coefficient", 5.0),
-                        _coefficient_prop("ADBE Metal Coefficient", 100.0),
+                        *(
+                            _gated(
+                                _coefficient_prop(match_name, value), "markers material"
+                            )
+                            for match_name, value in (
+                                ("ADBE Ambient Coefficient", 100.0),
+                                ("ADBE Diffuse Coefficient", 50.0),
+                                ("ADBE Specular Coefficient", 50.0),
+                                ("ADBE Shininess Coefficient", 5.0),
+                                ("ADBE Metal Coefficient", 100.0),
+                            )
+                        ),
                         _coefficient_prop("ADBE Reflection Coefficient", 0.0),
                         _coefficient_prop("ADBE Glossiness Coefficient", 100.0),
                         _coefficient_prop("ADBE Fresnel Coefficient", 0.0),
@@ -457,7 +485,12 @@ _MARKERS_LAYER: dict[str, Any] = {
             (
                 "group",
                 "ADBE Layer Sets",
-                {"children": [], "tdsb": {"enable_flags": 3}, "tdsn": "-_0_/-"},
+                {
+                    "children": [],
+                    "tdsb": {"enable_flags": 3},
+                    "tdsn": "-_0_/-",
+                    "gate": "layer sets",
+                },
             ),
         ],
         "tdsb": {},
@@ -468,7 +501,10 @@ _MARKERS_LAYER: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 COMP_VIEW_LAYER_SPECS: list[dict[str, Any]] = [
-    _view_layer("DLay", "Default", None, has_scale=True),
+    {
+        **_view_layer("DLay", "Default", None, has_scale=True),
+        "gate": "default view layer",
+    },
     _view_layer("SLay", "Front", ("$W2", "$H2", -5000.0), has_scale=False),
     _view_layer("SLay", "Left", ("$W2 - 5000", "$H2", 0.0), has_scale=False),
     _view_layer("SLay", "Top", ("$W2", "$H2 - 5000", 0.0), has_scale=False),

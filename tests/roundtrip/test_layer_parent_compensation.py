@@ -142,11 +142,14 @@ class TestParentCameraIsAlwaysThreeD:
         assert not hasattr(camera, "three_d_layer")
         target.transform["ADBE Rotate X"].value = 20.0
         target.transform["ADBE Rotate Z"].value = 30.0
-        before = build_world_matrix(camera)
+        # A camera's world is its rig (position + rotations): its point of
+        # interest sits in the Anchor Point slot and AE 2026 remaps it into
+        # the new parent's space too, so it is no anchor to subtract.
+        before = build_world_matrix(camera, as_parent=True)
 
         camera.parent = target
 
-        assert _world_delta(before, build_world_matrix(camera)) < 1e-9
+        assert _world_delta(before, build_world_matrix(camera, as_parent=True)) < 1e-9
 
     def test_camera_compensates_through_orientation(self) -> None:
         """A camera is 3D, so it takes the 3D path: the compensation lands in

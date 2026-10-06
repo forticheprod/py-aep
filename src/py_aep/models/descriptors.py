@@ -70,9 +70,10 @@ def _enum_class(transform: Callable[..., Any] | None) -> type[IntEnum] | None:
 def enum_or_raw(convert: Callable[[Any], Any]) -> Callable[[Any], Any]:
     """Wrap a get-transform so out-of-enum stored values read back raw.
 
-    Real `.aep` files can hold values outside our enums (e.g. a garbage
-    `Rouu.depth`, or a format id from a third-party output plugin); the
-    binary is trusted, so reads must not raise. Mirrors the fallback
+    Real `.aep` files can hold values outside our enums (e.g. an output
+    depth AE keeps but has no label for, -16, or a format id from a
+    third-party output plugin); the binary is trusted, so reads must not
+    raise. Mirrors the fallback
     `_try_enum_or_int` uses for XML params.
 
     For a chunk-backed field prefer
@@ -279,7 +280,7 @@ class ChunkField(Generic[T]):
         Args:
             allow_out_of_enum_values: When `True`, a stored value outside
                 the enum reads back raw instead of raising - real `.aep`
-                files hold them (a garbage `Rouu.depth`, a format id from a
+                files hold them (an unlabelled output depth, a format id from a
                 third-party output plugin) and the binary is trusted.
                 Wrapping the transform hides the enum class from
                 `_enum_class`, so write-side membership strictness is

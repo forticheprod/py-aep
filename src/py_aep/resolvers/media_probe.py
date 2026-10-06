@@ -20,10 +20,10 @@ import zlib
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, NamedTuple
+from typing import IO, TYPE_CHECKING, NamedTuple, cast
 
 if TYPE_CHECKING:
-    from typing import Callable, Iterator
+    from typing import Any, Callable, Iterator
 
 
 class MediaInfo(NamedTuple):
@@ -40,16 +40,104 @@ class MediaInfo(NamedTuple):
     audio_sample_rate: float = 0.0
     pixel_aspect: float = 1.0
     bit_depth: int = 8
-    """Bits per channel (8, 16, 32). Read for PSD/PSB, DPX/Cineon and HEIF."""
+    """Bits per channel (8, 16, 32). Read for PSD/PSB, TIFF, DPX/Cineon and
+    HEIF."""
     layer_count: int = 0
-    """Number of layers (PSD/PSB only; 0 for a flattened document)."""
-    channels: int = 0
-    """Channel count from the file header (PSD/PSB only; 3 for RGB, 4 RGBA)."""
+    """Number of layers as After Effects counts them: a PSD/PSB's layer
+    records (0 for a flattened document); for a TIFF the layers of its
+    Photoshop layer data (tag 37724), else 1 when it has an alpha sample and
+    0 when it has none (AE 2026)."""
+    color_mode: int = 0
+    """The Photoshop colour mode of a PSD/PSB, or the one a TIFF reads as
+    (PSD/PSB and TIFF only): 0 bitmap, 1 grayscale, 2 indexed, 3 RGB,
+    4 CMYK, 9 Lab."""
+    pixel_channels: int = 0
+    """Channels in the pixel buffer whose size AE caches (PSD/PSB and TIFF):
+    the colour channels, plus one for the transparency of a PSD's layers, or
+    a TIFF's alpha sample or Photoshop layer data (AE 2026: 2 for a layered
+    gray PSD, 4 for CMYK; a flattened PSD's alpha channel does not count).
+    0 for other formats."""
     icc_profile: bytes | None = None
     """The ICC color profile the file embeds, for the formats that can carry
     one (PNG, JPEG, TIFF, PSD/PSB). After Effects records it in the footage
     `LIST:CLRS` and shows it as "Embedded"; `None` means the file carries
     none, and AE assigns a profile instead."""
+    depth: int = 0
+    """The pixel depth After Effects caches for the footage (`sspc` byte 0x3E,
+    see `SspcChunk.depth`); 0 for media without video."""
+    compression: int = 0
+    """OpenEXR only: the (first part's) compression code."""
+    channel_names: tuple[str, ...] = ()
+    """OpenEXR only: every channel, those of a named part of a multi-part
+    file prefixed with the part's name (`"Z.A"`)."""
+
+
+#: AE's depth for grayscale pixels by bits per sample (AE 2026 imports of
+#: grayscale PNG, TIFF and PSD files).
+_GRAY_DEPTHS = {1: 1, 2: 34, 4: 36, 8: 40, 16: -16, 32: -32}
+
+
+def _color_depth(has_alpha: bool, bits_per_channel: int) -> int:
+    """AE's depth for RGB pixels, or RGBA when `has_alpha` (24 / 48 / 96 and
+    32 / 64 / 128 at 8 / 16 / 32 bits per channel)."""
+    return (4 if has_alpha else 3) * bits_per_channel
+
+
+def _image_depth(has_alpha: bool, bits: int, *, gray: bool, indexed: bool) -> int:
+    """AE's depth for a TIFF or Photoshop image: RGB(A), except that without
+    alpha a grayscale one stays gray (bilevel: 0) and an indexed one keeps
+    its bits per sample (AE 2026)."""
+    if has_alpha or not (gray or indexed):
+        return _color_depth(has_alpha, bits)
+    if indexed:
+        return bits
+    return 0 if bits == 1 else _GRAY_DEPTHS.get(bits, 0)
+
+
+class _BoundedReader:
+    """A read-only binary file whose reads never ask for more than the bytes
+    left in it.
+
+    A file object allocates the size it is asked for before reading, so a
+    corrupt size field (`0xFFFFFFF0` in a 36-byte EXR) made `read(size)`
+    allocate 4 GB. Clamped, every probe's memory stays proportional to the
+    file. A seek before the start raises `ValueError`, as `io.BytesIO` does.
+    """
+
+    def __init__(self, fp: IO[bytes]) -> None:
+        self._fp = fp
+        self._size = fp.seek(0, io.SEEK_END)
+        fp.seek(0)
+
+    def read(self, size: int | None = -1) -> bytes:
+        left = max(self._size - self._fp.tell(), 0)
+        if size is None or size < 0 or size > left:
+            size = left
+        return self._fp.read(size)
+
+    def readline(self, size: int | None = -1) -> bytes:
+        return self._fp.readline(-1 if size is None else size)
+
+    def __iter__(self) -> Iterator[bytes]:
+        return iter(self._fp)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._fp.tell()}.get(whence, self._size)
+        if base + offset < 0:
+            raise ValueError(f"negative seek position {base + offset}")
+        return self._fp.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._fp.tell()
+
+
+def read_bounded(fp: IO[bytes], size: int) -> bytes:
+    """`fp.read(size)`, never asking for more than the bytes left after the
+    stream position (see `_BoundedReader` for why)."""
+    here = fp.tell()
+    end = fp.seek(0, io.SEEK_END)
+    fp.seek(here)
+    return fp.read(max(min(size, end - here), 0))
 
 
 def probe_media(file: Path, data: bytes | None = None) -> MediaInfo:
@@ -63,6 +151,8 @@ def probe_media(file: Path, data: bytes | None = None) -> MediaInfo:
     Raises:
         NotImplementedError: If header probing is not implemented for the
             file's extension.
+        ValueError: If the file is not a valid file of its format, or is
+            truncated or malformed.
     """
     suffix = file.suffix.lower()
     parser = _PARSERS.get(suffix)
@@ -71,10 +161,18 @@ def probe_media(file: Path, data: bytes | None = None) -> MediaInfo:
             f"Media-header probing is not implemented for {suffix!r}. "
             f"Supported: {', '.join(sorted(_PARSERS))}."
         )
-    if data is not None:
-        return parser(io.BytesIO(data))
-    with file.open("rb") as fp:
-        return parser(fp)
+    # The parsers trust the header layout; a truncated or corrupt file would
+    # otherwise surface as a raw struct.error / IndexError from deep inside
+    # one of them.
+    try:
+        if data is not None:
+            return parser(io.BytesIO(data))
+        with file.open("rb") as fp:
+            return parser(cast("IO[bytes]", _BoundedReader(fp)))
+    except (struct.error, IndexError) as exc:
+        raise ValueError(
+            f"{file.name}: truncated or malformed {suffix} file ({exc})"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -93,17 +191,26 @@ def _probe_png(fp: IO[bytes]) -> MediaInfo:
     if fp.read(4) != b"IHDR":
         raise ValueError("PNG missing IHDR chunk")
     width, height = struct.unpack(">II", fp.read(8))
-    fp.read(1)  # bit depth
+    bit_depth = fp.read(1)[0]
     color_type = fp.read(1)[0]
     # color_type bit 2 (value 4) means an alpha channel (types 4 and 6).
     has_alpha = bool(color_type & 4)
     fp.seek(7, 1)  # rest of IHDR (compression/filter/interlace) + its CRC
     has_trns, icc_profile = _png_color_chunks(fp)
+    # AE keeps grayscale gray and expands a palette to RGBA at any bit depth;
+    # a `tRNS` chunk adds alpha without changing the depth (AE 2026).
+    if color_type == 0:
+        depth = _GRAY_DEPTHS.get(bit_depth, 0)
+    elif color_type == 3:
+        depth = _color_depth(True, 8)
+    else:
+        depth = _color_depth(has_alpha, bit_depth)
     return MediaInfo(
         width=width,
         height=height,
         has_alpha=has_alpha or has_trns,
         icc_profile=icc_profile,
+        depth=depth,
     )
 
 
@@ -266,18 +373,54 @@ def _read_cstr(fp: IO[bytes]) -> bytes:
         out += b
 
 
+#: Version-field flag of a multi-part EXR (one header per part, then a 0 byte).
+_EXR_MULTIPART = 0x1000
+
+
 def _probe_exr(fp: IO[bytes]) -> MediaInfo:
     if fp.read(4) != _EXR_MAGIC:
         raise ValueError("Not a valid EXR file (bad magic)")
-    fp.read(4)  # version + flags
-    width = height = 0
-    has_alpha = False
-    pixel_aspect = 1.0
-    frame_rate = 0.0
+    multipart = bool(struct.unpack("<I", fp.read(4))[0] & _EXR_MULTIPART)
+    parts = [_read_exr_header(fp)]
+    while multipart:
+        if fp.read(1) in (b"", b"\x00"):  # the empty header ends the list
+            break
+        fp.seek(-1, 1)
+        parts.append(_read_exr_header(fp))
+    first = parts[0]
+    has_alpha = any(c in ("A", "a") for c in first.get("channels", ()))
+    channel_names = tuple(
+        f"{part['name']}.{c}" if part.get("name") else c
+        for part in parts
+        for c in part.get("channels", ())
+    )
+    # AE reads OpenEXR as 32-bit float, half-float channels included. Its
+    # footage size and alpha come from the first part. A luminance-only part
+    # (a lone Y channel) reads as float grayscale (AE 2026: exr/y.exr caches
+    # depth -32; Y + A reads as RGBA float, 128).
+    first_channels = set(first.get("channels", ()))
+    luminance_only = (
+        not has_alpha and "Y" in first_channels and not first_channels & {"R", "G", "B"}
+    )
+    return MediaInfo(
+        width=first.get("width", 0),
+        height=first.get("height", 0),
+        has_alpha=has_alpha,
+        pixel_aspect=first.get("pixel_aspect", 1.0),
+        frame_rate=first.get("frame_rate", 0.0),
+        depth=_GRAY_DEPTHS[32] if luminance_only else _color_depth(has_alpha, 32),
+        compression=first.get("compression", 0),
+        channel_names=channel_names,
+    )
+
+
+def _read_exr_header(fp: IO[bytes]) -> dict[str, Any]:
+    """The attributes `_probe_exr` uses from one EXR part header."""
+    out: dict[str, Any] = {}
     while True:
         name = _read_cstr(fp)
         if not name:  # empty name terminates the header
-            break
+            return out
         _read_cstr(fp)  # attribute type
         size = struct.unpack("<I", fp.read(4))[0]
         value = fp.read(size)
@@ -285,37 +428,33 @@ def _probe_exr(fp: IO[bytes]) -> MediaInfo:
         # dataWindow (actual pixel-data extent, which may be cropped/oversized).
         if name == b"displayWindow":
             x_min, y_min, x_max, y_max = struct.unpack("<iiii", value)
-            width = x_max - x_min + 1
-            height = y_max - y_min + 1
+            out["width"] = x_max - x_min + 1
+            out["height"] = y_max - y_min + 1
         elif name == b"channels":
-            has_alpha = _exr_channels_have_alpha(value)
+            out["channels"] = _exr_channel_names(value)
+        elif name == b"compression":
+            out["compression"] = value[0]
+        elif name == b"name":
+            out["name"] = value.rstrip(b"\x00").decode("utf-8", "replace")
         elif name == b"pixelAspectRatio":
-            pixel_aspect = struct.unpack("<f", value)[0]
+            out["pixel_aspect"] = struct.unpack("<f", value)[0]
         elif name == b"framesPerSecond":
             num, den = struct.unpack("<ii", value)
-            frame_rate = num / den if den else 0.0
-    return MediaInfo(
-        width=width,
-        height=height,
-        has_alpha=has_alpha,
-        pixel_aspect=pixel_aspect,
-        frame_rate=frame_rate,
-    )
+            out["frame_rate"] = num / den if den else 0.0
 
 
-def _exr_channels_have_alpha(value: bytes) -> bool:
+def _exr_channel_names(value: bytes) -> list[str]:
     """A chlist is a sequence of null-terminated channel names, each followed
     by 16 bytes of channel data, terminated by an empty name."""
+    names = []
     pos = 0
     while pos < len(value):
         end = value.find(b"\x00", pos)
         if end <= pos:  # empty name -> end of list
             break
-        name = value[pos:end]
-        if name in (b"A", b"a"):
-            return True
+        names.append(value[pos:end].decode("utf-8", "replace"))
         pos = end + 1 + 16  # skip name terminator + 16-byte channel descriptor
-    return False
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -334,31 +473,149 @@ _BIGTIFF_VALUE_FMT = {3: "H", 4: "I", 16: "Q"}
 #: TIFF tag 34675: the embedded ICC profile.
 _TIFF_ICC_TAG = 0x8773
 
+#: TIFF tag 37724: Photoshop's layer data (a layered TIFF saved by Photoshop).
+_TIFF_PHOTOSHOP_LAYERS_TAG = 0x935C
+
+#: The signature tag 37724 opens with, ahead of PSD additional-info blocks.
+_PHOTOSHOP_DATA_HEADER = b"Adobe Photoshop Document Data Block\x00"
+
+#: The Photoshop colour mode a TIFF reads as, per PhotometricInterpretation
+#: (a 1-bit grayscale TIFF is bitmap; CIELab is Lab). Measured on AE 2026
+#: (footage_depth.aep, photoshop_modes.aep).
+_TIFF_COLOR_MODES = {0: 1, 1: 1, 2: 3, 3: 2, 5: 4, 8: 9}
+
+
+def _tiff_photoshop_layer_count(
+    fp: IO[bytes], en: str, offset: int, length: int
+) -> int:
+    """The layer count of a TIFF's Photoshop layer data (tag 37724).
+
+    The tag holds PSD additional-information blocks in the TIFF's byte order
+    (a little-endian file reverses every 4-character code: `MIB8ryaL`). The
+    `Layr` block (`Lr16`/`Lr32` at 16/32 bits) opens with the signed layer
+    count. 0 when no such block is found.
+    """
+    if length < len(_PHOTOSHOP_DATA_HEADER):
+        return 0
+    end = offset + length
+    fp.seek(offset)
+    if fp.read(len(_PHOTOSHOP_DATA_HEADER)) != _PHOTOSHOP_DATA_HEADER:
+        return 0
+    while fp.tell() + 12 <= end:
+        head = fp.read(12)
+        signature, key = head[:4], head[4:8]
+        if en == "<":
+            signature, key = signature[::-1], key[::-1]
+        if signature != b"8BIM":
+            break
+        block_len = struct.unpack(en + "I", head[8:12])[0]
+        if key in _LAYER_RECORD_KEYS:
+            count_raw = fp.read(2)
+            if len(count_raw) < 2:
+                return 0
+            count: int = struct.unpack(en + "h", count_raw)[0]
+            return abs(count)
+        fp.seek(block_len + (-block_len % 4), 1)
+    return 0
+
+
+def _tiff_media_info(
+    fp: IO[bytes],
+    en: str,
+    width: int,
+    height: int,
+    samples: int,
+    bits: int,
+    bits_offset: int | None,
+    photometric: int,
+    extra_alpha: bool,
+    icc_span: tuple[int, int] | None,
+    photoshop_span: tuple[int, int] | None,
+) -> MediaInfo:
+    """`MediaInfo` of a classic TIFF or a BigTIFF, from its first IFD's tags;
+    the values stored by offset (`bits_offset`, and the `(offset, length)`
+    spans of the ICC profile and the Photoshop layer data) are read here.
+
+    AE 2026 gives a TIFF alpha for a sample beyond its colour channels, or for
+    Photoshop layer data (whose layers can be transparent), and not otherwise.
+    Without alpha a grayscale TIFF stays gray (bilevel: depth 0) and a palette
+    stays indexed; CMYK and YCbCr read as RGB. `pixel_channels` counts the
+    colour channels plus one for an extra sample marked as alpha
+    (`extra_alpha`: ExtraSamples 1 or 2, not 0 = unspecified) or for
+    Photoshop layer data. `photoshop_layers` is the layer count of that data
+    (tag 37724), `None` when the file has none; without it AE counts an
+    image with an alpha sample as one layer.
+    """
+    if bits_offset is not None:
+        fp.seek(bits_offset)
+        bits = struct.unpack(en + "H", fp.read(2))[0]
+    icc_profile = None
+    if icc_span is not None:
+        fp.seek(icc_span[0])
+        icc_profile = fp.read(icc_span[1])
+    photoshop_layers = None
+    if photoshop_span is not None:
+        photoshop_layers = _tiff_photoshop_layer_count(fp, en, *photoshop_span)
+    if not 1 <= bits <= 64:
+        raise ValueError(f"Not a valid TIFF file ({bits} bits per sample)")
+    if photometric in (0, 1, 3) and 1 < bits < 8:
+        # AE 2026 reads a 2- or 4-bit grayscale or palette TIFF as 8 bits:
+        # depth 40 (gray) / 8 (palette), an 8-bit opti and a byte-per-pixel
+        # cached size (synthetic tif_g2/g4/pal4 vs AE's import). Bilevel
+        # (1-bit) stays as it is.
+        bits = 8
+    layered = photoshop_layers is not None
+    base = _TIFF_BASE_CHANNELS.get(photometric, 3)
+    has_alpha = samples > base or layered
+    depth = _image_depth(
+        has_alpha, bits, gray=photometric in (0, 1), indexed=photometric == 3
+    )
+    # A palette image's alpha sample is not counted in the opti channels,
+    # layer count or cached size, unlike a grayscale or RGB one (AE 2026:
+    # an 8-bit palette TIFF with an ExtraSamples alpha records 1 channel,
+    # 0 layers and w * h bytes; gray + alpha records 2 channels, 1 layer).
+    counted_alpha = extra_alpha and photometric != 3
+    return MediaInfo(
+        width=width,
+        height=height,
+        has_alpha=has_alpha,
+        icc_profile=icc_profile,
+        depth=depth,
+        bit_depth=bits,
+        layer_count=photoshop_layers or int(counted_alpha),
+        color_mode=0 if bits == 1 else _TIFF_COLOR_MODES.get(photometric, 3),
+        pixel_channels=base + 1 if counted_alpha or layered else base,
+    )
+
 
 def _probe_bigtiff(fp: IO[bytes], en: str) -> MediaInfo:
     """Probe a BigTIFF (magic 43): 8-byte offsets and 20-byte IFD entries.
 
     AE reads BigTIFF, so returning 0x0 would write an unusable footage item.
-    Unlike AE's classic-TIFF path, which always reports an alpha channel, the
-    BigTIFF path honours SamplesPerPixel: a 3-sample RGB BigTIFF imports opaque
-    and a 4-sample one imports with alpha.
     """
     if struct.unpack(en + "H", fp.read(2))[0] != 8:
         raise ValueError("Unsupported BigTIFF offset size (expected 8)")
     fp.read(2)  # reserved, always 0
     fp.seek(struct.unpack(en + "Q", fp.read(8))[0])
-    width = height = samples = 0
+    width = height = 0
+    samples = bits = 1
     photometric = 2
+    extra_alpha = False
+    bits_offset: int | None = None
     icc_span: tuple[int, int] | None = None
+    photoshop_span: tuple[int, int] | None = None
     for _ in range(struct.unpack(en + "Q", fp.read(8))[0]):
         entry = fp.read(20)
         if len(entry) < 20:
             break
         tag, typ = struct.unpack(en + "HH", entry[:4])
+        length = struct.unpack_from(en + "Q", entry, 4)[0]
         if tag == _TIFF_ICC_TAG:
-            length = struct.unpack_from(en + "Q", entry, 4)[0]
             if length > 8:  # values this long are stored by offset
                 icc_span = (struct.unpack_from(en + "Q", entry, 12)[0], length)
+            continue
+        if tag == _TIFF_PHOTOSHOP_LAYERS_TAG:
+            photoshop_span = (struct.unpack_from(en + "Q", entry, 12)[0], length)
             continue
         fmt = _BIGTIFF_VALUE_FMT.get(typ)
         if fmt is None:
@@ -369,20 +626,29 @@ def _probe_bigtiff(fp: IO[bytes], en: str) -> MediaInfo:
             width = val
         elif tag == 0x0101:
             height = val
+        elif tag == 0x0102:  # BitsPerSample, one SHORT per sample
+            if length > 4:
+                bits_offset = struct.unpack_from(en + "Q", entry, 12)[0]
+            else:
+                bits = val
         elif tag == 0x0106:
             photometric = val
         elif tag == 0x0115:
             samples = val
-    icc_profile = None
-    if icc_span is not None:
-        fp.seek(icc_span[0])
-        icc_profile = fp.read(icc_span[1])
-    base = _TIFF_BASE_CHANNELS.get(photometric, 3)
-    return MediaInfo(
-        width=width,
-        height=height,
-        has_alpha=samples > base,
-        icc_profile=icc_profile,
+        elif tag == 0x0152:  # ExtraSamples: 1 / 2 = (un)associated alpha
+            extra_alpha = length <= 4 and val in (1, 2)
+    return _tiff_media_info(
+        fp,
+        en,
+        width,
+        height,
+        samples,
+        bits,
+        bits_offset,
+        photometric,
+        extra_alpha,
+        icc_span,
+        photoshop_span,
     )
 
 
@@ -400,7 +666,12 @@ def _probe_tiff(fp: IO[bytes]) -> MediaInfo:
     fp.seek(ifd_offset)
     count = struct.unpack(en + "H", fp.read(2))[0]
     width = height = 0
+    samples = bits = 1
+    photometric = 2
+    extra_alpha = False
+    bits_offset: int | None = None
     icc_span: tuple[int, int] | None = None
+    photoshop_span: tuple[int, int] | None = None
     for _ in range(count):
         entry = fp.read(12)
         tag, typ = struct.unpack(en + "HH", entry[:4])
@@ -414,15 +685,33 @@ def _probe_tiff(fp: IO[bytes]) -> MediaInfo:
             width = val
         elif tag == 0x0101:
             height = val
+        elif tag == 0x0102:  # BitsPerSample, one SHORT per sample
+            if length > 2:
+                bits_offset = struct.unpack(en + "I", entry[8:12])[0]
+            else:
+                bits = val
+        elif tag == 0x0106:
+            photometric = val
+        elif tag == 0x0115:
+            samples = val
+        elif tag == 0x0152:  # ExtraSamples: 1 / 2 = (un)associated alpha
+            extra_alpha = length <= 2 and val in (1, 2)
+        elif tag == _TIFF_PHOTOSHOP_LAYERS_TAG:
+            photoshop_span = (val, length)  # stored by offset (> 4 bytes)
         elif tag == _TIFF_ICC_TAG and length > 4:
             icc_span = (val, length)  # values this long are stored by offset
-    icc_profile = None
-    if icc_span is not None:
-        fp.seek(icc_span[0])
-        icc_profile = fp.read(icc_span[1])
-    # AE allocates an alpha channel for TIFF regardless of SamplesPerPixel.
-    return MediaInfo(
-        width=width, height=height, has_alpha=True, icc_profile=icc_profile
+    return _tiff_media_info(
+        fp,
+        en,
+        width,
+        height,
+        samples,
+        bits,
+        bits_offset,
+        photometric,
+        extra_alpha,
+        icc_span,
+        photoshop_span,
     )
 
 
@@ -463,7 +752,11 @@ def _probe_jpeg(fp: IO[bytes]) -> MediaInfo:
         fp.seek(length - 2, 1)
     icc_profile = b"".join(icc_chunks[key] for key in sorted(icc_chunks)) or None
     return MediaInfo(
-        width=width, height=height, has_alpha=False, icc_profile=icc_profile
+        width=width,
+        height=height,
+        has_alpha=False,
+        icc_profile=icc_profile,
+        depth=_color_depth(False, 8),
     )
 
 
@@ -475,10 +768,19 @@ def _probe_jpeg(fp: IO[bytes]) -> MediaInfo:
 def _probe_tga(fp: IO[bytes]) -> MediaInfo:
     header = fp.read(18)
     width, height = struct.unpack("<HH", header[12:16])
-    depth = header[16]
+    image_type, bits_per_pixel = header[2], header[16]
     # AE treats only 32-bit TGA as having alpha (16-bit's single attribute
-    # bit and 24-bit are reported as no-alpha).
-    return MediaInfo(width=width, height=height, has_alpha=depth == 32)
+    # bit and 24-bit are reported as no-alpha). A colour-mapped image stays
+    # indexed and a grayscale one gray (AE 2026; image types 9-11 are the
+    # run-length encoded 1-3).
+    has_alpha = bits_per_pixel == 32
+    if image_type in (1, 9):
+        depth = bits_per_pixel
+    elif image_type in (3, 11):
+        depth = _GRAY_DEPTHS.get(bits_per_pixel, 0)
+    else:
+        depth = _color_depth(has_alpha, 8)
+    return MediaInfo(width=width, height=height, has_alpha=has_alpha, depth=depth)
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +799,9 @@ def _probe_bmp(fp: IO[bytes]) -> MediaInfo:
         width = struct.unpack("<I", fp.read(4))[0]
         height = abs(struct.unpack("<i", fp.read(4))[0])
     # AE allocates an alpha channel for BMP regardless of bit depth.
-    return MediaInfo(width=width, height=height, has_alpha=True)
+    return MediaInfo(
+        width=width, height=height, has_alpha=True, depth=_color_depth(True, 8)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -559,8 +863,9 @@ def _probe_gif(fp: IO[bytes]) -> MediaInfo:
     if packed & 0x80:  # global colour table
         fp.seek(3 * (1 << ((packed & 0x07) + 1)), 1)
     frames, delay = _gif_frame_timing(fp)
-    if frames < 2:
-        return MediaInfo(width=width, height=height, has_alpha=True)  # a still
+    depth = _color_depth(True, 8)  # AE reads every GIF as RGBA
+    if frames < 2:  # a still
+        return MediaInfo(width=width, height=height, has_alpha=True, depth=depth)
     if delay == 0:
         # Nothing in the file says how fast an all-zero-delay GIF should run.
         # AE stretches it to roughly two seconds, giving every frame the same
@@ -574,6 +879,7 @@ def _probe_gif(fp: IO[bytes]) -> MediaInfo:
         duration=duration,
         frame_rate=round(frames / duration, 3),
         has_alpha=True,
+        depth=depth,
     )
 
 
@@ -684,7 +990,7 @@ def iter_image_resources(fp: IO[bytes]) -> Iterator[tuple[int, bytes]]:
     """
     try:
         fp.seek(struct.unpack(">I", fp.read(4))[0], 1)  # color mode data
-        section = fp.read(struct.unpack(">I", fp.read(4))[0])
+        section = read_bounded(fp, struct.unpack(">I", fp.read(4))[0])
     except struct.error:
         return
     pos = 0
@@ -736,22 +1042,88 @@ def _probe_psd(fp: IO[bytes]) -> MediaInfo:
     height, width = struct.unpack(">II", fp.read(8))
     bit_depth = struct.unpack(">H", fp.read(2))[0]
     color_mode = struct.unpack(">H", fp.read(2))[0]
+    # The PSD/PSB specification bounds these header fields; anything else is
+    # a corrupt file (and would not fit the `opti` bytes recording them).
+    if (
+        version not in (1, 2)
+        or not 1 <= channels <= 56
+        or bit_depth not in (1, 8, 16, 32)
+        or color_mode not in (0, 1, 2, 3, 4, 7, 8, 9)
+    ):
+        raise ValueError(
+            f"Not a valid PSD/PSB file (version {version}, {channels} channels, "
+            f"{bit_depth} bits, colour mode {color_mode})"
+        )
     pixel_aspect, icc_profile = _psd_image_resources(fp)
     layer_count, _ = psd_layer_record_count(fp, version == 2)
-    # AE composites a layered PSD to RGBA (alpha from layer transparency),
-    # but treats a flattened document as opaque unless it carries an alpha
-    # channel (flattened_rgb_comp.aep: AE writes alpha_mode 3 = no alpha).
+    # AE composites a layered PSD to RGBA (alpha from layer transparency)
+    # unless its bottom layer is Photoshop's Background, which has no
+    # transparency channel; a flattened document is opaque unless it carries
+    # an alpha channel (AE 2026: psd_rgb8_bg_layer.psd imports opaque,
+    # flattened_rgb_comp.aep writes alpha_mode 3 = no alpha).
+    bottom_transparent = layer_count > 0 and _psd_record_has_transparency(
+        fp, version == 2
+    )
     base_channels = _PSD_BASE_CHANNELS.get(color_mode, 3)
+    has_alpha = bottom_transparent or channels > base_channels
+    # Without alpha a bitmap document has depth 0 and an indexed one stays
+    # indexed, as for TIFF (AE 2026, photoshop_modes.aep).
+    depth = _image_depth(
+        has_alpha, bit_depth, gray=color_mode in (0, 1), indexed=color_mode == 2
+    )
     return MediaInfo(
         width=width,
         height=height,
-        has_alpha=layer_count > 0 or channels > base_channels,
+        has_alpha=has_alpha,
         bit_depth=bit_depth,
         layer_count=layer_count,
-        channels=channels,
+        color_mode=color_mode,
+        # The alpha channel of a flattened document is not counted (AE 2026,
+        # photoshop_modes.aep: psd_rgb8_flat_alpha.psd caches 3 channels).
+        pixel_channels=base_channels + 1 if bottom_transparent else base_channels,
         pixel_aspect=pixel_aspect,
         icc_profile=icc_profile,
+        depth=depth,
     )
+
+
+def _psd_record_has_transparency(fp: IO[bytes], is_psb: bool) -> bool:
+    """Whether the layer record at `fp` has a transparency channel (id -1)."""
+    fp.seek(16, 1)  # the record's bounds
+    count = struct.unpack(">H", fp.read(2))[0]
+    entry = 2 + (8 if is_psb else 4)  # channel id + data length
+    ids = fp.read(count * entry)
+    return any(struct.unpack_from(">h", ids, i * entry)[0] == -1 for i in range(count))
+
+
+def psd_layer_depth(info: MediaInfo, has_transparency: bool) -> int:
+    """After Effects' depth for one layer of a layered PSD/PSB.
+
+    A layer with transparency imports as RGBA at the document's bit depth;
+    Photoshop's Background layer (no transparency) as the opaque document
+    does (AE 2026: `psd_rgb8_bg_layer.psd` / `psd_rgb16_bg_layer.psd`).
+    """
+    if has_transparency:
+        return _color_depth(True, info.bit_depth)
+    if info.has_alpha:
+        return _color_depth(False, info.bit_depth)
+    return info.depth
+
+
+def psd_layer_channels(info: MediaInfo, has_transparency: bool) -> int:
+    """The channels After Effects counts for one raster layer of a layered
+    PSD/PSB: the document's colour channels, plus one when the layer has
+    transparency (AE 2026: a Background layer counts 3 channels, a gray
+    layer 2)."""
+    colour = _PSD_BASE_CHANNELS.get(info.color_mode, 3)
+    return colour + (1 if has_transparency else 0)
+
+
+def pixel_buffer_size(width: int, height: int, channels: int, bit_depth: int) -> int:
+    """The decoded pixel buffer After Effects caches as the data size of a
+    merged PSD/PSB, a TIFF still or one Photoshop layer:
+    `width * height * channels * bytes per channel`."""
+    return width * height * channels * (bit_depth // 8)
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +1299,7 @@ def _probe_mov(fp: IO[bytes], undecodable: frozenset[bytes] = frozenset()) -> Me
     pixel_aspect = 1.0
     audio_sample_rate = 0.0
     has_audio = has_alpha = False
+    video_bits = 8
     movie_ts = 0
     audio_elst_dur = 0.0
 
@@ -994,13 +1367,12 @@ def _probe_mov(fp: IO[bytes], undecodable: frozenset[bytes] = frozenset()) -> Me
                 # sample entry (reading them from an audio stsd gives garbage).
                 if entry.depth == 32:
                     has_alpha = True
+                video_bits = entry.bits_per_channel
                 if entry.pixel_aspect:
                     # A quarter turn maps x onto y, so the sample aspect
                     # turns with the axes.
                     pixel_aspect = (
-                        round(1 / entry.pixel_aspect, 5)
-                        if swap_axes
-                        else entry.pixel_aspect
+                        1 / entry.pixel_aspect if swap_axes else entry.pixel_aspect
                     )
                 if not samples:  # fragmented: the durations live in the moofs
                     samples, ticks = _fragment_totals(fp, track_id)
@@ -1031,6 +1403,7 @@ def _probe_mov(fp: IO[bytes], undecodable: frozenset[bytes] = frozenset()) -> Me
         has_audio=has_audio,
         audio_sample_rate=audio_sample_rate,
         pixel_aspect=pixel_aspect,
+        depth=_color_depth(has_alpha, video_bits) if width else 0,
     )
 
 
@@ -1042,6 +1415,49 @@ class _VideoSampleEntry(NamedTuple):
     height: int = 0
     depth: int = 0
     pixel_aspect: float = 0.0
+    bits_per_channel: int = 8
+    """The bits per channel AE decodes the codec at."""
+
+
+#: Apple ProRes sample-entry codes. AE decodes ProRes at 16 bits per channel
+#: (AE 2026 imports of its own ProRes 422 and 4444 renders).
+_PRORES_CODECS = frozenset({b"apco", b"apcs", b"apcn", b"apch", b"ap4h", b"ap4x"})
+
+#: H.264 profiles whose sequence parameter set carries the bit depth.
+_AVC_HIGH_PROFILES = frozenset(
+    {100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135}
+)
+
+
+def _avc_bit_depth(data: bytes, body: int, end: int) -> int:
+    """Luma bit depth of the first sequence parameter set of an `avcC` box.
+
+    AE decodes H.264 above 8 bits at 16 bits per channel (a High 10
+    `mov_23_976.mov` caches depth 48, 8-bit High profile files 24).
+    """
+    if body + 8 > end or not data[body + 5] & 0x1F:
+        return 8
+    sps_end = min(body + 8 + _u(data, body + 6, 2), end)
+    # Drop the NAL header byte and the emulation-prevention bytes.
+    rbsp = data[body + 9 : sps_end].replace(b"\x00\x00\x03", b"\x00\x00")
+    if len(rbsp) < 4 or rbsp[0] not in _AVC_HIGH_PROFILES:
+        return 8
+    bits = "".join(f"{byte:08b}" for byte in rbsp[3:16])
+    _, pos = _exp_golomb(bits, 0)  # seq_parameter_set_id
+    chroma_format, pos = _exp_golomb(bits, pos)
+    if chroma_format == 3:  # 4:4:4 adds the separate-colour-plane flag
+        pos += 1
+    luma_minus8, _ = _exp_golomb(bits, pos)
+    return 8 + luma_minus8
+
+
+def _exp_golomb(bits: str, pos: int) -> tuple[int, int]:
+    """Read one unsigned Exp-Golomb code from a bit string: `(value, end)`."""
+    zeros = 0
+    while pos + zeros < len(bits) and bits[pos + zeros] == "0":
+        zeros += 1
+    start = pos + zeros
+    return int(bits[start : start + zeros + 1] or "1", 2) - 1, start + zeros + 1
 
 
 def _parse_stsd(data: bytes, body: int, end: int) -> _VideoSampleEntry:
@@ -1057,14 +1473,20 @@ def _parse_stsd(data: bytes, body: int, end: int) -> _VideoSampleEntry:
     height = _u(data, entry + 34, 2) if entry + 36 <= end else 0
     depth = _u(data, entry + 82, 2) if entry + 84 <= end else 0
     pixel_aspect = 0.0
-    # pasp extension atom lives after the 86-byte base video sample entry.
-    for atype, b, _e in _atoms(data, entry + 86, min(entry + entry_size, end)):
+    bits_per_channel = 16 if codec in _PRORES_CODECS else 8
+    # Extension atoms (pasp, avcC) live after the 86-byte base video entry.
+    for atype, b, e in _atoms(data, entry + 86, min(entry + entry_size, end)):
         if atype == b"pasp":
             h_spacing = _u(data, b, 4)
             v_spacing = _u(data, b + 4, 4)
             if v_spacing:
-                pixel_aspect = round(h_spacing / v_spacing, 5)
-    return _VideoSampleEntry(codec, width, height, depth, pixel_aspect)
+                # Unrounded: AE stores the exact ratio (4:3 -> 4/3).
+                pixel_aspect = h_spacing / v_spacing
+        elif atype == b"avcC" and _avc_bit_depth(data, b, e) > 8:
+            bits_per_channel = 16
+    return _VideoSampleEntry(
+        codec, width, height, depth, pixel_aspect, bits_per_channel
+    )
 
 
 #: Video sample-entry codes AE 2026's Media Core `.mp4` importer cannot
@@ -1130,7 +1552,12 @@ def _probe_fbx(fp: IO[bytes]) -> MediaInfo:
     # AE imports an FBX as a 1920x1080, 30 fps, 30 s 3D scene regardless of the
     # scene's authored render settings, and re-reads the geometry on open.
     return MediaInfo(
-        width=1920, height=1080, duration=30.0, frame_rate=30.0, has_alpha=True
+        width=1920,
+        height=1080,
+        duration=30.0,
+        frame_rate=30.0,
+        has_alpha=True,
+        depth=_color_depth(True, 8),
     )
 
 
@@ -1462,6 +1889,7 @@ def _probe_swf(fp: IO[bytes]) -> MediaInfo:
         duration=duration,
         frame_rate=frame_rate,
         has_alpha=True,
+        depth=_color_depth(True, 8),
     )
 
 
@@ -1577,6 +2005,7 @@ def _probe_mpeg(fp: IO[bytes]) -> MediaInfo:
         frame_rate=fps,
         has_audio=has_audio,
         pixel_aspect=pixel_aspect,
+        depth=_color_depth(False, 8),
     )
 
 
@@ -1603,7 +2032,59 @@ def _probe_hdr(fp: IO[bytes]) -> MediaInfo:
     dims = {parts[0][-1:]: int(parts[1]), parts[2][-1:]: int(parts[3])}
     if b"X" not in dims or b"Y" not in dims:
         raise ValueError("Cannot parse HDR resolution line (missing X or Y axis)")
-    return MediaInfo(width=dims[b"X"], height=dims[b"Y"])
+    # Radiance RGBE is floating-point RGB.
+    return MediaInfo(width=dims[b"X"], height=dims[b"Y"], depth=_color_depth(False, 32))
+
+
+# ---------------------------------------------------------------------------
+# Canon CRW (CIFF) - Camera Raw still
+# ---------------------------------------------------------------------------
+
+_CIFF_IMAGE_INFO = 0x1810
+
+
+def _probe_crw(fp: IO[bytes]) -> MediaInfo:
+    data = fp.read()
+    order = {b"II": "<", b"MM": ">"}.get(data[:2])
+    if order is None or data[6:14] != b"HEAPCCDR":
+        raise ValueError("Not a Canon CRW file (missing CIFF heap header)")
+    (header_length,) = struct.unpack(order + "I", data[2:6])
+    info = _ciff_record(data, order, header_length, len(data), _CIFF_IMAGE_INFO)
+    if info is None:
+        raise ValueError("CRW file has no ImageInfo record")
+    # Camera Raw develops the image at the ImageInfo size, turned by its
+    # rotation (AE 2026 reports a CRW marked 90 or 270 degrees upright).
+    width, height, _pixel_aspect, rotation = struct.unpack(order + "IIfi", info[:16])
+    if rotation % 180 == 90:
+        width, height = height, width
+    # AE 2026 caches a developed raw as 16-bit RGB (crw.crw: depth 48).
+    return MediaInfo(width=width, height=height, depth=_color_depth(False, 16))
+
+
+def _ciff_record(
+    data: bytes, order: str, start: int, end: int, wanted: int
+) -> bytes | None:
+    """The body of the first `wanted` record in the CIFF heap `[start, end)`."""
+    (table,) = struct.unpack(order + "I", data[end - 4 : end])
+    table += start
+    (count,) = struct.unpack(order + "H", data[table : table + 2])
+    for i in range(count):
+        entry = table + 2 + i * 10
+        tag, size, offset = struct.unpack(order + "HII", data[entry : entry + 10])
+        if tag & 0xC000:  # value stored in the entry itself: not a heap
+            continue
+        body = start + offset
+        if tag & 0x3800 in (0x2800, 0x3000):  # a sub-heap
+            if size >= end - start:
+                # A sub-heap lies inside its parent; one that does not would
+                # recurse forever on a malformed file.
+                raise ValueError("CRW file has a malformed CIFF heap")
+            found = _ciff_record(data, order, body, body + size, wanted)
+            if found is not None:
+                return found
+        elif tag & 0x3FFF == wanted:
+            return data[body : body + size]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1615,12 +2096,21 @@ _MEDIABOX_RE = re.compile(
 )
 
 
+#: AE 2026 caches AI/EPS/PDF footage, and each of its layers, as 8-bit RGBA.
+_VECTOR_DEPTH = _color_depth(True, 8)
+
+
 def _probe_pdf(fp: IO[bytes]) -> MediaInfo:
     m = _MEDIABOX_RE.search(fp.read())
     if m is None:
-        return MediaInfo(has_alpha=True)
+        return MediaInfo(has_alpha=True, depth=_VECTOR_DEPTH)
     x0, y0, x1, y1 = (float(g) for g in m.groups())
-    return MediaInfo(width=round(x1 - x0), height=round(y1 - y0), has_alpha=True)
+    return MediaInfo(
+        width=round(x1 - x0),
+        height=round(y1 - y0),
+        has_alpha=True,
+        depth=_VECTOR_DEPTH,
+    )
 
 
 def _probe_eps(fp: IO[bytes]) -> MediaInfo:
@@ -1643,7 +2133,7 @@ def _probe_eps(fp: IO[bytes]) -> MediaInfo:
                     width, height = round(urx - llx), round(ury - lly)
         elif line.startswith(b"%%EndComments"):
             break
-    return MediaInfo(width=width, height=height, has_alpha=True)
+    return MediaInfo(width=width, height=height, has_alpha=True, depth=_VECTOR_DEPTH)
 
 
 def _probe_text(fp: IO[bytes]) -> MediaInfo:
@@ -1793,7 +2283,14 @@ def _probe_wmv(fp: IO[bytes]) -> MediaInfo:
         has_audio=has_audio,
         audio_sample_rate=audio_sample_rate,
         pixel_aspect=pixel_aspect,
+        depth=_color_depth(False, 8) if width else 0,
     )
+
+
+def _deep_color_depth(has_alpha: bool, bit_depth: int) -> int:
+    """`_color_depth` for a file of `bit_depth` bits per channel: AE decodes
+    anything deeper than 8 bits at 16 (AE 2026: 10- and 12-bit DPX are 48)."""
+    return _color_depth(has_alpha, 8 if bit_depth <= 8 else 16)
 
 
 def _probe_dpx_cineon(fp: IO[bytes]) -> MediaInfo:
@@ -1837,7 +2334,11 @@ def _probe_dpx_cineon(fp: IO[bytes]) -> MediaInfo:
             if desc in (4, 51, 52):
                 has_alpha = True
         return MediaInfo(
-            width=width, height=height, bit_depth=bit_depth, has_alpha=has_alpha
+            width=width,
+            height=height,
+            bit_depth=bit_depth,
+            has_alpha=has_alpha,
+            depth=_deep_color_depth(has_alpha, bit_depth),
         )
 
     # --- Cineon (SMPTE V4.5) ---
@@ -1858,7 +2359,11 @@ def _probe_dpx_cineon(fp: IO[bytes]) -> MediaInfo:
                 bit_depth = bits
                 width, height = w, h
         return MediaInfo(
-            width=width, height=height, bit_depth=bit_depth, has_alpha=has_alpha
+            width=width,
+            height=height,
+            bit_depth=bit_depth,
+            has_alpha=has_alpha,
+            depth=_deep_color_depth(has_alpha, bit_depth),
         )
 
     raise ValueError("Not a valid DPX/Cineon file (bad magic number)")
@@ -1919,7 +2424,11 @@ def _probe_heif(fp: IO[bytes]) -> MediaInfo:
     if width == 0:
         raise ValueError("Not a valid HEIF file (no ispe box found)")
     return MediaInfo(
-        width=width, height=height, bit_depth=bit_depth, has_alpha=has_alpha
+        width=width,
+        height=height,
+        bit_depth=bit_depth,
+        has_alpha=has_alpha,
+        depth=_deep_color_depth(has_alpha, bit_depth),
     )
 
 
@@ -1940,6 +2449,7 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".mpeg": _probe_mpeg,
     ".mpg": _probe_mpeg,
     ".hdr": _probe_hdr,
+    ".crw": _probe_crw,
     ".ai": _probe_text,
     ".eps": _probe_text,
     ".pdf": _probe_text,

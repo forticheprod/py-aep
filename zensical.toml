@@ -14,6 +14,7 @@ nav = [
     { "Differences from ExtendScript" = "differences.md" },
     { "Known Limitations" = "limitations.md" },
     { "CLI Tools" = "cli.md" },
+    { "File Format" = "file_format.md" },
     { "API Reference" = [
         { "Overview" = "api/index.md" },
         { "Parsers" = "api/parsers.md" },

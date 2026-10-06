@@ -30,6 +30,7 @@ from ..models.layers.light_layer import LightLayer
 from ..models.layers.parametric_mesh_layer import ParametricMeshLayer
 from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
+from ..models.layers.three_d_model_layer import ThreeDModelLayer
 from ..models.properties.property import Property
 from ..models.properties.property_group import (
     PropertyGroup,
@@ -37,6 +38,7 @@ from ..models.properties.property_group import (
     _derive_layer_styles_enabled,
     _reorder_and_fill,
 )
+from ..resolvers.transform import default_camera_zoom
 from .property import (
     _PARAMETRIC_MESH_TOP_LEVEL_SPECS,
     _SKIP_FOR_CAMERA,
@@ -156,10 +158,14 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
     comp_h = layer.containing_comp.height
     if isinstance(layer, AVLayer):
         if (
-            isinstance(layer, (TextLayer, ShapeLayer, ParametricMeshLayer))
+            isinstance(
+                layer, (TextLayer, ShapeLayer, ParametricMeshLayer, ThreeDModelLayer)
+            )
             or layer.null_layer
         ):
-            # Source-less AVLayers: anchor defaults to origin
+            # Source-less AVLayers: anchor defaults to origin. So does a 3D
+            # model layer, whose anchor is in model space (AE 2026 reports
+            # [0, 0, 0] for an untouched one).
             anchor_w = 0
             anchor_h = 0
         else:
@@ -169,10 +175,18 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
         anchor_w = comp_w
         anchor_h = comp_h
 
+    # A camera AE never moved sits on its default comp-camera spot, one
+    # zoom in front of the comp plane (AE 2026 reports z = -width * PAR /
+    # 0.72 for an unstored camera Position).
+    position_z = 0.0
+    if isinstance(layer, CameraLayer):
+        comp = layer.containing_comp
+        position_z = -round(default_camera_zoom(comp.width, comp.pixel_aspect), 8)
+
     # Spatial defaults depend on layer dimensions.
     spatial_defaults: dict[str, list[float] | float] = {
         "ADBE Anchor Point": [anchor_w / 2.0, anchor_h / 2.0, 0.0],
-        "ADBE Position": [comp_w / 2.0, comp_h / 2.0, 0.0],
+        "ADBE Position": [comp_w / 2.0, comp_h / 2.0, position_z],
         "ADBE Position_0": comp_w / 2.0,
         "ADBE Position_1": comp_h / 2.0,
     }

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from attrs import define, fields
 
-from .bin_utils import read_bytes, to_dividend_divisor
+from .bin_utils import read_bytes, to_dividend_divisor, to_fixed_16_16
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import (
@@ -72,13 +72,11 @@ class RouuChunk(Chunk):
     format_id: str = ascii_field(4, default="TIF ")
     """Output format 4-char identifier (e.g. '.AVI', 'H264', 'png!')."""
 
-    _reserved_1e: bytes = bytes_field(2, repr=False)
-    _reserved_20: bytes = bytes_field(4, repr=False)
-    width: int = u2_field(default=100)
+    _reserved_1e: bytes = bytes_field(4, repr=False)
+    width: int = u4_field(default=100)
     """Output width (0 when video disabled)."""
 
-    _reserved_26: bytes = bytes_field(2, repr=False)
-    height: int = u2_field(default=100)
+    height: int = u4_field(default=100)
     """Output height (0 when video disabled)."""
 
     _reserved_2a: bytes = bytes_field(15, repr=False)
@@ -86,12 +84,13 @@ class RouuChunk(Chunk):
     """Set to 1 once AE applies the format header to a render queue item;
     0 in prefs-stored output module templates."""
 
-    _reserved_3a: bytes = bytes_field(9, repr=False)
-    frame_rate: int = u1_field(default=30)
-    depth: int = s4_field(default=32)
-    """Color depth in total bits-per-pixel as a signed 4-byte big-endian value:
-    24=Millions/8bpc, 48=Trillions/16bpc, 96=Floating/32bpc, and -32 for the
-    32bpc single-channel `Floating Point Gray` depth."""
+    _reserved_3a: bytes = bytes_field(8, repr=False)
+    frame_rate_integer: int = u2_field(default=30)
+    frame_rate_fractional: int = u2_field()
+    depth: int = s2_field(default=32)
+    """Color depth in total bits per pixel: 24=Millions/8bpc,
+    48=Trillions/16bpc, 96=Floating/32bpc, `+` variants with alpha, and -32
+    (`FF E0`) for `Floating Point Gray`."""
 
     _reserved_48: bytes = bytes_field(5, default=b"\x01\x01\x00\x00\x00", repr=False)
     color_premultiplied: int = u1_field(default=1)
@@ -101,21 +100,18 @@ class RouuChunk(Chunk):
         18, default=b"FIEL\x00\x01" + b"\x00" * 12, repr=False
     )
     audio_sample_rate: float = f8_field(default=-1.0)
-    """Audio sample rate in Hz (e.g. 44100.0, 48000.0)."""
+    """Audio sample rate in Hz (e.g. 44100.0, 48000.0); -1 while unset."""
 
-    audio_disabled_hi: int = u1_field(default=255)
-    """0xFF when audio is disabled."""
+    audio_encoding: int = u2_field(default=0xFFFF)
+    """Audio sample encoding: 1=unsigned PCM, 2=signed PCM, 3=float;
+    0xFFFF while unset."""
 
-    audio_format: int = u1_field(default=255)
-    """Audio format: 2=16-bit, 3=24-bit, 4=32-bit."""
+    audio_bit_depth: int = u2_field(default=0xFFFF)
+    """Audio bytes per sample: 1=8-bit, 2=16-bit, 4=32-bit; 0xFFFF while
+    unset."""
 
-    _reserved_6e: int = u1_field(default=255, repr=False)
-    audio_bit_depth: int = u1_field(default=255)
-    """Audio bit depth: 1=8-bit, 2=16-bit, 4=32-bit."""
-
-    _reserved_70: int = u1_field(repr=False)
-    audio_channels: int = u1_field()
-    """1=mono, 2=stereo."""
+    audio_channels: int = u2_field()
+    """1=mono, 2=stereo; 0 while the audio format is unset."""
 
     # The 40 bytes AE writes after the audio fields (offset 0x72..0x99); carries
     # a few audio-config sub-bytes that vary by codec. The default is the
@@ -129,6 +125,16 @@ class RouuChunk(Chunk):
         optional=True,
         repr=False,
     )
+
+    @property
+    def frame_rate(self) -> float:
+        """Output frame rate, 16.16 fixed point (integer + fractional/65536):
+        the render frame rate divided by (skip frames + 1)."""
+        return self.frame_rate_integer + self.frame_rate_fractional / 65536.0
+
+    @frame_rate.setter
+    def frame_rate(self, value: float) -> None:
+        self.frame_rate_integer, self.frame_rate_fractional = to_fixed_16_16(value)
 
 
 # ---------------------------------------------------------------------------
@@ -190,9 +196,6 @@ _JPEG_PAD = bytes.fromhex(
 _TARGA_PAD = (
     bytes.fromhex("002e000000540400") + b"\x00" * 9 + b"\x36" + b"\x00" * 54 + b"\x01"
 )
-_PNG_TRAILING = (
-    bytes.fromhex("00000006") + b"\x00" * 8 + bytes.fromhex("00000004") + b"\x00" * 272
-)
 
 
 @define
@@ -207,7 +210,7 @@ class CineonRoptChunk(RoptChunk):
     _pad: bytes = bytes_field(
         10, default=bytes.fromhex("00030000003000000000"), repr=False
     )
-    ten_bit_black_point: int = u2_field(default=1)
+    ten_bit_black_point: int = u2_field()
     ten_bit_white_point: int = u2_field(default=1023)
     converted_black_point: float = f8_field(default=0.0)
     converted_white_point: float = f8_field(default=1.0)
@@ -250,7 +253,7 @@ class OpenExrRoptChunk(RoptChunk):
     thirty_two_bit_float: bool = bool_field()
     luminance_chroma: bool = bool_field()
     _pad_11: bytes = bytes_field(1, repr=False)
-    dwa_compression_level: float = f4_field(default=0.0, endian="<")
+    dwa_compression_level: float = f4_field(default=45.0, endian="<")
     _pad_end: bytes = bytes_field(56, repr=False)
 
 
@@ -310,7 +313,17 @@ class PngRoptChunk(RoptChunk):
     _pad2: bytes = bytes_field(2, repr=False)
     bit_depth: int = u2_field(default=16)
     compression: int = u4_field()
-    _pad_end: bytes = bytes_field(288, default=_PNG_TRAILING, repr=False)
+    _flags: int = u4_field(default=6, repr=False)
+    """Bit 2 = `has_alpha`; bit 1 is always set."""
+
+    _reserved_26: bytes = bytes_field(8, repr=False)
+    channel_count: int = u4_field(default=4)
+    """3 for RGB, 4 for RGB + Alpha."""
+
+    _pad_end: bytes = bytes_field(272, repr=False)
+
+    has_alpha = BitField("_flags", 2)
+    """The output has an alpha channel."""
 
 
 _ROPT_VARIANTS: dict[str, type[RoptChunk]] = {
@@ -398,7 +411,13 @@ class RenderSettingsItem(FmtItem):
     # Defaults mirror AE's factory "Best Settings" render template, so a fresh
     # item is valid even when parse() had no ae_preferences_dir to read from.
     template_name: str = str_field(64, default="Best Settings", encoding="windows-1252")
-    _reserved_35: bytes = bytes_field(1990, repr=False)
+    _reserved_35: bytes = bytes_field(1987, repr=False)
+    settings_written: int = u1_field()
+    """1 once a script has written any render setting through
+    `setSettings` (AE 2026 sets it even for an unchanged value; `skipFrames`
+    and the time-span attributes leave it)."""
+
+    _reserved_36: bytes = bytes_field(2, repr=False)
     use_this_frame_rate: int = u2_field()
     _reserved_37: bytes = bytes_field(2, repr=False)
     time_span_source: int = u2_field()
@@ -417,11 +436,19 @@ class RenderSettingsItem(FmtItem):
     _reserved_47: bytes = bytes_field(16, repr=False)
     start_time: int = u4_field()
     elapsed_seconds: int = u4_field()
+    _reserved_end: bytes = bytes_field(16, repr=False)
+    item_id: int = u4_field(default=2)
+    """Unique per render-queue item: AE gives a new item (added or
+    duplicated) the highest id of the queue + 1, 2 in an empty queue."""
+
     _remaining: bytes = bytes_field(
-        40, default=b"\x00" * 19 + b"\x02\x00\x00\x00\x0f" + b"\x00" * 16, repr=False
+        20, default=b"\x00\x00\x00\x0f" + b"\x00" * 16, repr=False
     )
 
     queue_item_notify = BitField("_flag_byte", 2)
+    render_checked = BitField("_flag_byte", 0)
+    """The item's Render box: set from Queued on (Queued, stopped, done),
+    clear while it needs an output or is unqueued."""
 
     _TEMPLATE_FIELDS: ClassVar[tuple[str, ...]] = (
         "quality",
@@ -466,8 +493,7 @@ class RenderSettingsItem(FmtItem):
 
     @frame_rate.setter
     def frame_rate(self, value: float) -> None:
-        self.frame_rate_integer = int(value)
-        self.frame_rate_fractional = round((value - int(value)) * 65536)
+        self.frame_rate_integer, self.frame_rate_fractional = to_fixed_16_16(value)
 
     @property
     def time_span_start(self) -> float:
@@ -516,7 +542,7 @@ class OutputModuleSettingsItem(FmtItem):
         7, default=b"\x00\x05\x00\x00\x00\x00\x00", repr=False
     )
     _flag_byte_07: int = u1_field(default=8, repr=False)
-    """Byte 7: bit 7=preserve_rgb, bit 6=include_source_xmp,
+    """Byte 7: bit 6=include_source_xmp, bit 5=has_output_file,
     bit 4=use_region_of_interest, bit 3=use_comp_frame_number."""
 
     post_render_target_comp_id: int = u4_field()
@@ -537,8 +563,13 @@ class OutputModuleSettingsItem(FmtItem):
     crop_left: int = s2_field()
     crop_bottom: int = s2_field()
     crop_right: int = s2_field()
-    _reserved_24: bytes = bytes_field(2, repr=False)
-    output_audio: int = u1_field(default=1)
+    _reserved_24: bytes = bytes_field(1, repr=False)
+    output_audio: int = u1_field()
+    """1 when Output Audio is On or Auto."""
+
+    output_audio_auto: int = u1_field(default=1)
+    """1 for Auto. Switching Output Audio Off leaves it as it was."""
+
     _reserved_26: bytes = bytes_field(4, repr=False)
     _include_project_link: int = u1_field(repr=False)
     post_render_action: int = u4_field()
@@ -549,10 +580,13 @@ class OutputModuleSettingsItem(FmtItem):
     convert_to_linear_light: int = u1_field(default=2)
     _prev_byte_34: bytes = bytes_field(1, default=b"\x01", repr=False)
     output_color_space_working: int = u1_field(default=1)
-    _reserved_36: bytes = bytes_field(34, repr=False)
+    preserve_rgb: bool = bool_field()
+    _reserved_5f: bytes = bytes_field(33, repr=False)
 
-    preserve_rgb = BitField("_flag_byte_07", 7)
     include_source_xmp = BitField("_flag_byte_07", 6)
+    has_output_file = BitField("_flag_byte_07", 5)
+    """Set on every AE-saved module that has an output path record; AE
+    2026 ignores the record of a module without it."""
     use_region_of_interest = BitField("_flag_byte_07", 4)
     use_comp_frame_number = BitField("_flag_byte_07", 3)
     crop = BitField("_flag_byte_22", 0)
@@ -576,6 +610,7 @@ class OutputModuleSettingsItem(FmtItem):
         "crop_right",
         "_reserved_24",
         "output_audio",
+        "output_audio_auto",
         "_reserved_26",
         "_include_project_link",
         "post_render_action",
@@ -585,7 +620,8 @@ class OutputModuleSettingsItem(FmtItem):
         "convert_to_linear_light",
         "_prev_byte_34",
         "output_color_space_working",
-        "_reserved_36",
+        "preserve_rgb",
+        "_reserved_5f",
     )
 
     def copy_settings_from(self, source: OutputModuleSettingsItem) -> None:

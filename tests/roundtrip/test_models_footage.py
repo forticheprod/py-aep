@@ -258,6 +258,78 @@ class TestRoundtripConformFrameRate:
         with pytest.raises(ValueError, match="must be <= 999"):
             source.conform_frame_rate = 1000.0
 
+    @pytest.mark.parametrize(
+        ("rate", "duration"), [(24.0, 2.0), (25.0, 1.92), (30.0, 1.6), (12.5, 3.84)]
+    )
+    def test_conformed_duration_is_frame_count_over_rate(
+        self, tmp_path: Path, rate: float, duration: float
+    ) -> None:
+        """The sample's 48-frame 23.976 movie plays those 48 frames at the
+        conform rate. The durations are what AE 2026 reports for the same
+        conform."""
+        project = parse_aep(SAMPLES_DIR / "conform_frame_rate_2.5.aep").project
+        project.footages[0].main_source.conform_frame_rate = rate
+        out = tmp_path / "conformed.aep"
+        project.save(out)
+        assert parse_aep(out).project.footages[0].duration == duration
+
+    def test_conformed_duration_loops(self) -> None:
+        # AE 2026: conformed to 24 fps and looped twice, the movie lasts 4 s.
+        footage = parse_project_fresh(
+            SAMPLES_DIR / "conform_frame_rate_2.5.aep"
+        ).footages[0]
+        footage.main_source.conform_frame_rate = 24.0
+        footage.main_source.loop = 2
+        assert footage.duration == 4.0
+
+    def test_frame_duration_counts_every_frame(self) -> None:
+        # The 48-frame 23.976 movie: its 16.16 stored rate puts duration x
+        # rate at 47.99995, which truncation would make 47 frames.
+        footage = parse_project_fresh(
+            SAMPLES_DIR / "conform_frame_rate_2.5.aep"
+        ).footages[0]
+        footage.main_source.conform_frame_rate = 0.0
+        assert footage.frame_duration == 48
+
+
+class TestPlaceholderConformFrameRate:
+    """A placeholder keeps its rate in the native slot, like a sequence, but
+    its duration stays in seconds (AE 2026)."""
+
+    def _placeholder(self) -> tuple[Project, FootageItem]:
+        project = parse_project_fresh(SAMPLES_DIR / "placeholder.aep")
+        return project, project.import_placeholder("PH", 640, 480, 24.0, 10.0)
+
+    def test_reads_its_rate(self) -> None:
+        _, item = self._placeholder()
+        assert item.main_source.conform_frame_rate == 24.0
+
+    def test_write_keeps_the_duration(self, tmp_path: Path) -> None:
+        project, item = self._placeholder()
+        item.main_source.conform_frame_rate = 25.0
+        out = tmp_path / "placeholder.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == item.id)
+        sspc = reparsed.main_source._sspc
+        assert (sspc.native_frame_rate, sspc.conform_frame_rate) == (25.0, 0.0)
+        assert reparsed.main_source.conform_frame_rate == 25.0
+        assert reparsed.frame_rate == 25.0
+        assert reparsed.duration == 10.0
+
+    def test_zero_is_ignored(self) -> None:
+        _, item = self._placeholder()
+        item.main_source.conform_frame_rate = 0.0
+        assert item.main_source.conform_frame_rate == 24.0
+
+    def test_a_stored_conform_reads_like_ae(self) -> None:
+        # py_aep used to store a placeholder's conform in the conform slot;
+        # AE 2026 opens such a file at the conform rate, still 10 s long.
+        _, item = self._placeholder()
+        item.main_source._sspc.conform_frame_rate = 25.0
+        assert item.main_source.conform_frame_rate == 25.0
+        assert item.frame_rate == 25.0
+        assert item.duration == 10.0
+
 
 class TestRemovePulldown:
     """Roundtrip tests for FootageSource.remove_pulldown."""

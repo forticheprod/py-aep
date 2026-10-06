@@ -76,7 +76,7 @@ Note:
 | Class | Status | Missing attributes | Missing methods |
 |-------|--------|--------------------|-----------------|
 | Layer | 🚧 | `selectedProperties` | `applyPreset()` |
-| AVLayer | 🚧 | | `sourceRectAtTime()` (text and shape layer content bounds) |
+| AVLayer | ✅ | | |
 | CameraLayer | ✅ | | |
 | LightLayer | ✅ | | |
 | TextLayer | ✅ | | |
@@ -86,9 +86,9 @@ Note:
 
 Note:
     `sourceRectAtTime()` returns the source bounds for footage, solid,
-    precomposition and adjustment layers; the text-layer ink bounding box
-    (glyph extents) and shape-layer geometry bounds raise
-    `NotImplementedError` (see [Differences](differences.md)).
+    precomposition and adjustment layers, and the content bounds of shape
+    and text layers, raising `NotImplementedError` outside the measured
+    envelope (see [Differences](differences.md)).
     `Layer.doSceneEditDetection()` (which runs Adobe Sensei's AI scene-cut
     detection on the rendered media) and `openInViewer()` are runtime.
 

@@ -157,7 +157,11 @@ class TestShapes:
         sp = cubics_to_subpath(raws[0], IDENTITY)
         assert len(sp.vertices) == 4
         assert sp.closed is True
-        assert _approx(sp.vertices[0], (10.0, 0.0))
+        # AE 2026 starts an imported circle/ellipse at the top vertex and runs
+        # clockwise (top, right, bottom, left), out tangent pointing right.
+        assert _approx(sp.vertices[0], (0.0, -5.0))
+        assert _approx(sp.vertices[1], (10.0, 0.0))
+        assert _approx(sp.out_tangents[0], (10.0 * 0.5522847498307936, 0.0))
 
     def test_polygon_closed(self):
         raws = element_subpaths("polygon", {"points": "0,0 10,0 5,8"})
@@ -275,21 +279,44 @@ class TestReadSvgSample:
         assert len(doc.drawables) == 1
         assert doc.drawables[0].opacity == pytest.approx(0.2)
 
-    def test_fill_stroke_opacity_attrs_ignored(self):
-        # AE's cropped import ignores fill-opacity/stroke-opacity attributes;
-        # only element opacity and the color's own alpha affect opacity.
+    def test_fill_stroke_opacity_attrs_applied(self):
+        # fill-opacity / stroke-opacity scale their own paint's alpha (After
+        # Effects' import ignores both; py_aep renders what the SVG says).
         svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
-            '<rect x="0" y="0" width="4" height="4" fill="#f00" '
+            '<rect x="0" y="0" width="4" height="4" fill="rgba(255,0,0,0.8)" '
             'fill-opacity="0.5" stroke="#00f" stroke-width="1" '
-            'stroke-opacity="0.25"/></svg>'
+            'stroke-opacity="25%"/></svg>'
         )
         drawable = read_svg(svg).drawables[0]
         assert isinstance(drawable.fill, SolidPaint)
-        assert drawable.fill.color[3] == 1.0
+        assert drawable.fill.color[3] == pytest.approx(0.4)
         assert isinstance(drawable.stroke.paint, SolidPaint)
-        assert drawable.stroke.paint.color[3] == 1.0
+        assert drawable.stroke.paint.color[3] == pytest.approx(0.25)
         assert drawable.opacity == 1.0
+
+    def test_fill_opacity_inherits(self):
+        # Unlike `opacity`, fill-opacity is inherited from a group.
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<g fill-opacity="0.5"><rect width="4" height="4" fill="#f00"/></g>'
+            "</svg>"
+        )
+        drawable = read_svg(svg).drawables[0]
+        assert drawable.fill.color[3] == pytest.approx(0.5)
+        assert drawable.opacity == 1.0
+
+    def test_fill_opacity_scales_gradient_stops(self):
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<linearGradient id="g"><stop offset="0" stop-color="#f00"/>'
+            '<stop offset="1" stop-color="#00f" stop-opacity="0.5"/>'
+            "</linearGradient>"
+            '<rect width="4" height="4" fill="url(#g)" fill-opacity="0.5"/></svg>'
+        )
+        fill = read_svg(svg).drawables[0].fill
+        assert isinstance(fill, GradientPaint)
+        assert [s.color[3] for s in fill.stops] == pytest.approx([0.5, 0.25])
 
     def test_first_drawable_geometry_absolute(self):
         doc = read_svg(SAMPLE)

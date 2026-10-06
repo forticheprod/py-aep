@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from py_aep import parse as parse_aep
 
 SAMPLE = (
@@ -37,17 +39,37 @@ class TestVersionUpdatesFormatGate:
     """Setting version also updates the file-format open gate."""
 
     def test_version_setter_syncs_format_version(self) -> None:
-        app = parse_aep(SAMPLE)  # AE 2025 -> format 96
-        assert app._head.file_format_version == 96
-        app.version = "22.0x1"
-        assert app._head.file_format_version == 22 + 71  # 93
+        app = parse_aep(SAMPLE)  # AE 2025 -> format 96.9
+        head = app._head
+        assert (head.file_format_version, head._format_subversion) == (96, 9)
+        app.version = "24.0x1"
+        assert (head.file_format_version, head._format_subversion) == (95, 6)
         app.version = "26.0x67"
-        assert app._head.file_format_version == 26 + 71  # 97
+        assert (head.file_format_version, head._format_subversion) == (97, 2)
 
     def test_build_name_setter_syncs_format_version(self) -> None:
         app = parse_aep(SAMPLE)
         app.build_name = "23.0x1"
-        assert app._head.file_format_version == 23 + 71  # 94
+        head = app._head
+        assert (head.file_format_version, head._format_subversion) == (94, 9)
+
+    def test_unknown_release_rejected(self) -> None:
+        # No After Effects release 20 or 27 to take a stamp from; a derived
+        # one makes AE 2026 misread or reject the file.
+        app = parse_aep(SAMPLE)
+        for version in ("20.0x1", "27.0x1"):
+            with pytest.raises(ValueError):
+                app.version = version
+        head = app._head
+        assert (head.file_format_version, head._format_subversion) == (96, 9)
+
+    def test_relabel_across_the_layer_record_change_rejected(self) -> None:
+        # AE 2026 refuses an AE 2026 project relabelled 22 ("chunk in file
+        # too big"): AE 23 lengthened the layer record.
+        app = parse_aep(SAMPLE)
+        with pytest.raises(ValueError):
+            app.version = "22.0x1"
+        assert app.version == "25.6x101"
 
 
 class TestRoundtripBuildName:
@@ -57,13 +79,13 @@ class TestRoundtripBuildName:
         app = parse_aep(SAMPLE)
         original = app.build_name
 
-        app.build_name = "20.1x42"
-        assert app.build_name == "20.1x42"
+        app.build_name = "24.1x42"
+        assert app.build_name == "24.1x42"
 
         out = tmp_path / "modified.aep"
         app.project.save(out)
         app2 = parse_aep(out)
 
-        assert app2.build_name == "20.1x42"
-        assert app2.version == "20.1x42"
+        assert app2.build_name == "24.1x42"
+        assert app2.version == "24.1x42"
         assert app2.build_name != original

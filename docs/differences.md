@@ -118,6 +118,17 @@ plain string as a comment shorthand:
 layer["ADBE Marker"].set_value_at_time(2.0, "my comment")
 ```
 
+Inserting a keyframe into a segment keeps the segment's curve. After Effects
+does too, with two exceptions where py_aep deliberately keeps the curve
+instead (measured on AE 2026):
+
+- **A curved spatial segment.** AE gives the new keyframe zero spatial
+  tangents, so the motion path gets a corner there; py_aep splits the path
+  exactly.
+- **A color segment with one LINEAR side.** AE keeps that side LINEAR and
+  the colors in between shift slightly; py_aep turns it BEZIER, as AE does
+  for every other property, so the colors stay put.
+
 ## Feather Points
 
 ExtendScript exposes mask feather data as parallel arrays on `Shape`
@@ -190,6 +201,17 @@ Warning:
     `1/frame_rate`). This differs from ExtendScript's `AVItem.frameDuration`
     which is the duration of one frame in seconds.
 
+## Layer In and Out Points
+
+Writing `layer.in_point` moves only the in point. In After Effects 2026,
+writing `inPoint` also moves the out point: the stored out point shifts by
+the new in point (composition seconds) minus the old one (layer seconds),
+held inside the source's duration. On a 100 % layer that starts at 0 this
+keeps the layer's duration; with any other start or stretch the out point
+lands somewhere else (a 150 % solid starting at 0 with its out point at
+45 s ends at 48 s after `inPoint = 2`). Set `out_point` after `in_point` to
+place both ends.
+
 ## Convenience Access Properties
 
 ### Project
@@ -246,7 +268,7 @@ not available in ExtendScript:
 | Attribute | Description |
 |-----------|-------------|
 | `dimensions` | Number of dimensions (1, 2, or 3) |
-| `locked_ratio` | `True` if X/Y ratio is locked |
+| `locked_ratio` | `True` if X/Y ratio is locked (a Scale or Mask Feather's constrain-proportions switch) |
 | `default_value` | The default value of the property |
 | `last_value` | The last value before animation |
 | `nb_options` | Number of options in a dropdown property |
@@ -376,9 +398,10 @@ degenerate value and silently misbehaves, py_aep raises instead:
   renders 5 seconds of void lead-in; an end before the start renders a
   single frame, both with a `DONE` status - probed in AE 2026). py_aep
   rejects a negative start, a start at or past the end, and a duration
-  below one frame. The *semantics* match ExtendScript: setting the start
-  keeps the span end fixed (the duration is recomputed), setting the
-  duration keeps the start.
+  below one frame. The *semantics* match ExtendScript: setting the
+  duration keeps the start; setting the start keeps the span end fixed
+  while the span still follows the work area or the composition (the
+  duration is recomputed), and keeps the duration once the span is custom.
 - **Booleans**: AE coerces any truthy value, so `"no"` becomes `True`.
   py_aep boolean attributes and settings accept only `True` / `False`.
 
@@ -399,17 +422,38 @@ equivalent and documents the divergence:
   replaced too. The one divergent case: an expression that evaluates
   cleanly but contains the quoted text is rewritten by py_aep, while AE
   leaves it alone.
+- **`Project.revision`**: py_aep reports the counter stored in the file.
+  After Effects also counts the edits it makes itself while opening the
+  project, so its `revision` reads that many higher (13, 64, 151 and 312
+  more on four probed files, AE 2026).
 - **`AVLayer` geometry methods** (`source_point_to_comp()`,
   `comp_point_to_source()`, `source_rect_at_time()`): After Effects
   evaluates these at the current playhead position, which py_aep reads as
   the comp's stored `time` attribute - deterministic per file, but it
   reflects wherever the playhead sat when the project was last saved. The
   two point conversions accept an optional `time` keyword (py_aep
-  extension) to evaluate at an explicit time instead. Layers whose parent
-  chain uses auto-orientation raise `NotImplementedError` (the transform
-  math does not model it), as do text and shape layers for
-  `source_rect_at_time()` (content bounds need glyph extents / shape
-  geometry evaluation). `calculate_transform_from_points()` names its
+  extension) to evaluate at an explicit time instead. Auto-orientation
+  along a path and towards the camera is modelled, as are camera and light
+  parents; the point conversions raise `NotImplementedError` for the cases
+  not measured - separated Position dimensions along a path, a parented
+  layer turned towards the camera, and characters turned towards the
+  camera. All three read transform and content values before expressions
+  (see [Limitations](limitations.md)). Like After Effects,
+  `source_rect_at_time()` takes its `time` in layer time - not offset by
+  the layer's start time nor stretched - where the point conversions take
+  comp time. It raises `NotImplementedError` for a 3D model layer, whose
+  box After Effects takes from the model geometry, and for a shape layer
+  using path operations other than Trim Paths and Repeater or a polystar with a
+  fractional number of points. For a text layer it measures the glyph
+  outlines of the fonts installed on this machine (a different font version
+  than the one the project was saved with can change the box), and raises
+  for text animators, text on a path, per-character 3D, faux bold / italic,
+  small or all caps, horizontal / vertical scale, non-left-justified box
+  text, and the features the box-text composer refuses; it needs
+  `uharfbuzz`, which Python 3.7 lacks. TrueType curve extremes whose
+  off-curve point overshoots the curve can differ from AE's by a fraction
+  of a font unit (0.03 px on Calibri's W at 100 pt).
+  `calculate_transform_from_points()` names its
   third parameter `point_bottom_left`: the AE guide calls it
   `pointBottomRight`, but After Effects treats it as the bottom-left
   corner (probed AE 2026; the guide's own example passes `bl`).

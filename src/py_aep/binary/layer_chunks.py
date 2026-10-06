@@ -9,7 +9,7 @@ from __future__ import annotations
 from attrs import define
 
 from ..enums import LayerType
-from .bin_utils import to_dividend_divisor
+from .bin_utils import to_dividend_divisor, to_float32_ratio
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import (
@@ -88,17 +88,20 @@ class LdtaChunk(Chunk):
     _reserved_68: bytes = bytes_field(3, repr=False)
     track_matte_type: int = u1_field()
     stretch_divisor: int = u4_field(default=1)
-    _reserved_70: bytes = bytes_field(7, repr=False)
-    _unknown_ae26_flag: int = u1_field(repr=False)
-    """AE 26+ boolean flag (zero in earlier versions)."""
-    _unknown_ae26_float: float = f8_field(repr=False)
-    """AE 26+ float64 value (zero in earlier versions)."""
-    _reserved_70b: bytes = bytes_field(3, repr=False)
+    # Two doubles, 0.0 in every sample (AE 15-26).
+    _reserved_70: float = f8_field(repr=False)
+    _reserved_78: float = f8_field(repr=False)
+    _reserved_80: bytes = bytes_field(3, repr=False)
     layer_type: int = u1_field()
     parent_id: int = u4_field()
     _reserved_88: bytes = bytes_field(3, repr=False)
     light_and_mesh_type: int = u1_field()
-    _reserved_8c: bytes = bytes_field(20, repr=False)
+    # Three words (0 / 1, 0 / 0x01000000, 0 / 1 in the samples) and a double
+    # (0.0, 36.0 or 102.047...), undecoded.
+    _reserved_8c: int = u4_field(repr=False)
+    _reserved_90: int = u4_field(repr=False)
+    _reserved_94: int = u4_field(repr=False)
+    _reserved_98: float = f8_field(repr=False)
 
     # -- Optional field (bytes 160-163, AE >= 23) --------------------------
     matte_layer_id: int | None = u4_field(default=None, optional=True)
@@ -142,6 +145,10 @@ class LdtaChunk(Chunk):
     audio_enabled = BitField("_layer_flags_2", 1)
     enabled = BitField("_layer_flags_2", 0)
 
+    # byte 60: set while the layer has a comment (`cmta`); AE 2026 ignores
+    # a `cmta` without it and clears both when the comment is emptied.
+    has_comment = BitField("_reserved_3c", 0)
+
     # byte 103: _transfer_flags
     preserve_transparency = BitField("_transfer_flags", 0)
     dancing_dissolve = BitField("_transfer_flags", 1)
@@ -152,10 +159,6 @@ class LdtaChunk(Chunk):
     def start_time(self) -> float:
         """Start time in seconds (dividend / divisor)."""
         return self.start_time_dividend / self.start_time_divisor
-
-    @start_time.setter
-    def start_time(self, value: float) -> None:
-        self.start_time_dividend, self.start_time_divisor = to_dividend_divisor(value)
 
     @property
     def in_point(self) -> float:
@@ -188,7 +191,9 @@ class LdtaChunk(Chunk):
             self.stretch_dividend = 0
             self.stretch_divisor = 0
         else:
-            self.stretch_dividend, self.stretch_divisor = to_dividend_divisor(
+            # AE stores the factor as a float32, as an exact ratio: 133.33 %
+            # is 11184531 / 8388608, not 13333 / 10000.
+            self.stretch_dividend, self.stretch_divisor = to_float32_ratio(
                 value / 100.0
             )
 

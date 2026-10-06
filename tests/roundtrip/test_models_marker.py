@@ -86,6 +86,44 @@ class TestRoundtripMarkerDuration:
         marker2 = get_first_comp_marker(parse_project_fresh(out), "duration_5")
         assert math.isclose(marker2.duration, 10.0, abs_tol=0.01)
 
+    def test_frame_duration_is_in_frames(self) -> None:
+        # The 5 s marker of a 24 fps composition.
+        project = parse_project_fresh(SAMPLES_DIR / "comp_marker.aep")
+        marker = get_first_comp_marker(project, "duration_5")
+        assert marker.duration == 5.0
+        assert marker.frame_duration == 120
+
+    def test_set_frame_duration(self, tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "comp_marker.aep")
+        marker = get_first_comp_marker(project, "duration_5")
+        marker.frame_duration = 36
+        assert marker.duration == 1.5
+        out = tmp_path / "frame_duration.aep"
+        project.save(out)
+        marker2 = get_first_comp_marker(parse_project_fresh(out), "duration_5")
+        assert marker2.duration == 1.5
+        assert marker2.frame_duration == 36
+
+    def test_unbound_marker_has_no_frame_duration(self) -> None:
+        with pytest.raises(ValueError, match="frame rate"):
+            _ = MarkerValue(comment="x").frame_duration
+
+    def test_new_marker_duration_bytes_match_ae(self, tmp_path: Path) -> None:
+        """A new 2.5 s marker stores 1500 over 600, as AE 2026 writes for
+        `new MarkerValue()` + `duration = 2.5` + `setValueAtTime` (in 24,
+        25 and 29.97 fps compositions alike)."""
+        project = parse_project_fresh(SAMPLES_DIR / "comp_marker.aep")
+        comp = get_comp(project, "label_3")
+        marker = MarkerValue(comment="w_new")
+        marker.duration = 2.5
+        comp.marker_property.set_value_at_time(2.0, marker)
+        out = tmp_path / "new_marker.aep"
+        project.save(out)
+        comp2 = get_comp(parse_project_fresh(out), "label_3")
+        new = next(m for m in comp2.markers if m.comment == "w_new")
+        assert new._nmhd.tobytes()[8:16] == bytes.fromhex("000005dc00000258")
+        assert new.duration == 2.5
+
 
 class TestValidateMarkerFrameDuration:
     """Validation tests for MarkerValue.frame_duration."""
