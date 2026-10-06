@@ -35,7 +35,7 @@ from .media_probe import iter_image_resources
 
 if TYPE_CHECKING:
     import os
-    from typing import Any, Callable, Union
+    from typing import Any, Callable, Iterator, Union
 
     from .psd_layers import PsdGroup, PsdLayer, PsdStyleBlocks
 
@@ -624,9 +624,10 @@ def parse_layer_styles(
 def has_enabled_styles(node: PsdLayer | PsdGroup) -> bool:
     """Whether any style instance is enabled on the layer or group.
 
-    Used to gate merge-mode geometry: enabled styles (including multi-instance
-    ones) expand the rasterized content box in ways py_aep cannot compute. An
-    undecodable descriptor counts as styled (the conservative answer).
+    Used to warn about a group's styles, which a layered import does not
+    apply (a layer's merged styles size its footage through
+    `merged_styles_bounds`). An undecodable descriptor counts as styled
+    (the conservative answer).
     """
     blocks = node.style_blocks
     if blocks is None or blocks.effects is None:
@@ -635,11 +636,17 @@ def has_enabled_styles(node: PsdLayer | PsdGroup) -> bool:
         descriptor = _parse_effects_descriptor(blocks.effects)
     except ValueError:
         return True
-    return any(
-        isinstance(inst, dict) and inst.get("enab", False)
-        for instances in _style_instances(descriptor).values()
-        for inst in instances
-    )
+    return next(_enabled_instances(descriptor), None) is not None
+
+
+def _enabled_instances(
+    descriptor: dict[str, Any],
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """`(key, instance)` of every enabled style instance in a descriptor."""
+    for key, instances in _style_instances(descriptor).items():
+        for instance in instances:
+            if isinstance(instance, dict) and instance.get("enab", False):
+                yield key, instance
 
 
 # ---------------------------------------------------------------------------
@@ -762,12 +769,14 @@ def merged_styles_bounds(node: PsdLayer, global_angle: float) -> _Box:
     """The layer's content box once its enabled styles are merged into it.
 
     Args:
-        node: A `PsdLayer` from `read_psd_layers`.
+        node: A `PsdLayer` from `read_psd_layers`, its `bounds` the content
+            the styles grow from (`psd_bounds.psd_layer_box` passes the
+            masked content: AE grows merged styles from it).
         global_angle: The document's global light angle (`read_global_light`).
 
     Returns:
-        `(left, top, right, bottom)` in canvas pixels; the layer's own bounds
-        when it has no enabled style.
+        `(left, top, right, bottom)` in canvas pixels; `node.bounds` when the
+        layer has no enabled style.
 
     Raises:
         NotImplementedError: If the layer has a Stroke Emboss bevel, whose
@@ -785,12 +794,9 @@ def merged_styles_bounds(node: PsdLayer, global_angle: float) -> _Box:
             "decoded, so the merged bounds are not known"
         ) from exc
     left, top, right, bottom = bounds
-    for key, instances in _style_instances(descriptor).items():
-        for instance in instances:
-            if not (isinstance(instance, dict) and instance.get("enab", False)):
-                continue
-            box = _instance_box(key, instance, bounds, global_angle, node.name)
-            if box is not None:
-                left, top = min(left, box[0]), min(top, box[1])
-                right, bottom = max(right, box[2]), max(bottom, box[3])
+    for key, instance in _enabled_instances(descriptor):
+        box = _instance_box(key, instance, bounds, global_angle, node.name)
+        if box is not None:
+            left, top = min(left, box[0]), min(top, box[1])
+            right, bottom = max(right, box[2]), max(bottom, box[3])
     return left, top, right, bottom

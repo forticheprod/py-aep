@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING
 
 from attrs import define
 
-from .bin_utils import read_bytes, to_dividend_divisor, truncate_utf8
+from .bin_utils import (
+    MAC_EPOCH_OFFSET,
+    read_bytes,
+    to_dividend_divisor,
+    to_fixed_16_16,
+    truncate_utf8,
+)
 from .bitfield import BitField
 from .chunk import Chunk
 from .fmt_field import (
@@ -24,20 +30,18 @@ from .fmt_field import (
     bytes_field,
     f4_field,
     f8_field,
+    s2_field,
     s4_field,
     str_field,
     u1_field,
     u2_field,
     u4_field,
+    u8_field,
 )
 from .registry import register
 
 if TYPE_CHECKING:
-    from typing import IO, Any
-
-#: Seconds between the Mac epoch (1904-01-01) AE stamps source times with and
-#: the Unix epoch.
-_MAC_EPOCH_OFFSET = 2082844800
+    from typing import IO, Any, Sequence
 
 # ---------------------------------------------------------------------------
 # sspc - source footage settings (184+ bytes)
@@ -78,7 +82,17 @@ class SspcChunk(Chunk):
     _reserved_36: bytes = bytes_field(2, repr=False)
     native_frame_rate_integer: int = u4_field()
     native_frame_rate_fractional: int = u2_field()
-    _reserved_3e: bytes = bytes_field(7, repr=False)
+    depth: int = s2_field()
+    """Byte 0x3E: the source's pixel depth in bits per pixel, as the AE SDK's
+    `AEIO_InputDepth`: 24 / 48 / 96 for RGB at 8 / 16 / 32 bpc, 32 / 64 / 128
+    with alpha, 40 / -16 / -32 for grayscale, 8 for indexed color, 0 for
+    media without video. AE does not re-read most formats on open, so a wrong
+    value renders the footage without its alpha (AE 2026)."""
+
+    _reserved_40: bytes = bytes_field(2, repr=False)
+    """`01 01` on every file source, `00 00` on solids and placeholders."""
+
+    _reserved_42: bytes = bytes_field(3, repr=False)
 
     # -- Alpha flags (byte 69) ---------------------------------------------
     _alpha_flags: int = u1_field(repr=False)
@@ -113,9 +127,13 @@ class SspcChunk(Chunk):
     _is_synthetic_a: int = u1_field(default=1, repr=False)
     _reserved_6b: bytes = bytes_field(3, repr=False)
     _is_synthetic_b: int = u1_field(default=1, repr=False)
-    _reserved_6f: bytes = bytes_field(5, repr=False)
-    footage_missing_at_save: bool = bool_field()
-    """0 = found, 1 = missing or placeholder."""
+    _reserved_6e: bytes = bytes_field(2, repr=False)
+    _flags_70: int = u1_field(repr=False)
+    """Byte 0x70: bit 3 = `media_format`."""
+
+    _reserved_71: bytes = bytes_field(2, repr=False)
+    _flags_73: int = u1_field(repr=False)
+    """Byte 0x73: bit 0 = `footage_missing_at_save`."""
 
     _source_stamp: bytes = bytes_field(9, repr=False)
     """Bytes 0x74-0x7C: the source's last-modified stamp (see
@@ -147,7 +165,9 @@ class SspcChunk(Chunk):
     display_frame_rate_integer: int = u2_field()
     display_frame_rate_fractional: int = u2_field()
     _reserved_9c: bytes = bytes_field(3, repr=False)
-    high_quality_field_separation: int = u1_field()
+    _flags_9f: int = u1_field(repr=False)
+    """Byte 0x9F: bit 0 = `high_quality_field_separation`, bit 3 =
+    `media_file`."""
 
     # -- Audio / sequence (bytes 160-183) ----------------------------------
     audio_sample_rate: float = f8_field()
@@ -187,18 +207,26 @@ class SspcChunk(Chunk):
     solids/placeholders leave it `False`."""
 
     _reserved_c8: bytes = bytes_field(2, repr=False)
-    _reserved_ca: bytes = bytes_field(6, repr=False)
-    data_size: int = u4_field()
-    """Byte 0xD0: cached source data size. For a PSD layer (chosen or
-    comp-imported) the content box's pixel bytes (`w * h * 4` at 8 bpc);
-    for merged PSD footage the canvas equivalent; for whole files (PNG,
-    AI, ...) the file size on disk. AE re-derives it on a cache miss, so
-    `0` is accepted."""
+    _reserved_ca: bytes = bytes_field(2, repr=False)
+    data_size: int = u8_field()
+    """Byte 0xCC: cached source data size (64-bit). For a PSD layer (chosen
+    or comp-imported) the content box's pixel bytes (`w * h * 4` at 8 bpc);
+    for merged PSD footage and TIFF stills the decoded canvas; for whole
+    files (PNG, AI, ...) and sequences the file sizes on disk. AE re-derives
+    it on a cache miss, so `0` is accepted."""
     _reserved_d4: bytes = bytes_field(10, default=b"\x01" + b"\x00" * 9, repr=False)
 
     # -- BitField descriptors (not attrs fields) ---------------------------
     invert_alpha = BitField("_alpha_flags", 1)
     premultiplied = BitField("_alpha_flags", 0)
+    footage_missing_at_save = BitField("_flags_73", 0)
+    """0 = found, 1 = missing or placeholder."""
+    high_quality_field_separation = BitField("_flags_9f", 0)
+    media_format = BitField("_flags_70", 3)
+    """Set by AE's import for JPEG, BMP/GIF, HEIC, movie, audio and data
+    footage, single files and sequences alike (AE 2026)."""
+    media_file = BitField("_flags_9f", 3)
+    """As `media_format`, for single files only (clear on a sequence)."""
 
     # -- Computed properties -----------------------------------------------
 
@@ -211,8 +239,9 @@ class SspcChunk(Chunk):
 
     @native_frame_rate.setter
     def native_frame_rate(self, value: float) -> None:
-        self.native_frame_rate_integer = int(value)
-        self.native_frame_rate_fractional = round((value - int(value)) * 65536)
+        self.native_frame_rate_integer, self.native_frame_rate_fractional = (
+            to_fixed_16_16(value)
+        )
         self._update_display_frame_rate()
 
     @property
@@ -225,8 +254,9 @@ class SspcChunk(Chunk):
 
     @conform_frame_rate.setter
     def conform_frame_rate(self, value: float) -> None:
-        self.conform_frame_rate_integer = int(value)
-        self.conform_frame_rate_fractional = round((value - int(value)) * 65536)
+        self.conform_frame_rate_integer, self.conform_frame_rate_fractional = (
+            to_fixed_16_16(value)
+        )
         self._update_display_frame_rate()
 
     @property
@@ -240,11 +270,11 @@ class SspcChunk(Chunk):
         importer records the display window).
         """
         stamp = int.from_bytes(self._source_stamp[2:6], "big")
-        return stamp - _MAC_EPOCH_OFFSET if stamp else 0
+        return stamp - MAC_EPOCH_OFFSET if stamp else 0
 
     @source_modified.setter
     def source_modified(self, value: int) -> None:
-        stamp = int(value) + _MAC_EPOCH_OFFSET if value else 0
+        stamp = int(value) + MAC_EPOCH_OFFSET if value else 0
         self._source_stamp = b"\x00\x00" + stamp.to_bytes(4, "big") + b"\x00" * 3
 
     @property
@@ -326,8 +356,9 @@ class SspcChunk(Chunk):
 
     @display_frame_rate.setter
     def display_frame_rate(self, value: float) -> None:
-        self.display_frame_rate_integer = int(value)
-        self.display_frame_rate_fractional = round((value - int(value)) * 65536)
+        self.display_frame_rate_integer, self.display_frame_rate_fractional = (
+            to_fixed_16_16(value)
+        )
 
     def _update_display_frame_rate(self) -> None:
         """Recompute and store display_frame_rate from current settings."""
@@ -378,89 +409,113 @@ def build_generic_opti_data(source_format: str, *, sequence: bool = False) -> by
     )
 
 
-def build_tiff_opti_data(width: int, height: int, bit_depth: int = 8) -> bytes:
+def build_tiff_opti_data(
+    width: int,
+    height: int,
+    bit_depth: int,
+    channels: int,
+    color_mode: int,
+    layer_count: int,
+) -> bytes:
     """Build the 602-byte still-importer TIFF `opti` asset-info body.
 
     Unlike PNG/EXR, AE does not re-read a TIFF from the located file, so it
     needs this header for both stills and image sequences (an empty or generic
-    header crashes AE in both cases - AE 2026 measured). The header is
-    identical for 3- and 4-channel TIFFs. The channel count is always 4 (AE
-    composites to RGBA). PSD uses the same still-importer layout via
-    `PsdOptiChunk`.
+    header crashes AE in both cases - AE 2026 measured). It is the
+    `PsdOptiChunk` header under the `TIF ` code, describing the image the
+    way AE reads it (AE 2026, footage_depth.aep).
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+        bit_depth: Bits per sample (1 for a bilevel image).
+        channels: Colour channels, plus one for an alpha sample or
+            Photoshop layer data (`MediaInfo.pixel_channels`).
+        color_mode: The Photoshop colour mode the image reads as
+            (`MediaInfo.color_mode`).
+        layer_count: The layer count AE records (see `FileSource`'s
+            `_opti_data`).
     """
-    code = b"TIF "
-    return (
-        code
-        + b"\x01\x09"
-        + struct.pack(">I", 602)  # total length (big-endian)
-        + b"\x00\x00\x01\x01"
-        + b"\xff\xff\xff\xff"
-        + code[::-1]
-        + b"\x01\x00\x00\x00"
-        + b"\x00\x00\x00\x00"
-        + b"\x04\x00"
-        + struct.pack("<I", height)
-        + struct.pack("<I", width)
-        + struct.pack("<H", bit_depth)
-        + b"\x03\x00"
-        + b"\x00\x00\x00\x00"
-        + b"\x02\x00"
-    ).ljust(602, b"\x00")
+    chunk = PsdOptiChunk(
+        asset_type="TIF ",
+        pad_12=b" FIT\x01" + b"\x00" * 7,
+        psd_channels=channels,
+        psd_canvas_width=width,
+        psd_canvas_height=height,
+        psd_bit_depth=bit_depth,
+        psd_color_mode=color_mode,
+        psd_layer_count=layer_count,
+    )
+    chunk.psd_group_name = ""
+    return chunk.tobytes()
 
 
 def build_psd_opti_data(
-    width: int, height: int, bit_depth: int = 8, layer_count: int = 1
+    width: int,
+    height: int,
+    bit_depth: int,
+    channels: int,
+    color_mode: int,
+    layer_count: int,
 ) -> bytes:
     """Build the 602-byte merged-PSD/PSB `opti` asset-info body.
 
-    AE 2026 measured: AE itself writes an empty opti for PSD imports (both
-    stills and sequences), but it also accepts the 602-byte header produced
-    here on re-open without error. It stores layer metadata (index,
-    dimensions, bit depth, layer count) that AE exposes in its "Interpret
-    Footage" dialog; the layout lives on `PsdOptiChunk`, which this
-    serializes with the merged defaults (0xFFFFFFFF layer-index sentinel,
-    empty trailing name).
+    What AE 2026 writes for a Photoshop file imported as merged footage
+    (footage_depth.aep): the document's size, bit depth, channel count,
+    colour mode and layer count, the `0xFFFFFFFF` layer-index sentinel and
+    an empty trailing name. The layout lives on `PsdOptiChunk`.
 
     Args:
         width: Full PSD canvas width in pixels.
         height: Full PSD canvas height in pixels.
-        bit_depth: Bits per channel (8, 16, or 32).
-        layer_count: Number of layers in the PSD. A flattened document (0
-            layers) is stored as 1, matching AE.
+        bit_depth: Bits per channel (1, 8, 16, or 32).
+        channels: The document's colour channels, plus one when it has
+            alpha (`MediaInfo.pixel_channels`).
+        color_mode: The document's Photoshop colour mode.
+        layer_count: Number of layers in the PSD (0 for a flattened one).
     """
     chunk = PsdOptiChunk(
+        psd_channels=channels,
         psd_canvas_width=width,
         psd_canvas_height=height,
         psd_bit_depth=bit_depth,
-        psd_layer_count=min(max(layer_count, 1), 255),
+        psd_color_mode=color_mode,
+        psd_layer_count=layer_count,
     )
     chunk.psd_group_name = ""
     return chunk.tobytes()
 
 
 def build_psd_flattened_opti_data(
-    width: int, height: int, bit_depth: int, channels: int
+    width: int,
+    height: int,
+    bit_depth: int,
+    channels: int,
+    *,
+    color_mode: int = 3,
 ) -> bytes:
     """Build the 602-byte `8BPS` `opti` for a FLATTENED PSD/PSB imported as a
     one-layer composition.
 
-    AE writes a full opti (not the empty one it uses for footage) for this
-    merged-still comp layer. It differs from the merged `build_psd_opti_data`
-    in three bytes (AE 2026 byte-verified against a real flattened RGB PSD):
+    The merged `build_psd_opti_data` of the layerless document (0 layers),
+    with 0x0A (`psd_vector_or_merged`) set to 1 - per-layer optis set it only
+    for a layer with a vector mask (AE 2026 byte-verified against a real
+    flattened RGB PSD, flattened_rgb_comp.aep).
 
-    - 0x0A (`psd_flattened`): 1 (a merged/flattened-reference flag;
-      per-layer optis leave 0).
-    - 0x1E (`psd_channels`): the file's real channel count (3 for RGB, 4 for
-      RGBA), not the composited-to-4 value the merged builder uses.
-    - 0x30 (`psd_layer_count`): the true layer count, 0 (the merged builder
-      clamps this to 1).
+    Args:
+        width: Canvas width in pixels.
+        height: Canvas height in pixels.
+        bit_depth: Bits per channel.
+        channels: The document's channel count (3 for RGB).
+        color_mode: The document's Photoshop colour mode (3 = RGB).
     """
     chunk = PsdOptiChunk(
-        psd_flattened=True,
+        psd_vector_or_merged=True,
         psd_channels=channels,
         psd_canvas_width=width,
         psd_canvas_height=height,
         psd_bit_depth=bit_depth,
+        psd_color_mode=color_mode,
         psd_layer_count=0,
     )
     chunk.psd_group_name = ""
@@ -477,6 +532,11 @@ def build_psd_layer_opti_data(
     layer_name: str,
     bounds: tuple[int, int, int, int],
     is_adjustment: bool = False,
+    has_vector_mask: bool = False,
+    *,
+    channels: int = 4,
+    color_mode: int = 3,
+    layer_channels: int = 4,
 ) -> bytes:
     """Build the 602-byte `8BPS` `opti` for one layer of a layered PSD import.
 
@@ -488,19 +548,26 @@ def build_psd_layer_opti_data(
     this opti. It differs from the merged `build_psd_opti_data` (which keeps
     the `0xFFFFFFFF` layer-index sentinel and an empty trailing name) in:
 
+    - `psd_vector_or_merged`: 1 for a layer with a vector mask (a shape
+      layer's included, enabled or not).
     - `psd_layer_index`: the 0-based layer index, clearing the merged sentinel.
     - `psd_layer_top/left/bottom/right`: the layer's content bounding box
-      (LE s32), i.e. the layer record's rectangle - NOT the canvas.
-    - `psd_layer_channels`: 4 (RGBA) for a raster layer - including a fully
-      transparent one with an empty content box - and 0 for an adjustment
-      layer (which contributes no pixel channels).
+      (LE s32; `resolvers.psd_bounds.psd_layer_box`) - NOT the canvas.
+    - `psd_layer_channels`: the layer's channels for a raster layer - the
+      document's colour channels plus one for its transparency (4 for an RGB
+      layer, including a fully transparent one with an empty content box; 3
+      for an RGB Background layer; 2 for a gray layer) - and 0 for an
+      adjustment layer (which contributes no pixel channels).
     - `psd_layer_id`: the Photoshop layer id (`lyid`, LE u32).
     - the trailing name block (`psd_group_name`): the layer name,
       NUL-terminated UTF-8.
 
-    The `psd_canvas_*` fields keep the full document size. Byte-verified against
-    AE 2026's `COMP`/`COMP_CROPPED_LAYERS` import of `8bits.psd`/`.psb` and a
-    margined 3-layer PSD.
+    The `psd_canvas_*` fields keep the full document size, and
+    `psd_channels`/`psd_color_mode` the document's channel count and colour
+    mode (2 and grayscale for every layer of a gray document with
+    transparency, footage_depth.aep). Byte-verified against AE 2026's
+    `COMP`/`COMP_CROPPED_LAYERS` import of `8bits.psd`/`.psb` and a margined
+    3-layer PSD.
 
     Args:
         canvas_width: Full document width in pixels.
@@ -511,24 +578,35 @@ def build_psd_layer_opti_data(
         layer_id: Photoshop layer id (`lyid`).
         layer_name: Layer name.
         bounds: The layer's content box as `(left, top, right, bottom)`.
+        is_adjustment: Whether the layer is an adjustment layer.
+        has_vector_mask: Whether the layer has a vector mask.
+        channels: The document's colour channels, plus one when it has
+            alpha (`MediaInfo.pixel_channels`); 4 for an RGB document with
+            transparency.
+        color_mode: The document's Photoshop colour mode (3 = RGB).
+        layer_channels: The layer's channels when it is a raster layer;
+            4 for an RGB layer with transparency.
     """
     left, top, right, bottom = bounds
     chunk = PsdOptiChunk(
+        psd_vector_or_merged=has_vector_mask,
         psd_layer_index=layer_index,
+        psd_channels=channels,
         psd_canvas_width=canvas_width,
         psd_canvas_height=canvas_height,
         psd_bit_depth=bit_depth,
-        psd_layer_count=min(max(layer_count, 1), 255),
+        psd_color_mode=color_mode,
+        psd_layer_count=max(layer_count, 1),
         psd_layer_top=top,
         psd_layer_left=left,
         psd_layer_bottom=bottom,
         psd_layer_right=right,
-        # 4 (RGBA) for a raster layer - even a fully transparent one whose
-        # content box is empty (psd_clipping_mask "Layer 1") - and 0 for an
-        # adjustment layer, which has no pixel channels (grouped_layers
-        # "hue/sat adj"). AE 2026 measured; the empty content box alone does
-        # NOT drop the channels.
-        psd_layer_channels=0x00 if is_adjustment else 0x04,
+        # The raster layer's channels - even for a fully transparent layer
+        # whose content box is empty (psd_clipping_mask "Layer 1") - and 0
+        # for an adjustment layer, which has no pixel channels
+        # (grouped_layers "hue/sat adj"). AE 2026 measured; the empty content
+        # box alone does NOT drop the channels.
+        psd_layer_channels=0 if is_adjustment else layer_channels,
         psd_layer_id=layer_id,
     )
     chunk.psd_group_name = layer_name
@@ -544,7 +622,33 @@ def build_dpx_opti_data() -> bytes:
     """
     from .render_chunks import CineonRoptChunk
 
-    return CineonRoptChunk(ten_bit_black_point=0).tobytes()
+    return CineonRoptChunk().tobytes()
+
+
+#: Length of the `oEXR` opti body AE 2026 writes for every OpenEXR file.
+_OEXR_OPTI_SIZE = 9750
+
+
+def build_exr_opti_data(compression: int, channel_names: Sequence[str]) -> bytes:
+    """Build the 9750-byte OpenEXR (`oEXR`) `opti` asset-info body.
+
+    AE writes it for EXR stills and sequences. Without it AE renders a data
+    window that differs from the display window misplaced, and crashed
+    rendering one larger than the display window (AE 2026). The header
+    (bytes 0x00-0x2F, little-endian after the length) carries the compression
+    code at 0x0E, the channel count of all parts at 0x12, and at 0x2E that
+    count plus one per named layer (a part name, or the prefix of a
+    `layer.channel` name). The rest of AE's bytes vary from import to
+    import; zeros render the same (verified against AE's own imports,
+    exr_options.aep).
+    """
+    layers = {name.rsplit(".", 1)[0] for name in channel_names if "." in name}
+    body = bytearray(_OEXR_OPTI_SIZE)
+    body[0:4] = b"oEXR"
+    struct.pack_into(">HI", body, 4, 1, _OEXR_OPTI_SIZE)
+    struct.pack_into("<HHHHH", body, 0x0A, 1, 0, compression, 1, len(channel_names))
+    struct.pack_into("<H", body, 0x2E, len(channel_names) + len(layers))
+    return bytes(body)
 
 
 def build_rhdr_opti_data() -> bytes:
@@ -579,16 +683,34 @@ def build_craw_opti_data() -> bytes:
 
 
 def build_text_opti_data(width: int, height: int) -> bytes:
-    """Build the 596-byte `TEXT` `opti` asset-info body for AI/EPS/PDF.
+    """Build the bare 596-byte `TEXT` `opti` asset-info body of an EPS file.
 
-    AE stores this opti for every file imported with source format `TEXT`
-    (Illustrator, EPS, PDF). AE caches `sspc` (not this opti) for
-    dimensions, so AE's per-file flag bytes (0x33, 0x3C) and the redundant
-    dimension tail (0x248-0x24D) are not necessary and are left zero.
-    Reverse-engineered from AE 2026 for ai.ai (612x792), eps.eps
-    (1921x2881), pdf.pdf (595x842); the layout lives on `TextOptiChunk`.
+    What AE 2026 writes for eps.eps (1921x2881) imported as footage: the
+    page size and nothing else - no layer count, page count or page-size
+    tail, which an Illustrator/PDF document carries
+    (`build_ai_document_opti_data`). The layout lives on `TextOptiChunk`.
     """
     return TextOptiChunk(text_width=width, text_height=height).tobytes()
+
+
+def build_ai_document_opti_data(width: int, height: int, layer_count: int) -> bytes:
+    """Build the 596-byte `TEXT` `opti` of an Illustrator/PDF file imported
+    whole.
+
+    The bare body (`build_text_opti_data`) plus the document's layer count,
+    a page count of 1 and the page-size tail; no layer is chosen, so the
+    layer name and visibility stay empty. Byte-verified against AE 2026's
+    import of ai.ai, complex.ai, pdf.pdf, ai_no_pdf.ai and two more PDFs
+    (footage_depth.aep).
+
+    Args:
+        width: Page width in points.
+        height: Page height in points.
+        layer_count: How many layers the document has (0 when it has none
+            py_aep can read, as AE writes for a file without Optional
+            Content Groups).
+    """
+    return build_ai_layer_opti_data(width, height, "", layer_count, visible=False)
 
 
 def build_ai_layer_opti_data(
@@ -606,7 +728,7 @@ def build_ai_layer_opti_data(
     its source layer selected. The selection is stored entirely in this opti.
     It extends `build_text_opti_data` with:
 
-    - `text_document_layers` (0x33): the source document's layer count.
+    - `text_document_layers` (0x30): the source document's layer count.
     - `text_element_count` (0x3C): element/page count (1).
     - `text_layer_visible` (0x3D): the source layer's visibility in the
       Illustrator/PDF document (`False` for a layer the file's default
@@ -642,7 +764,7 @@ def build_ai_layer_opti_data(
     chunk = TextOptiChunk(
         text_width=width,
         text_height=height,
-        text_document_layers=min(layer_count, 0xFF),
+        text_document_layers=layer_count,
         text_element_count=1,
         text_layer_visible=visible,
         text_layer_name=truncate_utf8(layer_name, 255).decode("utf-8"),
@@ -755,10 +877,11 @@ class PsdOptiChunk(OptiChunk):
     _total_length: int = u4_field(default=602, repr=False)
     """Total opti body length AE bakes into the header."""
 
-    psd_flattened: bool = bool_field()
-    """`True` for the merged still of a flattened (layerless) file imported
-    as a one-layer composition; per-layer and plain merged optis leave it
-    `False`."""
+    psd_vector_or_merged: bool = bool_field()
+    """`True` for a layer with a vector mask (a shape layer's included,
+    enabled or disabled) and for the merged still of a flattened (layerless)
+    file imported as a one-layer composition; other per-layer and plain
+    merged optis leave it `False` (measured on AE 2026)."""
 
     _pad_0b: bytes = bytes_field(3, default=b"\x00\x01\x01", repr=False)
     psd_layer_index: int = u4_field(default=0xFFFFFFFF)
@@ -766,8 +889,10 @@ class PsdOptiChunk(OptiChunk):
 
     _pad_12: bytes = bytes_field(12, default=b"SPB8\x01" + b"\x00" * 7, repr=False)
     psd_channels: int = u1_field(default=4)
-    """Number of color channels (3=RGB, 4=RGBA/CMYK). The still importer
-    composites the merge to RGBA, so merged/per-layer optis store 4."""
+    """The document's channel count as AE reads it: its colour channels, plus
+    one when it has alpha (3 RGB, 4 RGB + alpha or CMYK, 1 grayscale, 2
+    grayscale + alpha). Every opti of a document stores the same count, a
+    layer's included (AE 2026)."""
 
     _pad_1f: bytes = bytes_field(1, repr=False)
     psd_canvas_height: int = u4_field(endian="<")
@@ -777,14 +902,21 @@ class PsdOptiChunk(OptiChunk):
     """Full PSD canvas width in pixels (LE u4)."""
 
     psd_bit_depth: int = u1_field(default=8)
-    """Bit depth per channel (8, 16, or 32). Low byte of a LE u2 whose high
-    byte stays 0 in `_pad_29`."""
+    """Bit depth per channel (1, 8, 16, or 32). Low byte of a LE u2 whose
+    high byte stays 0 in `_pad_29`."""
 
-    _pad_29: bytes = bytes_field(7, default=b"\x00\x03\x00\x00\x00\x00\x00", repr=False)
-    psd_layer_count: int = u1_field(default=1)
-    """Total number of layers in the PSD."""
+    _pad_29: bytes = bytes_field(1, repr=False)
+    psd_color_mode: int = u1_field(default=3)
+    """The document's Photoshop colour mode (0 bitmap, 1 grayscale, 2
+    indexed, 3 RGB, 4 CMYK, 9 Lab); a TIFF stores the mode it reads as. Low
+    byte of a LE u2."""
 
-    _pad_31: bytes = bytes_field(29, repr=False)
+    _pad_2b: bytes = bytes_field(5, repr=False)
+    psd_layer_count: int = u2_field(default=1, endian="<")
+    """Total number of layers in the document; 0 for a flattened one. A
+    16-bit field: AE 2026 writes 300 as `2c 01` for a 300-layer document."""
+
+    _pad_32: bytes = bytes_field(28, repr=False)
     psd_layer_top: int = s4_field(endian="<")
     """Layer bounding box top (LE s4, can be negative)."""
 
@@ -850,10 +982,11 @@ class TextOptiChunk(OptiChunk):
 
     _pad_1e: bytes = bytes_field(10, repr=False)
     _pad_28: bytes = bytes_field(4, default=b"\xff\xff\xff\xff", repr=False)
-    _pad_2c: bytes = bytes_field(7, repr=False)
-    text_document_layers: int = u1_field()
-    """How many layers the source document has (not this binding's index).
-    Zero for whole-document footage, which selects no layer.
+    _pad_2c: bytes = bytes_field(4, repr=False)
+    text_document_layers: int = u4_field()
+    """How many layers the source document has (not this binding's index), a
+    32-bit word, written for whole-document footage too. Zero for an EPS
+    file and for a document without layers.
 
     Read as a color-space flag until AE 2026 fixtures with more than eight
     layers turned up: ai.ai (CMYK) writes 2 and complex.ai (RGB) writes 8,
@@ -862,7 +995,8 @@ class TextOptiChunk(OptiChunk):
 
     _pad_34: bytes = bytes_field(8, repr=False)
     text_element_count: int = u1_field()
-    """Element/page count (1 for a per-layer reference)."""
+    """Element/page count: 1 for Illustrator/PDF footage (a whole document
+    or one of its layers), 0 for an EPS file."""
 
     text_layer_visible: bool = bool_field()
     """The source layer's visibility in the Illustrator/PDF document: `False`
@@ -882,11 +1016,11 @@ class TextOptiChunk(OptiChunk):
 
     _pad_144: bytes = bytes_field(260, repr=False)
     text_page_height: int = u2_field()
-    """Redundant page-dimension tail (height); 0 for whole-document."""
+    """Redundant page-dimension tail (height); 0 for an EPS file."""
 
     _pad_24a: bytes = bytes_field(2, repr=False)
     text_page_width: int = u2_field()
-    """Redundant page-dimension tail (width); 0 for whole-document."""
+    """Redundant page-dimension tail (width); 0 for an EPS file."""
 
     _pad_24e: bytes = bytes_field(6, repr=False)
 

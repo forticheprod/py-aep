@@ -12,6 +12,7 @@ from helpers import (
     parse_project_fresh,
 )
 
+from py_aep import Project
 from py_aep import new as py_aep_new
 from py_aep import parse as parse_aep
 from py_aep.enums import (
@@ -23,8 +24,17 @@ from py_aep.enums import (
     PropertyControlType,
     PropertyType,
 )
-from py_aep.models import Keyframe, Layer, MaskPropertyGroup, Property, PropertyGroup
+from py_aep.models import (
+    AVLayer,
+    Keyframe,
+    Layer,
+    MaskPropertyGroup,
+    Property,
+    PropertyGroup,
+    Shape,
+)
 from py_aep.models.layers import ShapeLayer, TextLayer
+from py_aep.resolvers.interpolation import NORMALIZED_ARC_ACCURACY
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "property"
 BUGS_DIR = Path(__file__).parent.parent.parent / "samples" / "bugs"
@@ -351,6 +361,27 @@ class TestRoundtripKeyframeLabel:
         layer2 = comp2.layers[0]
         prop2 = _find_property(layer2, "ADBE Opacity")
         assert prop2.keyframes[0].label == Label.RED
+
+    def test_label_bytes_match_after_effects(self, tmp_path: Path) -> None:
+        """Labels written by py_aep store the same key-flag bytes as AE's
+        `setLabelAtKey` on the same project (keyframe_labels.aep)."""
+        project = parse_aep(SAMPLES_DIR / "keyframe_bezier_multi_ease_1D.aep").project
+        opacity = _find_property(
+            get_comp(project, "TestComp").layers[0], "ADBE Opacity"
+        )
+        for kf, label in zip(opacity.keyframes, (Label(1), Label(5), Label(16))):
+            kf.label = label
+        out = tmp_path / "labels.aep"
+        project.save(out)
+
+        def key_flag_bytes(path: Path) -> list[bytes]:
+            proj = parse_aep(path).project
+            prop = _find_property(get_comp(proj, "TestComp").layers[0], "ADBE Opacity")
+            return [kf._ldat_item.tobytes()[6:8] for kf in prop.keyframes]
+
+        assert key_flag_bytes(out) == key_flag_bytes(
+            SAMPLES_DIR / "keyframe_labels.aep"
+        )
 
     def test_modify_keyframe_roving(self, tmp_path: Path) -> None:
         project = parse_aep(SAMPLES_DIR / "keyframe_1D.aep").project
@@ -736,6 +767,50 @@ class TestRoundtripRotoBezier:
         mask2 = project2.compositions[0].layers[0].masks[0]
         assert isinstance(mask2, MaskPropertyGroup)
         assert mask2.roto_bezier is False
+
+
+class TestKeyedEffectPointArcMetric:
+    """Keying a point stored normalized to its layer stamps how AE measures
+    its motion path - the layer's display aspect and the normalized-point
+    accuracy - and AE plays the stored values, so a path keyed by py_aep has
+    to equal AE's own keying (AE 2026: Gradient Ramp and Point Control on a
+    3000x200 solid, effect_point_static.aep holding the never-keyed Ramp)."""
+
+    AEP = SAMPLES_DIR / "effect_point_static.aep"
+    KEYS = ((0.0, [100.0, 50.0]), (1.0, [2900.0, 150.0]), (2.0, [1500.0, 20.0]))
+    # AE 2026 valueAtTime after setting the same three keys.
+    AE_VALUES = {
+        0.125: [450.000162621298, 62.5000058079035],
+        0.375: [1149.99974230726, 87.4999907966879],
+        1.25: [2549.99949578272, 117.499953179824],
+        1.625: [2024.99987115363, 68.7499880356941],
+    }
+
+    @staticmethod
+    def _effects(project: Project) -> PropertyGroup:
+        comp = next(c for c in project.compositions if c.name == "MASK_LAYER_SPACE")
+        layer = next(lyr for lyr in comp.layers if lyr.name == "solid_3000x200")
+        return layer["ADBE Effect Parade"]
+
+    @pytest.mark.parametrize("match_name", ["ADBE Ramp", "ADBE Point Control"])
+    def test_keyed_point_plays_like_ae(self, match_name: str, tmp_path: Path) -> None:
+        app = parse_aep(self.AEP)
+        effects = self._effects(app.project)
+        if match_name == "ADBE Point Control":
+            effects.add_property(match_name)
+        point = effects.properties[-1][f"{match_name}-0001"]
+        assert point._tdb4.pixel_aspect == 1.0  # never keyed
+        for time, value in self.KEYS:
+            point.set_value_at_time(time, value)
+        assert point._tdb4.pixel_aspect == 15.0
+        assert point._tdb4._arc_accuracy == NORMALIZED_ARC_ACCURACY
+        out = tmp_path / "keyed.aep"
+        app.project.save(out)
+        point = self._effects(parse_aep(out).project).properties[-1][
+            f"{match_name}-0001"
+        ]
+        for time, expected in self.AE_VALUES.items():
+            assert point.value_at_time(time) == pytest.approx(expected, abs=1e-9)
 
 
 class TestRoundtripDimensionsSeparated:
@@ -1142,6 +1217,51 @@ class TestAddProperty:
         assert new_mask.mask_mode == MaskMode.ADD
         assert new_mask.inverted is False
         assert new_mask._mkif.mask_id == 3
+
+    def test_add_mask_names_past_the_highest_mask_number(self) -> None:
+        """AE numbers a new mask's name past the highest "Mask N" name, not
+        by its id (AE 2026)."""
+        app = parse_aep(self.AEP)
+        masks = app.project.compositions[0].layers[0].masks
+        assert masks is not None
+        masks.properties[1].name = "stored"
+        new_mask = masks.add_property("ADBE Mask Atom")
+        assert isinstance(new_mask, MaskPropertyGroup)
+        assert (new_mask.name, new_mask._mkif.mask_id) == ("Mask 2", 3)
+
+        app = parse_aep(self.AEP)
+        masks = app.project.compositions[0].layers[0].masks
+        assert masks is not None
+        masks.properties[1].name = "Mask 3"
+        new_mask = masks.add_property("ADBE Mask Atom")
+        assert isinstance(new_mask, MaskPropertyGroup)
+        assert (new_mask.name, new_mask._mkif.mask_id) == ("Mask 4", 3)
+
+    def test_expression_on_path_less_mask_writes_default_path(
+        self, tmp_path: Path
+    ) -> None:
+        """An expression on a fresh mask's path makes AE write the default
+        full-frame path (`om-s` with its `omks`); a bare `tdbs` placeholder
+        is "file is damaged" (AE 2026)."""
+        app = parse_aep(self.AEP)
+        layer = app.project.compositions[0].layers[0]
+        assert layer.masks is not None
+        mask = layer.masks.add_property("ADBE Mask Atom")
+        mask["ADBE Mask Shape"].expression = "value"
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+        layer2 = parse_aep(out).project.compositions[0].layers[0]
+        assert layer2.masks is not None
+        mask2 = layer2.masks.properties[-1]
+        assert mask2._tdgp is not None
+        oms = next(
+            c for c in mask2._tdgp.chunks if getattr(c, "list_type", None) == "om-s"
+        )
+        assert [getattr(c, "list_type", None) for c in oms.chunks] == ["tdbs", "omks"]
+        path = mask2["ADBE Mask Shape"]
+        assert path.expression == "value"
+        w, h = layer2._mask_scale
+        assert path.value.vertices == [[0.0, 0.0], [0.0, h], [w, h], [w, 0.0]]
 
     def test_add_mask_by_display_name(self) -> None:
         """The display name `Mask` resolves to the mask atom match name."""
@@ -2049,6 +2169,52 @@ class TestAddInstalledEffect:
         assert [e.match_name for e in layer2.effects] == [
             "ADBE Lens Flare",
             "ADBE Lens Flare",
+        ]
+
+    @staticmethod
+    def _parade_layout(layer: AVLayer) -> list[str]:
+        """The Effect Parade's direct chunks, `engv` with its value."""
+        assert layer.effects is not None
+        list(layer.effects.properties)
+        tdgp = layer.effects._tdgp
+        assert tdgp is not None
+        return [
+            f"engv {int.from_bytes(c.data, 'big')}"
+            if c.chunk_type == "engv"
+            else getattr(c, "value", None) or c.chunk_type
+            for c in tdgp.chunks
+            if c.chunk_type in ("tdmn", "engv")
+        ]
+
+    def test_added_puppet_stores_its_engine_version(self, tmp_path: Path) -> None:
+        """AE 2026 stores `engv` 2 between every Puppet's `tdmn` and its
+        `sspc`; without it, AE loads the instance with the Legacy engine
+        (Puppet Engine reads 1 and its Advanced parameters are hidden)."""
+        app = parse_aep(SAMPLES_DIR / "effects.aep")
+        layer = get_layer(app.project, "effect_puppet")
+        assert layer.effects is not None
+        layer.effects.add_property("ADBE FreePin3")
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        layer2 = get_layer(parse_aep(out).project, "effect_puppet")
+        assert self._parade_layout(layer2) == [
+            "ADBE FreePin3",
+            "engv 2",
+            "ADBE FreePin3",
+            "engv 2",
+            "ADBE Group End",
+        ]
+
+    def test_removed_puppet_takes_its_engine_version(self) -> None:
+        app = parse_aep(SAMPLES_DIR / "effects.aep")
+        layer = get_layer(app.project, "effect_puppet")
+        assert layer.effects is not None
+        layer.effects.add_property("ADBE FreePin3").remove()
+        assert self._parade_layout(layer) == [
+            "ADBE FreePin3",
+            "engv 2",
+            "ADBE Group End",
         ]
 
     def test_add_installed_effect_uses_pard_defaults_not_def_values(self) -> None:
@@ -3237,20 +3403,28 @@ class TestRoundtripAnimatedTdb4Stamps:
         assert prop2._tdb4._time_base == 25600
 
     def test_animate_stamps_pixel_aspect_on_spatial(self, tmp_path: Path) -> None:
-        """AE writes the comp pixel aspect into a spatial property tdb4."""
+        """AE writes the comp pixel aspect into a spatial property tdb4, but
+        the layer display aspect into a footage layer's Anchor Point, which
+        it stores normalized (AE 2026 keying both on this 400x300 layer in a
+        1.5 comp: 1.5 / 1e-4 and 4/3 / 6.25e-12)."""
         project = parse_project_fresh(self.SAMPLE)
         comp = project.compositions[0]
         comp.pixel_aspect = 1.5
 
         comp.layers[0].transform["ADBE Anchor Point"].add_key(1.0)
+        comp.layers[0].transform["ADBE Position"].add_key(1.0)
         out = tmp_path / "modified.aep"
         project.save(out)
 
         comp2 = parse_aep(out).project.compositions[0]
         anchor = comp2.layers[0].transform["ADBE Anchor Point"]
         assert anchor.is_spatial
-        assert anchor._tdb4.pixel_aspect == pytest.approx(1.5)
+        assert anchor._tdb4.pixel_aspect == pytest.approx(400 / 300)
+        assert anchor._tdb4._arc_accuracy == NORMALIZED_ARC_ACCURACY
         assert anchor._tdb4._time_base == 25600
+        position = comp2.layers[0].transform["ADBE Position"]
+        assert position._tdb4.pixel_aspect == pytest.approx(1.5)
+        assert position._tdb4._arc_accuracy == pytest.approx(1e-4)
 
     def test_animate_leaves_pixel_aspect_alone_on_scalar(self, tmp_path: Path) -> None:
         """Non-spatial properties keep 1.0 even in a non-square-pixel comp -
@@ -3268,6 +3442,187 @@ class TestRoundtripAnimatedTdb4Stamps:
         opacity = comp2.layers[0].transform["ADBE Opacity"]
         assert not opacity.is_spatial
         assert opacity._tdb4.pixel_aspect == pytest.approx(1.0)
+
+
+class TestDeanimateMatchesAe:
+    """Removing the last keyframe reproduces AE 2026's static stream.
+
+    AE only sets the static bit, clears the animated flag and stores the
+    removed keyframe's record (in/out interpolation, spatial flags); every
+    other `tdb4` byte keeps its animated value, and the `cdat` holds 3
+    doubles per dimension for a colour or spatial stream, 5 otherwise. The
+    expected bytes are AE 2026's output for `removeKey(1)` until no key is
+    left, on the same sample. Restoring a never-animated stream's bytes
+    instead made AE ignore the static value: Position read back at its
+    default, a shape Fill Color failed to evaluate.
+    """
+
+    _AE_STATIC = {
+        ("ADBE Transform Group", "ADBE Position"): (
+            (
+                "db990003000f0003ffffffff000060003f1a36e2eb1c432d3ff0000000000000"
+                "3ff00000000000003ff00000000000003ff00000000000000000000809000000"
+                "0000000000000000000000000101000100000001000000000000000000000000"
+                "00000000000000000000000000000000000000000000000000000000"
+            ),
+            (
+                "407f4000000000004072c0000000000040490000000000000000000000000000"
+                "0000000000000000000000000000000000000000000000000000000000000000"
+                "0000000000000000"
+            ),
+        ),
+        ("ADBE Transform Group", "ADBE Scale"): (
+            (
+                "db990003000100000001ffff000060003f1a36e2eb1c432d3ff0000000000000"
+                "3ff00000000000003ff00000000000003ff00000000000000000000809000000"
+                "0000000000000000000000000101000000000000000000000000000000000000"
+                "00000000000000000000000000000000000000000000000000000000"
+            ),
+            (
+                "3ff80000000000003ff80000000000003ff00000000000000000000000000000"
+                "0000000000000000000000000000000000000000000000000000000000000000"
+                "0000000000000000000000000000000000000000000000000000000000000000"
+                "000000000000000000000000000000000000000000000000"
+            ),
+        ),
+        ("ADBE Transform Group", "ADBE Opacity"): (
+            (
+                "db990001000100000001ffff000060003f1a36e2eb1c432d3ff0000000000000"
+                "3ff00000000000003ff00000000000003ff00000000000000000000809000000"
+                "0000000000000000000000000101000000000000000000000000000000000000"
+                "00000000000000000000000000000000000000000000000000000000"
+            ),
+            (
+                "3fe999999999999a000000000000000000000000000000000000000000000000"
+                "0000000000000000"
+            ),
+        ),
+        ("ADBE Effect Parade", "ADBE Fill", "ADBE Fill-0002"): (
+            (
+                "db990004000700010002ffff000060003f1a36e2eb1c432d3ff0000000000000"
+                "3ff00000000000003ff00000000000003ff00000000000000000000101000000"
+                "0000000000000000000000000101000100000000000000000000000000000000"
+                "00000000000000000000000000000000000000000000000000000000"
+            ),
+            (
+                "406fe0000000000000000000000000000000000000000000406fe00000000000"
+                "0000000000000000000000000000000000000000000000000000000000000000"
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            ),
+        ),
+    }
+
+    def _prop(self, project: Project, path: tuple[str, ...]) -> Property:
+        layer = next(
+            lyr for lyr in get_comp(project, "type_camera").layers if lyr.name == "XF"
+        )
+        prop = layer
+        for match_name in path:
+            prop = prop[match_name]
+        assert isinstance(prop, Property)
+        return prop
+
+    @pytest.mark.parametrize("path", list(_AE_STATIC))
+    def test_remove_keys_bytes(self, path: tuple[str, ...], tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "all_animated.aep")
+        prop = self._prop(project, path)
+        _deanimate(prop)
+        out = tmp_path / "deanimated.aep"
+        project.save(out)
+        prop2 = self._prop(parse_aep(out).project, path)
+        tdb4_hex, cdat_hex = self._AE_STATIC[path]
+        assert prop2._tdb4.tobytes().hex() == tdb4_hex
+        assert prop2._cdat is not None
+        assert prop2._cdat.tobytes().hex() == cdat_hex
+
+    def test_shape_props_keep_animated_flags(self, tmp_path: Path) -> None:
+        """A shape group's Position and Fill Color animated by py and
+        de-animated again keep the value-bearing flags AE writes (static
+        bit, value-hint/cvot bytes and category of the animated state)."""
+        project = parse_project_fresh(LAYER_SAMPLES_DIR / "shape_source_rect.aep")
+        layer = next(
+            lyr
+            for lyr in get_comp(project, "SHAPE_RECTS").layers
+            if lyr.name == "animated_rect"
+        )
+        group = layer["ADBE Root Vectors Group"]["ADBE Vector Group"]
+        pos = group["ADBE Vector Transform Group"]["ADBE Vector Position"]
+        fill = group["ADBE Vectors Group"]["ADBE Vector Graphic - Fill"][
+            "ADBE Vector Fill Color"
+        ]
+        for prop, first, last in (
+            (pos, [10.0, 20.0], [30.0, 40.0]),
+            (fill, [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]),
+        ):
+            prop.set_value_at_time(0.0, first)
+            prop.set_value_at_time(1.0, last)
+            _deanimate(prop)
+        out = tmp_path / "shape_deanimated.aep"
+        project.save(out)
+        layer2 = next(
+            lyr
+            for lyr in get_comp(parse_aep(out).project, "SHAPE_RECTS").layers
+            if lyr.name == "animated_rect"
+        )
+        group2 = layer2["ADBE Root Vectors Group"]["ADBE Vector Group"]
+        pos2 = group2["ADBE Vector Transform Group"]["ADBE Vector Position"]
+        fill2 = group2["ADBE Vectors Group"]["ADBE Vector Graphic - Fill"][
+            "ADBE Vector Fill Color"
+        ]
+        # AE 2026 de-animating the same streams: 0x05-0x0B, the category
+        # and the record's interpolation bytes.
+        assert pos2._tdb4.tobytes()[0x04:0x0C].hex() == "000f0003ffffffff"
+        assert pos2._tdb4.tobytes()[0x3C] == 0x09
+        assert pos2._tdb4.tobytes()[0x4C:0x50].hex() == "01010001"
+        assert fill2._tdb4.tobytes()[0x04:0x06].hex() == "0007"
+        assert fill2._tdb4.tobytes()[0x08:0x0C].hex() == "0002ffff"
+        assert fill2._tdb4.tobytes()[0x3C] == 0x01
+        assert fill2._tdb4.tobytes()[0x4C:0x50].hex() == "01010001"
+        assert pos2._cdat is not None and fill2._cdat is not None
+        assert pos2._cdat.values == [30.0, 40.0, 0.0, 0.0, 0.0, 0.0]
+        assert len(fill2._cdat.values) == 12
+        assert pos2.value == [30.0, 40.0]
+        assert fill2.value == [0.0, 0.0, 1.0, 1.0]
+
+
+class TestEffectParamDefaults:
+    """`is_modified` of an effect parameter stored in the instance compares
+    against its pard default: popup s2 at 0x3E, point percent at 0x44/0x48
+    (or the 3D point doubles), scaled to the layer.
+
+    `effect_param_defaults.aep` is AE 2026 output (2_gaussian.aep plus two
+    Gradient Ramps): `blur_changed` stores Blur Dimensions = 3 and
+    `ramp_changed` Start of Ramp = [100, 200]. ExtendScript reports a
+    parameter holding its default (Blur Dimensions 1, Start of Ramp
+    [960, 0] on the 1920 x 1080 layer) as unmodified.
+    """
+
+    SAMPLE = SAMPLES_DIR / "effect_param_defaults.aep"
+
+    def _effect(self, project: Project, name: str) -> PropertyGroup:
+        layer = get_first_layer(project)
+        assert layer.effects is not None
+        effect = next(e for e in layer.effects if e.name == name)
+        assert isinstance(effect, PropertyGroup)
+        return effect
+
+    def test_stored_popup_back_to_default(self) -> None:
+        project = parse_project_fresh(self.SAMPLE)
+        dims = self._effect(project, "blur_changed")["ADBE Gaussian Blur 2-0002"]
+        assert dims.value == 3
+        assert dims.default_value == 1
+        assert dims.is_modified is True
+        dims.value = 1
+        assert dims.is_modified is False
+
+    def test_stored_point_back_to_default(self) -> None:
+        project = parse_project_fresh(self.SAMPLE)
+        start = self._effect(project, "ramp_changed")["ADBE Ramp-0001"]
+        assert start.value == [100.0, 200.0]
+        assert start.default_value == [960.0, 0.0]
+        assert start.is_modified is True
+        start.value = [960.0, 0.0]
+        assert start.is_modified is False
 
 
 class TestExpressionEnabledGuard:
@@ -3359,3 +3714,179 @@ class TestCanSetExpressionAfterLayerEdits:
         assert reflection.can_set_expression is True
         transmission = materials.property("ADBE Light Transmission")
         assert transmission.can_set_expression is False
+
+
+class TestLockedRatio:
+    """`locked_ratio` reads the X/Y link AE saves with a Scale or Mask Feather
+    (clear on a new layer, set once its dimensions are unlinked)."""
+
+    def test_new_layer_is_linked(self) -> None:
+        project = parse_aep(SAMPLES_DIR / "property_2D_position.aep").project
+        scale = project.compositions[0].layers[0].transform.property("ADBE Scale")
+        assert scale.locked_ratio is True
+
+    def test_unlinked_in_after_effects(self) -> None:
+        # Scale's proportions unlinked in the AE 2026 UI, then saved.
+        project = parse_aep(SAMPLES_DIR / "scale_unlinked.aep").project
+        scale = project.compositions[0].layers[0].transform.property("ADBE Scale")
+        assert scale._tdsb.ratio_unlinked is True
+        assert scale.locked_ratio is False
+
+
+class TestKeyPathlessMask:
+    """A mask with no stored path keys the default full-frame rectangle,
+    as After Effects does (`maskShape.addKey()` on the same mask, AE 2026)."""
+
+    AEP = (
+        Path(__file__).parent.parent.parent
+        / "samples"
+        / "models"
+        / "essential_graphics"
+        / "indexed_group_controllers.aep"
+    )
+
+    @staticmethod
+    def _mask_path(project):  # type: ignore[no-untyped-def]
+        comp = get_comp(project, "Comp 1")
+        layer = next(layer for layer in comp.layers if layer.name == "Gray Solid 1")
+        return layer.masks.properties[0].property("ADBE Mask Shape")
+
+    def test_add_key_stores_the_default_rectangle(self, tmp_path: Path) -> None:
+        project = parse_aep(self.AEP).project
+        mask_path = self._mask_path(project)
+        assert not mask_path.keyframes
+        assert mask_path.add_key(0.0) == 0
+        mask_path.add_key(1.0)
+        out = tmp_path / "keyed_mask.aep"
+        project.save(out)
+        reparsed = self._mask_path(parse_project_fresh(out))
+        assert len(reparsed.keyframes) == 2
+        for keyframe in reparsed.keyframes:
+            assert keyframe.value.vertices == [
+                [0.0, 0.0],
+                [0.0, 1080.0],
+                [1920.0, 1080.0],
+                [1920.0, 0.0],
+            ]
+            assert keyframe.value.closed is True
+
+
+def _mask_shape_bytes(mask: MaskPropertyGroup) -> bytes:
+    """The serialized `LIST:om-s` of a mask's stored Mask Shape."""
+    assert mask._tdgp is not None
+    chunks = mask._tdgp.chunks
+    index = next(
+        i
+        for i, c in enumerate(chunks)
+        if c.chunk_type == "tdmn" and getattr(c, "value", None) == "ADBE Mask Shape"
+    )
+    return chunks[index + 1].tobytes()
+
+
+class TestMaskLayerSpaceWrites:
+    """Mask Path writes in each layer's mask space, against the paths AE 2026
+    stored for the same input (`mask_layer_space.aep`)."""
+
+    AEP = SAMPLES_DIR / "mask_layer_space.aep"
+    _PATH = [[10.0, 20.0], [300.0, 20.0], [300.0, 200.0], [10.0, 200.0]]
+
+    @staticmethod
+    def _masks(project, layer_name: str) -> dict[str, MaskPropertyGroup]:  # type: ignore[no-untyped-def]
+        comp = get_comp(project, "MASK_LAYER_SPACE")
+        layer = next(lay for lay in comp.layers if lay.name == layer_name)
+        return {m.name: m for m in layer.masks.properties}
+
+    def test_reading_unstored_paths_writes_nothing(self, tmp_path: Path) -> None:
+        project = parse_aep(self.AEP).project
+        for name in ("solid_640x360", "text", "footage"):
+            mask_path = self._masks(project, name)["Mask 1"].property("ADBE Mask Shape")
+            assert mask_path.value.vertices
+            assert mask_path.value_at_time(1.0).vertices
+        out = tmp_path / "read.aep"
+        project.save(out)
+        assert out.read_bytes() == self.AEP.read_bytes()
+
+    def test_edited_unstored_path_is_written(self, tmp_path: Path) -> None:
+        """The value of a path-less mask is built per read: editing it and
+        assigning it back stores the edit."""
+        project = parse_aep(self.AEP).project
+        mask_path = self._masks(project, "solid_640x360")["Mask 1"].property(
+            "ADBE Mask Shape"
+        )
+        shape = mask_path.value
+        assert mask_path.value is not shape
+        shape.vertices = [[10.0, 20.0], [0.0, 360.0], [640.0, 360.0], [640.0, 0.0]]
+        mask_path.value = shape
+        out = tmp_path / "edited.aep"
+        project.save(out)
+        reparsed = self._masks(parse_project_fresh(out), "solid_640x360")["Mask 1"]
+        vertices = reparsed.property("ADBE Mask Shape").value.vertices
+        assert [c for point in vertices for c in point] == pytest.approx(
+            [10.0, 20.0, 0.0, 360.0, 640.0, 360.0, 640.0, 0.0], abs=1e-4
+        )
+
+    @pytest.mark.parametrize("layer_name", ["solid_640x360", "text", "shape"])
+    def test_set_path_is_stored_as_ae_stores_it(
+        self, tmp_path: Path, layer_name: str
+    ) -> None:
+        """Setting a path on a path-less mask writes the Mask Shape AE wrote
+        for the same path: normalized to the source on a solid, in layer
+        pixels on a text or shape layer."""
+        project = parse_aep(self.AEP).project
+        mask_path = self._masks(project, layer_name)["Mask 1"].property(
+            "ADBE Mask Shape"
+        )
+        mask_path.value = Shape(self._PATH)
+        out = tmp_path / "set.aep"
+        project.save(out)
+        masks = self._masks(parse_project_fresh(out), layer_name)
+        assert _mask_shape_bytes(masks["Mask 1"]) == _mask_shape_bytes(masks["stored"])
+
+
+class TestRotoBezierWrites:
+    """Reporting a RotoBezier mask's derived tangents changes nothing that is
+    written (`mask_rotobezier_tensions.aep`)."""
+
+    AEP = SAMPLES_DIR / "mask_rotobezier_tensions.aep"
+
+    @staticmethod
+    def _keyed(project) -> Property:  # type: ignore[no-untyped-def]
+        comp = get_comp(project, "ROTO")
+        return next(
+            m.property("ADBE Mask Shape")
+            for layer in comp.layers
+            for m in layer.masks.properties
+            if m.name == "keyed"
+        )
+
+    def test_reading_derived_tangents_writes_nothing(self, tmp_path: Path) -> None:
+        project = parse_aep(self.AEP).project
+        comp = get_comp(project, "ROTO")
+        for layer in comp.layers:
+            for mask in layer.masks.properties:
+                mask_path = mask.property("ADBE Mask Shape")
+                for time in (0.0, 0.5, 1.0):
+                    shape = mask_path.value_at_time(time)
+                    assert len(shape.in_tangents) == len(shape.vertices)
+        out = tmp_path / "read.aep"
+        project.save(out)
+        assert out.read_bytes() == self.AEP.read_bytes()
+
+    def test_interpolated_value_stores_the_blended_stored_handles(
+        self, tmp_path: Path
+    ) -> None:
+        # The first key stores handles on vertex 0 only, the second none.
+        # Halfway, the value reports the derived RotoBezier tangents, but
+        # writing it back stores half of the stored handles, as before.
+        project = parse_aep(self.AEP).project
+        mask_path = self._keyed(project)
+        halfway = mask_path.value_at_time(0.5)
+        assert halfway.in_tangents[0] != pytest.approx([-15.0, 5.0], abs=1e-3)
+        mask_path.set_value_at_time(0.5, halfway)
+        out = tmp_path / "keyed.aep"
+        project.save(out)
+        reparsed = self._keyed(parse_project_fresh(out))
+        value = next(kf.value for kf in reparsed.keyframes if kf.time == 0.5)
+        assert value.vertices[0] == pytest.approx([200.0, 150.0], abs=1e-3)
+        assert value._stored_tangents(-1)[0] == pytest.approx([-15.0, 5.0], abs=1e-3)
+        assert value._stored_tangents(1)[0] == pytest.approx([20.0, -10.0], abs=1e-3)

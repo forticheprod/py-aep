@@ -15,6 +15,7 @@ they never touch the shared cached instances.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import struct
@@ -24,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from py_aep import Application, Project
 from py_aep import parse as _parse_aep
+from py_aep.binary.chunk import write_aep
 
 if TYPE_CHECKING:
     from py_aep.models.items.composition import CompItem
@@ -98,6 +100,13 @@ def parse_project_fresh(aep_file_path: str | os.PathLike[str]) -> Project:
     object to mutate without affecting any cached read-only instance.
     """
     return parse_app_fresh(aep_file_path).project
+
+
+def project_bytes(project: Project) -> bytes:
+    """Serialize `project` to `.aep` bytes in memory, as `save()` writes it."""
+    buf = io.BytesIO()
+    write_aep(buf, project._rifx, project._xmp)
+    return buf.getvalue()
 
 
 @lru_cache(maxsize=None)

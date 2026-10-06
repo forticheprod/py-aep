@@ -400,18 +400,21 @@ _PARAMETRIC_MESH_CHECKBOX_STREAMS: frozenset[str] = frozenset(
     }
 )
 
-# Match names that are expressionable only on 3D AV layers.
-_CANSETEXPR_3D_ONLY: frozenset[str] = frozenset(
+# The material options every 3D renderer shows.
+_MATERIAL_COEFFICIENTS: frozenset[str] = frozenset(
     {
-        "ADBE Orientation",
-        "ADBE Rotate X",
-        "ADBE Rotate Y",
         "ADBE Ambient Coefficient",
         "ADBE Diffuse Coefficient",
         "ADBE Specular Coefficient",
         "ADBE Shininess Coefficient",
         "ADBE Metal Coefficient",
     }
+)
+
+# Match names that are expressionable only on 3D AV layers.
+_CANSETEXPR_3D_ONLY: frozenset[str] = (
+    frozenset({"ADBE Orientation", "ADBE Rotate X", "ADBE Rotate Y"})
+    | _MATERIAL_COEFFICIENTS
 )
 
 # Match names a 3D layer shows under one renderer only (probed on AE 2026
@@ -448,19 +451,8 @@ _CANSETEXPR_EXTRUSION_DEPTHS: frozenset[str] = frozenset(
 # A 3D model brings its own materials, so its layer hides every renderer's
 # material options (probed on AE 2026 under Classic 3D, Advanced 3D and
 # Cinema 4D).
-_MODEL_LAYER_HIDDEN_MATERIALS: frozenset[str] = frozenset(
-    {
-        "ADBE Ambient Coefficient",
-        "ADBE Diffuse Coefficient",
-        "ADBE Specular Coefficient",
-        "ADBE Shininess Coefficient",
-        "ADBE Metal Coefficient",
-        "ADBE Shadow Color",
-        "ADBE Light Transmission",
-        "ADBE Reflection Coefficient",
-        "ADBE Glossiness Coefficient",
-        "ADBE Fresnel Coefficient",
-    }
+_MODEL_LAYER_HIDDEN_MATERIALS: frozenset[str] = _MATERIAL_COEFFICIENTS | frozenset(
+    _CANSETEXPR_RENDERER_3D_ONLY
 )
 
 # Transform match names that are never expressionable on camera layers.

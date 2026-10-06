@@ -47,13 +47,6 @@ class MarkerValue:
     See: https://ae-scripting.docsforadobe.dev/other/markervalue/
     """
 
-    frame_duration = ChunkField[int](
-        "_nmhd",
-        "frame_duration",
-        validate=validate_u4,
-    )
-    """The marker's duration, in frames. Read / Write."""
-
     duration = ChunkField[float](
         "_nmhd",
         "duration_seconds",
@@ -226,6 +219,29 @@ class MarkerValue:
             self._keyframe.frame_time = value
         else:
             self._frame_time = value
+
+    @property
+    def frame_duration(self) -> int:
+        """The marker's duration, in frames of its composition. Read / Write.
+
+        Raises:
+            ValueError: If the marker is not set on a marker property yet,
+                so it has no composition frame rate.
+        """
+        return round(self.duration * self._frame_rate())
+
+    @frame_duration.setter
+    def frame_duration(self, value: int) -> None:
+        validate_u4(value)
+        self.duration = value / self._frame_rate()
+
+    def _frame_rate(self) -> float:
+        if self._keyframe is None:
+            raise ValueError(
+                "frame_duration needs the composition frame rate: set the "
+                "MarkerValue on a marker property first"
+            )
+        return self._keyframe._frame_rate
 
     @property
     def event_cue_point(self) -> bool:

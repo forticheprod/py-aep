@@ -23,6 +23,7 @@ from .fmt_field import (
     f4_field,
     f8_field,
     items_field,
+    s2_field,
     s4_field,
     u1_field,
     u2_field,
@@ -359,10 +360,14 @@ class NmhdChunk(Chunk):
     AE ignores the parameters entirely.
     """
 
-    frame_duration: int = u4_field()
-    """Duration in 600ths of a second."""
+    duration_value: int = u4_field()
+    """Duration dividend: seconds = `duration_value / duration_scale`."""
 
-    _reserved_0c: bytes = bytes_field(4, repr=False)
+    duration_scale: int = u4_field(default=600)
+    """Duration divisor. 600 on every marker a script creates or whose
+    duration a script sets (AE 2026, any composition frame rate); markers
+    edited in the UI also store 24, 25 or 24576. AE 2026 reads 0 as 600."""
+
     label: int = u1_field()
     """Label color index."""
 
@@ -375,12 +380,13 @@ class NmhdChunk(Chunk):
 
     @property
     def duration_seconds(self) -> float:
-        """Duration in seconds (frame_duration / 600)."""
-        return self.frame_duration / 600.0
+        """Duration in seconds."""
+        return self.duration_value / (self.duration_scale or 600)
 
     @duration_seconds.setter
     def duration_seconds(self, value: float) -> None:
-        self.frame_duration = round(value * 600)
+        self.duration_value = round(value * 600)
+        self.duration_scale = 600
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +401,9 @@ class FipsChunk(Chunk):
 
     Contains zoom, exposure, ROI, channel display, and toggle flags
     for guides, rulers, grid, etc. Bitfield flags are exposed via
-    `BitField` descriptors.
+    `BitField` descriptors. The last 9 bytes (0x57-0x5F) are undecoded and
+    kept verbatim as trailing data: zeros except byte 0x59 (0x24 or 0x00 in
+    the samples).
     """
 
     chunk_type: str = "fips"
@@ -610,7 +618,10 @@ class GenericPardChunk(PardChunk):
 
 @define
 class ColorPardChunk(PardChunk):
-    """Color control (type 5): 4xB last/default/max color."""
+    """Color control (type 5, SDK `PF_ColorDef`): 4xB value and 4xB
+    default, both alpha, red, green, blue. The rest of the body is leftover
+    memory, not a field (zeros in most samples, pointer-like patterns and
+    match-name fragments in others), kept as trailing bytes."""
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=5)
@@ -618,8 +629,6 @@ class ColorPardChunk(PardChunk):
     _pad_post: bytes = bytes_field(8, repr=False)
     _last_color: bytes = bytes_field(4, repr=False)
     _default_color: bytes = bytes_field(4, repr=False)
-    _pad_body: bytes = bytes_field(64, repr=False)
-    _max_color: bytes = bytes_field(4, repr=False)
 
     @property
     def last_color(self) -> list[int]:
@@ -636,14 +645,6 @@ class ColorPardChunk(PardChunk):
     @default_color.setter
     def default_color(self, value: list[int]) -> None:
         self._default_color = bytes(value)
-
-    @property
-    def max_color(self) -> list[int]:
-        return list(self._max_color)
-
-    @max_color.setter
-    def max_color(self, value: list[int]) -> None:
-        self._max_color = bytes(value)
 
 
 @define
@@ -758,7 +759,13 @@ class BooleanPardChunk(PardChunk):
 
 @define
 class TwoDPardChunk(PardChunk):
-    """2D point control (type 6): s4 last_value_x_raw, s4 last_value_y_raw."""
+    """2D point control (type 6, SDK `PF_PointDef`).
+
+    Body: `PF_Fixed` (16.16) value x / y, 3 reserved bytes,
+    `restrict_bounds`, then `PF_Fixed` default x / y in percent of the
+    layer size. The cached value comes in two forms: a fraction of the
+    layer size (0.5 = centre), or equal to the percent default.
+    """
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=6)
@@ -766,6 +773,10 @@ class TwoDPardChunk(PardChunk):
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value_x_raw: int = s4_field()
     last_value_y_raw: int = s4_field()
+    _reserved_40: bytes = bytes_field(3, repr=False)
+    restrict_bounds: int = u1_field()
+    default_x_raw: int = s4_field()
+    default_y_raw: int = s4_field()
 
     @property
     def last_value_x(self) -> float:
@@ -775,18 +786,25 @@ class TwoDPardChunk(PardChunk):
     def last_value_y(self) -> float:
         return self.last_value_y_raw * (1.0 / 128)
 
+    @property
+    def default(self) -> list[float]:
+        """Default x / y, in percent of the layer width / height."""
+        return [self.default_x_raw / 65536, self.default_y_raw / 65536]
+
 
 @define
 class EnumPardChunk(PardChunk):
-    """Enum/popup control (type 7): u4 last_value, s4 nb_options, s4 default."""
+    """Popup control (type 7, SDK `PF_PopupDef`): s4 value, s2 number of
+    choices, s2 default (1-based). The choice-names pointer that follows
+    in the SDK record is leftover memory, kept as trailing bytes."""
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=7)
     _raw_name: bytes = bytes_field(32, repr=False)
     _pad_post: bytes = bytes_field(8, repr=False)
     last_value: int = u4_field()
-    nb_options: int = s4_field()
-    default: int = s4_field()
+    nb_options: int = s2_field()
+    default: int = s2_field()
 
 
 @define
@@ -827,7 +845,10 @@ class SliderPardChunk(PardChunk):
 
 @define
 class ThreeDPardChunk(PardChunk):
-    """3D point control (type 18): 3x f8 for x/y/z raw values."""
+    """3D point control (type 18, SDK `PF_Point3DDef`): f8 value x / y /
+    z, then f8 default x / y / z in percent of the layer size. The cached
+    value is a fraction of the layer size or equal to the percent default,
+    as for a 2D point."""
 
     _pad_pre: bytes = bytes_field(15, repr=False)
     property_control_type: int = u1_field(default=18)
@@ -836,6 +857,14 @@ class ThreeDPardChunk(PardChunk):
     last_value_x_raw: float = f8_field()
     last_value_y_raw: float = f8_field()
     last_value_z_raw: float = f8_field()
+    default_x: float = f8_field()
+    default_y: float = f8_field()
+    default_z: float = f8_field()
+
+    @property
+    def default(self) -> list[float]:
+        """Default x / y / z, in percent of the layer size."""
+        return [self.default_x, self.default_y, self.default_z]
 
     @property
     def last_value_x(self) -> float:
@@ -1013,6 +1042,30 @@ class Fth5Chunk(Chunk):
     chunk_type: str = "fth5"
 
     points: list[FeatherPointItem] = items_field(FeatherPointItem, 32)
+
+
+# ---------------------------------------------------------------------------
+# omtn - per-vertex RotoBezier tensions of a shape value
+# ---------------------------------------------------------------------------
+
+
+@define
+class TensionItem(FmtItem):
+    """One vertex's RotoBezier tension (BE f4)."""
+
+    value: float = f4_field(default=0.0)
+
+
+@register("omtn")
+@define
+class OmtnChunk(Chunk):
+    """Per-vertex RotoBezier tensions of a mask shape value, one float per
+    vertex (0 = smoothest, 1 = a corner). Empty when the shape was never
+    given tensions."""
+
+    chunk_type: str = "omtn"
+
+    tensions: list[TensionItem] = items_field(TensionItem, 4)
 
 
 # ---------------------------------------------------------------------------

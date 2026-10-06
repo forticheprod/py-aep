@@ -18,7 +18,6 @@ from .fmt_field import (
     f4_field,
     f8_field,
     u1_field,
-    u2_field,
     u4_field,
     u8_field,
 )
@@ -103,12 +102,11 @@ class Lhd3Chunk(Chunk):
     chunk_type: str = "lhd3"
 
     _prefix: bytes = bytes_field(
-        10, default=b"\x00\xd0\x0b\xee\x00\x00\x00\x00\x00\x00", repr=False
+        8, default=b"\x00\xd0\x0b\xee\x00\x00\x00\x00", repr=False
     )
-    count: int = u2_field()
+    count: int = u4_field()
     _count_b: int = u4_field(default=1, repr=False)
-    _gap_b: bytes = bytes_field(2, default=b"\x00\x00", repr=False)
-    item_size: int = u2_field()
+    item_size: int = u4_field()
     _gap2: bytes = bytes_field(3, default=b"\x00\x00\x00", repr=False)
     item_type_raw: int = u1_field()
     _counter_a: int = u4_field(default=1, repr=False)
@@ -203,7 +201,8 @@ class KfNoValue(FmtItem):
 
 @define
 class KfColor(FmtItem):
-    """Keyframe data for color properties (RGBA)."""
+    """Keyframe data for color properties: alpha, red, green, blue in
+    0-255 units (the model reorders them to RGBA 0-1)."""
 
     _unknown1: int = u8_field()
     _unknown2: float = f8_field()
@@ -211,10 +210,10 @@ class KfColor(FmtItem):
     in_influence: float = f8_field()
     out_speed: float = f8_field()
     out_influence: float = f8_field()
+    a: float = f8_field()
     r: float = f8_field()
     g: float = f8_field()
     b: float = f8_field()
-    a: float = f8_field()
     _uf0: float = f8_field()
     _uf1: float = f8_field()
     _uf2: float = f8_field()
@@ -226,11 +225,12 @@ class KfColor(FmtItem):
 
     @property
     def value(self) -> list[float]:
-        return [self.r, self.g, self.b, self.a]
+        """The four channels in storage order: alpha, red, green, blue."""
+        return [self.a, self.r, self.g, self.b]
 
     @value.setter
     def value(self, v: list[float]) -> None:
-        self.r, self.g, self.b, self.a = v
+        self.a, self.r, self.g, self.b = v
 
 
 @define
@@ -341,28 +341,37 @@ class LdatItem:
     `time_units` is the keyframe time as a signed 32-bit count of the
     comp's `internal_timebase` units per second (e.g. 24576 for 24 fps;
     measured on AE 2026 keyframes up to 10000 s).
+
+    Header bytes 6-7 are one big-endian word of key flags: bits 3-5 are
+    the temporal continuous / auto-bezier / roving flags and bits 6-10 the
+    label (After Effects stores labels 1 / 5 / 16 as `00 40` / `01 40` /
+    `04 00`); the other bits are preserved as read.
     """
 
     time_units: int = 0
     in_interpolation_type: int = 0
     out_interpolation_type: int = 0
-    label: int = 0
-    _temporal_flags: int = 0
+    _key_flags: int = 0
     kf_data: Any = b""
     _trailing: bytes = b""
 
-    roving = BitField("_temporal_flags", 5)
-    temporal_auto_bezier = BitField("_temporal_flags", 4)
-    temporal_continuous = BitField("_temporal_flags", 3)
+    roving = BitField("_key_flags", 5)
+    temporal_auto_bezier = BitField("_key_flags", 4)
+    temporal_continuous = BitField("_key_flags", 3)
+
+    @property
+    def label(self) -> int:
+        """Label color index (0-16), bits 6-10 of the key flags."""
+        return (self._key_flags >> 6) & 0x1F
+
+    @label.setter
+    def label(self, value: int) -> None:
+        self._key_flags = (self._key_flags & ~(0x1F << 6)) | ((value & 0x1F) << 6)
 
     @classmethod
     def frombytes(cls, data: bytes, *, item_type: LdatItemType) -> LdatItem:
         # 8-byte header
-        time_units = struct.unpack(">i", data[0:4])[0]
-        in_interp = data[4]
-        out_interp = data[5]
-        label_val = data[6]
-        flags = data[7]
+        time_units, in_interp, out_interp, key_flags = struct.unpack(">iBBH", data[0:8])
 
         payload = data[8:]
         num_value = _NUM_VALUE.get(item_type)
@@ -406,20 +415,18 @@ class LdatItem:
             time_units=time_units,
             in_interpolation_type=in_interp,
             out_interpolation_type=out_interp,
-            label=label_val,
-            temporal_flags=flags,
+            key_flags=key_flags,
             kf_data=kf_data,
             trailing=trailing,
         )
 
     def tobytes(self) -> bytes:
         header = struct.pack(
-            ">iBBBB",
+            ">iBBH",
             self.time_units,
             self.in_interpolation_type,
             self.out_interpolation_type,
-            self.label,
-            self._temporal_flags,
+            self._key_flags,
         )
         if isinstance(self.kf_data, bytes):
             payload = self.kf_data

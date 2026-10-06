@@ -69,6 +69,22 @@ def _start_time_from_binary(value: int) -> datetime | None:
     return _AEP_EPOCH + timedelta(seconds=value)
 
 
+def _next_item_id(rq: RenderQueue) -> int:
+    """The id AE gives a new render-queue item: the queue's highest + 1, and
+    2 in an empty queue (AE 2026: ids 9 and 3 -> an added item gets 10, a
+    duplicate after it 11)."""
+    return max((item._ldat.item_id for item in rq.items), default=1) + 1
+
+
+class _RenderSettingsView(SettingsView):
+    """The render settings view: AE marks the item's render settings as
+    written by a script on every `setSettings` (AE 2026)."""
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        cast("RenderQueueItem", self._owner)._ldat.settings_written = 1
+
+
 # ---------------------------------------------------------------------------
 # RENDER_SETTINGS: ExtendScript key -> (attribute, optional enum class)
 # ---------------------------------------------------------------------------
@@ -158,10 +174,17 @@ class RenderQueueItem:
     """The current render status of the item. Read / Write."""
 
     def _on_status_changed(self) -> None:
-        """Reset start_time and elapsed_seconds for non-terminal statuses."""
-        if self.status in self._RESET_STATUSES:
+        """Reset start_time and elapsed_seconds for non-terminal statuses,
+        and keep the Render box in step: AE-saved items have it checked
+        from Queued on and clear while they need an output or are unqueued."""
+        status = self.status
+        if status in self._RESET_STATUSES:
             self._ldat.start_time = 0
             self._ldat.elapsed_seconds = 0
+        if status in (RQItemStatus.NEEDS_OUTPUT, RQItemStatus.UNQUEUED):
+            self._ldat.render_checked = False
+        elif status != RQItemStatus.WILL_CONTINUE:
+            self._ldat.render_checked = True
 
     _color_depth = ChunkField.enum(
         ColorDepthSetting,
@@ -191,12 +214,6 @@ class RenderQueueItem:
         FrameBlendingSetting,
         "_ldat",
         "frame_blending",
-    )
-
-    _frame_rate_setting = ChunkField.enum(
-        FrameRateSetting,
-        "_ldat",
-        "use_this_frame_rate",
     )
 
     _guide_layers = ChunkField.enum(
@@ -270,6 +287,7 @@ class RenderQueueItem:
         self._parent_rq = parent
         self._comp = comp
         self._output_modules = output_modules
+        self._skip_frames = 0
 
     @classmethod
     def _new(
@@ -307,6 +325,7 @@ class RenderQueueItem:
         rs_item.time_span_source = int(TimeSpanSource.WORK_AREA_ONLY)
         rs_item.time_span_start_divisor = 0
         rs_item.time_span_duration_divisor = 0
+        rs_item.item_id = _next_item_id(parent)
 
         # When ae_preferences_dir was supplied, overlay the user's configured
         # default render-settings template. Only _TEMPLATE_FIELDS are copied,
@@ -464,19 +483,28 @@ class RenderQueueItem:
         output, each frame would be double the duration.
 
         Read / Write.
+
+        Note:
+            After Effects does not save the value: it reads 0 for every
+            item of a project it opens and renders all frames, whatever
+            output frame rate the output modules store (AE 2026, rendered).
+            py_aep keeps it in memory the same way - a parsed project starts
+            at 0. Writing it still stores each output module's frame rate
+            (the render frame rate divided by skip + 1), as AE does once an
+            item is prepared for output.
         """
-        if self.output_modules:
-            om_frame_rate: int = self.output_modules[0]._roou.frame_rate
-            if om_frame_rate > 0:
-                return round(self.comp.frame_rate / om_frame_rate) - 1
-        return 0
+        return self._skip_frames
 
     @skip_frames.setter
     def skip_frames(self, value: int) -> None:
         _validate_number(min=0, max=99, integer=True)(value)
-        new_frame_rate = round(self.comp.frame_rate / (value + 1))
+        self._skip_frames = value
+        self._set_output_frame_rates()
+
+    def _set_output_frame_rates(self) -> None:
+        """Store the output frame rate of every output module."""
         for om in self.output_modules:
-            om._roou.frame_rate = new_frame_rate
+            om._set_frame_rate()
 
     @property
     def num_output_modules(self) -> int:
@@ -524,6 +552,14 @@ class RenderQueueItem:
     def _use_this_frame_rate(self, value: float) -> None:
         _validate_number(min=0.1, max=999)(value)
         self._ldat.frame_rate = value
+        self._set_output_frame_rates()
+
+    _frame_rate_setting = ChunkField.enum(
+        FrameRateSetting,
+        "_ldat",
+        "use_this_frame_rate",
+        post_set="_set_output_frame_rates",
+    )
 
     @property
     def _comp_frame_rate(self) -> float:
@@ -543,7 +579,7 @@ class RenderQueueItem:
             rqi.settings["Quality"] = RenderQuality.BEST
             ```
         """
-        return SettingsView(self, RENDER_SETTINGS)
+        return _RenderSettingsView(self, RENDER_SETTINGS)
 
     @settings.setter
     def settings(self, value: Mapping[str, Any]) -> None:
@@ -587,9 +623,12 @@ class RenderQueueItem:
     ) -> None:
         """Write a time span value, switching to CUSTOM.
 
-        Setting the start keeps the END time fixed and recomputes the duration; setting
-        the duration keeps the start. Unlike AE scripting which accepts degenerate spans
-        and silently renders garbage (a start before 0 renders void
+        Setting the duration keeps the start. Setting the start keeps the
+        end when the span still follows the work area or the comp, and keeps
+        the duration once it is CUSTOM (measured on AE 2026: 0..10 s ->
+        start 1.03 gives 1.03 / 8.97; a custom 0 / 2.51 span -> start 1.03
+        gives 1.03 / 2.51). Unlike AE scripting which accepts degenerate
+        spans and silently renders garbage (a start before 0 renders void
         lead-in frames, an end before the start renders a single frame) -
         py_aep validates the values like AE's own dialog.
 
@@ -600,11 +639,14 @@ class RenderQueueItem:
                 to seconds via the composition frame rate before writing.
 
         Raises:
-            ValueError: If a start is negative, or if either field would
-                leave a duration shorter than one frame (AE's own
-                scripting bound); a start keeps the end fixed.
+            ValueError: If a start is negative, if either field would leave
+                a duration shorter than one frame (AE's own scripting
+                bound), or if a value does not fit the stored ratio.
+            TypeError: If the value is not a number.
         """
         frame_duration = 1.0 / self.comp.frame_rate
+        # A signed 32-bit dividend over a divisor of at least 1.
+        _validate_number(min=0.0, max=float(2**31 - 1))(value)
         seconds = value / self.comp.frame_rate if is_frames else float(value)
         # Both fields resolve the span BEFORE switching the source to
         # CUSTOM: a WORK_AREA_ONLY / LENGTH_OF_COMP item takes its span
@@ -617,27 +659,27 @@ class RenderQueueItem:
                     f"Duration must be at least one frame "
                     f"({frame_duration:.6g}s), got {seconds}"
                 )
-            self._ldat.time_span_source = int(TimeSpanSource.CUSTOM)
-            self._ldat.time_span_start = old_start
-            self._ldat.time_span_duration = seconds
-            return
-        if seconds < 0:
-            raise ValueError(f"Start time must be non-negative, got {seconds}")
-        new_duration = old_start + old_duration - seconds
-        if new_duration <= 0:
-            raise ValueError(
-                f"Start time {seconds} is at or past the span end "
-                f"({old_start + old_duration})"
+            new_start, new_duration = old_start, seconds
+        else:
+            custom = self._time_span_source == TimeSpanSource.CUSTOM
+            new_start = seconds
+            new_duration = (
+                old_duration if custom else old_start + old_duration - seconds
             )
-        # The same one-frame floor the duration path enforces: reaching it
-        # through the start must not be a back door to a degenerate span.
-        if new_duration < frame_duration - 1e-9:
-            raise ValueError(
-                f"Start time {seconds} leaves a duration shorter than one "
-                f"frame ({frame_duration:.6g}s), got {new_duration}"
-            )
+            if new_duration <= 0:
+                raise ValueError(
+                    f"Start time {seconds} is at or past the span end "
+                    f"({old_start + old_duration})"
+                )
+            # The same one-frame floor the duration path enforces: reaching it
+            # through the start must not be a back door to a degenerate span.
+            if new_duration < frame_duration - 1e-9:
+                raise ValueError(
+                    f"Start time {seconds} leaves a duration shorter than one "
+                    f"frame ({frame_duration:.6g}s), got {new_duration}"
+                )
         self._ldat.time_span_source = int(TimeSpanSource.CUSTOM)
-        self._ldat.time_span_start = seconds
+        self._ldat.time_span_start = new_start
         self._ldat.time_span_duration = new_duration
 
     @property
@@ -857,6 +899,7 @@ class RenderQueueItem:
             RQItemStatus.ERR_STOPPED,
         ):
             new_rsi.status = RQItemStatus.QUEUED.to_binary()
+        new_rsi.item_id = _next_item_id(rq)
 
         new_rout_items = [copy.deepcopy(ri) for ri in self._rout_items]
 
@@ -916,6 +959,7 @@ class RenderQueueItem:
             om = parse_output_module(om_group, new_om_ldat.items[i], new_item)
             output_modules.append(om)
         new_item._output_modules = output_modules
+        new_item._skip_frames = self._skip_frames
 
         # Insert into model list after original
         rq._items.insert(idx + 1, new_item)

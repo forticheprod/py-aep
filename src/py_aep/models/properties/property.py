@@ -7,7 +7,6 @@ import re
 from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
-from py_aep.data.spatial_flags import EFFECT_PARAM_SPATIAL_FLAGS
 from py_aep.enums import (
     KeyframeInterpolationType,
     LayerType,
@@ -18,9 +17,12 @@ from py_aep.enums import (
 from py_aep.resolvers.can_set_expression import resolve_can_set_expression
 from py_aep.resolvers.interpolation import (
     _DEFAULT_INFLUENCE,
+    NORMALIZED_ARC_ACCURACY,
     ArcMetric,
     _tangents_are_zero,
+    color_distance,
     interpolate_keyframes,
+    motion_path_direction,
     motion_path_length,
     roving_keyframe_times,
     segment_value_slope,
@@ -30,8 +32,10 @@ from py_aep.resolvers.interpolation import (
 )
 
 from ...binary.chunk import ContainerChunk, ListChunk
+from ...binary.composition_chunks import layer_timebase
 from ...binary.ldat_chunks import (
     LHD3_BLOCK_KEYFRAMES,
+    KfPosition,
     LdatItemType,
     ShapePoint,
     set_lhd3_count,
@@ -56,6 +60,7 @@ from ...binary.property_chunks import (
     VfdnChunk,
     tdb4_apply_animated_template,
     tdb4_apply_static_template,
+    tdb4_clear_keyframe_record,
 )
 from ...binary.scalar_chunks import S4Chunk, Utf8Chunk
 from ...binary.utils import (
@@ -74,13 +79,14 @@ from ..validators import (
     _validate_number,
     validate_bool,
     validate_enum,
+    validate_f8,
     validate_name,
     validate_number,
     validate_sequence,
-    validate_string,
+    validate_text,
 )
 from .gradient import Gradient
-from .keyframe import Keyframe, _timebase_units
+from .keyframe import Keyframe, _check_time_units, _timebase_units
 from .keyframe_ease import KeyframeEase
 from .marker import MarkerValue
 from .overrides import (
@@ -106,7 +112,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ...binary.chunk import Chunk
-    from ...binary.ldat_chunks import LdatChunk, Lhd3Chunk
+    from ...binary.ldat_chunks import LdatChunk, LdatItem, Lhd3Chunk
     from ...binary.misc_chunks import ShphChunk
     from ...binary.scalar_chunks import U4Chunk
     from ...synthesis.property import PropSpec
@@ -116,6 +122,7 @@ if TYPE_CHECKING:
     from ..items.footage import FootageItem
     from ..layers.av_layer import AVLayer
     from ..project import Project
+    from .mask_property_group import MaskPropertyGroup
     from .property_group import PropertyGroup
 
     _ValueType = Union[
@@ -216,8 +223,31 @@ _validate_scalar = _validate_number(min=_get_min, max=_get_max)
 _validate_list = validate_sequence(length=_get_dimensions, min=_get_min, max=_get_max)
 
 
+def _same_path(a: Shape, b: Any) -> bool:
+    """Whether two path values draw the same featherless path (vertices,
+    stored handles and closed flag; a path with feather points never
+    matches)."""
+    return (
+        isinstance(b, Shape)
+        and a.closed == b.closed
+        and a.vertices == b.vertices
+        and a._stored_tangents(-1) == b._stored_tangents(-1)
+        and a._stored_tangents(1) == b._stored_tangents(1)
+        and not a.feather_points
+        and not b.feather_points
+    )
+
+
 def _validate_value(prop: Property, value: Any) -> None:
     """Validate type, length and bounds of a property value."""
+    # A mask or shape-layer path only holds a Shape: AE 2026 refuses any other
+    # value ("Array is not of the correct type"), and the numeric write path
+    # it would otherwise take leaves the file untouched while the model
+    # reports the stray value.
+    if prop._parallel_kind() is SHAPE_KIND and not isinstance(value, Shape):
+        raise TypeError(
+            f"{prop.match_name!r} takes a Shape, got {type(value).__name__}"
+        )
     if value is None:
         return
     # Variable-font axis properties are 2-dimensional in the binary
@@ -236,6 +266,15 @@ def _validate_value(prop: Property, value: Any) -> None:
         _validate_list(value, prop)
     else:
         _validate_scalar(value, prop)
+
+
+def _validate_key_value(prop: Property, value: Any) -> None:
+    """Validate a keyframe value: `_validate_value`, after refusing `None` for
+    a numeric keyframe, which always holds a number (storing `None` only in
+    the model left the file at whatever the slot held, 0)."""
+    if value is None and prop._parallel_kind() is None and not prop._no_value:
+        raise TypeError(f"{prop.match_name!r} keyframe value cannot be None")
+    _validate_value(prop, value)
 
 
 # Standard OpenType design-axis display names (AE shows the axis name from
@@ -360,8 +399,12 @@ class Property(PropertyBase):
 
     _vector = ChunkField[bool]("_tdb4", "vector")
 
-    locked_ratio = ChunkField[bool]("_tdsb", "locked_ratio", read_only=True)
-    """When `True`, the property's X/Y ratio is locked. Read-only."""
+    locked_ratio = ChunkField[bool](
+        "_tdsb", "ratio_unlinked", transform=lambda v: not v, read_only=True
+    )
+    """When `True`, the property's X/Y ratio is locked (the constrain
+    proportions switch of a Scale or Mask Feather; `True` on any property
+    without one). Read-only."""
 
     _is_spatial_raw = ChunkField[bool]("_tdb4", "is_spatial")
 
@@ -388,7 +431,7 @@ class Property(PropertyBase):
 
         `is_spatial` also reports `True` for colors, to match what
         ExtendScript says; a color has no motion path, so the keyframe
-        binary (`temporal_flags`, ldat item layout), the speed math and
+        binary (the ldat item's key flags and layout), the speed math and
         the roving guard ask this instead.
         """
         return self.is_spatial and not self._color
@@ -777,16 +820,15 @@ class Property(PropertyBase):
         same scalar applies to both the in and out directions and is
         independent of the width - verified in AE 2026 on 300x300, 400x300,
         800x200 and 1920x1080 comps, which all report an identical speed for
-        identical eases. `ADBE Anchor Point` is excluded: its speed is
-        already in pixels.
+        identical eases. A footage layer's `ADBE Anchor Point` is stored the
+        same way (AE 2026: an ease of 900 px/s on a 3000x200 solid stores
+        4.5, one of 114.6 px/s on a 200x100 solid 1.146).
 
         Resolved when the ease is read rather than pushed onto every
         keyframe: `_effect_scale` is unavailable while the property is still
         being constructed, and re-deriving it per value read used to rescan
         every keyframe, which is quadratic in the keyframe count.
         """
-        if self.match_name == "ADBE Anchor Point":
-            return None
         scale = self._effect_scale
         if scale is None or not scale[1]:
             return None
@@ -805,6 +847,22 @@ class Property(PropertyBase):
             kf._bind_property(self)
             kf._prev = self.keyframes[i - 1] if i > 0 else None
             kf._next = self.keyframes[i + 1] if i < len(self.keyframes) - 1 else None
+
+    def _keyframe_index(self, keyframe: Keyframe) -> int | None:
+        """`keyframe`'s position in `keyframes`, `None` once it is removed.
+
+        Cached by identity and checked on every read, so after any change
+        to the list a stale entry is rebuilt (once) rather than trusted: an
+        ease read on a long track no longer scans every keyframe.
+        """
+        keyframes = self.keyframes
+        positions: dict[int, int] = self.__dict__.get("_keyframe_positions") or {}
+        index = positions.get(id(keyframe))
+        if index is None or index >= len(keyframes) or keyframes[index] is not keyframe:
+            positions = {id(kf): i for i, kf in enumerate(keyframes)}
+            self.__dict__["_keyframe_positions"] = positions
+            index = positions.get(id(keyframe))
+        return index
 
     def _link_inserted_key(self, idx: int) -> None:
         """Re-link only the keyframe inserted at `idx` and its neighbours.
@@ -920,7 +978,9 @@ class Property(PropertyBase):
                 if holder is None or holder == index:
                     break
                 units += -1 if holder > index else 1
-            if units == kf.time_units:
+            # Still taken once the tries run out (wedged between two keys):
+            # leave it where it is rather than stack two keys on one unit.
+            if units == kf.time_units or holders.get(units, index) != index:
                 continue
             del holders[kf.time_units]
             holders[units] = index
@@ -938,6 +998,18 @@ class Property(PropertyBase):
             return
 
         parent = self.parent_property
+        if (
+            self.match_name == "ADBE Mask Shape"
+            and parent is not None
+            and parent._is_mask
+        ):
+            # A path-less mask stores no path. Whatever first writes its
+            # Mask Path (a value, a key, an expression) makes AE write the
+            # default full-frame rectangle it stands for; a bare placeholder
+            # instead is "file is damaged" (AE 2026). The builder replaces
+            # the placeholder in place and rebinds this property to it.
+            cast("MaskPropertyGroup", parent)._materialize_mask_shape()
+            return
         if parent is not None:
             parent._ensure_materialized()
 
@@ -1006,10 +1078,38 @@ class Property(PropertyBase):
                 self._tdb4._spatial_marker
                 and not self._tdb4.color
                 and not self._tdb4.no_value
+                and self._effect_scale is None
             ):
-                # AE writes the comp's pixel aspect into spatial point
-                # tdb4s (not orientation / color).
+                # AE writes the comp's pixel aspect into a layer's spatial
+                # point tdb4s (not orientation / color). A point stored
+                # normalized to its layer is measured otherwise, stamped
+                # when keyed (`_stamp_normalized_arc_metric`).
                 self._tdb4.pixel_aspect = comp._cdta.pixel_aspect
+
+    def _stamp_normalized_arc_metric(self) -> None:
+        """Stamp how AE measures a newly keyed normalized point's path.
+
+        A point stored as a fraction of its layer (an effect point, a
+        footage layer's Anchor Point) is measured in layer heights: AE
+        stamps the layer's display aspect (source width * pixel aspect /
+        height) as the X multiplier and fits to `NORMALIZED_ARC_ACCURACY`
+        when the point is first keyed, and keeps both once its keys are
+        removed. A never-keyed point holds 1.0 / 1e-4. AE evaluates the
+        stored values (AE 2026: 15.0 on a 3000x200 solid, 3.556 on a 640x360
+        one with 2:1 pixels; a point keyed with 1.0 plays up to 3 px off).
+        """
+        scale = self._effect_scale
+        if scale is None or not scale[1] or not self._has_motion_path:
+            return
+        layer = self._containing_layer
+        source = getattr(layer, "source", None)
+        pixel_aspect = (
+            source.pixel_aspect
+            if source is not None
+            else layer.containing_comp.pixel_aspect
+        )
+        self._tdb4.pixel_aspect = scale[0] * pixel_aspect / scale[1]
+        self._tdb4._arc_accuracy = NORMALIZED_ARC_ACCURACY
 
     def _ensure_bound_chunks(self) -> None:
         """Append the `tdum`/`tduM` min/max chunks AE requires for
@@ -1032,7 +1132,7 @@ class Property(PropertyBase):
             self._tdbs.chunks.append(TdumChunk(chunk_type="tdum", values=[low]))
             self._tdbs.chunks.append(TdumChunk(chunk_type="tduM", values=[high]))
             return
-        # Synthetic EFFECT params: AE writes [0.0] tdum/tduM for SCALAR /
+        # Synthetic EFFECT params: AE writes tdum/tduM for SCALAR /
         # INTEGER / SLIDER control types (RE'd vs AE 2026) regardless of
         # can_vary, and omits them for ANGLE / POINT / 3D / COLOR / BOOLEAN /
         # ENUM / LAYER. This bypasses the can_vary / fallback gating below,
@@ -1077,14 +1177,25 @@ class Property(PropertyBase):
                 return
         if any(c.chunk_type in ("tdum", "tduM") for c in self._tdbs.chunks):
             return
-        # Integer-typed effect params (SCALAR/INTEGER) use u4-encoded bounds;
-        # vector params (SLIDER) and layer/shape props use double-encoded ones.
-        is_int = self._tdb4 is not None and self._tdb4.integer
+        # AE writes doubles whatever the tdb4 integer flag says (all 47652
+        # integer-flagged bounds in the sample corpus are 8 bytes), holding an
+        # effect param's UI slider range (24594 of the corpus's 24676 effect
+        # bounds, and AE 2026 materializing a Slider Control writes 0 / 100).
+        # AE reads neither back: the bounds ExtendScript reports come from
+        # the effect's definition.
+        slider_low = self._slider_min if effect_bounded else None
+        slider_high = self._slider_max if effect_bounded else None
         self._tdbs.chunks.append(
-            TdumChunk(chunk_type="tdum", values=[0.0], is_integer=is_int)
+            TdumChunk(
+                chunk_type="tdum",
+                values=[0.0 if slider_low is None else slider_low],
+            )
         )
         self._tdbs.chunks.append(
-            TdumChunk(chunk_type="tduM", values=[0.0], is_integer=is_int)
+            TdumChunk(
+                chunk_type="tduM",
+                values=[0.0 if slider_high is None else slider_high],
+            )
         )
 
     # The tdum/tduM values AE writes for this property at materialization
@@ -1105,7 +1216,7 @@ class Property(PropertyBase):
         }
     )
 
-    # Effect-param control types AE writes [0.0] tdum/tduM bounds for when a
+    # Effect-param control types AE writes tdum/tduM bounds for when a
     # synthesized param is materialized (RE'd vs AE 2026 references; see
     # scripts/_tmp_a6re). The other control types (ANGLE / POINT / 3D / COLOR /
     # BOOLEAN / ENUM / LAYER) get no bounds. A SCALAR / INTEGER / SLIDER effect
@@ -1472,6 +1583,20 @@ class Property(PropertyBase):
         # prop.value = text_doc  # unnecessary - same object
         ```
         """
+        return cast("_ValueType", self._mask_inert_z(self._stored_static_value()))
+
+    @value.setter
+    def value(self, value: _ValueType) -> None:
+        if self._separation_followers() is not None:
+            raise ValueError(
+                f"cannot set the value of {self.match_name!r} while its "
+                f"dimensions are separated; write its X / Y / Z followers "
+                f"instead (get_separation_follower)"
+            )
+        self._set_own_value(value)
+
+    def _stored_static_value(self) -> _ValueType:
+        """[value][Property.value] before a 2-D layer's Z is reported as 0."""
         if self._tdpi is not None and self._composition is not None:
             layer_id = self._tdpi.value
             if layer_id == 0:
@@ -1483,20 +1608,18 @@ class Property(PropertyBase):
         if self._value is not None:
             return self._wire_text_version(self._value)
         if self.keyframes:
-            return self.value_at_time(0)
+            return self._stored_value_at(0)
         if self._cdat is not None:
             return self._resolve_value(self._read_cdat_raw())
+        if self.match_name == "ADBE Mask Shape":
+            # A mask AE never needed a path for stores none; AE reports the
+            # rectangle bounding the layer's mask space, the path it writes
+            # once one is needed. Built on every read, not cached, so it
+            # follows the layer's source and a read, edited and re-assigned
+            # value is still written.
+            w, h = cast("AVLayer", self._containing_layer)._mask_scale
+            return Shape([[0.0, 0.0], [0.0, h], [w, h], [w, 0.0]])
         return None
-
-    @value.setter
-    def value(self, value: _ValueType) -> None:
-        if self._separation_followers() is not None:
-            raise ValueError(
-                f"cannot set the value of {self.match_name!r} while its "
-                f"dimensions are separated; write its X / Y / Z followers "
-                f"instead (get_separation_follower)"
-            )
-        self._set_own_value(value)
 
     def _set_separated_value(
         self, value: _ValueType, followers: list[Property]
@@ -1527,6 +1650,11 @@ class Property(PropertyBase):
             if follower.value != component:
                 follower.value = component
 
+    def _unstored_mask_path(self) -> bool:
+        """Whether this is the Mask Path of a mask AE has written no path for
+        (a fresh mask, which reports the default rectangle)."""
+        return self.match_name == "ADBE Mask Shape" and self._kf_value_container is None
+
     def _set_own_value(self, value: _ValueType) -> None:
         """Write this property's own value, bypassing any separation fan-out.
 
@@ -1539,6 +1667,10 @@ class Property(PropertyBase):
         # to the backing chunks via their own descriptors. Plain numeric/list
         # values have no write-through, so a value read, mutated in place, and
         # re-assigned must still be written to the cdat chunk.
+        if value is None and self._parallel_kind() is SHAPE_KIND:
+            # A fresh mask caches no value, so the identity shortcut below
+            # would swallow `None` instead of rejecting it.
+            _validate_value(self, value)
         if value is self._value and not isinstance(value, (int, float, list)):
             return
         if self.keyframes:
@@ -1550,13 +1682,18 @@ class Property(PropertyBase):
                 "Use set_value_at_time() instead."
             )
         _validate_value(self, value)
+        if self._unstored_mask_path() and _same_path(cast("Shape", value), self.value):
+            # AE 2026 writes no path for a fresh mask set to the rectangle it
+            # already reports (`maskPath.setValue(maskPath.value)` saves the
+            # bare mask atom), so the default stays implicit here too.
+            return
         complex_value = not isinstance(value, (int, float, list, type(None)))
         # Arbitrary-data params (CUSTOM_VALUE, e.g. an effect's Curves /
         # ARBITRARY_DATA leaf) store their data in a separate blob, not the
         # numeric cdat. Writing a scalar/list into the cdat overflows it
         # (AE: "chunk in file too big") or crashes on the empty buffer; reject
-        # it. Complex value objects (a mask Shape, also CUSTOM_VALUE-seeded)
-        # take the write-through path below and are unaffected.
+        # it. Complex value objects take the write-through path below and are
+        # unaffected.
         if (
             not complex_value
             and self.property_value_type == PropertyValueType.CUSTOM_VALUE
@@ -1565,21 +1702,6 @@ class Property(PropertyBase):
                 "Cannot set a numeric value on a CUSTOM_VALUE (arbitrary-data) "
                 "property; its data is not stored in the numeric value chunk."
             )
-        # A freshly-added mask has no Mask Shape om-s container yet. Build AE's
-        # default full-frame path with the mask-specific builder BEFORE
-        # `_ensure_materialized` runs: it replaces the still-synthetic Mask
-        # Shape placeholder in place, whereas materializing first leaves the
-        # placeholder behind and AE rejects the duplicate ("missing data").
-        if (
-            complex_value
-            and self.match_name == "ADBE Mask Shape"
-            and self._kf_value_container is None
-        ):
-            from .mask_property_group import MaskPropertyGroup
-
-            parent = self._parent_property
-            if isinstance(parent, MaskPropertyGroup):
-                parent._materialize_mask_shape()
         self._ensure_materialized()
         if complex_value:
             # A new complex value object (Shape, Gradient, TextDocument,
@@ -1855,11 +1977,8 @@ class Property(PropertyBase):
                     current = cast("TdmnChunk", chunk).value
                 elif current == self.match_name:
                     if isinstance(chunk, EnumPardChunk):
-                        # The option count lives in the high 16 bits; AE
-                        # keeps the low 16 bits unchanged.
-                        chunk.nb_options = (len(items) << 16) | (
-                            chunk.nb_options & 0xFFFF
-                        )
+                        # AE keeps the default choice unchanged.
+                        chunk.nb_options = len(items)
                     elif chunk.chunk_type == "pdnm":
                         utf8 = find_by_type(
                             chunks=cast("ContainerChunk", chunk).chunks,
@@ -1968,6 +2087,19 @@ class Property(PropertyBase):
         else:
             self._recombine_static(live)
 
+    def _set_separated_flags(self, separated: bool) -> None:
+        """Flag the leader separated or recombined in its own `tdsb`.
+
+        AE hides the leader in the Timeline while the followers drive the
+        layer (enable byte 0x3, lock byte 0x8 on every separated position it
+        authored) and shows it again once recombined (enable byte 0x1).
+        """
+        self._ensure_materialized()
+        assert self._tdsb is not None
+        self._tdsb.dimensions_separated = separated
+        self._tdsb.hidden = separated
+        self._dimensions_separated = separated
+
     def _separate_static(self, followers: list[Property]) -> None:
         """Hand the leader's components to its followers.
 
@@ -1979,14 +2111,7 @@ class Property(PropertyBase):
         """
         components = cast("list[float]", self.value)
         default = cast("list[float]", self.default_value)
-        self._ensure_materialized()
-        assert self._tdsb is not None
-        self._tdsb.dimensions_separated = True
-        # AE hides the leader in the Timeline while the followers drive the
-        # layer (enable byte 0x3, lock byte 0x8 on every separated position
-        # it authored).
-        self._tdsb.hidden = True
-        self._dimensions_separated = True
+        self._set_separated_flags(True)
         three_d = self._containing_layer.is_3d
         for dimension, follower in enumerate(followers):
             if dimension == 2 and not three_d:
@@ -2003,12 +2128,7 @@ class Property(PropertyBase):
         followers to their dead, unserialized state.
         """
         composed = [float(cast("float", follower.value)) for follower in followers]
-        self._ensure_materialized()
-        assert self._tdsb is not None
-        self._tdsb.dimensions_separated = False
-        # Recombined, the leader is shown again (enable byte 0x1).
-        self._tdsb.hidden = False
-        self._dimensions_separated = False
+        self._set_separated_flags(False)
         self.value = composed
         for follower in followers:
             _deactivate_follower(follower)
@@ -2047,14 +2167,7 @@ class Property(PropertyBase):
         incoming, outgoing = self._segment_spans(times)
 
         self.remove_all_keys()
-        self._ensure_materialized()
-        assert self._tdsb is not None
-        self._tdsb.dimensions_separated = True
-        # AE hides the leader in the Timeline while the followers drive the
-        # layer (enable byte 0x3, lock byte 0x8 on every separated position
-        # it authored).
-        self._tdsb.hidden = True
-        self._dimensions_separated = True
+        self._set_separated_flags(True)
         self._set_own_value(list(cast("list[float]", self.default_value)))
 
         three_d = self._containing_layer.is_3d
@@ -2172,12 +2285,7 @@ class Property(PropertyBase):
         for follower in followers:
             _deactivate_follower(follower)
 
-        self._ensure_materialized()
-        assert self._tdsb is not None
-        self._tdsb.dimensions_separated = False
-        # Recombined, the leader is shown again (enable byte 0x1).
-        self._tdsb.hidden = False
-        self._dimensions_separated = False
+        self._set_separated_flags(False)
         for index, time in enumerate(times):
             self._add_key(time, composed[index])
         for index, keyframe in enumerate(self.keyframes):
@@ -2226,7 +2334,9 @@ class Property(PropertyBase):
             raise AttributeError(
                 f"expression cannot be set on property {self.match_name!r}"
             )
-        validate_string(value)
+        # A NUL ends the expression for AE 2026, which keeps only the text
+        # before it, both when a script sets it and when it reads the file.
+        validate_text(value)
         if not value:
             # Empty string clears the expression (chunk + tdb4 markers).
             self._clear_expression()
@@ -2288,6 +2398,10 @@ class Property(PropertyBase):
             raise ValueError(
                 f"property {self.match_name!r} has no expression to enable"
             )
+        if not value and not self.expression and self._unstored_mask_path():
+            # Nothing to disable: AE 2026 saves a fresh mask given
+            # `expressionEnabled = false` as the bare atom, with no path.
+            return
         self._ensure_materialized()
         self._expression_enabled = value
         self._tdb4.expression_disabled = not value
@@ -2752,30 +2866,97 @@ class Property(PropertyBase):
             raise NotImplementedError(
                 "Expression evaluation is not supported by the parser."
             )
+        if isinstance(time, bool) or not isinstance(time, (int, float)):
+            raise TypeError(f"time must be a number, got {type(time).__name__}")
         if isinstance(time, float) and math.isnan(time):
             # AE 2026: "Unable to call valueAtTime because of parameter 1.
             # NaN is not a number." Infinity IS accepted (it evaluates to the
             # last keyframe's value), so only NaN is rejected here.
             raise ValueError("time must be a number, got NaN")
+        return cast("_ValueType", self._mask_inert_z(self._stored_value_at(time)))
+
+    def _stored_value_at(self, time: float) -> _ValueType:
+        """[value_at_time][] before a 2-D layer's Z is reported as 0: what
+        AE stores in a key added at `time` (measured on AE 2026: `addKey`
+        between keys at Z 40 and -30 stores Z 5.0005)."""
         if not self.keyframes:
             separated = self._separated_value(time)
             if separated is not None:
                 return separated
-            return self.value
+            return self._stored_static_value()
 
         kind = self._parallel_kind()
         has_motion_path = self._has_motion_path
-        return cast(
-            "_ValueType",
-            interpolate_keyframes(
-                self._layer_time_from_comp(time),
-                self.keyframes,
-                has_motion_path,
-                self._inert_dimensions(),
-                value_kind=kind,
-                metric=self._arc_metric if has_motion_path else ArcMetric(),
-            ),
+        result = interpolate_keyframes(
+            self._evaluated_layer_time(time),
+            self.keyframes,
+            has_motion_path,
+            self._inert_dimensions(),
+            value_kind=kind,
+            metric=self._arc_metric if has_motion_path else ArcMetric(),
+            is_color=bool(self._color),
         )
+        return cast("_ValueType", self._clamp_to_range(result))
+
+    def _mask_inert_z(self, value: Any) -> Any:
+        """Report a 2-D layer's Position / Anchor Point Z as 0.
+
+        A 2-D layer ignores Z, and AE reports it as 0 in `value`,
+        `keyValue` and `valueAtTime` whatever is stored, while the stored Z
+        still counts in the motion path's length, so in its timing and ease
+        speeds (measured on AE 2026: a static [100, 120, 40] and keys at Z
+        40 / -30 on a 2-D layer read Z = 0 and keep the 40 in the file).
+        """
+        if (
+            isinstance(value, list)
+            and len(value) == 3
+            and self.match_name in ("ADBE Position", "ADBE Anchor Point")
+            and not getattr(self._containing_layer, "three_d_layer", True)
+        ):
+            return [value[0], value[1], 0.0]
+        return value
+
+    def _evaluated_layer_time(self, time: float) -> float:
+        """The layer time AE evaluates a composition `time` at.
+
+        AE snaps the time to the layer's tick grid twice: the composition
+        time to `1 / layer timebase`, then the layer time it maps to
+        (measured on AE 2026, every one of 1614 dense samples across 100,
+        50, 150, 200, -100 and -150 % stretch, with and without a start
+        offset). Off the grid, the exact time is up to half a tick away.
+        """
+        base = self._layer_timebase
+        if not base or not math.isfinite(time):
+            return self._layer_time_from_comp(time)
+        snapped = math.floor(time * base + 0.5) / base
+        layer = self._layer_time_from_comp(snapped)
+        return math.floor(layer * base + 0.5) / base
+
+    def _clamp_to_range(self, value: Any) -> Any:
+        """Clamp an evaluated numeric value to the property's range.
+
+        AE evaluates an eased overshoot clamped to the range the property
+        accepts (measured on AE 2026: Opacity, Mask Opacity, Mask Feather,
+        Mask Expansion, Stroke Width and a Slider all read their bound,
+        never past it).
+        """
+        lo = _get_min(self)
+        hi = _get_max(self)
+        if lo is None and hi is None:
+            return value
+
+        def clamp(component: Any) -> Any:
+            if isinstance(component, bool) or not isinstance(component, (int, float)):
+                return component
+            if lo is not None and component < lo:
+                return float(lo)
+            if hi is not None and component > hi:
+                return float(hi)
+            return component
+
+        if isinstance(value, list):
+            return [clamp(component) for component in value]
+        return clamp(value)
 
     @property
     def _arc_metric(self) -> ArcMetric:
@@ -2796,7 +2977,8 @@ class Property(PropertyBase):
                 tdb4._arc_multiplier_w,
             ),
             divisors=tuple(scale) if scale is not None else None,
-            speed_divisor=self._effect_point_speed_factor or 1.0,
+            # `_effect_point_speed_factor`, from the scale already in hand.
+            speed_divisor=float(scale[1]) if scale is not None and scale[1] else 1.0,
         )
 
     def _layer_time_from_comp(self, time: float) -> float:
@@ -2867,15 +3049,14 @@ class Property(PropertyBase):
 
     # -- Keyframe mutation -------------------------------------------------
 
-    def _time_units(self) -> tuple[float, float]:
-        """Return `(time_scale, frame_rate)` for keyframe time conversion."""
+    def _keyframe_frame_rate(self) -> float:
+        """The frame rate keyframe times convert with."""
         if self.keyframes:
-            kf = self.keyframes[0]
-            return kf._time_scale, kf._frame_rate
+            return self.keyframes[0]._frame_rate
         comp = self._composition
         if comp is None:
             comp = self._containing_layer.containing_comp
-        return comp.time_scale, comp.frame_rate
+        return comp.frame_rate
 
     def _keyframe_inner(self) -> ListChunk | None:
         """The `LIST:list` holding the keyframe header chunks, or None."""
@@ -2937,9 +3118,9 @@ class Property(PropertyBase):
             t.animated = True
             t._spatial_marker = False
             # AE clears the opaque interpolation residue it leaves in these
-            # fields when a complex property went static.
-            t._pad7b = 0
-            t._pad7c = 0
+            # fields when a complex property went static (bytes 0x49-0x4E).
+            t._reserved_48 &= 0xFF000000
+            t._reserved_4c = t._reserved_4d = t._pad_4e = 0
             return
         # AE keeps a variable-font axis's value-hint flag, cvot flags
         # and time base unchanged across the static<->animated
@@ -2958,6 +3139,10 @@ class Property(PropertyBase):
         # property - one parsed from a real file returns early there, so
         # animating it needs the stamp applied here too.
         self._ensure_time_base()
+        self._stamp_normalized_arc_metric()
+        # After the stamp, which reads the record's 0x4F to spot a static
+        # spatial point.
+        tdb4_clear_keyframe_record(t)
         if preserved is not None:
             t._value_hint_flag, t._cvot_flags, t._time_base = preserved
 
@@ -3004,8 +3189,18 @@ class Property(PropertyBase):
         return len(self.keyframes), False
 
     def _keyframe_units_at(self, time: float) -> int:
-        """Layer-relative keyframe units for a composition `time` in seconds."""
-        timebase = self._layer_timebase or _timebase_units(*self._time_units())
+        """Layer-relative keyframe units for a composition `time` in seconds.
+
+        Where AE puts a key added at `time`: the layer tick it evaluates
+        `time` at (`_evaluated_layer_time`), not the nearest tick to the
+        exact layer time. Measured on AE 2026: 584 of 585 `setValueAtTime`
+        keys over 8 frame rates and stretches from -500 to 9900 % (the
+        one-step rounding missed 10, each by one tick).
+        """
+        timebase = self._layer_timebase
+        if timebase:
+            return round(self._evaluated_layer_time(time) * timebase)
+        timebase = _timebase_units(self._keyframe_frame_rate())
         return round((time - self._start_time_offset) / self._time_stretch * timebase)
 
     def can_add_to_motion_graphics_template(self, comp: CompItem) -> bool:
@@ -3090,7 +3285,7 @@ class Property(PropertyBase):
         # path.)
         if self._no_value:
             raise ValueError(f"property {self.match_name!r} has no value to keyframe")
-        time_scale, frame_rate = self._time_units()
+        frame_rate = self._keyframe_frame_rate()
 
         item_type = self._keyframe_item_type()
         kf_data = build_kf_data(item_type, self.dimensions)
@@ -3098,7 +3293,6 @@ class Property(PropertyBase):
 
         kf = Keyframe(
             _ldat_item=ldat_item,
-            _time_scale=time_scale,
             _frame_rate=frame_rate,
         )
         kf._bind_property(self)
@@ -3106,7 +3300,7 @@ class Property(PropertyBase):
         # count overflows the 32-bit field, and animating first left the
         # property marked animated with no keyframes and its static value
         # gone (issue #228). `_add_parallel_key` orders itself the same way.
-        kf.time = time
+        kf._set_time_units(self._keyframe_units_at(time))
 
         idx, exists = self._keyframe_insert_index(kf.time_units)
         if exists:
@@ -3114,15 +3308,20 @@ class Property(PropertyBase):
         # At the key's own time, which is `time` rounded to whole units: the
         # value has to be where the curve is when the key sits, or it kinks
         # the motion path at the split.
-        new_value = self.value_at_time(kf.time) if value is _USE_VALUE else value
+        new_value = self._stored_value_at(kf.time) if value is _USE_VALUE else value
+        # Written into the detached keyframe first: the setter validates the
+        # value (type, length, finiteness, range), and a rejected one must
+        # leave the property exactly as it was rather than holding a new key
+        # at 0.
+        kf.value = new_value
         self._ensure_materialized()
         lhd3, ldat = self._ensure_animated()
         ldat.items.insert(idx, ldat_item)
         self.keyframes.insert(idx, kf)
         set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
-        kf.value = new_value
         self._link_inserted_key(idx)
-        self._preserve_curve_on_insert(idx)
+        self._preserve_curve_on_insert(idx, set_value=value is not _USE_VALUE)
+        self._redistribute_roving_keyframes()
         # The static value is now dead: `value` reads the keyframes, but its
         # cache short-circuits ahead of that check, so animating a property
         # that had been read (or written) statically kept reporting the old
@@ -3132,7 +3331,7 @@ class Property(PropertyBase):
             self._value = None
         return idx
 
-    def _preserve_curve_on_insert(self, idx: int) -> None:
+    def _preserve_curve_on_insert(self, idx: int, set_value: bool = False) -> None:
         """Give a freshly inserted keyframe the interpolation AE gives it.
 
         `addKey` must not change the animation: AE inserts the key with the
@@ -3152,6 +3351,15 @@ class Property(PropertyBase):
           segment's slope with AE's default influence.
         - HOLD: speed 0 with the default influence; the value is held either
           way.
+        - LINEAR on one side, BEZIER on the other: AE turns the LINEAR side
+          into the BEZIER handle it already is (the segment slope at the
+          default influence) and splits the segment as BEZIER, so the new
+          key and both facing sides come out BEZIER and the curve is kept
+          (measured on AE 2026 in both orders).
+
+        `set_value` is for `set_value_at_time`, which seeds a value of its
+        own: AE leaves a key it adds that way into a LINEAR segment with a
+        blank (0 / 0) ease, where `addKey` writes the slope (AE 2026).
         """
         if idx <= 0 or idx >= len(self.keyframes) - 1:
             # Outside the keyed range there is no segment to preserve.
@@ -3171,6 +3379,13 @@ class Property(PropertyBase):
         # key has to hold on both sides to leave the value where it was.
         if KeyframeInterpolationType.HOLD in (out_type, in_type):
             out_type = in_type = KeyframeInterpolationType.HOLD
+        mixed = not set_value and {out_type, in_type} == {
+            KeyframeInterpolationType.LINEAR,
+            KeyframeInterpolationType.BEZIER,
+        }
+        linear_out = out_type == KeyframeInterpolationType.LINEAR
+        if mixed:
+            out_type = in_type = KeyframeInterpolationType.BEZIER
         kf.in_interpolation_type = out_type
         kf.out_interpolation_type = in_type
 
@@ -3179,9 +3394,16 @@ class Property(PropertyBase):
         t0, t1, t = prev_kf._layer_time, next_kf._layer_time, kf._layer_time
         if not t0 < t < t1:
             return
+        if set_value and out_type == KeyframeInterpolationType.LINEAR:
+            return
 
+        # Read while the neighbours still have their own types: a LINEAR
+        # side resolves to its segment slope at the default influence.
         prev_out = list(prev_kf.out_temporal_ease)
         next_in = list(next_kf.in_temporal_ease)
+        if mixed:
+            prev_kf.out_interpolation_type = KeyframeInterpolationType.BEZIER
+            next_kf.in_interpolation_type = KeyframeInterpolationType.BEZIER
         new_in: list[KeyframeEase] = []
         new_out: list[KeyframeEase] = []
         left_out: list[KeyframeEase] = []
@@ -3192,7 +3414,19 @@ class Property(PropertyBase):
         n_ease = min(len(prev_out), len(next_in)) or 1
         spatial = n_ease == 1 and dims > 1
         split_at: float | None = None
-        if spatial:
+        if self._color:
+            # One ease along the colour line: split it as one quantity, the
+            # colour distance in the units its speeds use.
+            pairs = [
+                (
+                    0.0,
+                    color_distance(
+                        cast("list[float]", prev_kf.value),
+                        cast("list[float]", next_kf.value),
+                    ),
+                )
+            ]
+        elif spatial:
             # A spatial ease's speed is measured along the PATH, so the split
             # runs once over the segment's arc length - the chord would be
             # short wherever the tangents bow the curve.
@@ -3205,6 +3439,15 @@ class Property(PropertyBase):
             v0, v1 = pairs[d] if d < len(pairs) else pairs[0]
             o_ease = prev_out[d] if d < len(prev_out) else prev_out[0]
             i_ease = next_in[d] if d < len(next_in) else next_in[0]
+            if mixed:
+                # The LINEAR side as the BEZIER handle it is: the slope of
+                # the whole segment (not of its first half - the new key is
+                # already linked) at the default influence.
+                as_bezier = KeyframeEase((v1 - v0) / (t1 - t0), _DEFAULT_INFLUENCE)
+                if linear_out:
+                    o_ease = as_bezier
+                else:
+                    i_ease = as_bezier
             if out_type == KeyframeInterpolationType.HOLD:
                 slope = 0.0
                 infl = (o_ease.influence, _DEFAULT_INFLUENCE, _DEFAULT_INFLUENCE)
@@ -3228,10 +3471,12 @@ class Property(PropertyBase):
             new_out.append(KeyframeEase(slope, infl[2]))
             right_in.append(KeyframeEase(i_speed, infl_next))
 
-        kf.in_temporal_ease = new_in
-        kf.out_temporal_ease = new_out
-        prev_kf.out_temporal_ease = left_out
-        next_kf.in_temporal_ease = right_in
+        # Raw writes: the public setters also switch a side to BEZIER, and a
+        # LINEAR segment's keys stay LINEAR with the slope stored.
+        kf._apply_ease(new_in, "in")
+        kf._apply_ease(new_out, "out")
+        prev_kf._apply_ease(left_out, "out")
+        next_kf._apply_ease(right_in, "in")
 
         if split_at is not None:
             self._split_motion_path(prev_kf, kf, next_kf, split_at)
@@ -3241,14 +3486,20 @@ class Property(PropertyBase):
 
         In the units the property's ease speeds are reported in.
         """
-        v0 = prev_kf.value
-        v1 = next_kf.value
+        v0 = prev_kf._stored_value
+        v1 = next_kf._stored_value
         if not isinstance(v0, list) or not isinstance(v1, list):
             return 0.0
         ndim = len(v0)
         out_tangent = prev_kf.out_spatial_tangent or [0.0] * ndim
         in_tangent = next_kf.in_spatial_tangent or [0.0] * ndim
         return motion_path_length(v0, v1, out_tangent, in_tangent, self._arc_metric)
+
+    def _motion_direction_at(self, time: float) -> list[float] | None:
+        """The direction this property's motion path heads at comp `time`."""
+        return motion_path_direction(
+            self._layer_time_from_comp(time), self.keyframes, self._arc_metric
+        )
 
     def _motion_path_parameter(self, idx: int, time: float) -> float | None:
         """The curve parameter the motion path was at, at `time` in layer time.
@@ -3272,8 +3523,8 @@ class Property(PropertyBase):
         Without this the new keyframe carries no spatial tangents and the
         single curve becomes two straight-ish halves.
         """
-        v0 = prev_kf.value
-        v1 = next_kf.value
+        v0 = prev_kf._stored_value
+        v1 = next_kf._stored_value
         if not isinstance(v0, list) or not isinstance(v1, list):
             return
         ndim = len(v0)
@@ -3317,13 +3568,17 @@ class Property(PropertyBase):
         self._ensure_materialized()
         lhd3, ldat = self._ensure_animated()
         removed = self.keyframes[key_index]
-        removed_value = removed.value
+        removed_value = removed._stored_value
         del ldat.items[key_index]
         del self.keyframes[key_index]
         set_lhd3_count(lhd3, len(self.keyframes), LHD3_BLOCK_KEYFRAMES)
         self._link_keyframes()
         if not self.keyframes:
-            self._deanimate(removed_value)
+            self._deanimate(removed_value, removed._ldat_item)
+            return
+        # The run a removed anchor bounded now spans to the next anchor: AE
+        # re-times its roving keys along it (AE 2026).
+        self._redistribute_roving_keyframes()
 
     def remove_all_keys(self) -> None:
         """Remove every keyframe from this property.
@@ -3344,56 +3599,31 @@ class Property(PropertyBase):
         # that are thrown away.
         self._ensure_materialized()
         lhd3, ldat = self._ensure_animated()
-        first_value = self.keyframes[0].value
+        first = self.keyframes[0]
+        first_value = first._stored_value
         del ldat.items[:]
         del self.keyframes[:]
         set_lhd3_count(lhd3, 0, LHD3_BLOCK_KEYFRAMES)
-        self._deanimate(first_value)
+        self._deanimate(first_value, first._ldat_item)
 
-    def _static_tdb4(self) -> None:
-        """Revert tdb4 metadata to AE's static (non-animated) state.
-
-        Inverse of `_animate_tdb4`. `_type_flags` is left untouched because
-        its non-`animated` bits (vector / color) are property-intrinsic and
-        differ per type.
-        """
-        t = self._tdb4
-        if self._parallel_kind() is not None:
-            # AE re-derives _spatial_marker when a complex property goes
-            # static: observed 1 for shape / orientation / gradient (whose
-            # _spatial_static_flags carry bit 1) and 0 for text / marker.
-            t.static = True
-            t.animated = False
-            t._spatial_marker = bool(t._spatial_static_flags & 0x02)
-            return
-        # Mirror `_animate_tdb4`: the axis keeps its value-hint flag,
-        # cvot flags and time base across the transition too.
-        preserved = (
-            (t._value_hint_flag, t._cvot_flags, t._time_base)
-            if self._is_vf_axis
-            else None
-        )
+    def _static_tdb4(self, last_key: LdatItem) -> None:
+        """Set the tdb4 to AE's static state after removing `last_key`."""
+        kf_data = last_key.kf_data
         tdb4_apply_static_template(
-            t, color=bool(self._color), spatial=self._has_motion_path
+            self._tdb4,
+            in_interpolation=last_key.in_interpolation_type,
+            out_interpolation=last_key.out_interpolation_type,
+            spatial_flags=(
+                kf_data._spatial_flags if isinstance(kf_data, KfPosition) else 0
+            ),
         )
-        control_type = self._property_control_type
-        if control_type is not None and self._is_in_effect():
-            # `tdb4_apply_static_template` wrote the LAYER-property byte (9
-            # for spatial, 6 for colour). An effect parameter needs the
-            # instance-value bits on top, without which AE ignores the tdbs
-            # and falls back to the parT default - so the same AE-measured
-            # table the parse path synthesizes from decides the byte here.
-            effect_flags = EFFECT_PARAM_SPATIAL_FLAGS.get(control_type)
-            if effect_flags is not None:
-                t._spatial_static_flags = effect_flags
-        if preserved is not None:
-            t._value_hint_flag, t._cvot_flags, t._time_base = preserved
 
-    def _deanimate(self, value: _ValueType) -> None:
-        """Revert an emptied animated property to a static `value`."""
+    def _deanimate(self, value: _ValueType, last_key: LdatItem) -> None:
+        """Revert an emptied animated property to a static `value`, after
+        removing `last_key`."""
         inner = self._keyframe_inner()
         chunks = self._tdbs.chunks
-        self._static_tdb4()
+        self._static_tdb4(last_key)
         raw = (
             self._unresolve_value(value)
             if isinstance(value, (int, float, list))
@@ -3405,6 +3635,11 @@ class Property(PropertyBase):
             raw_vals = [float(v) for v in raw]
         else:
             raw_vals = [0.0]
+        # AE pads the static value to 3 doubles per dimension when the
+        # stream flags have bit 1 (spatial and colour streams), 5 otherwise
+        # - the layout of every static numeric stream in the samples.
+        per_dim = 3 if self._tdb4._spatial_static_flags & 0x02 else 5
+        raw_vals += [0.0] * (self._tdb4.dimensions * per_dim - len(raw_vals))
         cdat = CdatChunk(values=raw_vals)
         if inner is not None:
             chunks[index_by_identity(chunks, inner)] = cdat
@@ -3444,10 +3679,18 @@ class Property(PropertyBase):
         For a mask property, a pixel-space (from-scratch) shape is
         converted to the normalized `[0, 1]`-of-LAYER bounding box AE uses
         (mask space is layer space: the psd_vector_mask_cropped fixture
-        pins the divisor as the layer source size, not the comp size).
+        pins the divisor as the layer source size, not the comp size; a
+        text or shape layer divides by 1, see `AVLayer._mask_scale`).
         Dividing the box leaves the points, which are normalized to that
-        box, unchanged. A shape already in mask space (parsed) is used
-        as-is.
+        box, unchanged. A mask value read from a layer is in that layer's
+        mask space, so it is brought back to pixels first: like AE 2026's
+        `setValue`, a path copied to another layer or to a shape-layer
+        path keeps its pixel coordinates.
+
+        A RotoBezier mask path stores a tension per vertex: the value's
+        own when it carries one for every vertex, else 1 (AE 2026 writes 1
+        for every vertex of a value set on a RotoBezier mask, handles or
+        not). A mask path keeps the value's feather points.
         """
         points = [ShapePoint(x=p.x, y=p.y) for p in (shape._points or [])]
         src = shape._shph
@@ -3460,14 +3703,37 @@ class Property(PropertyBase):
             ]
         else:
             bbox = [0.0, 0.0, 0.0, 0.0]
-        if self.match_name == "ADBE Mask Shape" and not shape._is_mask:
-            layer = cast("AVLayer", self._containing_layer)
-            w, h = float(layer.width), float(layer.height)
-            bbox = [bbox[0] / w, bbox[1] / h, bbox[2] / w, bbox[3] / h]
+        is_mask_path = self.match_name == "ADBE Mask Shape"
+        source_size = shape._comp_size if shape._is_mask else None
+        src_w, src_h = source_size if source_size is not None else (1.0, 1.0)
+        if is_mask_path:
+            dst_w, dst_h = cast("AVLayer", self._containing_layer)._mask_scale
+        else:
+            dst_w, dst_h = 1.0, 1.0
+        if (src_w, src_h) != (dst_w, dst_h):
+            # Scale then divide: a pixel-space value divided by the layer size
+            # stays bit-identical to the plain division.
+            bbox = [
+                bbox[0] * src_w / dst_w,
+                bbox[1] * src_h / dst_h,
+                bbox[2] * src_w / dst_w,
+                bbox[3] * src_h / dst_h,
+            ]
+        tensions = None
+        mask = self._parent_property
+        if is_mask_path and mask is not None and mask._is_mask:
+            if cast("MaskPropertyGroup", mask).roto_bezier:
+                own = shape._own_tensions()
+                count = len(points) // 3
+                tensions = own if len(own) == count else [1.0] * count
         shap = build_shap(
             (bbox[0], bbox[1], bbox[2], bbox[3]),
             open_path=not shape.closed,
             points=points,
+            tensions=tensions,
+            feather_points=(
+                [fp._fp for fp in shape.feather_points] if is_mask_path else None
+            ),
         )
         if src is not None:
             # Carry over the source header's unknown flag bits; build_shap
@@ -3515,15 +3781,13 @@ class Property(PropertyBase):
             raise NotImplementedError(
                 "text property has no TextDocument value to animate"
             )
-        time_scale, frame_rate = self._time_units()
+        frame_rate = self._keyframe_frame_rate()
         self._ensure_materialized()
         lhd3, ldat = self._ensure_animated()
         ldat_item = build_parallel_ldat_item(self._keyframe_item_type())
-        kf = Keyframe(
-            _ldat_item=ldat_item, _time_scale=time_scale, _frame_rate=frame_rate
-        )
+        kf = Keyframe(_ldat_item=ldat_item, _frame_rate=frame_rate)
         kf._bind_property(self)
-        kf.time = time
+        kf._set_time_units(self._keyframe_units_at(time))
         ldat.items.append(ldat_item)
         self.keyframes.append(kf)
         set_lhd3_count(lhd3, 1, LHD3_BLOCK_KEYFRAMES)
@@ -3549,7 +3813,7 @@ class Property(PropertyBase):
         if self._keyframe_inner() is None or not self.keyframes:
             return self._animate_static_text(time, value)
         lhd3, ldat = self._ensure_animated()
-        time_scale, frame_rate = self._time_units()
+        frame_rate = self._keyframe_frame_rate()
         nearest = self.nearest_key_index(time)
         template = self.keyframes[nearest].value
         if not isinstance(template, TextDocument):
@@ -3558,11 +3822,9 @@ class Property(PropertyBase):
         new_doc = copy.deepcopy(doc_array[nearest])
 
         ldat_item = build_parallel_ldat_item(self._keyframe_item_type())
-        kf = Keyframe(
-            _ldat_item=ldat_item, _time_scale=time_scale, _frame_rate=frame_rate
-        )
+        kf = Keyframe(_ldat_item=ldat_item, _frame_rate=frame_rate)
         kf._bind_property(self)
-        kf.time = time
+        kf._set_time_units(self._keyframe_units_at(time))
         idx, exists = self._keyframe_insert_index(kf.time_units)
         if exists:
             return idx
@@ -3615,6 +3877,13 @@ class Property(PropertyBase):
         kind's wrapper LIST holding the per-keyframe value container,
         with kind-specific `tdb4` baselines (AE 2026 output).
         """
+        if self.match_name == "ADBE Mask Shape":
+            # A path-less mask keys the default full-frame rectangle it
+            # stands for, which materializing writes (`_ensure_materialized`).
+            self._ensure_materialized()
+            container = self._kf_value_container
+            assert container is not None
+            return container
         if not kind.can_materialize_wrapper or kind.container_type is None:
             raise NotImplementedError(
                 f"animating a static {self.match_name!r} property is not yet supported"
@@ -3672,10 +3941,18 @@ class Property(PropertyBase):
         """
         if kind is TEXT_KIND:
             return self._add_text_key(time, value)
+        # Check the time and a given value before building the container:
+        # that build materializes a fresh mask's default path, and a
+        # rejected call must leave the file untouched.
+        validate_f8(time)
+        units = self._keyframe_units_at(time)
+        _check_time_units(units)
+        if value is not _USE_VALUE:
+            kind.build_value_chunk(self, kind.coerce(value))
         container = self._kf_value_container
         if container is None:
             container = self._materialize_parallel_container(kind)
-        time_scale, frame_rate = self._time_units()
+        frame_rate = self._keyframe_frame_rate()
         # Resolve the held value before _ensure_animated: for a static
         # orientation it reads the cdat that the swap removes.
         new_value = kind.held_value(self, time) if value is _USE_VALUE else value
@@ -3683,11 +3960,9 @@ class Property(PropertyBase):
         ldat_item = kind.build_header_item(new_value)
         value_chunk = kind.build_value_chunk(self, new_value)
 
-        kf = Keyframe(
-            _ldat_item=ldat_item, _time_scale=time_scale, _frame_rate=frame_rate
-        )
+        kf = Keyframe(_ldat_item=ldat_item, _frame_rate=frame_rate)
         kf._bind_property(self)
-        kf.time = time
+        kf._set_time_units(units)
         idx, exists = self._keyframe_insert_index(kf.time_units)
         if exists:
             return idx
@@ -3723,7 +3998,47 @@ class Property(PropertyBase):
                 cast("_ValueType", kf._value) if kind.aliases_static_value else None
             )
         self._link_inserted_key(idx)
+        if not was_static and self.is_interpolation_type_valid(
+            KeyframeInterpolationType.BEZIER
+        ):
+            self._type_new_parallel_key(kf)
         return idx
+
+    def _type_new_parallel_key(self, kf: Keyframe) -> None:
+        """Give a keyframe `add_key` inserted on a parallel kind AE's types.
+
+        AE does not reshape the curve here; it reads the key sides facing
+        the new key (the left key's out, the right key's in). Any BEZIER
+        makes it a temporally continuous BEZIER key with the default
+        influence and speed 1 - 0 outside the keyed range. Otherwise it
+        takes the left side's type in, and HOLD out when a side holds,
+        LINEAR if not. Measured on AE 2026 over every pairing, before the
+        first and after the last key, on mask and shape paths and
+        Orientation.
+        """
+        bezier = KeyframeInterpolationType.BEZIER
+        hold = KeyframeInterpolationType.HOLD
+        sides = [
+            side
+            for side in (
+                kf._prev.out_interpolation_type if kf._prev is not None else None,
+                kf._next.in_interpolation_type if kf._next is not None else None,
+            )
+            if side is not None
+        ]
+        if bezier in sides:
+            kf.in_interpolation_type = bezier
+            kf.out_interpolation_type = bezier
+            kf._ldat_item.temporal_continuous = True
+            data = kf._ldat_item.kf_data
+            speed = 1.0 if len(sides) == 2 else 0.0
+            data.in_speed = data.out_speed = speed
+            data.in_influence = data.out_influence = _DEFAULT_INFLUENCE / 100.0
+            return
+        kf.in_interpolation_type = sides[0]
+        kf.out_interpolation_type = (
+            hold if hold in sides else KeyframeInterpolationType.LINEAR
+        )
 
     def _remove_parallel_key(self, key_index: int, kind: ParallelKind) -> None:
         """Remove a keyframe from a complex (parallel-container) property."""
@@ -3753,7 +4068,8 @@ class Property(PropertyBase):
         value (reverting it to the default gradient); keeping it matches
         the persisted static-gradient form and `removeKey` semantics.
         """
-        removed_value = self.keyframes[0].value
+        removed = self.keyframes[0]
+        removed_value = removed._stored_value
         self._ensure_materialized()
         inner = self._keyframe_inner()
         del self.keyframes[0]
@@ -3767,7 +4083,7 @@ class Property(PropertyBase):
             del container.chunks[0]
         cdat = kind.static_cdat(removed_value)
         self._value = removed_value if kind.keeps_value_on_revert else None
-        self._static_tdb4()
+        self._static_tdb4(removed._ldat_item)
         chunks = self._tdbs.chunks
         if inner is not None:
             chunks[index_by_identity(chunks, inner)] = cdat
@@ -3887,7 +4203,11 @@ class Property(PropertyBase):
         """
         if len(times) != len(new_values):
             raise ValueError("times and new_values must have the same length")
+        # Every entry is checked before the first is applied, so a bad one
+        # rejects the whole call instead of leaving the earlier keys added.
         validate_sequence()(times)
+        for value in new_values:
+            _validate_key_value(self, value)
         for time, value in zip(times, new_values):
             self.set_value_at_time(time, value)
 
@@ -3899,17 +4219,10 @@ class Property(PropertyBase):
         ExtendScript reports them in composition time. Kept in seconds
         rather than whole frames so a sub-frame keyframe survives the
         conversion - AE leaves a layer start off the frame grid after a
-        frame-rate change, which a rounded offset would then quantize.
+        frame-rate change, which a rounded offset would then quantize. A
+        reversed layer starts a hair early (`Layer._time_origin`).
         """
-        stretch = self._time_stretch
-        if stretch >= 0:
-            return self._containing_layer.start_time
-        # A reversed layer starts a hair before its nominal start: AE offsets
-        # it by `|stretch| / 100 / 3000` seconds. Measured on AE 2026 at
-        # -50 / -100 / -150 / -200 % and 24 / 25 / 30 fps - twelve readings,
-        # all matching, and frame-rate independent (so it is a layer-time
-        # constant of 1/3000 s, not a frame or tick).
-        return self._containing_layer.start_time - abs(stretch) / 3000.0
+        return self._containing_layer._time_origin
 
     @property
     def _time_stretch(self) -> float:
@@ -3930,8 +4243,9 @@ class Property(PropertyBase):
     def _layer_timebase(self) -> float:
         """Keyframe time units per second of the owning LAYER's time.
 
-        AE stores `floor(cdta.internal_timebase * max(1, |stretch| / 100))`
-        in every `tdb4` and counts keyframe ticks against it, so a stretched
+        AE stores `layer_timebase(cdta.internal_timebase, stretch)` (about
+        `internal_timebase * max(1, |stretch| / 100)`, at most 115200) in
+        every `tdb4` and counts keyframe ticks against it, so a stretched
         layer's ticks stay in its own time (measured on AE 2026: a 150 %
         layer at 24 fps stores 36864 and a key at layer-second 1 holds
         36864 ticks, which AE reports at composition second 1.5). Derived
@@ -3943,7 +4257,7 @@ class Property(PropertyBase):
         base = comp._cdta.internal_timebase
         if not base:
             return 0.0
-        return float(math.floor(base * max(1.0, abs(self._time_stretch))))
+        return float(layer_timebase(base, self._time_stretch))
 
     def _owning_comp(self) -> CompItem | None:
         """The composition this property belongs to.
@@ -4016,7 +4330,10 @@ class Property(PropertyBase):
             if getattr(self._containing_layer, "source", None) is not None:
                 size = self._layer_pixel_size()
                 if size is not None:
-                    scale = [size[0], size[1], 1.0]
+                    # Z shares the height divisor, as on a 3-D effect point
+                    # (AE 2026: an anchor at Z 80 on a 400x300 solid stores
+                    # 0.2667, Z 30 on a null 0.3).
+                    scale = [size[0], size[1], size[1]]
         elif (
             # The PUBLIC control type, so a property the effect creates
             # dynamically and never declares in a `pard` still counts: a
@@ -4086,8 +4403,8 @@ def _segment_components(
     prev_kf: Keyframe, next_kf: Keyframe
 ) -> tuple[list[tuple[float, float]], int] | None:
     """Per-dimension `(v0, v1)` pairs for the segment, or `None` if not numeric."""
-    v0 = prev_kf.value
-    v1 = next_kf.value
+    v0 = prev_kf._stored_value
+    v1 = next_kf._stored_value
     if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
         return [(float(v0), float(v1))], 1
     if isinstance(v0, list) and isinstance(v1, list) and len(v0) == len(v1):

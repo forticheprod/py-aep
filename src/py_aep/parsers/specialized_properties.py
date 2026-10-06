@@ -28,6 +28,7 @@ from .text import parse_btdk_cos
 
 if TYPE_CHECKING:
     from ..binary.chunk import ListChunk
+    from ..binary.misc_chunks import OmtnChunk
     from ..binary.property_chunks import TdmnChunk
     from ..binary.scalar_chunks import Utf8Chunk
     from ..models.items.composition import CompItem
@@ -107,7 +108,7 @@ def parse_orientation(
 def _parse_shape_shap(
     shap_chunk: ListChunk,
     layer: Layer | None,
-    is_mask_shape: bool,
+    mask_path: Property | None,
 ) -> Shape:
     """Parse a single shape path from a `shap` LIST chunk.
 
@@ -130,7 +131,9 @@ def _parse_shape_shap(
         shap_chunk: A `shap` LIST chunk.
         layer: The owning layer, which a mask shape denormalizes against.
             Only optional because a shape-layer path does not need one.
-        is_mask_shape: Whether this shape belongs to a mask property.
+        mask_path: The Mask Path property this shape is a value of (its
+            mask's RotoBezier switch decides the reported tangents), or
+            `None` for a shape-layer path.
 
     Returns:
         A [Shape][] with absolute coordinates and tangent offsets.
@@ -139,6 +142,7 @@ def _parse_shape_shap(
         ValueError: If a mask shape is parsed without its layer, which
             would silently yield raw normalized coordinates.
     """
+    is_mask_shape = mask_path is not None
     if is_mask_shape and layer is None:
         raise ValueError("a mask shape must be parsed with its owning layer")
     shph_chunk = cast(
@@ -165,11 +169,20 @@ def _parse_shape_shap(
     except ChunkNotFoundError:
         feather_points = []
 
+    try:
+        omtn: OmtnChunk | None = cast(
+            "OmtnChunk", find_by_type(chunks=shap_chunk.chunks, chunk_type="omtn")
+        )
+    except ChunkNotFoundError:
+        omtn = None
+
     return Shape._from_binary(
         _shph=shph_chunk,
         _points=points,
         _is_mask=is_mask_shape,
         _layer=layer if is_mask_shape else None,
+        _omtn=omtn,
+        _mask_path=mask_path,
         feather_points=feather_points,
     )
 
@@ -222,12 +235,13 @@ def parse_shape(
     try:
         omks_chunk = find_by_list_type(chunks=oms_chunk.chunks, list_type="omks")
         prop._kf_value_container = omks_chunk
-        shape_values: list[Shape] = []
-        is_mask = match_name == "ADBE Mask Shape"
-        for shap_chunk in filter_by_list_type(
-            chunks=omks_chunk.chunks, list_type="shap"
-        ):
-            shape_values.append(_parse_shape_shap(shap_chunk, layer, is_mask))
+        mask_path = prop if match_name == "ADBE Mask Shape" else None
+        shape_values = [
+            _parse_shape_shap(shap_chunk, layer, mask_path)
+            for shap_chunk in filter_by_list_type(
+                chunks=omks_chunk.chunks, list_type="shap"
+            )
+        ]
     except ChunkNotFoundError:
         logger.debug("Could not parse omks shape data for %s", match_name)
         return prop

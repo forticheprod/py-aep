@@ -451,14 +451,15 @@ _3D_COMPOSITING_OPTIONS_SPECS: list[PropSpec] = [
 ]
 
 # Canonical children of a mask atom ("ADBE Mask Atom").
-# Mask Path is parsed separately (complex shape data) and only present in
-# binary for some samples; placing it in specs ensures correct ordering.
+# Mask Path is parsed separately (complex shape data) and absent from the
+# binary until the mask needs a path; placing it in specs ensures correct
+# ordering. Its unstored value is built by `Property.value`.
 _MASK_ATOM_SPECS: list[PropSpec] = [
     _spec(
         "ADBE Mask Shape",
         "Mask Path",
         None,
-        PropertyValueType.CUSTOM_VALUE,
+        PropertyValueType.SHAPE,
         is_spatial=True,
     ),
     _spec(
@@ -1424,6 +1425,7 @@ _VECTOR_STAR_SPECS: list[PropSpec] = [
         5.0,
         PropertyValueType.OneD,
         min_value=3,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Star Position",
@@ -1443,6 +1445,7 @@ _VECTOR_STAR_SPECS: list[PropSpec] = [
         50.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Star Outer Radius",
@@ -1450,6 +1453,7 @@ _VECTOR_STAR_SPECS: list[PropSpec] = [
         100.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Star Inner Roundess",
@@ -1457,6 +1461,7 @@ _VECTOR_STAR_SPECS: list[PropSpec] = [
         0.0,
         PropertyValueType.OneD,
         bound_chunks=True,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Star Outer Roundess",
@@ -1464,6 +1469,7 @@ _VECTOR_STAR_SPECS: list[PropSpec] = [
         0.0,
         PropertyValueType.OneD,
         bound_chunks=True,
+        chunk_bounds_are_hints=True,
     ),
 ]
 
@@ -1577,6 +1583,7 @@ _VECTOR_STROKE_WIDTH = _spec(
     2.0,
     PropertyValueType.OneD,
     min_value=0,
+    chunk_bounds_are_hints=True,
 )
 _VECTOR_STROKE_LINE_CAP = _spec(
     "ADBE Vector Stroke Line Cap",
@@ -1602,6 +1609,7 @@ _VECTOR_STROKE_MITER_LIMIT = _spec(
     4.0,
     PropertyValueType.OneD,
     min_value=1,
+    chunk_bounds_are_hints=True,
 )
 
 # Canonical children of "ADBE Vector Graphic - Fill".
@@ -1762,6 +1770,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[PropSpec] = [
         0.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Taper EndWidthPx",
@@ -1769,6 +1778,7 @@ _VECTOR_STROKE_TAPER_SPECS: list[PropSpec] = [
         0.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Taper Start Width",
@@ -1829,6 +1839,7 @@ _VECTOR_STROKE_WAVE_SPECS: list[PropSpec] = [
         100.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Taper Wave Cycles",
@@ -1836,6 +1847,7 @@ _VECTOR_STROKE_WAVE_SPECS: list[PropSpec] = [
         10.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Taper Wave Phase",
@@ -2067,6 +2079,7 @@ _VECTOR_RECT_SPECS: list[PropSpec] = [
         0.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
 ]
 
@@ -2187,6 +2200,7 @@ _VECTOR_OFFSET_SPECS: list[PropSpec] = [
         10.0,
         PropertyValueType.OneD,
         bound_chunks=True,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Offset Line Join",
@@ -2203,6 +2217,7 @@ _VECTOR_OFFSET_SPECS: list[PropSpec] = [
         4.0,
         PropertyValueType.OneD,
         min_value=1,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Offset Copies",
@@ -2210,13 +2225,26 @@ _VECTOR_OFFSET_SPECS: list[PropSpec] = [
         1.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
-    _spec("ADBE Vector Offset Copy Offset", "Copy Offset", 1.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Offset Copy Offset",
+        "Copy Offset",
+        1.0,
+        PropertyValueType.OneD,
+        chunk_bounds_are_hints=True,
+    ),
 ]
 
 # "ADBE Vector Filter - PB" (Pucker & Bloat).
 _VECTOR_PUCKER_BLOAT_SPECS: list[PropSpec] = [
-    _spec("ADBE Vector PuckerBloat Amount", "Amount", 10.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector PuckerBloat Amount",
+        "Amount",
+        10.0,
+        PropertyValueType.OneD,
+        chunk_bounds_are_hints=True,
+    ),
 ]
 
 # "ADBE Vector Filter - RC" (Round Corners).
@@ -2227,6 +2255,7 @@ _VECTOR_ROUND_CORNERS_SPECS: list[PropSpec] = [
         10.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
 ]
 
@@ -2262,7 +2291,13 @@ _VECTOR_TRIM_SPECS: list[PropSpec] = [
 
 # "ADBE Vector Filter - Twist".
 _VECTOR_TWIST_SPECS: list[PropSpec] = [
-    _spec("ADBE Vector Twist Angle", "Angle", 10.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Twist Angle",
+        "Angle",
+        10.0,
+        PropertyValueType.OneD,
+        chunk_bounds_are_hints=True,
+    ),
     _spec(
         "ADBE Vector Twist Center",
         "Center",
@@ -2279,6 +2314,7 @@ _VECTOR_ROUGHEN_SPECS: list[PropSpec] = [
         10.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Roughen Detail",
@@ -2296,7 +2332,13 @@ _VECTOR_ROUGHEN_SPECS: list[PropSpec] = [
         min_value=1,
         max_value=2,
     ),
-    _spec("ADBE Vector Temporal Freq", "Wiggles/Second", 2.0, PropertyValueType.OneD),
+    _spec(
+        "ADBE Vector Temporal Freq",
+        "Wiggles/Second",
+        2.0,
+        PropertyValueType.OneD,
+        chunk_bounds_are_hints=True,
+    ),
     _spec(
         "ADBE Vector Correlation",
         "Correlation",
@@ -2347,6 +2389,7 @@ _VECTOR_WIGGLER_SPECS: list[PropSpec | GroupSpec] = [
         "Wiggles/Second",
         2.0,
         PropertyValueType.OneD,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Correlation",
@@ -2377,6 +2420,7 @@ _VECTOR_ZIGZAG_SPECS: list[PropSpec] = [
         5.0,
         PropertyValueType.OneD,
         min_value=0,
+        chunk_bounds_are_hints=True,
     ),
     _spec(
         "ADBE Vector Zigzag Detail",

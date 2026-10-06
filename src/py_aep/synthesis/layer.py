@@ -76,6 +76,15 @@ class LayerSpec(NamedTuple):
     hides (an Illustrator layer in the file's `/D` `/OFF` array), which AE
     imports as a layer with its eyeball off."""
 
+    has_alpha: bool | None = None
+    """A PSD layer's own alpha: `False` for Photoshop's Background layer,
+    which has no transparency. `None` for the layers of other files, which
+    take the file's alpha and depth."""
+
+    depth: int | None = None
+    """A PSD layer's own pixel depth (`sspc` byte 0x3E); `None` with
+    `has_alpha`."""
+
 
 class LayerGroupSpec(NamedTuple):
     """A layer group, imported as a nested composition of its children.
@@ -103,3 +112,8 @@ class LayerGroupSpec(NamedTuple):
     collapsed: bool = True
     """Collapse transformations on the parent layer (groups); clipping
     precomps stay uncollapsed."""
+
+    enabled: bool = True
+    """`False` for a group hidden in Photoshop: AE 2026 turns the parent
+    layer's video switch off and leaves the children's own switches as they
+    are (synthetic hidden_group.psd)."""

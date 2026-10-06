@@ -16,6 +16,9 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..binary.bin_utils import FLOAT32_MAX
+from ..binary.item_chunks import AE_VERSION_RE, FORMAT_VERSIONS
+
 if TYPE_CHECKING:
     from typing import Callable, Iterable
 
@@ -197,6 +200,10 @@ def validate_one_of(
     return _validator
 
 
+#: The After Effects platforms py_aep writes footage for (see `py_aep.parse`).
+validate_platform = validate_one_of(("windows", "macos"))
+
+
 def _validate_str(
     *,
     allow_empty: bool = True,
@@ -290,10 +297,14 @@ validate_int = _validate_number(integer=True)
 
 validate_positive_int = _validate_number(min=0, integer=True)
 
-# A u2 field (e.g. the project revision counter) holds 0..65535.
+# A u1 field (e.g. the head chunk's 8-bit build number) holds 0..255.
+validate_u1 = _validate_number(min=0, max=0xFF, integer=True)
+
+# A u2 field (e.g. the Cineon highlight expansion) holds 0..65535.
 validate_u2 = _validate_number(min=0, max=0xFFFF, integer=True)
 
-# A u4 frame counter (e.g. a marker's frame_duration) holds 0..4294967295.
+# A u4 field (e.g. a marker's frame_duration or the project revision counter)
+# holds 0..4294967295.
 validate_u4 = _validate_number(min=0, max=0xFFFFFFFF, integer=True)
 
 # A signed 32-bit metric (e.g. text kerning/tracking). AE 2026 reads values
@@ -325,6 +336,14 @@ validate_pixel_aspect = _validate_number(min=0.01, max=100.0)
 validate_duration = _validate_number(min=1.0 / 99.0, max=10800.0)
 
 validate_frame_rate = _validate_number(min=1.0, max=99.0)
+
+# A composition's frame rate: AE 2026's own range ("out of range 1 to 999"),
+# for `addComp` and the `frameRate` setter alike.
+validate_comp_frame_rate = _validate_number(min=1.0, max=999.0)
+
+# A composition's duration: at least one frame at the fastest composition
+# rate (999 fps), at most AE's 10800 seconds.
+validate_comp_duration = _validate_number(min=1.0 / 999.0, max=10800.0)
 
 # 0 means "use the footage's own rate"; the upper bound is the `sspc` field's
 # (a u2 of whole frames per second).
@@ -374,3 +393,34 @@ validate_shadow_smoothness = _validate_number(min=1, max=20, integer=True)
 validate_casting_box_size = _validate_number(min=0, max=30000)
 validate_casting_box_center = validate_sequence(length=3, min=-30000, max=30000)
 validate_cinema_4d_quality = _validate_number(min=1, max=99, integer=True)
+
+# An `[x, y]` point stored as two float32 values (shape vertices / tangents,
+# and the bounding box): a larger coordinate cannot be serialized.
+validate_f4_point = validate_sequence(length=2, min=-FLOAT32_MAX, max=FLOAT32_MAX)
+
+
+def validate_ae_version(value: object, instance: object | None = None) -> None:
+    """Validate an After Effects version string, `"{major}.{minor}x{build}"`.
+
+    The major must be a release py_aep has a file-format stamp for
+    (`FORMAT_VERSIONS`: AE 15-18 and 22-26, there was no AE 19-21); the
+    head chunk holds the minor in 4 bits and the build in 8.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"expected a version string, got {type(value).__name__}")
+    match = AE_VERSION_RE.match(value)
+    if match is None:
+        raise ValueError(
+            "version must match '{major}.{minor}x{build}' "
+            f"(e.g. '25.6x101'), got {value!r}"
+        )
+    major, minor, build = (int(part) for part in match.groups())
+    if major not in FORMAT_VERSIONS:
+        raise ValueError(
+            f"After Effects {major} is not a release py_aep writes; "
+            f"supported majors: {sorted(FORMAT_VERSIONS)}"
+        )
+    if minor > 0x0F:
+        raise ValueError(f"version minor must be <= 15, got {minor}")
+    if build > 0xFF:
+        raise ValueError(f"version build must be <= 255, got {build}")

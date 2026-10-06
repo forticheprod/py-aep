@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import re
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 from py_aep.data.builtin_effects import BUILTIN_EFFECTS
 from py_aep.data.effect_controls import EXPRESSION_CONTROLS
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
-from py_aep.enums import PropertyControlType, PropertyType
+from py_aep.enums import PropertyType
 from py_aep.resolvers.can_add_property import AddableKind, resolve_addable
 from py_aep.resolvers.can_add_property import (
     can_add_property as _can_add_property,
 )
 
 from ...ae_version import get_ae_version_major, requires_version
-from ...binary.chunk import ListChunk, read_chunks
+from ...binary.chunk import Chunk, ListChunk, read_chunks
 from ...binary.mutations import (
     build_dropdown_control,
     build_expression_control,
@@ -51,7 +52,7 @@ from .property import Property, _values_equal, _vf_tag_from_str
 from .property_base import _INDEXED_GROUP_MATCH_NAMES, PropertyBase
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
     from typing import Literal
 
     from ...synthesis.property import PropSpec
@@ -95,6 +96,14 @@ _TEXT_SELECTOR_NAMES: dict[str, str] = {
     "ADBE Text Wiggly Selector": "Wiggly Selector",
     "ADBE Text Expressible Selector": "Expression Selector",
 }
+
+
+# The Puppet engine version. Measured on AE 2026: AE writes an `engv` atom
+# holding 2 between every Puppet's `tdmn` and its `LIST:sspc` (new instances,
+# its EfdG definition, and an AE 15 project's stored 1 on resave). Without
+# the atom AE loads the instance with the Legacy engine: Puppet Engine reads 1
+# and the Advanced-only parameters are hidden.
+_PUPPET_ENGINE_VERSION = (2).to_bytes(4, "big")
 
 
 def _baked_effect_def(name: str) -> tuple[str, str, ListChunk] | None:
@@ -159,6 +168,28 @@ def _set_effect_instance_name(sspc: ListChunk, name: str) -> None:
             return
 
 
+# A sibling mask name the next "Mask N" counts: "Mask" (number 1) or "Mask"
+# plus 1 to 6 ASCII digits (AE 2026 ignores 7-digit numbers, other digit
+# sets and any other spacing).
+_NUMBERED_MASK = re.compile(r"Mask(?: ([0-9]{1,6}))?")
+
+
+def _next_mask_name(names: Iterable[str]) -> str:
+    """The name AE 2026 gives a new mask beside masks named `names`: one past
+    the highest number, keeping the zero padding of the first name holding
+    it ("Mask 007" -> "Mask 008"; "Mask 0" counts as unnumbered)."""
+    highest, width = 0, 1
+    for name in names:
+        match = _NUMBERED_MASK.fullmatch(name)
+        if match is None:
+            continue
+        digits = match.group(1)
+        number = int(digits) if digits is not None else 1
+        if number > highest:
+            highest, width = number, len(digits) if digits is not None else 1
+    return f"Mask {str(highest + 1).zfill(width)}"
+
+
 def _reset_to_default_values(group: PropertyGroup) -> None:
     """Reset every value leaf of a freshly cloned effect to its default.
 
@@ -169,15 +200,7 @@ def _reset_to_default_values(group: PropertyGroup) -> None:
     expression, then leaves whose value still differs from the `pard`
     default are reset. Leaves with no known default keep their value but
     are still de-animated / de-expressioned.
-
-    2D/3D point params carry no `default` field in their `pard`, so their
-    reset target is the `last_value` AE stamps into the `parT` (in the
-    same 0-512 layer-relative range a synthesized point uses). It is read
-    here rather than published as `default_value`, because on a parsed
-    project that number is the instance's own coordinate, not a default.
     """
-    from ...parsers.effect import _point_default_pixels  # noqa: PLC0415
-
     for child in group.properties:
         if isinstance(child, PropertyGroup):
             _reset_to_default_values(child)
@@ -187,11 +210,6 @@ def _reset_to_default_values(group: PropertyGroup) -> None:
         child.remove_all_keys()
         child._clear_expression()
         default = child.default_value
-        if default is None and child._property_control_type in (
-            PropertyControlType.TWO_D,
-            PropertyControlType.THREE_D,
-        ):
-            default = _point_default_pixels(child, child.last_value)
         if default is not None and not _values_equal(child.value, default):
             # Use the parse-path writer, not the public `value` setter: an
             # enum/popup leaf's stored default can sit below its own pard min
@@ -673,6 +691,24 @@ class PropertyGroup(PropertyBase):
                 f"'{type(self).__name__}' has no property '{name}'"
             ) from None
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        # A name the class does not define would only become a Python
+        # attribute: nothing reaches the file, and it would shadow the child
+        # that attribute access resolves (`transform.position = [...]` leaves
+        # Position untouched and makes `transform.position` the list). Layers
+        # opt out (`Layer.__setattr__`) to keep their own public instance
+        # attributes.
+        if (
+            not name.startswith("_")
+            and not hasattr(type(self), name)
+            and name not in self.__dict__
+        ):
+            raise AttributeError(
+                f"'{type(self).__name__}' has no attribute '{name}' to set; "
+                "assign a child property's `value` instead"
+            )
+        super().__setattr__(name, value)
+
     def __getitem__(self, key: int | str) -> Property | PropertyGroup:
         """Look up a child property by index or name.
 
@@ -971,10 +1007,13 @@ class PropertyGroup(PropertyBase):
         # removed, or on a parsed layer whose mask ids are non-contiguous.
         existing = [m for m in self.properties if isinstance(m, MaskPropertyGroup)]
         next_id = max((m._mkif.mask_id for m in existing), default=0) + 1
+        # The name is numbered past the highest "Mask N" name, independently
+        # of the id (AE 2026: beside "Mask 1" and a mask renamed "stored" the
+        # new mask is id 3 "Mask 2"; beside "Mask 1" and "Mask 3", "Mask 4").
         mask = MaskPropertyGroup._new(
             self,
             self.property_depth + 1,
-            name=f"Mask {next_id}",
+            name=_next_mask_name(m.name for m in existing),
             mask_id=next_id,
         )
         self._properties.append(mask)
@@ -1081,17 +1120,30 @@ class PropertyGroup(PropertyBase):
         tdsn_name = self._effect_instance_name(display, same_type)
         _set_effect_instance_name(sspc, tdsn_name)
 
-        effect = self._attach_effect(TdmnChunk(value=match_name), sspc, match_name)
+        engv = (
+            Chunk(chunk_type="engv", data=_PUPPET_ENGINE_VERSION)
+            if match_name == "ADBE FreePin3"
+            else None
+        )
+        effect = self._attach_effect(
+            TdmnChunk(value=match_name), sspc, match_name, engv
+        )
         _reset_to_default_values(effect)
         return effect
 
     def _attach_effect(
-        self, tdmn: TdmnChunk, sspc: ListChunk, match_name: str
+        self,
+        tdmn: TdmnChunk,
+        sspc: ListChunk,
+        match_name: str,
+        engv: Chunk | None = None,
     ) -> PropertyGroup:
         """Insert a built effect's chunks, parse, wire the model, append.
 
         `parse_effect` is the canonical chunks->model path for effects
         (param-def merging, child synthesis); `duplicate()` uses it too.
+        `engv` is the engine-version atom AE stores between an effect's
+        `tdmn` and its `sspc` (Puppet only).
         """
         from ...parsers.effect import parse_effect  # noqa: PLC0415
 
@@ -1100,6 +1152,8 @@ class PropertyGroup(PropertyBase):
         parent_tdgp = self._tdgp
         assert parent_tdgp is not None
         _insert_before_group_end(parent_tdgp, tdmn)
+        if engv is not None:
+            _insert_before_group_end(parent_tdgp, engv)
         _insert_before_group_end(parent_tdgp, sspc)
 
         effect_param_defs = comp._project._effect_param_defs

@@ -48,6 +48,7 @@ from ..data.std14_metrics import (
 )
 from .ai_layers import (
     UnsupportedAiLayersError,
+    _find_ai_icc,
     _object_offsets,
     _parse_object_at,
     read_ai_layer_ocgs,
@@ -62,7 +63,7 @@ if TYPE_CHECKING:
     #: `(widths, default width, y-min, y-max, two-byte)` in glyph space.
     Metrics = tuple[dict[int, float], float, float, float, bool]
 
-__all__ = ["EMPTY_BOX", "footage_size", "read_ai_layer_bounds"]
+__all__ = ["EMPTY_BOX", "footage_size", "read_ai_icc_profile", "read_ai_layer_bounds"]
 
 #: Uniform expansion applied to a filled path or a shading, in points.
 FILL_PAD = 0.25
@@ -349,22 +350,12 @@ class _Document:
                 return candidate
         raise self._reject("no document catalog")
 
-    def first_page(self) -> dict[str, Any]:
-        """The first page dictionary, in `/Kids` order."""
+    def pages(self) -> list[dict[str, Any]]:
+        """The page dictionaries, in `/Kids` order (at least one)."""
         pages = list(self._walk_pages(self.get(self.catalog(), "Pages"), 0))
         if not pages:
             raise self._reject("the document has no pages")
-        if len(pages) > 1:
-            warnings.warn(
-                f"{self._name}: the document has {len(pages)} artboards. "
-                "py_aep measures the first one; After Effects measures the "
-                "second and reports first-artboard layers as empty, so the "
-                "stored artwork box will differ from AE's.",
-                UserWarning,
-                # user -> read_ai_layer_bounds -> first_page -> warn
-                stacklevel=3,
-            )
-        return pages[0]
+        return pages
 
     def _walk_pages(self, node: Any, depth: int) -> Iterator[dict[str, Any]]:
         node = _as_dict(self.resolve(node))
@@ -1164,7 +1155,17 @@ def read_ai_layer_bounds(
         data = path.read_bytes()
     layers = read_ai_layer_ocgs(path, data)
     doc = _Document(data, path.name)
-    page = doc.first_page()
+    pages = doc.pages()
+    if len(pages) > 1:
+        warnings.warn(
+            f"{path.name}: the document has {len(pages)} artboards. "
+            "py_aep measures the first one; After Effects measures the "
+            "second and reports first-artboard layers as empty, so the "
+            "stored artwork box will differ from AE's.",
+            UserWarning,
+            stacklevel=2,
+        )
+    page = pages[0]
     measurer = _Measurer(doc)
     measurer.run(doc.page_content(page), doc.get(page, "Resources"))
     return [
@@ -1173,6 +1174,54 @@ def read_ai_layer_bounds(
         else None
         for layer in layers
     ]
+
+
+#: A content-stream colour-space operator: `/CS0 cs` (fill) or `/CS0 CS`
+#: (stroke).
+_COLOR_SPACE_OP_RE = re.compile(rb"/([^\s/\[\]()<>{}%]+)\s+(?:cs|CS)\b")
+
+
+def read_ai_icc_profile(
+    file: str | os.PathLike[str], data: bytes | None = None
+) -> bytes | None:
+    """Return the ICC profile After Effects records for an Illustrator/PDF
+    file, or `None`.
+
+    It is the profile of the first ICC-based colour space the first page's
+    content draws with (`/Name cs` or `/Name CS`, `/Name` being an
+    `[/ICCBased ...]` page resource). A profile the page never draws with is
+    not recorded: an Illustrator file saved without PDF compatibility keeps
+    one among its placeholder page's unused resources, and AE 2026 assigns
+    sRGB to it instead (ai_no_pdf.ai). When the page cannot be read
+    (compressed object streams, encryption, an unsupported filter), the first
+    embedded profile is returned.
+
+    Args:
+        file: Path to a `.ai` or `.pdf` file.
+        data: The file's bytes, if the caller already read them.
+    """
+    if data is None:
+        data = Path(file).read_bytes()
+    if not data.startswith(b"%PDF"):
+        return None
+    try:
+        doc = _Document(data, Path(file).name)
+        page = doc.pages()[0]
+        content = doc.page_content(page)
+        spaces = doc.get(doc.get(page, "Resources"), "ColorSpace")
+        for match in _COLOR_SPACE_OP_RE.finditer(content):
+            space = doc.get(spaces, match.group(1).decode("latin-1"))
+            if (
+                isinstance(space, list)
+                and len(space) == 2
+                and str(space[0]) == "ICCBased"
+            ):
+                profile = doc.stream(space[1])
+                if len(profile) >= 132 and profile[36:40] == b"acsp":
+                    return profile
+    except UnsupportedAiLayersError:
+        return _find_ai_icc(file, data)
+    return None
 
 
 def footage_size(box: Box | None) -> tuple[int, int]:

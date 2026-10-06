@@ -9,13 +9,16 @@ from ...binary.mutations import build_default_mask_shape
 from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.utils import find_by_list_type, find_by_type
 from ...enums import MaskFeatherFalloff, MaskMode, MaskMotionBlur
+from ...resolvers.roto_bezier import keyframe_tensions
 from ..descriptors import ChunkField
 from ..validators import validate_bool, validate_rgb_color
 from .property_group import PropertyGroup, _insert_before_group_end
 
 if TYPE_CHECKING:
     from ...binary.scalar_chunks import Utf8Chunk
+    from ..layers.av_layer import AVLayer
     from .property import Property
+    from .shape import Shape
 
 # Mask outline colors cycled by creation index for new masks. AE picks
 # from the label colors via an app-global counter that persists across
@@ -104,6 +107,17 @@ class MaskPropertyGroup(PropertyGroup):
         no Mask Shape subtree (AE treats it as the implicit default
         full-frame rectangle), so enabling RotoBezier materializes that
         default path - mirroring what After Effects writes.
+
+        While it is on, the Mask Path's [Shape][] reports the tangents AE
+        derives from the vertices and their stored tensions
+        (`resolvers.roto_bezier`), not the stored direction handles.
+
+        As in After Effects, switching it on keeps every vertex without
+        direction handles a corner (tension 1) and smooths the others
+        (tension 1/3), and switching it off keeps the drawn tangents as the
+        handles. A path value assigned while it is on draws straight
+        segments (tension 1 at every vertex) unless it is a value read from
+        a RotoBezier mask, which keeps its own tensions.
         """
         tdsb = self._mask_shape_tdsb
         return bool(tdsb.roto_bezier) if tdsb is not None else False
@@ -115,9 +129,39 @@ class MaskPropertyGroup(PropertyGroup):
             if not value:
                 # Already the default; AE writes no Mask Shape for this state.
                 return
+            # The default path carries tension 1 per vertex, as AE writes it.
             self._materialize_mask_shape(roto_bezier=True)
-        assert self._mask_shape_tdsb is not None
-        self._mask_shape_tdsb.roto_bezier = value
+            return
+        if bool(self._mask_shape_tdsb.roto_bezier) == value:
+            return
+        path = cast("Property", self.property("ADBE Mask Shape"))
+        shapes = cast(
+            "list[Shape]",
+            [kf.value for kf in path.keyframes] if path.keyframes else [path.value],
+        )
+        if value:
+            # Measured on AE 2026: switching RotoBezier on gives each vertex
+            # of every key tension 1 when both its handles are zero (it stays
+            # a corner) and 1/3 otherwise, then stores the tangents those
+            # tensions draw as the handles.
+            tensions = [
+                keyframe_tensions([], s._stored_tangents(-1), s._stored_tangents(1))
+                for s in shapes
+            ]
+            self._mask_shape_tdsb.roto_bezier = True
+            for shape, shape_tensions in zip(shapes, tensions):
+                shape._set_tensions(shape_tensions)
+                shape._write_geometry(
+                    shape.vertices, shape.in_tangents, shape.out_tangents
+                )
+        else:
+            # Switching it off (AE 2026) keeps the drawn tangents as the
+            # handles and drops the tensions.
+            drawn = [(s.in_tangents, s.out_tangents) for s in shapes]
+            self._mask_shape_tdsb.roto_bezier = False
+            for shape, (ins, outs) in zip(shapes, drawn):
+                shape._set_tensions([])
+                shape._write_geometry(shape.vertices, ins, outs)
 
     @classmethod
     def _new(  # type: ignore[override]
@@ -227,10 +271,21 @@ class MaskPropertyGroup(PropertyGroup):
         self._ensure_materialized()
         self._ensure_children_synthesized()
         assert self._tdgp is not None
-        layer = self._containing_layer
+        layer = cast("AVLayer", self._containing_layer)
         comp = layer.containing_comp
+        width, height = layer._mask_scale
+        source = layer.source
+        # AE stamps the mask space's display aspect, so a non-square source
+        # pixel aspect counts (measured on AE-saved projects). Headless AE
+        # 2026 writes 1.0 instead on a layer it loaded from disk, whatever
+        # the first write (path, key, expression, RotoBezier), yet the
+        # aspect on one created in the same session. RotoBezier tangents are
+        # measured in this space, so 1.0 would bend them: keep the aspect.
+        pixel_aspect = source.pixel_aspect if source is not None else 1.0
         tdmn, oms = build_default_mask_shape(
-            comp._cdta.internal_timebase, roto_bezier=roto_bezier
+            comp._cdta.internal_timebase,
+            aspect=width * pixel_aspect / height,
+            roto_bezier=roto_bezier,
         )
 
         # Synthesis inserts a bare synthetic `tdmn + tdbs` placeholder for

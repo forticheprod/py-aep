@@ -9,16 +9,25 @@ produces for an SVG imported as cropped-comp layers.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Union
-from xml.etree.ElementTree import Element, fromstring
+from xml.etree.ElementTree import Element, ParseError, fromstring
 
-from ._util import local_name, parse_number, parse_ratio
+from ..binary.bin_utils import FLOAT32_MAX
+from ._util import (
+    DEFAULT_FONT_SIZE,
+    LengthContext,
+    local_name,
+    parse_length,
+    parse_number,
+    parse_ratio,
+)
 from .colors import parse_color
-from .document import canvas
+from .document import canvas, viewport_transform
 from .errors import UnsupportedSVGError
 from .fonts import resolve_font
 from .gradients import GradientDef, collect_gradients, resolve_gradient
@@ -28,6 +37,7 @@ from .text import TextRun, outline_runs, outline_text_path
 from .transform import Affine, parse_transform
 from .types import (
     GradientPaint,
+    GradientStop,
     SolidPaint,
     StrokeStyle,
     Subpath,
@@ -98,7 +108,8 @@ def read_svg(source: str | os.PathLike[str] | bytes) -> SvgDocument:
         The flattened document (canvas size + drawables).
 
     Raises:
-        UnsupportedSVGError: For SVG features py_aep cannot import.
+        UnsupportedSVGError: For SVG features py_aep cannot import, and for
+            a file that is not well-formed XML.
     """
     if isinstance(source, (bytes, bytearray)):
         data = bytes(source)
@@ -106,7 +117,12 @@ def read_svg(source: str | os.PathLike[str] | bytes) -> SvgDocument:
         data = source.encode("utf-8")
     else:
         data = Path(os.fspath(source)).read_bytes()
-    root = fromstring(data)
+    try:
+        root = fromstring(data)
+    except ParseError as exc:
+        raise UnsupportedSVGError(
+            f"Malformed SVG (not well-formed XML): {exc}"
+        ) from exc
     if local_name(root.tag) != "svg":
         raise UnsupportedSVGError(
             f"Root element is <{local_name(root.tag)}>, not <svg>"
@@ -218,6 +234,9 @@ class _Reader:
         # opacity, so accumulate it down the tree and fold it into the leaf.
         eff_opacity = opacity * parse_ratio(style.get("opacity"), 1.0)
 
+        if tag == "svg":
+            self._visit_viewport(elem, local_tf, style, eff_opacity, out, depth)
+            return
         if tag in _CONTAINER_TAGS:
             out.extend(self.walk(elem, local_tf, style, eff_opacity, depth + 1))
             return
@@ -235,6 +254,79 @@ class _Reader:
         # Unknown element: ignore (forward-compatible) but recurse in case
         # it wraps drawables.
         out.extend(self.walk(elem, local_tf, style, eff_opacity, depth + 1))
+
+    def _ctx(self, style: dict[str, str]) -> LengthContext:
+        """What this element's percentage and `em` lengths resolve against:
+        the nearest viewport and its font size."""
+        font_size = parse_length(
+            style.get("font-size"),
+            DEFAULT_FONT_SIZE,
+            DEFAULT_FONT_SIZE,
+            DEFAULT_FONT_SIZE,
+        )
+        return LengthContext(self._viewport[0], self._viewport[1], font_size)
+
+    def _visit_viewport(
+        self,
+        elem: Element,
+        ctm: Affine,
+        style: dict[str, str],
+        opacity: float,
+        out: list[SvgDrawable],
+        depth: int,
+    ) -> None:
+        """A nested `<svg>` is a new viewport (SVG 1.1 7.9): `x / y /
+        width / height` place it (100 % of the parent viewport by default)
+        and its viewBox maps onto that box under `preserveAspectRatio`, as
+        AE 2026 imports it. Its content is not clipped (AE clips it)."""
+        ctx = self._ctx(style)
+        x = parse_length(elem.get("x"), 0.0, ctx.width, ctx.font_size)
+        y = parse_length(elem.get("y"), 0.0, ctx.height, ctx.font_size)
+        self._walk_viewport(elem, elem, ctm, style, opacity, out, depth, x, y)
+
+    def _walk_viewport(
+        self,
+        viewport: Element,
+        sizing: Element,
+        ctm: Affine,
+        style: dict[str, str],
+        opacity: float,
+        out: list[SvgDrawable],
+        depth: int,
+        x: float,
+        y: float,
+    ) -> None:
+        """Walk the children of a viewport element (a nested `<svg>`, or the
+        `<symbol>` / `<svg>` a `<use>` instantiates), its viewBox mapped
+        onto the `x, y` box sized by `sizing`'s width / height (falling back
+        to the viewport's own, then 100 %)."""
+        ctx = self._ctx(style)
+        width = parse_length(
+            sizing.get("width") or viewport.get("width"),
+            ctx.width,
+            ctx.width,
+            ctx.font_size,
+        )
+        height = parse_length(
+            sizing.get("height") or viewport.get("height"),
+            ctx.height,
+            ctx.height,
+            ctx.font_size,
+        )
+        tf, size = viewport_transform(
+            viewport.get("viewBox"),
+            viewport.get("preserveAspectRatio"),
+            x,
+            y,
+            width,
+            height,
+        )
+        parent_viewport = self._viewport
+        self._viewport = size
+        try:
+            out.extend(self.walk(viewport, ctm.multiply(tf), style, opacity, depth + 1))
+        finally:
+            self._viewport = parent_viewport
 
     def _visit_use(
         self,
@@ -254,14 +346,19 @@ class _Reader:
         target = self._by_id.get(target_id)
         if target is None:
             return
-        x = parse_number(elem.get("x", "0"))
-        y = parse_number(elem.get("y", "0"))
+        ctx = self._ctx(style)
+        x = parse_length(elem.get("x"), 0.0, ctx.width, ctx.font_size)
+        y = parse_length(elem.get("y"), 0.0, ctx.height, ctx.font_size)
         use_tf = ctm.multiply(Affine(e=x, f=y))
         self._use_stack.append(target_id)
         try:
             t_tag = local_name(target.tag)
             if t_tag in ("symbol", "svg"):
-                out.extend(self.walk(target, use_tf, style, opacity, depth + 1))
+                # The instance is a viewport sized by the <use> (AE 2026
+                # maps a 10 x 10 symbol viewBox onto `width="50"`).
+                self._walk_viewport(
+                    target, elem, use_tf, style, opacity, out, depth, 0.0, 0.0
+                )
             else:
                 self._visit(target, use_tf, style, opacity, out, depth)
         finally:
@@ -390,7 +487,9 @@ class _Reader:
         if run is None:
             return
         try:
-            path = element_subpaths(local_name(target.tag), target.attrib)
+            path = element_subpaths(
+                local_name(target.tag), target.attrib, self._ctx(style)
+            )
         except UnsupportedSVGError:
             return  # referenced element is not a path/basic shape
         raw_off = (tp_elem.get("startOffset") or "0").strip()
@@ -421,7 +520,7 @@ class _Reader:
         style: dict[str, str],
         opacity: float,
     ) -> SvgDrawable | None:
-        raws = element_subpaths(tag, elem.attrib)
+        raws = element_subpaths(tag, elem.attrib, self._ctx(style))
         subpaths: list[Subpath] = []
         for raw in raws:
             sp = cubics_to_subpath(raw, ctm)
@@ -434,7 +533,12 @@ class _Reader:
 
         # `opacity` already includes this element's own opacity (folded in by
         # the caller alongside every ancestor's), so use it directly.
-        return self._emit(subpaths, style, ctm, elem.get("id"), opacity)
+        drawable = self._emit(subpaths, style, ctm, elem.get("id"), opacity)
+        if tag == "line":
+            # A line has no interior, so its fill paints nothing; AE 2026
+            # adds only the Stroke.
+            drawable.fill = None
+        return drawable
 
     def _emit(
         self,
@@ -444,49 +548,81 @@ class _Reader:
         name: str | None,
         opacity: float,
     ) -> SvgDrawable:
+        if not all(
+            abs(c) <= FLOAT32_MAX
+            for sp in subpaths
+            for points in (sp.vertices, sp.in_tangents, sp.out_tangents)
+            for point in points
+            for c in point
+        ):
+            # Shape paths store float32 points; a larger number (or one past
+            # the float range, `1e400`, read as infinity) cannot be saved.
+            raise UnsupportedSVGError("SVG coordinate is out of range")
         bbox = _bbox(subpaths)
         return SvgDrawable(
             subpaths=subpaths,
-            fill=self._paint(style.get("fill", "black"), bbox, ctm),
+            fill=self._paint(
+                style.get("fill", "black"), style.get("fill-opacity"), bbox, ctm
+            ),
             stroke=self._stroke(style, bbox, ctm),
             name=name,
             opacity=opacity,
         )
 
-    def _paint(self, value: str | None, bbox: Bbox, ctm: Affine) -> Paint:
+    def _paint(
+        self, value: str | None, opacity: str | None, bbox: Bbox, ctm: Affine
+    ) -> Paint:
+        """A fill or stroke paint, its `fill-opacity` / `stroke-opacity`
+        (`opacity`) folded into its alpha: a color's own, or every gradient
+        stop's. After Effects' own SVG import ignores both attributes
+        (AE 2026: a 0.5 stroke-opacity imports at 100 %)."""
         if value is None:
             return None
         value = value.strip()
         if value == "none":
             return None
+        alpha = parse_ratio(opacity, 1.0)
         url = _URL_RE.match(value)
         if url:
             gd = self._gradients.get(url.group(1))
-            if gd is not None and gd.stops:
-                return resolve_gradient(gd, bbox, ctm, self._viewport)
-            # Unknown paint server (pattern, missing gradient): no paint.
-            return None
+            if gd is None or not gd.stops:
+                # Unknown paint server (pattern, missing gradient): no paint.
+                return None
+            gradient = resolve_gradient(gd, bbox, ctm, self._viewport)
+            gradient.stops = [
+                GradientStop(s.offset, (*s.color[:3], s.color[3] * alpha))
+                for s in gradient.stops
+            ]
+            return gradient
         color = parse_color(value)
         if color is None:
             return None
-        # AE's SVG cropped import ignores the fill-opacity/stroke-opacity
-        # presentation attributes (verified against AE 2026); only the
-        # element/group `opacity` (applied by the builder) and the paint's
-        # own color alpha affect the imported opacity.
-        return SolidPaint(color=color)
+        return SolidPaint(color=(*color[:3], color[3] * alpha))
 
     def _stroke(
         self, style: dict[str, str], bbox: Bbox, ctm: Affine
     ) -> StrokeStyle | None:
-        paint = self._paint(style.get("stroke", "none"), bbox, ctm)
+        paint = self._paint(
+            style.get("stroke", "none"), style.get("stroke-opacity"), bbox, ctm
+        )
         if paint is None:
             return None
-        width = parse_number(style.get("stroke-width", "1")) * ctm.mean_scale
+        ctx = self._ctx(style)
+        # A percentage width refers to the viewport's normalized diagonal
+        # (AE 2026: 5 % of a 200 x 100 viewBox is 7.906).
+        width = (
+            parse_length(style.get("stroke-width"), 1.0, ctx.diagonal, ctx.font_size)
+            * ctm.mean_scale
+        )
         if width <= 0:
             return None
+        if not math.isfinite(width):
+            raise UnsupportedSVGError("SVG stroke-width is out of range")
         cap = _CAP.get((style.get("stroke-linecap") or "").strip(), 1)
         join = _JOIN.get((style.get("stroke-linejoin") or "").strip(), 1)
-        miter = parse_number(style.get("stroke-miterlimit", "4"))
+        # SVG requires a miter limit >= 1 (AE's Miter Limit too); AE 2026
+        # imports a smaller one clamped to 1.
+        miter = max(1.0, parse_number(style.get("stroke-miterlimit", "4")))
         dashes = [
             parse_number(t) * ctm.mean_scale
             for t in re.split(r"[,\s]+", (style.get("stroke-dasharray") or "").strip())

@@ -13,9 +13,10 @@ from py_aep.enums import PropertyControlType
 #: `tdbs` entirely and falls back to the `parT` default, silently discarding
 #: the written value (bisected one bit at a time against AE 2026).
 #:
-#: These differ from the layer-property values in
-#: `tdb4_apply_static_template`: a layer's own spatial property is 9 and its
-#: colour 6, because only an effect parameter needs the instance-value bits.
+#: These differ from a layer's own properties (a spatial one has 9, a
+#: colour 6), because only an effect parameter needs the instance-value
+#: bits. Removing a property's last keyframe keeps whatever byte it has and
+#: only sets the static bit (`tdb4_apply_static_template`).
 #:
 #: One-dimensional controls (slider, angle, checkbox, enum, ...) keep the
 #: chunk default of `1` and are absent from this table.

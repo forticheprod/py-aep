@@ -58,9 +58,10 @@ def _add_drawable(contents: PropertyGroup, drawable: SvgDrawable) -> None:
     group = _grp(contents.add_property("ADBE Vector Group"))
     inner = _grp(group["ADBE Vectors Group"])
 
-    # AE stores each group's vertices centred on their bounding box and puts
-    # the offset in the group's Vector Position (verified against AE's own
-    # SVG import). Mirror that so the output matches AE byte-for-byte.
+    # AE stores each group's vertices centred on the box of their vertices
+    # and tangent handles and puts the offset in the group's Vector Position
+    # (verified against AE's own SVG import). Mirror that so the output
+    # matches AE byte-for-byte.
     cx, cy = _bbox_center(drawable)
     for subpath in drawable.subpaths:
         path_group = _grp(inner.add_property("ADBE Vector Shape - Group"))
@@ -91,9 +92,15 @@ def _add_drawable(contents: PropertyGroup, drawable: SvgDrawable) -> None:
 
 
 def _bbox_center(drawable: SvgDrawable) -> tuple[float, float]:
-    """Centre of the bounding box of all the drawable's vertices."""
-    xs = [v[0] for sp in drawable.subpaths for v in sp.vertices]
-    ys = [v[1] for sp in drawable.subpaths for v in sp.vertices]
+    """Centre of the box of all the drawable's vertices and tangent handles."""
+    points = [
+        (v[0] + t[0], v[1] + t[1])
+        for sp in drawable.subpaths
+        for v, t_in, t_out in zip(sp.vertices, sp.in_tangents, sp.out_tangents)
+        for t in ((0.0, 0.0), t_in, t_out)
+    ]
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
     if not xs:
         return (0.0, 0.0)
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
@@ -221,7 +228,13 @@ def _gradient_value(paint: GradientPaint) -> Gradient:
         GradientColorStop(s.offset, 0.5, (s.color[0], s.color[1], s.color[2]))
         for s in stops
     ]
-    alpha_stops = [GradientAlphaStop(s.offset, 0.5, s.color[3]) for s in stops]
+    # AE writes one alpha stop for consecutive stops sharing offset and
+    # opacity (it keeps every colour stop).
+    alpha_stops: list[GradientAlphaStop] = []
+    for s in stops:
+        prev = alpha_stops[-1] if alpha_stops else None
+        if prev is None or (prev.offset, prev.alpha) != (s.offset, s.color[3]):
+            alpha_stops.append(GradientAlphaStop(s.offset, 0.5, s.color[3]))
     return Gradient(color_stops, alpha_stops)
 
 

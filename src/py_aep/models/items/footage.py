@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING
 
 from ...binary.chunk import Chunk, ListChunk
 from ...binary.comp_skeleton import build_item_view_chunks
-from ...binary.item_chunks import IdpcChunk, IdtaChunk, IideChunk
+from ...binary.item_chunks import IdtaChunk
 from ...binary.misc_chunks import FtgiChunk
+from ...binary.mutations import build_gide_list, build_item_id_chunks
 from ...binary.scalar_chunks import Utf8Chunk
 from ...data.file_formats import AI_COMP_EXTENSIONS, PSD_COMP_EXTENSIONS
 from ...resolvers.source_layers import layer_index_for_stored
@@ -293,8 +294,6 @@ class FootageItem(AVItem):
         else:
             label = label_index(project._preferences, "Video Label Index 2", 3)
 
-        iide = IideChunk(value=item_id)
-        idpc = IdpcChunk()
         idta = IdtaChunk(
             item_type=7,
             item_id=item_id,
@@ -316,7 +315,14 @@ class FootageItem(AVItem):
 
         item_list = ListChunk(
             list_type="Item",
-            chunks=[iide, idpc, idta, name_utf8, pin_list, ftgi, Utf8Chunk()],
+            chunks=[
+                *build_item_id_chunks(item_id, project._head.ae_version_major),
+                idta,
+                name_utf8,
+                pin_list,
+                ftgi,
+                Utf8Chunk(),
+            ],
         )
 
         # View data chunks AE expects after LIST:Item in the parent folder
@@ -334,10 +340,27 @@ class FootageItem(AVItem):
             main_source=source,
             proxy_source=None,
         )
-        source._project = project
-        item._ensure_guides_container()
+        source._join_project(project)
+        # AE writes the guide list with no `ldat` until a guide is added.
+        item._gide, item._lhd3, item._inner = build_gide_list()
+        item._item_list.chunks.append(item._gide)
         item._view_data = view_data
+        item._sync_modified_time()
         return item
+
+    def _sync_modified_time(self) -> None:
+        # AE 2026 stamps idta with the last-modified time of the file in use
+        # - the proxy's while a file proxy is in use, the main file's
+        # otherwise - on import, replace, reload and every proxy change. A
+        # solid or placeholder in use leaves the stamp as it is: AE does the
+        # same for a placeholder, and writes the time of the edit for a
+        # solid, which would make py_aep's output depend on when it ran.
+        # AE replaces an unset (0) stamp with the save time without
+        # re-reading the media, so leaving one is harmless.
+        source = self._proxy_source if self.use_proxy else self._main_source
+        if isinstance(source, FileSource):
+            assert self._idta is not None
+            self._idta.modified_time = source._sspc.source_modified
 
     def replace_with_placeholder(
         self,
@@ -475,16 +498,17 @@ class FootageItem(AVItem):
                 not reference a single layer (or the new file has no layer at
                 the stored index).
             NotImplementedError: If After Effects requires a format-specific
-                `opti` header not implemented for this format, or if
-                `layer_dimensions="layer"` is combined with merge-mode styles
-                on a PSD layer that has styles (the style-expanded bounds are
-                not derivable).
+                `opti` header not implemented for this format, or if merged
+                styles include a Stroke Emboss bevel, whose rasterized bounds
+                are not known.
             UnsupportedAiLayersError: If `layer_dimensions="layer"` is
                 requested for an AI/PDF file whose page content py_aep cannot
                 read (see `resolvers.ai_bounds`).
         """
         if layer_index is None:
-            self._replace_main_source(FileSource._from_file(file))
+            self._replace_main_source(
+                FileSource._from_file(file, windows=self._project._windows)
+            )
             return
         if not isinstance(layer_index, _CurrentValue):
             validate_positive_int(layer_index)
@@ -534,7 +558,11 @@ class FootageItem(AVItem):
             resolved_styles = layer_styles
         self._replace_main_source(
             FileSource._from_layer(
-                file, layer_index, dimensions=dimensions, layer_styles=resolved_styles
+                file,
+                layer_index,
+                dimensions=dimensions,
+                layer_styles=resolved_styles,
+                windows=self._project._windows,
             )
         )
 
@@ -558,11 +586,14 @@ class FootageItem(AVItem):
         Args:
             file: Path to a representative frame; sibling frames in the same
                 folder are gathered into the sequence.
-            force_alphabetical: Order frames alphabetically rather than
-                numerically.
+            force_alphabetical: Take every file of the same type in the
+                folder, in alphabetical order, rather than the numbered
+                frames (see `ImportOptions.force_alphabetical`).
 
         Raises:
-            ValueError: If the extension is not a supported footage format.
+            ValueError: If the extension is not a supported footage format,
+                or one After Effects does not import as a sequence (movies,
+                audio, HEIC, FBX, data files).
             NotImplementedError: If After Effects requires a format-specific
                 `opti` header not implemented for this format.
         """
@@ -571,6 +602,7 @@ class FootageItem(AVItem):
                 file,
                 sequence=True,
                 force_alphabetical=force_alphabetical,
+                windows=self._project._windows,
                 default_sequence_fps=default_sequence_fps(self._project._preferences),
             )
         )
@@ -587,13 +619,14 @@ class FootageItem(AVItem):
         self._replace_pin(0, AVItem._pin_for_source(source))
 
         self._main_source = source
-        source._project = self._project
+        source._join_project(self._project)
 
         assert self._idta is not None
         self._idta.is_footage = True
         self._idta.is_solid = is_solid
         if isinstance(source, FileSource):
             self._idta._flags_17 = source._idta_flags17()
+        self._sync_modified_time()
 
         # AE only ever writes the item-level Utf8 when the user renames the
         # item, so a replace leaves it alone: a default (source-derived) name

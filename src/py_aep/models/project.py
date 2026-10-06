@@ -9,12 +9,12 @@ from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from ..ae_version import requires_version
+from ..ae_version import ae_writes, requires_version
+from ..binary.bin_utils import to_f4, truncate_utf8
 from ..binary.chunk import Chunk, ListChunk, write_aep
 from ..binary.footage_chunks import (
     build_ai_layer_opti_data,
     build_psd_flattened_opti_data,
-    build_psd_layer_opti_data,
     build_text_opti_data,
 )
 from ..binary.item_chunks import (
@@ -31,9 +31,18 @@ from ..binary.project_chunks import (
     WsnmChunk,
     WsnsChunk,
 )
-from ..binary.scalar_chunks import F8Chunk, U1Chunk, U2Chunk, U4Chunk, Utf8Chunk
+from ..binary.scalar_chunks import (
+    F8Chunk,
+    U1Chunk,
+    U2Chunk,
+    U4Chunk,
+    U4LeChunk,
+    Utf8Chunk,
+)
 from ..binary.utils import (
+    PENDING_ASCENDCOUNT,
     ChunkNotFoundError,
+    dump_alas,
     filter_by_type,
     find_by_list_type,
     find_by_type,
@@ -46,7 +55,11 @@ from ..color.envelope import (
     build_ocio_display_envelope,
     envelope_profile_name,
 )
-from ..color.icc import IccProfileLibrary
+from ..color.icc import (
+    IccProfileLibrary,
+    icc_profile_description,
+    icc_profile_id,
+)
 from ..color.ocio import (
     list_config_color_spaces,
     ocio_color_profile_envelope,
@@ -71,11 +84,11 @@ from ..enums import (
     TimeDisplayType,
 )
 from ..enums.mappings import adobe_color_profile_names
-from ..resolvers.ai_layers import (
-    read_ai_color_profile,
-    read_ai_layer_ocgs,
-)
-from ..resolvers.media_probe import probe_media
+from ..resolvers.ai_bounds import EMPTY_BOX, footage_size, read_ai_layer_bounds
+from ..resolvers.ai_layers import read_ai_layer_ocgs
+from ..resolvers.interpolation import NORMALIZED_ARC_ACCURACY
+from ..resolvers.media_probe import pixel_buffer_size, probe_media
+from ..resolvers.platform_paths import platform_path, relative_path_counts
 from ..resolvers.psd_layers import (
     FlattenedPsdError,
     PsdGroup,
@@ -117,7 +130,14 @@ from .properties.property import Property, _values_equal
 from .properties.property_group import PropertyGroup
 from .properties.shape import Shape
 from .renderqueue.render_queue import RenderQueue
-from .sources.file import PSD_LAYER_STYLES_C8, FileSource
+from .sources.file import (
+    PSD_LAYER_STYLES_C8,
+    FileSource,
+    ai_document_profile,
+    check_footage_size,
+    named_media_profile,
+    psd_layer_footage,
+)
 from .text.ranges import _replace_layer_font
 from .validators import (
     _validate_number,
@@ -129,7 +149,7 @@ from .validators import (
     validate_path_does_not_exist,
     validate_path_exists,
     validate_string,
-    validate_u2,
+    validate_u4,
 )
 
 if TYPE_CHECKING:
@@ -149,6 +169,15 @@ if TYPE_CHECKING:
 
 
 _validate_expression_engine = validate_one_of(("extendscript", "javascript-1.0"))
+
+
+def _validate_gpu_accel_type(value: GpuAccelType | str, obj: Project) -> None:
+    """Accept a `GpuAccelType` or a renderer UUID string (what the getter
+    returns for an id it does not recognise)."""
+    if isinstance(value, str):
+        GpuAccelType.to_binary(value)
+    else:
+        validate_enum(GpuAccelType)(value)
 
 
 def _font_post_script_name(font: FontObject | str) -> str:
@@ -191,6 +220,11 @@ class Project:
 
     See: https://ae-scripting.docsforadobe.dev/general/project/
     """
+
+    _platform: str = "windows" if os.name == "nt" else "macos"
+    """The After Effects platform the project is for, `"windows"` or
+    `"macos"`, which picks a BMP/GIF sequence's importer code (see
+    `py_aep.parse`). The host's by default."""
 
     bits_per_channel = ChunkField.enum(
         BitsPerChannel,
@@ -273,7 +307,7 @@ class Project:
     """When `True`, thumbnail views use the transparency checkerboard
     pattern. Read / Write."""
 
-    revision = ChunkField[int]("_head", "file_revision", validate=validate_u2)
+    revision = ChunkField[int]("_head", "file_revision", validate=validate_u4)
     """The current revision of the project. Every user action increases the
     revision number by one. A new project starts at revision 1. Read / Write.
 
@@ -315,10 +349,13 @@ class Project:
         GpuAccelType,
         "_gpug_utf8",
         "value",
+        allow_out_of_enum_values=True,
+        validate=_validate_gpu_accel_type,
         min_version=13,
     )
-    """The GPU acceleration type for the project. None if not
-    recognised. Read / Write."""
+    """The GPU acceleration type for the project. A renderer id py_aep does
+    not recognise reads as its UUID string, which can be written back.
+    Read / Write."""
 
     # ChunkField needs a chunk_attr that resolves to an object holding the
     # target field.  _xmp lives directly on Project, so we alias _aep = self
@@ -454,16 +491,24 @@ class Project:
             chunk.frames_count_type = item.frames_count_type
 
     @classmethod
-    def _new(cls, version: str, ae_preferences_dir: Path | None = None) -> Project:
+    def _new(
+        cls,
+        version: str,
+        ae_preferences_dir: Path | None = None,
+        platform: str | None = None,
+    ) -> Project:
         """Build a new, empty project (mirrors AE's File > New Project).
 
         Constructs the minimal root chunk skeleton AE accepts - the large
         workspace blobs AE regenerates on open (`LSIf/AFsi`, `PTRE/ftwd`)
         are omitted - stamps `version` into the head chunk, and wires the
         model the same way `parse_project` does. `ae_preferences_dir` is
-        stored for render-queue template lookup. See [Application][] and
-        `py_aep.new`.
+        stored for render-queue template lookup. `platform` (default: the
+        running operating system) selects the header stamps AE writes on
+        that platform. See [Application][] and `py_aep.new`.
         """
+        platform = platform or cls._platform
+        macos = platform == "macos"
         preferences = Preferences(ae_preferences_dir)
         head = HeadChunk()
         # HeadChunk defaults the OS / release / reserved bits AE always writes
@@ -475,14 +520,32 @@ class Project:
         # open in that AE (validated AE 2022-2026).
         head.sync_file_format_version()
         major = head.ae_version_major
+        # Saving-platform stamps, constant per platform across the sample
+        # corpus (1348 Windows / 7 macOS files): the head OS code, nnhd byte
+        # 2, and the system text encoding at the start of nnhd 0x1A - macOS
+        # 0x0100, Windows code page 1252 up to AE 25 and 65001 (UTF-8) from
+        # AE 26. AE rewrites all three on every save.
+        head.ae_version_os = 14 if macos else 12
         svap = SvapChunk(build_number=head.ae_build_number)
         nhed = NhedChunk()
         nnhd = NnhdChunk()
         cls._apply_project_settings_prefs(preferences, nhed, nnhd)
+        nnhd._saving_platform = 0x08 if macos else 0
+        if macos:
+            nnhd._system_code_page = 0x0100
+        else:
+            utf8 = ae_writes("utf-8 code page", major)
+            nnhd._system_code_page = 65001 if utf8 else 1252
         acer = U1Chunk(chunk_type="acer", value=1)
         adfr = F8Chunk(chunk_type="adfr", value=48000.0)
         dwga = DwgaChunk(working_gamma_selector=1)
-        gpug_utf8 = Utf8Chunk(value=str(uuid.uuid4()))
+        # A new project takes the platform's GPU renderer: AE's File > New
+        # on Windows writes CUDA (emptier.aep), macOS files carry Metal.
+        gpug_utf8 = Utf8Chunk(
+            value=GpuAccelType.to_binary(
+                GpuAccelType.METAL if macos else GpuAccelType.CUDA
+            )
+        )
         fold = ListChunk(list_type="Fold", chunks=[FdtaChunk()])
         # AE stamps the "New Project Solids Folder" preference into the
         # root sfnm chunk at File > New; the stored name is used from
@@ -513,14 +576,14 @@ class Project:
                 list_type="sfnm",
                 chunks=[
                     Utf8Chunk(value=solids_name or "Solids"),
-                    U4Chunk(chunk_type="sfid"),
+                    U4LeChunk(chunk_type="sfid"),
                 ],
             ),
         ]
-        if major >= 22:
-            root_chunks.append(U4Chunk(chunk_type="mrid"))
+        if ae_writes("media replacement folder id", major):
+            root_chunks.append(U4LeChunk(chunk_type="mrid"))
         root_chunks += [acer, ListChunk(list_type="CPPl"), CpidChunk(), dwga]
-        if major >= 22:  # color management (pcms/PwCs) added in AE 22
+        if ae_writes("color management", major):
             cms_utf8 = Utf8Chunk(value=cls._NEW_PROJECT_CMS_JSON)
             root_chunks += [
                 U1Chunk(chunk_type="pcms", value=1),
@@ -528,9 +591,9 @@ class Project:
                 U1Chunk(chunk_type="PwCs", value=1),
                 Utf8Chunk(value="{}"),
             ]
-        if major >= 23:  # pdvc added in AE 23
+        if ae_writes("pdvc", major):
             root_chunks += [U1Chunk(chunk_type="pdvc", value=1), Utf8Chunk(value="{}")]
-        if major >= 16:  # JS expression engine (LIST:ExEn) added in AE 16
+        if ae_writes("expression engine", major):
             exen_utf8 = Utf8Chunk(value="javascript-1.0")
             root_chunks.append(ListChunk(list_type="ExEn", chunks=[exen_utf8]))
         root_chunks += [
@@ -565,6 +628,7 @@ class Project:
             render_queue=None,
             ae_preferences_dir=ae_preferences_dir,
         )
+        project._platform = platform
 
         # Root folder (mirrors parse_folder(is_root=True): no idta/name, the
         # Fold chunk list is its own children container).
@@ -737,12 +801,19 @@ class Project:
 
         In Adobe CMS mode, the matching ICC profile is discovered on disk (see
         [icc_profile_dirs][]) and embedded; `ColorProfileNotFoundError` is
-        raised if it is not installed.
+        raised if it is not installed. Assigning `"None"` removes the working
+        space.
         """
         if self._ws_utf8 is not None:
             return envelope_profile_name(self._ws_utf8.value)
         if not any(c.chunk_type == "pcms" for c in self._root_chunks):
-            return "sRGB IEC61966-2.1"
+            # Before AE 22 the working space is the `LIST:CPPl` profile
+            # whose ICC profile id `cpid` holds (all 0xFF: None).
+            profile_id = self._cpid.data
+            cppl = find_by_list_type(chunks=self._root_chunks, list_type="CPPl")
+            for pprf in filter_by_type(chunks=cppl.chunks, chunk_type="pprf"):
+                if icc_profile_id(pprf.data) == profile_id:
+                    return icc_profile_description(pprf.data) or "None"
         return "None"
 
     @working_space.setter
@@ -750,11 +821,34 @@ class Project:
         validate_string(value)
         if self.color_management_system == ColorManagementSystem.OCIO:
             envelope = self._ocio_envelope(value)
+            profile_id = b"\xff" * 16
+        elif value == "None":
+            # No working space, which the getter reports as "None": AE 2026
+            # saves `workingSpace = "None"` as an empty `{}` profile after
+            # `PwCs` and an all-0xFF `cpid`, like a new project.
+            envelope = "{}"
+            profile_id = b"\xff" * 16
         else:
             # bytes_for already raises ColorProfileNotFoundError for an
             # unknown Adobe profile name, so no separate name check is needed.
-            envelope = build_icc_envelope(value, self._icc_lib().bytes_for(value))
+            icc = self._icc_lib().bytes_for(value)
+            envelope = build_icc_envelope(value, icc)
+            profile_id = icc_profile_id(icc)
         self._ws_utf8 = self._rewrite_color_profile("PwCs", envelope)
+        # AE 2026 rewrites `cpid` to the new profile's id when a script sets
+        # workingSpace; OCIO projects store all 0xFF.
+        self._cpid.data = profile_id
+
+    @property
+    def _cpid(self) -> CpidChunk:
+        return cast(
+            "CpidChunk", find_by_type(chunks=self._root_chunks, chunk_type="cpid")
+        )
+
+    @property
+    def _windows(self) -> bool:
+        """Whether the project is for After Effects on Windows (`_platform`)."""
+        return self._platform == "windows"
 
     def _ocio_envelope(self, name: str) -> str:
         """Build the OCIO color-profile envelope AE writes for `name`.
@@ -1019,15 +1113,18 @@ class Project:
         For `ImportAsType.COMP` on a layered Illustrator/PDF (`.ai`, `.pdf`) or
         Photoshop (`.psd`, `.psb`) file, creates a composition with one footage
         layer per source layer (each referencing the same file) and returns
-        that [CompItem][]. For `ImportAsType.COMP_CROPPED_LAYERS` on an SVG,
-        converts the vector artwork into a new composition holding a single
-        shape layer and returns that [CompItem][] (unlike ExtendScript, where
-        `importFile` returns `null` for an SVG).
+        that [CompItem][]. `ImportAsType.COMP_CROPPED_LAYERS` on those files
+        crops each layer's footage to its content and places the layer where
+        that content sits. On an SVG, it converts the vector artwork into a
+        new composition holding a single shape layer and returns that
+        [CompItem][] (unlike ExtendScript, where `importFile` returns `null`
+        for an SVG).
 
         Args:
             options: The import settings. `ImportAsType.FOOTAGE`, `COMP`
-                (layered `.ai`/`.pdf`/`.psd`/`.psb`), and (for SVG)
-                `COMP_CROPPED_LAYERS` are supported. With
+                (layered `.ai`/`.pdf`/`.psd`/`.psb`), and
+                `COMP_CROPPED_LAYERS` (the same files, and SVG) are
+                supported. With
                 `ImportOptions.layer_index` set (py_aep extension mirroring
                 the "Choose Layer" option of AE's import dialog), a FOOTAGE
                 import of a layered file references that single layer
@@ -1039,11 +1136,14 @@ class Project:
 
         Raises:
             ValueError: If `import_as` is unsupported for the file, if the
-                file extension is not a supported format, or if the file has
-                no track After Effects can decode (e.g. an AV1-only `.mp4`,
-                which AE itself refuses to import).
+                file extension is not a supported format, if `sequence` is
+                set for a format AE does not import as a sequence (movies,
+                audio, HEIC, FBX, data files), or if the file has no track
+                After Effects can decode (e.g. an AV1-only `.mp4`, which AE
+                itself refuses to import).
             NotImplementedError: If media-header probing is not implemented
-                for the file's format.
+                for the file's format, or if merged PSD layer styles include
+                a Stroke Emboss bevel, whose rasterized bounds are not known.
             UnsupportedSVGError: If the SVG uses features py_aep cannot
                 import.
             UnsupportedAiLayersError: If a layered `.ai`/`.pdf` import is
@@ -1100,9 +1200,11 @@ class Project:
                     cropped=True,
                     layer_styles=self._resolve_comp_layer_styles(options),
                 )
+            if suffix in AI_COMP_EXTENSIONS:
+                return self._import_ai_layered(options.file, cropped=True)
             raise ValueError(
                 "import_file supports COMP_CROPPED_LAYERS for SVG and layered "
-                f".psd/.psb; {suffix} cropped import is not implemented yet"
+                f".ai/.pdf/.psd/.psb; {suffix} cropped import is not implemented yet"
             )
         if options.import_as == ImportAsType.COMP:
             if suffix in AI_COMP_EXTENSIONS:
@@ -1123,7 +1225,8 @@ class Project:
         if options.import_as != ImportAsType.FOOTAGE:
             raise ValueError(
                 "import_file supports ImportAsType.FOOTAGE, COMP (layered "
-                f".ai/.pdf/.psd/.psb), and COMP_CROPPED_LAYERS (SVG, .psd/.psb), "
+                f".ai/.pdf/.psd/.psb), and COMP_CROPPED_LAYERS (SVG, "
+                ".ai/.pdf/.psd/.psb), "
                 f"got {options.import_as.name}"
             )
 
@@ -1153,12 +1256,14 @@ class Project:
                 options.layer_index,
                 dimensions=dimensions,
                 layer_styles=styles,
+                windows=self._windows,
             )
         else:
             source = FileSource._from_file(
                 options.file,
                 sequence=options.sequence,
                 force_alphabetical=options.force_alphabetical,
+                windows=self._windows,
                 default_sequence_fps=default_sequence_fps(self._preferences),
                 range_start=options.range_start if options.sequence else 0,
                 range_end=options.range_end if options.sequence else 0,
@@ -1182,16 +1287,26 @@ class Project:
 
     def _import_svg_cropped(self, file: Path) -> CompItem:
         """Import an SVG as a cropped comp (one shape layer of its art)."""
-        from ..svg import read_svg
+        from ..svg import UnsupportedSVGError, read_svg
         from ..svg.build import build_shape_layer_contents
 
         doc = read_svg(file)
-        width = max(1, int(doc.width))
-        height = max(1, int(doc.height))
+        # AE truncates the canvas to whole pixels (2434.9 -> 2434).
+        width = int(doc.width)
+        height = int(doc.height)
+        if not (1 <= width <= 30000 and 1 <= height <= 30000):
+            # AE's own import refuses a canvas under 1 px a side ("width and
+            # height must be > 0") but builds 1 to 3 px compositions, below
+            # the 4 px `addComp` floor (AE 2026).
+            raise UnsupportedSVGError(
+                f"SVG canvas {doc.width:g} x {doc.height:g} is outside the "
+                "1 to 30000 px composition size range (width / height or "
+                "viewBox missing, invalid or out of range)"
+            )
         # AE creates a 1-frame, 30 fps comp named after the file.
         # (add_comp front-inserts the comp to match AE's import ordering.)
-        comp = self.root_folder.add_comp(
-            file.name, width, height, 1.0, 1.0 / 30.0, 30.0
+        comp = self.root_folder._add_comp(
+            file.name, width, height, 1.0, 1.0 / 30.0, 30.0, min_dimension=1
         )
         layer = comp.add_shape()
         layer.name = file.name
@@ -1209,15 +1324,22 @@ class Project:
         return comp
 
     def _new_layered_comp(
-        self, parent_folder: FolderItem, name: str, width: int, height: int
+        self,
+        parent_folder: FolderItem,
+        name: str,
+        width: int,
+        height: int,
+        pixel_aspect: float,
     ) -> CompItem:
-        """Create an import composition (full canvas, AE's default timing)."""
+        """Create an import composition (full canvas and the file's pixel
+        aspect - AE 2026 gives a 4:3 PSD a 4:3 comp - at AE's default
+        timing)."""
         frames = round(_LAYERED_COMP_DURATION_SECONDS * _LAYERED_COMP_FRAME_RATE)
         comp = parent_folder.add_comp(
             name,
             width,
             height,
-            1.0,
+            pixel_aspect,
             frames / _LAYERED_COMP_FRAME_RATE,
             _LAYERED_COMP_FRAME_RATE,
         )
@@ -1251,9 +1373,11 @@ class Project:
             info: The probed media info for `file` (canvas size, alpha, ...).
             embedded_profile_name: Optional ICC profile name for the sources.
         """
+        # Before anything is added: every layer's footage spans the canvas.
+        check_footage_size(file.name, info.width, info.height)
         folder = self.root_folder.add_folder(f"{file.stem} Layers")
         comp = self._new_layered_comp(
-            self.root_folder, file.stem, info.width, info.height
+            self.root_folder, file.stem, info.width, info.height, info.pixel_aspect
         )
         self._add_layered_specs(
             comp, folder, layer_specs, file, source_format, info, embedded_profile_name
@@ -1293,6 +1417,7 @@ class Project:
                     spec.comp_name if spec.comp_name is not None else spec.name,
                     info.width,
                     info.height,
+                    info.pixel_aspect,
                 )
                 self._add_layered_specs(
                     nested,
@@ -1311,11 +1436,15 @@ class Project:
                 group_layer = cast("AVLayer", comp.add(nested))
                 if spec.collapsed:
                     group_layer.collapse_transformation = True
+                if not spec.enabled:
+                    group_layer.enabled = False
                 if spec.layer_name is not None:
                     group_layer.name = spec.layer_name
                     group_layer._ldta.name_set = False
                 _serialize_import_layer_styles(group_layer, None, file.name)
                 continue
+            has_alpha = info.has_alpha if spec.has_alpha is None else spec.has_alpha
+            depth = info.depth if spec.depth is None else spec.depth
             source = FileSource._new(
                 file,
                 source_format=source_format,
@@ -1325,7 +1454,8 @@ class Project:
                 frame_rate=0.0,
                 pixel_aspect=info.pixel_aspect,
                 icc_profile=info.icc_profile,
-                has_alpha=info.has_alpha,
+                has_alpha=has_alpha,
+                depth=depth,
                 opti_data=spec.opti_data,
                 embedded_profile_name=embedded_profile_name,
                 full_frame=spec.full_frame,
@@ -1334,6 +1464,8 @@ class Project:
                 layer_index=spec.layer_index,
                 data_size=spec.data_size,
                 reserved_c8=spec.reserved_c8,
+                color_mode=info.color_mode,
+                windows=self._windows,
             )
             footage = FootageItem._new(source, project=self, parent_folder=folder)
             folder._children_container.append(footage._item_list)
@@ -1341,7 +1473,9 @@ class Project:
             self.items[footage.id] = footage
             folder.items.append(footage)
             layer = comp.add(footage)
-            layer.name = spec.name
+            # AE 2026 cuts an imported layer's name to its longest UTF-8
+            # prefix of 255 bytes (a 313-byte Photoshop layer name).
+            layer.name = truncate_utf8(spec.name, 255).decode("utf-8")
             if not spec.enabled:
                 layer.enabled = False
             if spec.transform is not None:
@@ -1372,32 +1506,53 @@ class Project:
                     cast("Property", mask.property("ADBE Mask Shape")).value = shape
             _serialize_import_layer_styles(layer, spec.styles, file.name)
 
-    def _import_ai_layered(self, file: Path) -> CompItem:
-        """Import a layered Illustrator/PDF file as a composition."""
+    def _import_ai_layered(self, file: Path, *, cropped: bool = False) -> CompItem:
+        """Import a layered Illustrator/PDF file as a composition.
+
+        `cropped` is Composition - Retain Layer Sizes: each layer's footage
+        takes its "Layer Size" artwork box (`resolvers.ai_bounds`) and the
+        comp layer is placed where that box sits on the page.
+        """
         # Read once: the probe, the ICC scan and the layer scan all consume
         # the same bytes.
         data = file.read_bytes()
         info = probe_media(file, data)
-        profile_name = read_ai_color_profile(file, data)
+        # The page's RGB profile is embedded like a raster file's; a non-RGB
+        # one is recorded by name.
+        icc, profile_name = ai_document_profile(file, data)
+        info = info._replace(icc_profile=icc)
         layers = read_ai_layer_ocgs(file, data)
-        specs: list[LayerSpec | LayerGroupSpec] = [
-            LayerSpec(
-                layer.name,
-                build_ai_layer_opti_data(
-                    info.width,
-                    info.height,
+        boxes = read_ai_layer_bounds(file, data) if cropped else None
+        specs: list[LayerSpec | LayerGroupSpec] = []
+        for index, layer in enumerate(layers):
+            box = None
+            width, height = info.width, info.height
+            transform = None
+            if boxes is not None:
+                measured = boxes[index]
+                box = EMPTY_BOX if measured is None else measured
+                width, height = footage_size(measured)
+                transform = _ai_cropped_transform(box, info.height)
+            specs.append(
+                LayerSpec(
                     layer.name,
-                    len(layers),
-                    visible=layer.visible,
-                ),
-                info.width,
-                info.height,
-                layer_index=index,
-                data_size=len(data),
-                enabled=layer.visible,
+                    build_ai_layer_opti_data(
+                        info.width,
+                        info.height,
+                        layer.name,
+                        len(layers),
+                        box,
+                        visible=layer.visible,
+                    ),
+                    width,
+                    height,
+                    transform=transform,
+                    full_frame=not cropped,
+                    layer_index=index,
+                    data_size=len(data),
+                    enabled=layer.visible,
+                )
             )
-            for index, layer in enumerate(layers)
-        ]
         return self._import_layered_comp(file, "TEXT", specs, info, profile_name)
 
     def _import_eps_comp(self, file: Path) -> CompItem:
@@ -1452,7 +1607,11 @@ class Project:
             spec = LayerSpec(
                 file.name,
                 build_psd_flattened_opti_data(
-                    info.width, info.height, info.bit_depth, info.channels
+                    info.width,
+                    info.height,
+                    info.bit_depth,
+                    info.pixel_channels,
+                    color_mode=info.color_mode,
                 ),
                 info.width,
                 info.height,
@@ -1460,47 +1619,47 @@ class Project:
                 # full frame and caches its actual channel count (both from
                 # the flattened_rgb_comp.aep fixture).
                 full_frame=False,
-                data_size=(
-                    info.width * info.height * info.channels * (info.bit_depth // 8)
+                data_size=pixel_buffer_size(
+                    info.width, info.height, info.pixel_channels, info.bit_depth
                 ),
             )
-            return self._import_layered_comp(file, "8BPS", [spec], info)
+            return self._import_layered_comp(
+                file, "8BPS", [spec], info, named_media_profile("8BPS", info)
+            )
         resolved_styles = "editable" if layer_styles is None else layer_styles
         specs = self._psd_layer_specs(
             nodes,
             file,
-            info.width,
-            info.height,
-            info.bit_depth,
-            info.layer_count,
+            info,
             cropped,
             resolved_styles,
             # The global light is a document constant; read it once here
             # rather than per recursion level (one file scan per group).
-            read_global_light(file) if resolved_styles == "editable" else None,
+            read_global_light(file),
         )
-        return self._import_layered_comp(file, "8BPS", specs, info)
+        return self._import_layered_comp(
+            file, "8BPS", specs, info, named_media_profile("8BPS", info)
+        )
 
     def _psd_layer_specs(
         self,
         nodes: list[Any],
         file: Path,
-        canvas_w: int,
-        canvas_h: int,
-        bit_depth: int,
-        layer_count: int,
+        info: MediaInfo,
         cropped: bool,
         layer_styles: str,
-        global_light: tuple[float, float] | None,
+        global_light: tuple[float, float],
         clip_counter: Iterator[int] | None = None,
         group_clipping: bool = True,
     ) -> list[LayerSpec | LayerGroupSpec]:
         """Convert a PSD layer tree into import specs (recursively).
 
-        `clip_counter` numbers the clipping-run precomps document-wide
-        (AE names them `"<stem> (n)"`); `group_clipping=False` disables
-        run detection while building a run's own children.
+        `info` is the probed document (canvas, bit depth, layer count,
+        channels). `clip_counter` numbers the clipping-run precomps
+        document-wide (AE names them `"<stem> (n)"`); `group_clipping=False`
+        disables run detection while building a run's own children.
         """
+        canvas_w, canvas_h = info.width, info.height
         if clip_counter is None:
             clip_counter = count(1)
         reserved_c8 = PSD_LAYER_STYLES_C8[layer_styles]
@@ -1525,15 +1684,13 @@ class Project:
                         self._psd_layer_specs(
                             node.children,
                             file,
-                            canvas_w,
-                            canvas_h,
-                            bit_depth,
-                            layer_count,
+                            info,
                             cropped,
                             layer_styles,
                             global_light,
                             clip_counter,
                         ),
+                        enabled=node.visible,
                     )
                 )
                 continue
@@ -1558,10 +1715,7 @@ class Project:
                             self._psd_layer_specs(
                                 run,
                                 file,
-                                canvas_w,
-                                canvas_h,
-                                bit_depth,
-                                layer_count,
+                                info,
                                 cropped,
                                 layer_styles,
                                 global_light,
@@ -1574,37 +1728,14 @@ class Project:
                         )
                     )
                     continue
-            if cropped and layer_styles == "merge" and has_enabled_styles(node):
-                # Merging styles expands the rasterized content box, which
-                # sets the cropped footage size and the layer transform here.
-                # AE derives the expansion with its style renderer; py_aep
-                # cannot (see docs/limitations.md).
-                raise NotImplementedError(
-                    f"layer {node.name!r} of {file.name} has layer styles: "
-                    "merging them expands the rasterized bounds, so a "
-                    "COMP_CROPPED_LAYERS import cannot size its layers; "
-                    'import as COMP or pass layer_styles="editable"'
-                )
             styles = (
                 parse_layer_styles(node, global_light)
-                if global_light is not None
+                if layer_styles == "editable"
                 else None
             )
-            opti_data = build_psd_layer_opti_data(
-                canvas_w,
-                canvas_h,
-                bit_depth,
-                layer_count,
-                node.record_index,
-                node.layer_id,
-                node.name,
-                node.bounds,
-                node.is_adjustment,
-            )
-            left, top, right, bottom = node.bounds
-            data_size = (
-                max(right - left, 0) * max(bottom - top, 0) * 4 * (bit_depth // 8)
-            )
+            # AE stores the content box and crops the layer to it.
+            footage = psd_layer_footage(info, node, layer_styles, global_light[0])
+            left, top, right, bottom = footage.box
             masks: tuple[Shape, ...] = ()
             if node.vector_mask is not None:
                 masks = tuple(parse_vector_mask(node.vector_mask, canvas_w, canvas_h))
@@ -1640,7 +1771,7 @@ class Project:
                 specs.append(
                     LayerSpec(
                         node.name,
-                        opti_data,
+                        footage.opti_data,
                         crop_w,
                         crop_h,
                         transform,
@@ -1650,28 +1781,34 @@ class Project:
                         layer_index=node.record_index,
                         # Empty layers have no pixels: data_size stays 0 (from
                         # the real bounds), even though the layer is full-canvas.
-                        data_size=data_size,
+                        data_size=footage.data_size,
                         reserved_c8=reserved_c8,
                         styles=styles,
                         masks=masks,
                         preserve_transparency=not group_clipping and node.clipped,
+                        has_alpha=footage.has_alpha,
+                        depth=footage.depth,
+                        enabled=node.visible,
                     )
                 )
             else:
                 specs.append(
                     LayerSpec(
                         node.name,
-                        opti_data,
+                        footage.opti_data,
                         canvas_w,
                         canvas_h,
                         is_adjustment=node.is_adjustment,
                         layer_id=node.layer_id,
                         layer_index=node.record_index,
-                        data_size=data_size,
+                        data_size=footage.data_size,
                         reserved_c8=reserved_c8,
                         styles=styles,
                         masks=masks,
                         preserve_transparency=not group_clipping and node.clipped,
+                        has_alpha=footage.has_alpha,
+                        depth=footage.depth,
+                        enabled=node.visible,
                     )
                 )
         return specs
@@ -1929,18 +2066,58 @@ class Project:
         validate_path_does_not_exist(path)
         path_obj = Path(path)
         path_obj.parent.mkdir(parents=True, exist_ok=True)
+        filled = self._fill_relative_path_counts(
+            platform_path(os.path.abspath(path_obj), windows=self._windows)
+        )
         # Write to a sibling temp file then rename, so a serialization
-        # error can never leave a truncated .aep at the target path.
-        tmp_path = path_obj.with_name(path_obj.name + ".tmp")
+        # error can never leave a truncated .aep at the target path. The
+        # temp name is unique and created exclusively: a fixed one would
+        # overwrite, then move away, any file of the user's carrying it.
+        tmp_path = path_obj.with_name(f"{path_obj.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with tmp_path.open("wb") as f:
+            with tmp_path.open("xb") as f:
                 write_aep(f, self._rifx, self._xmp)
         except BaseException:
             if tmp_path.exists():  # missing_ok needs Python 3.8
                 tmp_path.unlink()
             raise
+        finally:
+            # Back to pending, so a later save computes them for its own
+            # location.
+            for alas, text in filled:
+                alas.value = text
         os.replace(tmp_path, path_obj)
         self._file = str(path)
+
+    def _fill_relative_path_counts(
+        self, project_file: str
+    ) -> list[tuple[Utf8Chunk, str]]:
+        """Fill in the relative-path counts of the `alas` path records
+        py_aep wrote, for a project saved at `project_file`.
+
+        Records parsed from the file keep the counts After Effects wrote, so
+        parse then save stays byte-identical. Layer lists still deferred are
+        skipped: no layer holds a path record. Returns each filled record
+        with its previous text.
+        """
+        filled = []
+        for chunk in recursive_find(
+            self._rifx.chunks, chunk_type="alas", skip_unparsed=True
+        ):
+            alas = cast("Utf8Chunk", chunk)
+            text = alas.value
+            data = json.loads(text) if text else {}
+            if data.get("ascendcount_base") != PENDING_ASCENDCOUNT:
+                continue
+            counts = relative_path_counts(
+                project_file,
+                data.get("fullpath", ""),
+                target_is_folder=bool(data.get("target_is_folder")),
+            )
+            data["ascendcount_base"], data["ascendcount_target"] = counts
+            filled.append((alas, text))
+            alas.value = dump_alas(data)
+        return filled
 
     def _require_prefs_dir(self, label: str) -> Path:
         """Return the AE preferences directory or raise if none was given."""
@@ -2042,13 +2219,43 @@ class Project:
         return name or "Solids"
 
     @property
+    def _sfid(self) -> U4LeChunk | None:
+        try:
+            sfnm = find_by_list_type(chunks=self._rifx.chunks, list_type="sfnm")
+            return cast(
+                "U4LeChunk", find_by_type(chunks=sfnm.chunks, chunk_type="sfid")
+            )
+        except ChunkNotFoundError:
+            return None
+
+    @property
+    def _solids_folder_id(self) -> int:
+        """The item id of the Solids folder recorded in `sfid` (0 for none)."""
+        sfid = self._sfid
+        return sfid.value if sfid is not None else 0
+
+    @property
     def _solids_folder(self) -> FolderItem:
-        """Return the Solids folder, creating one if it doesn't exist."""
+        """The folder new solids go into, creating it if needed.
+
+        As After Effects 2026 does: the recorded Solids folder wherever it
+        now is and whatever its name; else a root folder with the stored
+        Solids name (the id stays unset); else a new one, whose id is
+        recorded.
+        """
+        sfid = self._sfid
+        recorded = sfid.value if sfid is not None else 0
+        folder = self.items.get(recorded) if recorded else None
+        if isinstance(folder, FolderItem):
+            return folder
         name = self._solids_folder_name
         for folder in self.root_folder.folders:
             if folder.name == name:
                 return folder
-        return self.root_folder.add_folder(name)
+        created = self.root_folder.add_folder(name)
+        if sfid is not None:
+            sfid.value = created.id
+        return created
 
     _CMS_DEFAULTS: ClassVar[dict[str, int | str]] = {
         "colorManagementSystem": 0,
@@ -2077,6 +2284,26 @@ class Project:
             self._cms_utf8 = chunk
 
 
+def _ai_cropped_transform(
+    box: tuple[float, float, float, float], page_height: int
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """`((anchor), (position))` of a cropped Illustrator/PDF layer.
+
+    Measured on AE 2026 (`importFile` with `COMP_CROPPED_LAYERS`, every
+    layer of a 22-rule probe PDF and a real `.ai`): the anchor is half the
+    artwork box rounded to float32, and the position is the box centre with
+    the PDF's y axis flipped against the page, counted in the opti's 16.16
+    units with the centre floored. An empty layer's `(0, 0, 1/65536,
+    1/65536)` box therefore sits at x = 0, not half a unit right of it.
+    AE sums the two 16.16 edges in 32 bits, so artwork near the 32768 pt
+    limit wraps to the far side of the page; py keeps the true centre.
+    """
+    x0, y0, x1, y1 = (round(v * 65536) for v in box)
+    anchor = (to_f4((x1 - x0) / 131072), to_f4((y1 - y0) / 131072))
+    position = (((x0 + x1) >> 1) / 65536, page_height - ((y0 + y1) >> 1) / 65536)
+    return anchor, position
+
+
 def _get_effect_names(root_chunks: list[Chunk]) -> list[str]:
     """Get the list of effect names used in the project."""
     pefl_chunk = find_by_list_type(chunks=root_chunks, list_type="Pefl")
@@ -2100,10 +2327,6 @@ _STYLE_TDB4_ANGLE: Any = (0xFFFF, 0xFF, 0xFF, 0x04, 0x06, None, None, False)
 _STYLE_TDB4_TOGGLE: Any = (0xFFFF, None, 0x04, 0x04, 0x04, None, None, False)
 _STYLE_TDB4_POINT: Any = (0xFFFF, 0xFF, 0xFF, 0x04, 0x06, 3, False, True)
 
-# The spatial-block epsilon AE writes on the 2D point style leaves (exact
-# double 0x3D9B7CDFD9D7BDBC, both leaves and layers of the
-# psd_styles_offset_phase fixture; ordinary spatial properties carry 1e-4).
-_STYLE_POINT_EPSILON = float.fromhex("0x1.b7cdfd9d7bdbcp-38")
 _STYLE_TDB4_CANON: dict[str, Any] = {
     **dict.fromkeys(_STYLE_ENUM_SUFFIXES, _STYLE_TDB4_ENUM),
     **dict.fromkeys(_STYLE_ANGLE_SUFFIXES, _STYLE_TDB4_ANGLE),
@@ -2158,7 +2381,9 @@ def _stamp_style_tdb4(
         # (source_width * PAR / source_height; 1.28 in the fixture).
         tdb4._spatial_marker = True
         tdb4._spatial_static_flags = 0x0F
-        tdb4._arc_accuracy = _STYLE_POINT_EPSILON
+        # The normalized-point accuracy (psd_styles_offset_phase fixture:
+        # leaves and layers alike).
+        tdb4._arc_accuracy = NORMALIZED_ARC_ACCURACY
         tdb4.pixel_aspect = point_aspect
     tdb4._time_base = timebase
 

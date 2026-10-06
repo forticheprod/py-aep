@@ -20,6 +20,10 @@ departs from the exact curve:
 - **An in-side HOLD on a spatial property holds at the segment's START**,
   where a non-spatial property jumps to the next key's value - both as AE
   does.
+- **A 2-D layer ignores Z.** `value`, a keyframe's `value` and
+  `value_at_time()` report Z as 0 there, as AE does, while the file keeps
+  the stored Z. That stored Z still counts in the path's length, and so in
+  its timing and ease speeds, in both.
 
 ## Property.value_at_time on paths and Orientation
 
@@ -107,6 +111,14 @@ if prop.expression_enabled:
     print(prop.expression)  # the expression string is available
 ```
 
+The same holds for the layer geometry methods:
+`AVLayer.source_point_to_comp`, `AVLayer.comp_point_to_source` and
+`AVLayer.source_rect_at_time` evaluate the transform chain (parents and the
+active camera included) and the layer content from **pre-expression**
+values. A layer whose transform, or a parent's, is driven by an expression
+converts points as if the expression were off; After Effects uses the
+expression results.
+
 ### Property.expression_error
 
 `Property.expression_error` is always an empty string. After Effects computes
@@ -152,7 +164,8 @@ reports the state the file was saved in.
 About a dozen non-effect properties report bounds where ExtendScript reports
 none - `ADBE Position_0`/`_1` and `ADBE Scale` carry placeholder `[0.0]` bound
 chunks in the binary, and a few layer-style and light properties carry
-synthesized bounds. Values are unaffected.
+synthesized bounds. A paint stroke's Diameter reports the 200 slider maximum
+the file stores, where ExtendScript reports 2500. Values are unaffected.
 
 ## Templates
 
@@ -196,8 +209,15 @@ target profile must be installed or `ColorProfileNotFoundError` is raised.
 
 The render-queue output color space is writable in **both** modes: an Adobe ICC
 profile name in Adobe CMS mode, or any color space / role / alias / display-view
-pair in OCIO mode (the 16-byte id is computed from the `.ocio` configuration -
-it is the color space's `Guid`, a two-stage MurmurHash3-128).
+pair in OCIO mode (the 16-byte id is computed from the `.ocio` configuration).
+
+Footage imported into an **OCIO** project takes the input color space After
+Effects assigns, read from the project's configuration: the first matching
+file rule, or the `default` role of a configuration without file rules. A
+replace keeps the footage's color space, as After Effects does, even when the
+new file would match another rule; a proxy gets its own. A
+`ColorSpaceNamePathSearch` rule is not modelled, and when the configuration
+cannot be found the footage keeps an Adobe profile (with a warning).
 
 ## Essential Properties
 
@@ -248,12 +268,55 @@ from a static file rather than through AE's live media engine:
 - **SVG** imports only as `COMP_CROPPED_LAYERS` (native vector shape layers);
   importing an SVG as `FOOTAGE` raises. `<text>`/`<tspan>` require the
   `font-family` to be installed - an unresolved font is skipped - and raster
-  `<image>` and `<textPath>` are not yet rendered.
-- **Layer-size dimensions for AI/PDF single-layer import** measure the
-  layer's artwork box from the page content stream
+  `<image>` and `<textPath>` are not yet rendered. A radial gradient stretched
+  by its `gradientTransform`, or by a non-square bounding box in
+  `objectBoundingBox` units, needs an AE 2026 project: older versions have no
+  gradient Scale/Rotation properties, so it renders as a circle there.
+  Deliberate divergences from AE's own import (measured on AE 2026), where
+  py_aep follows the SVG / CSS specifications:
+    - **Placement.** AE moves the artwork vertically by up to 1.5 px, by an
+      amount that depends on how the drawing's bounding box rounds to whole
+      pixels and on its `<g>` nesting. py_aep keeps the SVG coordinates.
+    - **Opacity attributes.** AE drops `stop-opacity`, `fill-opacity` and
+      `stroke-opacity`; py_aep applies them - a gradient's in its alpha stops,
+      a flat color's in the Fill or Stroke Opacity.
+    - **Nested group opacity.** AE applies only one level of `opacity`
+      (a 0.5 group inside a 0.5 group imports at 50 %); py_aep multiplies
+      them (25 %).
+    - **Stroke width under a transform.** AE keeps the SVG `stroke-width`
+      even inside `scale(3)`; py_aep scales it with the drawing (by the
+      square root of the transform's area factor), so strokes keep their
+      rendered thickness.
+    - **Units.** AE converts absolute units at 72 px per inch (`1pt` is
+      1 px, `1mm` 2.835 px, `1em` 12 px); py_aep uses CSS's 96 px per inch
+      (`1pt` is 1.333 px) and `1em` = the font size (16 px by default).
+    - **Root size.** When the root's `width`/`height` differ from its
+      `viewBox`, AE scales the drawing by them but still sizes the
+      composition from the `viewBox`; py_aep keeps the drawing in `viewBox`
+      units, so it fills the composition.
+    - **Colors.** AE imports `#rrggbbaa`, `rgba()`, `hsl()` and `hsla()`
+      colors, and a gradient with a single stop, as black; py_aep reads them
+      (a single stop paints its own color).
+    - **References.** AE ignores a `<use>` that uses the SVG 2 `href`
+      (rather than `xlink:href`), and drops a shape whose gradient inherits
+      its stops through an `href` chain; py_aep resolves both.
+    - **Path data after `Z`.** A drawing command that follows `Z` without
+      a move starts a new subpath at the closed one's start in py_aep; AE
+      continues the same path.
+    - **`auto` radii.** A `rx` / `ry` of `auto` takes the other radius in
+      py_aep (SVG 2); AE reads it as 0 (a zero-width ellipse, a
+      square-cornered rect).
+  Clipping is not imported: a nested `<svg>` or `<symbol>` viewport is
+  placed and scaled as AE places it, but py_aep does not clip its content
+  to it (AE does), and it ignores `clip-path` and `mask`.
+- **Layer-size dimensions for AI/PDF single-layer import** (and every layer
+  of a `COMP_CROPPED_LAYERS` import) measure the layer's artwork box from the
+  page content stream
   ([read_ai_layer_bounds][py_aep.resolvers.ai_bounds.read_ai_layer_bounds]),
   reproducing After Effects' own conservative estimate rather than the true
-  visual extent. Three gaps:
+  visual extent. A cropped layer whose artwork reaches the 32768 pt limit
+  keeps its true centre, where AE's 32-bit sum wraps it to the far side of
+  the page. Three gaps:
     - **A document with more than one artboard diverges by design.** AE
       measures the *second* page there and reports every layer whose art is on
       the first artboard as empty (1x1); py_aep measures the first page and
@@ -272,14 +335,24 @@ from a static file rather than through AE's live media engine:
       table, and Type 3 fonts, fall back to a generic estimate.
       Illustrator always embeds fonts with explicit widths, so this only
       affects PDFs from other producers.
+- **Paths for the other platform are mapped by rule.** A project whose
+  `platform` differs from the running system stores footage and render
+  output paths in that platform's style. `C:\x` <-> `/x` mirrors how After
+  Effects on Windows opens a macOS path (measured); other drives and UNC
+  shares become `/Volumes/<drive or share>/...`, the usual macOS mount
+  points, which is not measured against After Effects on macOS. A share
+  mounted under another name needs the path fixed in After Effects. The
+  relative-path fallback (`ascendcount`) is computed on the mapped paths, so
+  a project and footage that keep their relative layout still relocate.
 - **BMP and GIF image sequences are platform-specific.** Neither format has
   a dedicated AE importer, so AE tags them with the platform's generic still
   importer (`IMIO` on macOS, `STIL` on Windows). Measured in AE 2026 on both:
-  an `IMIO` still opens on either platform, so py-aep writes `IMIO` for
-  stills everywhere; but an `IMIO` sequence never opens on Windows and a
-  `STIL` sequence never opens on macOS - even in an AE-collected project.
-  py-aep picks the sequence code from the platform it is running on,
-  so a BMP/GIF sequence needs re-importing when the project changes platform.
+  an `IMIO` still opens on either platform, but an `IMIO` sequence never
+  opens on Windows and a `STIL` sequence never opens on macOS - even in an
+  AE-collected project. py-aep writes the code of the `platform` passed to
+  `parse()`/`new()` (default: the running operating system) for stills and
+  sequences, so a BMP/GIF sequence needs re-importing when the project
+  changes platform.
 - **`has_alpha` is a per-format heuristic**, not a full media decode. Alpha is
   inferred from the format and header - allocated for PNG/TIFF/BMP/GIF, opaque
   for JPEG, and derived from the channel list (EXR), bit depth (TGA), codec
@@ -287,6 +360,21 @@ from a static file rather than through AE's live media engine:
   alpha item (HEIC/HEIF), or layer transparency/channel count (PSD/PSB).
   These match AE's
   import for the tested samples but are not a guaranteed media-accurate decode.
+  AE on Windows stores HEIC/HEIF without alpha, so py-aep does too when the
+  project's `platform` is `"windows"`.
+- **Footage is limited to 32767 px a side** (`ValueError`): After Effects
+  reads the stored size as a signed 16-bit value, so a wider image opens with
+  a negative width.
+- **Input color profiles follow After Effects' per-format choices** (measured
+  on AE 2026): an RGB TIFF/PSD, Illustrator/PDF page or Camera Raw file
+  records its ICC profile (sRGB when untagged, ProPhoto RGB for Camera Raw);
+  a grayscale, CMYK, Lab or indexed TIFF/PSD records only the name of its
+  profile (or of AE's default for the mode) and is interpreted in the
+  working space, as are DPX and Cineon, which record none. One gap: for an
+  untagged 32-bit float RGB TIFF, AE embeds a linear sRGB profile it
+  generates at import time (stamped with the import date), which py-aep
+  cannot reproduce byte for byte; py-aep records sRGB, which renders the
+  same in the tested projects.
 
 ### PSD layer styles (ImportOptions.layer_styles)
 
@@ -294,16 +382,13 @@ Editable-layer-styles imports translate each layer's effects descriptor
 (`lmfx`/`lfx2`) into the comp layer's `ADBE Layer Styles` tree, byte-matched
 against AE 2026 for the sample documents. The differences from AE:
 
-- **Merging styles into footage stores approximate bounds.** After Effects
-  rasterizes the styled layer at import and stores the style-expanded content
-  box in the footage `opti` (plus the matching `data_size` cache); py_aep
-  cannot run AE's style renderer, so it writes the raw layer bounds. AE
-  restores the expanded box itself when it next opens the project (verified
-  by resave), and tolerates the stale `data_size`. Because a
-  `COMP_CROPPED_LAYERS` import (or `layer_dimensions="layer"`) derives the
-  footage size and layer transforms from that expanded box - state AE does
-  not recompute - those combinations raise `NotImplementedError` for layers
-  that have styles.
+- **Merging styles into footage** grows the layer's content box to hold the
+  rasterized styles; a `COMP_CROPPED_LAYERS` import and
+  `layer_dimensions="layer"` size the footage from that box. py_aep derives it
+  from the style parameters the way After Effects 2026 does (measured on some
+  900 single-style variants and every styled sample document), growing it
+  from the masked content like AE (see below). One gap: a Stroke Emboss
+  bevel, whose box was not measured, raises `NotImplementedError`.
 - **Multi-instance styles are dropped whole** (imported as a disabled style),
   matching After Effects exactly - AE does not keep even a representable
   instance of e.g. a double stroke. py_aep emits a `UserWarning` where AE is
@@ -329,6 +414,24 @@ against AE 2026 for the sample documents. The differences from AE:
   headers). A pre-Photoshop-6 document carrying styles solely in the legacy
   `lrFX` block imports with the plain disabled skeleton.
 
+### PSD layer content boxes (masks, fill layers)
+
+Each per-layer footage of a layered PSD/PSB import is sized to the layer's
+content box, which a `COMP_CROPPED_LAYERS` import and
+`layer_dimensions="layer"` also crop to. py_aep derives it the way After
+Effects 2026 does (byte-matched against AE for some 55 probe imports): an
+enabled raster layer mask crops to where the layer's alpha and the mask are
+both non-zero; a fill or shape layer spans the canvas; merging also cuts to
+an enabled vector mask's path. The gaps:
+
+- **Mask density and feather are not modeled**: a layer mask carrying either
+  is ignored for the box (a `UserWarning` says so), so the footage is sized
+  as if unmasked.
+- **Vector-mask subpaths are united**: a subpath that subtracts from or
+  intersects the others still widens the merged box to its own extent.
+- **"Ignore layer styles"** (`layer_styles="ignore"`) handles vector masks like
+  Editable mode; that mode's box was not measured.
+
 ## guessAlphaMode / guessPulldown
 
 `FootageSource.guess_alpha_mode()` and `guess_pulldown()` are not implemented.
@@ -343,3 +446,14 @@ for EXR), and pulldown OFF.
 been removed since AE 2020 (17.0). Files using the renderer can be parsed and 
 re-saved byte-exact, but there is nothing safe to expose, and no supported
 version of After Effects can author a file that uses it.
+
+## Project Versions
+
+`py_aep.new(version)` and `Application.version` take the After Effects
+releases py_aep has a file-format stamp for: 15 (CC 2018) to 18, and 22 to
+26 (there was no After Effects 19 to 21). Setting `Application.version` only
+relabels the project, so it raises `ValueError` across a change After Effects
+reads from the format version alone: the AE 23 layer record (a 22-or-older
+project relabelled 23 or later, or the reverse) and the AE 17 Media
+Replacement folder id. After Effects 2026 opens none of those relabelled
+files. Open and re-save the project in the target release instead.

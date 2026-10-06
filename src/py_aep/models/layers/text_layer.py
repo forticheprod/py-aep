@@ -75,6 +75,8 @@ class TextLayer(AVLayer):
             ),
         )
         layer._ldta.layer_type = LayerType.TEXT
+        # The base factory named the layer from the AV type it started with.
+        layer._match_name = layer._LAYER_MATCH_NAMES[LayerType.TEXT]
         # AE labels scripted text layers with the "Text Label Index"
         # preference (factory value 1, probed in AE 2026).
         layer._ldta.label = label_index(

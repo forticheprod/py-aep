@@ -8,9 +8,13 @@ import uuid
 from io import BytesIO
 from typing import TYPE_CHECKING, NamedTuple, cast
 
+from attrs import evolve
+
+from ..ae_version import ae_writes
 from ..data.dropdown_control import DROPDOWN_CONTROL
 from .chunk import Chunk, ContainerChunk, ListChunk, read_chunks, write_chunk
 from .composition_chunks import CsctChunk
+from .item_chunks import IdpcChunk
 from .ldat_chunks import (
     GdtaChunk,
     KfColor,
@@ -30,15 +34,18 @@ from .misc_chunks import (
     EmbpChunk,
     EmpdChunk,
     EpidChunk,
+    Fth5Chunk,
     HdrmChunk,
     IpwsChunk,
     LinlChunk,
     McspChunk,
     OcspChunk,
+    OmtnChunk,
     PguiChunk,
     PrgbChunk,
     ShphChunk,
     StrtChunk,
+    TensionItem,
 )
 from .property_chunks import (
     TDSN_SENTINEL,
@@ -49,11 +56,13 @@ from .property_chunks import (
     TdsnChunk,
 )
 from .render_chunks import RoutItem
-from .scalar_chunks import F8Chunk, S4Chunk, U4Chunk, Utf8Chunk
+from .scalar_chunks import F8Chunk, S4Chunk, U4Chunk, U4LeChunk, Utf8Chunk
 from .utils import recursive_find
 
 if TYPE_CHECKING:
     from typing import Any, Callable
+
+    from .misc_chunks import FeatherPointItem
 
 # Keyframe ldat items always use raw type 4; the effective LdatItemType is
 # disambiguated by item_size (and spatial context on re-read).
@@ -340,7 +349,7 @@ def build_ldat_item(kf_data: Any, *, spatial: bool) -> LdatItem:
         time_units=0,
         in_interpolation_type=1,
         out_interpolation_type=1,
-        temporal_flags=7 if spatial else 0,
+        key_flags=7 if spatial else 0,
         kf_data=kf_data,
     )
 
@@ -384,7 +393,7 @@ def build_parallel_ldat_item(
         time_units=0,
         in_interpolation_type=interp,
         out_interpolation_type=interp,
-        temporal_flags=flags,
+        key_flags=flags,
         kf_data=kf_data,
         trailing=b"\x00" * (item_size - body_len),
     )
@@ -398,11 +407,16 @@ def build_shap(
     *,
     open_path: bool,
     points: list[ShapePoint],
+    tensions: list[float] | None = None,
+    feather_points: list[FeatherPointItem] | None = None,
 ) -> ListChunk:
-    """Build a `shap` LIST chunk: `shph` + point `LIST:list` + empty `omtn`.
+    """Build a `shap` LIST chunk: `shph` + point `LIST:list` + `omtn`, then
+    an `fth5` when the path has feather points (the order AE writes).
 
     `bbox` is `(top_left_x, top_left_y, bottom_right_x, bottom_right_y)`;
-    `points` are the normalized bezier control points (3 per vertex).
+    `points` are the normalized bezier control points (3 per vertex);
+    `tensions` the per-vertex RotoBezier tensions (empty `omtn` when
+    `None`); `feather_points` are copied, so the source keeps its own.
     """
     shph = ShphChunk()
     shph.open = open_path
@@ -418,8 +432,11 @@ def build_shap(
     )
     ldat = LdatChunk(items=list(points), item_type=LdatItemType.shape, item_size=8)
     inner = ListChunk(list_type="list", chunks=[lhd3, ldat])
-    omtn = Chunk(chunk_type="omtn")
-    return ListChunk(list_type="shap", chunks=[shph, inner, omtn])
+    omtn = OmtnChunk(tensions=[TensionItem(value=t) for t in tensions or []])
+    chunks: list[Chunk] = [shph, inner, omtn]
+    if feather_points:
+        chunks.append(Fth5Chunk(points=[evolve(fp) for fp in feather_points]))
+    return ListChunk(list_type="shap", chunks=chunks)
 
 
 def build_gide_list() -> tuple[ListChunk, Lhd3Chunk, ListChunk]:
@@ -439,7 +456,21 @@ def build_gide_list() -> tuple[ListChunk, Lhd3Chunk, ListChunk]:
 def build_ovg2() -> ListChunk:
     """Build the `LIST:OvG2(CprC)` block AE writes after a Layer
     Overrides tdmn."""
-    return ListChunk(list_type="OvG2", chunks=[U4Chunk(chunk_type="CprC")])
+    return ListChunk(list_type="OvG2", chunks=[S4Chunk(chunk_type="CprC")])
+
+
+def build_ovdg() -> ListChunk:
+    """Build the empty `LIST:OvdG(CprC)` AE 15 writes at the end of every
+    layer (see `ae_writes("layer OvdG")`)."""
+    return ListChunk(list_type="OvdG", chunks=[S4Chunk(chunk_type="CprC")])
+
+
+def build_item_id_chunks(item_id: int, ae_major: int) -> list[Chunk]:
+    """Build the `iide` / `idpc` pair that opens a new item's `LIST:Item`,
+    or nothing for a release that does not write them."""
+    if not ae_writes("item ids", ae_major):
+        return []
+    return [U4LeChunk(chunk_type="iide", value=item_id), IdpcChunk()]
 
 
 def build_source_alternate_extras() -> list[Chunk]:
@@ -497,7 +528,7 @@ def _build_cctl(
             Utf8Chunk(value=uuid_str),
             ctyp,
             *value_chunks,
-            U4Chunk(chunk_type="CprC", value=1),
+            S4Chunk(chunk_type="CprC", value=1),
             cprp,
         ],
     )
@@ -814,7 +845,7 @@ def build_default_path_shape(time_base: int) -> tuple[TdmnChunk, ListChunk]:
                 list_type="list",
                 chunks=[Lhd3Chunk(item_size=8, item_type_raw=4, counter_b=4)],
             ),
-            Chunk(chunk_type="omtn"),
+            OmtnChunk(),
         ],
     )
     oms = ListChunk(
@@ -849,7 +880,7 @@ _DEFAULT_ROTO_MASK_SHAPE_OMS = (
 
 
 def build_default_mask_shape(
-    time_base: int, *, roto_bezier: bool = False
+    time_base: int, *, aspect: float, roto_bezier: bool = False
 ) -> tuple[TdmnChunk, ListChunk]:
     """Build the `(tdmn, LIST:om-s)` pair AE writes for `ADBE Mask Shape`
     when a path-less mask first materializes one.
@@ -857,10 +888,13 @@ def build_default_mask_shape(
     A freshly added mask has no Mask Shape subtree (AE treats it as the
     implicit default full-frame rectangle); enabling rotoBezier or setting
     a path materializes that default as an explicit path. The geometry is
-    normalized, so only the comp's internal timebase varies.
+    normalized, so only the comp's internal timebase and the layer's
+    aspect vary.
 
     Args:
         time_base: The comp's internal timebase (`cdta.internal_timebase`).
+        aspect: The tdb4 X multiplier AE stamps on a mask path: the
+            layer's mask space in display pixels, width / height.
         roto_bezier: Whether the mask-shape `tdsb` roto flag is set. The
             baked template originates from an enable-rotoBezier capture
             (flag on); a plain bezier path write clears it, matching AE
@@ -872,6 +906,7 @@ def build_default_mask_shape(
     for c in tdbs.chunks:
         if isinstance(c, Tdb4Chunk):
             c._time_base = time_base
+            c.pixel_aspect = aspect
         elif isinstance(c, TdsbChunk):
             c.roto_bezier = roto_bezier
     return TdmnChunk(value="ADBE Mask Shape"), oms
@@ -1030,7 +1065,7 @@ def build_expression_control(
             time_base=time_base,
             type_flags=4,
             property_category=4,
-            pad7a=128,
+            reserved_48=0x80000000,
         )
         return ListChunk(
             list_type="tdbs",

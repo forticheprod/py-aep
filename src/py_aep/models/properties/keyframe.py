@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, cast
 
 from py_aep.enums import KeyframeInterpolationType, Label
 
+from ...binary.composition_chunks import frame_grid
 from ...resolvers.interpolation import (
     _DEFAULT_INFLUENCE,
     auto_path_speed,
     auto_spatial_tangents,
     auto_temporal_speeds,
+    color_auto_speed,
+    color_distance,
+    linear_path_speed,
 )
 from ..descriptors import ChunkField
 from ..text.text_document import TextDocument
@@ -55,15 +58,24 @@ def _validate_interpolation_type(
         )
 
 
-def _timebase_units(time_scale: float, frame_rate: float) -> float:
-    """Keyframe units per second: `frame_rate * 256 * time_scale`.
+def _timebase_units(frame_rate: float) -> float:
+    """Keyframe units per second of a composition running at `frame_rate`.
 
-    Rounded to an integer because AE derives and stores
-    `cdta.internal_timebase` exactly that way, and the frame rate
-    reconstructed from the file is a hair off for NTSC rates (29.97
-    gives 23976.0008, where AE stores 23976).
+    AE's own frame grid for the rate (see `frame_grid`), not
+    `frame_rate * 256 * time_scale`: the 16.16 rate and time scale stored
+    in the file are a hair off for a decimal rate (12.3456 fps gave
+    24691, where AE counts 24692 units per second).
     """
-    return float(round(time_scale * 256.0 * frame_rate) or 1)
+    return float(frame_grid(frame_rate)[0])
+
+
+def _check_time_units(units: int) -> None:
+    """Refuse a keyframe time that does not fit the 32-bit time field."""
+    if not -0x80000000 <= units <= 0x7FFFFFFF:
+        raise ValueError(
+            f"keyframe time out of supported range: {units} units "
+            f"does not fit the 32-bit keyframe time field"
+        )
 
 
 def _validate_roving(value: bool, keyframe: Keyframe) -> None:
@@ -114,6 +126,7 @@ class Keyframe:
         "_ldat_item",
         "in_interpolation_type",
         validate=_validate_interpolation_type,
+        post_set="_on_interpolation_type_set",
     )
     """The "in" interpolation type for the keyframe. Read / Write.
 
@@ -133,6 +146,7 @@ class Keyframe:
         "_ldat_item",
         "out_interpolation_type",
         validate=_validate_interpolation_type,
+        post_set="_on_interpolation_type_set",
     )
     """The "out" interpolation type for the keyframe. Read / Write.
 
@@ -144,7 +158,7 @@ class Keyframe:
         "_ldat_item",
         "roving",
         validate=_validate_roving,
-        post_set="_on_roving_set",
+        post_set="_retime_roving_runs",
     )
     """
     `True` if the keyframe is roving. The first and last keyframe in
@@ -183,17 +197,20 @@ class Keyframe:
     this keyframe only if the keyframe interpolation type is
     `KeyframeInterpolationType.BEZIER` for both `in_interpolation_type` and
     `out_interpolation_type`. Read / Write.
+
+    As in After Effects, setting it to `True` turns
+    [temporal_auto_bezier][Keyframe.temporal_auto_bezier] off, a temporal
+    auto-Bezier keyframe stays continuous, and setting neither interpolation
+    type to `KeyframeInterpolationType.BEZIER` turns it off.
     """
 
     def __init__(
         self,
         *,
         _ldat_item: LdatItem,
-        _time_scale: float,
         _frame_rate: float,
     ) -> None:
         self._ldat_item = _ldat_item
-        self._time_scale = _time_scale
         self._frame_rate = _frame_rate
         self._property: Property | None = None
         self._prev: Keyframe | None = None
@@ -204,10 +221,42 @@ class Keyframe:
 
         self._value: _ValueType | object = _VALUE_FROM_CHUNK
 
-    def _on_roving_set(self) -> None:
-        """Re-space the property's roving keyframes after the flag changed."""
+    def _on_interpolation_type_set(self) -> None:
+        self._settle_temporal_continuous()
+        self._retime_roving_runs()
+
+    def _retime_roving_runs(self) -> None:
+        """Re-time the property's roving runs after a roving flag, a spatial
+        tangent, or an anchor's interpolation or ease changed: they decide
+        where a run's keys fall (AE 2026 re-times the run on
+        `setInterpolationTypeAtKey` and `setTemporalEaseAtKey`; an out-HOLD
+        anchor packs the run against itself)."""
         if self._property is not None:
             self._property._redistribute_roving_keyframes()
+
+    def _settle_temporal_continuous(self) -> None:
+        """Keep temporal continuity consistent with the interpolation types.
+
+        Measured on AE 2026 (the flags AE saves): continuity needs a BEZIER
+        side - setting both sides to LINEAR / HOLD clears it, one BEZIER
+        side keeps it - and temporal auto-bezier implies it, so AE turns it
+        back on for an auto-bezier key with a BEZIER side. Temporal
+        auto-bezier itself survives any type change.
+        """
+        bezier = KeyframeInterpolationType.BEZIER
+        if (
+            self.in_interpolation_type != bezier
+            and self.out_interpolation_type != bezier
+        ):
+            self._ldat_item.temporal_continuous = False
+        elif self.temporal_auto_bezier:
+            self._ldat_item.temporal_continuous = True
+
+    @property
+    def _is_roving_run_key(self) -> bool:
+        """Whether the key rides a roving run rather than bounding one: the
+        first and last keys are anchors even when flagged roving."""
+        return self.roving and self._prev is not None and self._next is not None
 
     def _force_bezier_both_sides(self) -> None:
         """Set both interpolation types to BEZIER, skipping no-op writes."""
@@ -250,6 +299,7 @@ class Keyframe:
                 ],
                 direction,
             )
+        self._retime_roving_runs()
 
     def _on_temporal_continuous_set(self) -> None:
         """Force both sides to BEZIER and match the out speed to the in one.
@@ -266,7 +316,13 @@ class Keyframe:
         genuinely leaves the tangents alone.
         """
         if not self.temporal_continuous:
+            # An auto-bezier key stays continuous (AE 2026 turns it back on).
+            self._settle_temporal_continuous()
             return
+        # Continuous and auto-bezier are exclusive modes: AE 2026 clears
+        # temporal auto-bezier here (the raw byte - its setter would
+        # re-derive the ease).
+        self._ldat_item.temporal_auto_bezier = False
         self._force_bezier_both_sides()
         self._ensure_ease()
         incoming, outgoing = self._in_temporal_ease, self._out_temporal_ease
@@ -274,6 +330,7 @@ class Keyframe:
             return
         for out_ease, in_ease in zip(outgoing, incoming):
             out_ease.speed = in_ease.speed
+        self._retime_roving_runs()
 
     def _rescale_tangent(self, tangent: list[float], *, invert: bool) -> list[float]:
         """Move a raw spatial tangent into the space its value is reported in.
@@ -383,10 +440,10 @@ class Keyframe:
             return
         validate_sequence(length=len(self.in_spatial_tangent))(value)
         kf_data = self._ldat_item.kf_data
+        self._leave_spatial_auto_bezier()
         if hasattr(kf_data, "in_spatial_tangents"):
             kf_data.in_spatial_tangents = self._rescale_tangent(value, invert=True)
-            if self._property is not None:
-                self._property._redistribute_roving_keyframes()
+            self._retime_roving_runs()
 
     @property
     def out_spatial_tangent(self) -> list[float] | None:
@@ -416,10 +473,25 @@ class Keyframe:
             return
         validate_sequence(length=len(self.out_spatial_tangent))(value)
         kf_data = self._ldat_item.kf_data
+        self._leave_spatial_auto_bezier()
         if value is not None and hasattr(kf_data, "out_spatial_tangents"):
             kf_data.out_spatial_tangents = self._rescale_tangent(value, invert=True)
-            if self._property is not None:
-                self._property._redistribute_roving_keyframes()
+            self._retime_roving_runs()
+
+    def _leave_spatial_auto_bezier(self) -> None:
+        """Turn spatial auto-bezier off before a tangent is written.
+
+        AE's `setSpatialTangentsAtKey` clears the flag (AE 2026); left on,
+        the derived tangents would keep overriding the written one. The
+        side not written keeps the derived tangent it had.
+        """
+        kf_data = self._ldat_item.kf_data
+        if not getattr(kf_data, "spatial_auto_bezier", False):
+            return
+        derived = self._auto_spatial_tangents()
+        if derived is not None:
+            kf_data.out_spatial_tangents, kf_data.in_spatial_tangents = derived
+        kf_data.spatial_auto_bezier = False
 
     def _neighbour_window(self) -> tuple[list[Keyframe], int]:
         """This keyframe plus its immediate neighbours, and its own index.
@@ -456,17 +528,43 @@ class Keyframe:
         back to the stored ease.
         """
         prop = self._property
-        if prop is not None and prop._has_motion_path:
-            # A motion path carries ONE ease, a speed along the path. AE
-            # writes it on both sides; the outward side of an end key is
-            # reported as 0, as on any other property.
-            keyframes = prop.keyframes
-            index = next(i for i, kf in enumerate(keyframes) if kf is self)
-            speed = auto_path_speed(keyframes, index, prop._arc_metric)
-            return (
-                [0.0 if index == 0 else speed],
-                [0.0 if index == len(keyframes) - 1 else speed],
+        kind = prop._parallel_kind() if prop is not None else None
+        if prop is not None and kind is not None:
+            # A path and an Orientation are spatial for ExtendScript but have
+            # no motion path to measure: AE reports an auto-bezier side at the
+            # unit chord slope, like a LINEAR side, and plays it that way
+            # (measured on AE 2026 on a mask path and an Orientation key).
+            unit = kind.linear_ease_speed
+            index = prop._keyframe_index(self)
+            if unit is None or index is None:
+                return None
+            last = len(prop.keyframes) - 1
+            return [0.0 if index == 0 else unit], [0.0 if index == last else unit]
+        if prop is not None and prop._color:
+            # One speed along the colour line, like a motion path.
+            window, at = self._neighbour_window()
+            speed = color_auto_speed(
+                [cast("list[float]", kf.value) for kf in window],
+                [kf._layer_time for kf in window],
+                at,
             )
+            return (
+                [0.0 if self._prev is None else speed],
+                [0.0 if self._next is None else speed],
+            )
+        if prop is not None and prop._has_motion_path:
+            keyframes = prop.keyframes
+            # A keyframe removed from its property is no longer on its path.
+            index = prop._keyframe_index(self)
+            if index is not None:
+                # A motion path carries ONE ease, a speed along the path. AE
+                # writes it on both sides; the outward side of an end key is
+                # reported as 0, as on any other property.
+                speed = auto_path_speed(keyframes, index, prop._arc_metric)
+                return (
+                    [0.0 if index == 0 else speed],
+                    [0.0 if index == len(keyframes) - 1 else speed],
+                )
 
         def as_vector(keyframe: Keyframe) -> list[float] | None:
             value = keyframe.value
@@ -497,14 +595,9 @@ class Keyframe:
         [TextDocument][]. For marker properties, this is a [MarkerValue][].
         For properties that carry no value, this is `None`.
         """
-        val = (
-            self._value
-            if self._value is not _VALUE_FROM_CHUNK
-            else self._extract_raw_value()
-        )
-        if self._property is not None and isinstance(val, (int, float, list)):
-            return cast("_ValueType", self._property._resolve_value(val))
-        return cast("_ValueType", val)
+        if self._property is None:
+            return self._stored_value
+        return cast("_ValueType", self._property._mask_inert_z(self._stored_value))
 
     @value.setter
     def value(
@@ -523,9 +616,9 @@ class Keyframe:
             # Reuse the property's value validation (numeric bounds + finite
             # check); it is a no-op for complex value types. Keeps NaN/inf and
             # out-of-range values out of keyframe floats just as `.value=` does.
-            from .property import _validate_value
+            from .property import _validate_key_value
 
-            _validate_value(prop, value)
+            _validate_key_value(prop, value)
             # Replacing a TEXT keyframe's value must mutate the EXISTING
             # btdk-wired TextDocument in place (text documents live in the
             # shared btdk COS blob, not a per-keyframe container). Storing a
@@ -560,6 +653,22 @@ class Keyframe:
             prop._redistribute_roving_keyframes()
         else:
             self._value = value
+
+    @property
+    def _stored_value(self) -> _ValueType:
+        """The value as stored, before a 2-D layer's Z is reported as 0.
+
+        Interpolation and ease measurement read this one: AE measures a
+        2-D layer's motion path with the stored Z too.
+        """
+        val = (
+            self._value
+            if self._value is not _VALUE_FROM_CHUNK
+            else self._extract_raw_value()
+        )
+        if self._property is not None and isinstance(val, (int, float, list)):
+            return cast("_ValueType", self._property._resolve_value(val))
+        return cast("_ValueType", val)
 
     def _cache_value(self, value: _ValueType) -> None:
         """Cache a value decoded from chunks (parser-only).
@@ -635,6 +744,7 @@ class Keyframe:
     @in_temporal_ease.setter
     def in_temporal_ease(self, value: list[KeyframeEase]) -> None:
         self._apply_ease(value, "in")
+        self._on_ease_written("in")
 
     @property
     def out_temporal_ease(self) -> list[KeyframeEase]:
@@ -655,6 +765,26 @@ class Keyframe:
     @out_temporal_ease.setter
     def out_temporal_ease(self, value: list[KeyframeEase]) -> None:
         self._apply_ease(value, "out")
+        self._on_ease_written("out")
+
+    def _on_ease_written(self, direction: str) -> None:
+        """Make a written ease the one that plays, as AE does.
+
+        `setTemporalEaseAtKey` switches the key to BEZIER and clears temporal
+        auto-bezier (measured on AE 2026, from LINEAR and from HOLD keys):
+        otherwise a LINEAR or HOLD side, or the auto-bezier derivation,
+        would report and play something else than the ease just written.
+        Only the written side is switched - the per-side setters are the
+        two halves of AE's one call.
+        """
+        self._ldat_item.temporal_auto_bezier = False
+        bezier = KeyframeInterpolationType.BEZIER
+        name = f"{direction}_interpolation_type"
+        if getattr(self, name) != bezier:
+            prop = self._property
+            if prop is None or prop.is_interpolation_type_valid(bezier):
+                setattr(self, name, bezier)
+        self._retime_roving_runs()
 
     def _apply_ease(self, value: list[KeyframeEase], direction: str) -> None:
         """Copy `value`'s speed/influence into the chunk-backed ease objects.
@@ -696,8 +826,21 @@ class Keyframe:
             raise ValueError(
                 f"{field} expects {expected} KeyframeEase object(s), got {len(value)}"
             )
+        # The unit factor the getter applies, which a backing ease only
+        # carries once it has been read as BEZIER: a LINEAR or end key of an
+        # effect point would otherwise store its pixel speed unconverted.
+        factor = self._speed_unit_factor()
         for target, source in zip(backing, value):
+            target._speed_factor = factor
             target._write_from(source)
+
+    def _speed_unit_factor(self) -> float:
+        """Reported / stored ratio of this keyframe's ease speeds."""
+        prop = self._property
+        if prop is None:
+            return 1.0
+        point = prop._effect_point_speed_factor
+        return point if point is not None else prop._speed_factor
 
     def _resolve_ease(
         self, raw_ease: list[KeyframeEase], direction: str
@@ -712,82 +855,72 @@ class Keyframe:
         if not raw_ease:
             return [KeyframeEase(speed=0.0, influence=0.0)]
 
-        # Auto-bezier wins over the stored bytes and over the interpolation
-        # type. AE recomputes the ease from the flag (and forces the type
-        # to BEZIER when the flag is set), so its own files carry stale ease
-        # on an auto-bezier keyframe. Colour properties report a single ease
-        # whose derivation is not known, so a dimension mismatch falls
-        # through to the stored values rather than guessing.
-        if self.temporal_auto_bezier:
-            auto_speeds = self._auto_temporal_speeds()
-            if auto_speeds is not None:
-                chosen = auto_speeds[0] if direction == "in" else auto_speeds[1]
-                if len(chosen) == len(raw_ease):
-                    return [
-                        KeyframeEase(speed=speed, influence=_DEFAULT_INFLUENCE)
-                        for speed in chosen
-                    ]
-
         if direction == "in":
             interp = self.in_interpolation_type
+            other_interp = self.out_interpolation_type
+            neighbour = self._prev
         else:
             interp = self.out_interpolation_type
+            other_interp = self.in_interpolation_type
+            neighbour = self._next
 
-        if interp == KeyframeInterpolationType.LINEAR:
-            if direction == "out":
-                other = self._next
-            else:
-                other = self._prev
-            if other is None:
-                return [
-                    KeyframeEase(speed=0.0, influence=_DEFAULT_INFLUENCE)
-                    for _ in raw_ease
-                ]
-            # A HOLD on the adjacent keyframe's connecting side means
-            # the segment holds - speed is 0.
-            if direction == "out":
-                adjacent_interp = other.in_interpolation_type
-            else:
-                adjacent_interp = other.out_interpolation_type
-            if adjacent_interp == KeyframeInterpolationType.HOLD:
-                return [
-                    KeyframeEase(speed=0.0, influence=_DEFAULT_INFLUENCE)
-                    for _ in raw_ease
-                ]
-            kind = self._property._parallel_kind() if self._property else None
-            if kind is not None and kind.linear_ease_speed is not None:
-                # A path and an Orientation have no scalar magnitude for a
-                # speed to measure, so AE reports a LINEAR side's speed as
-                # the unit chord slope rather than a rate. Measured on AE
-                # 2026 across three Orientation segments of different
-                # rotation and duration, and on a mask path: always 1.
-                # Reporting only - `_single_progress` forces the LINEAR
-                # control points and never reads the speed back.
-                return [
-                    KeyframeEase(
-                        speed=kind.linear_ease_speed, influence=_DEFAULT_INFLUENCE
-                    )
-                    for _ in raw_ease
-                ]
-            speeds = _segment_speed(
-                self if direction == "out" else other,
-                other if direction == "out" else self,
-                self._property._has_motion_path if self._property else False,
-            )
-            return [KeyframeEase(speed=s, influence=_DEFAULT_INFLUENCE) for s in speeds]
-
+        # The interpolation type wins over the temporal auto-bezier flag:
+        # AE keeps the flag through `setInterpolationTypeAtKey` and reports
+        # (and plays) a LINEAR side as LINEAR and a HOLD side as HOLD
+        # (measured on AE 2026).
         if interp == KeyframeInterpolationType.HOLD:
             return [
                 KeyframeEase(speed=0.0, influence=_DEFAULT_INFLUENCE) for _ in raw_ease
             ]
+        if interp == KeyframeInterpolationType.LINEAR:
+            return self._linear_ease(raw_ease, direction)
+
+        # A BEZIER side facing a HOLD side reports speed 0, as AE does; the
+        # segment holds, so no value depends on it. Roving neighbours are
+        # skipped: a run is eased by its anchors, so it is the far anchor's
+        # side that decides (AE 2026).
+        anchor = neighbour
+        while anchor is not None and anchor._is_roving_run_key:
+            anchor = anchor._prev if direction == "in" else anchor._next
+        facing_hold = (
+            anchor is not None
+            and (
+                anchor.out_interpolation_type
+                if direction == "in"
+                else anchor.in_interpolation_type
+            )
+            == KeyframeInterpolationType.HOLD
+        )
+
+        # Auto-bezier wins over the stored bytes on a BEZIER side. AE
+        # recomputes the ease from the flag, so its own files carry stale
+        # ease on an auto-bezier keyframe. When the key's other side is
+        # LINEAR, this side takes that side's speed - 0 at an end (measured
+        # on AE 2026: the last key B/L reports in-speed 0, an interior B/L
+        # key the LINEAR segment's slope rather than the through-slope).
+        if self.temporal_auto_bezier:
+            chosen: list[float] | None = None
+            if other_interp == KeyframeInterpolationType.LINEAR:
+                other_direction = "out" if direction == "in" else "in"
+                chosen = [e.speed for e in self._linear_ease(raw_ease, other_direction)]
+            else:
+                auto_speeds = self._auto_temporal_speeds()
+                if auto_speeds is not None:
+                    chosen = auto_speeds[0] if direction == "in" else auto_speeds[1]
+            if chosen is not None and len(chosen) == len(raw_ease):
+                return [
+                    KeyframeEase(
+                        speed=0.0 if facing_hold or neighbour is None else speed,
+                        influence=_DEFAULT_INFLUENCE,
+                    )
+                    for speed in chosen
+                ]
 
         # BEZIER - boundary keyframes get zeroed speed on the side with
         # no adjacent keyframe.  Keep original influence so the
         # interpolation solver that reads the adjacent direction is
         # unaffected.
-        if direction == "in" and self._prev is None:
-            return [KeyframeEase(speed=0.0, influence=e.influence) for e in raw_ease]
-        if direction == "out" and self._next is None:
+        if neighbour is None or facing_hold:
             return [KeyframeEase(speed=0.0, influence=e.influence) for e in raw_ease]
         # An effect point stores speed normalized against the comp height.
         # Applied here because the factor needs a fully constructed property,
@@ -799,6 +932,79 @@ class Keyframe:
                 for ease in raw_ease:
                     ease._speed_factor = factor
         return raw_ease
+
+    def _linear_ease(
+        self, raw_ease: list[KeyframeEase], direction: str
+    ) -> list[KeyframeEase]:
+        """The ease AE reports for a LINEAR side: the segment's own rate,
+        with the default influence."""
+        other = self._next if direction == "out" else self._prev
+        if other is None:
+            return [
+                KeyframeEase(speed=0.0, influence=_DEFAULT_INFLUENCE) for _ in raw_ease
+            ]
+        # A HOLD on the adjacent keyframe's connecting side means the
+        # segment holds - speed is 0. A roving neighbour's own type is
+        # ignored: AE reports the run's speed past it (AE 2026). An in side
+        # looks back over the run to its start anchor instead: every in
+        # side of a run that leaves an out-HOLD anchor reads 0, while the
+        # out sides keep the run's speed (measured on AE 2026).
+        adjacent = other
+        if direction == "out":
+            adjacent_interp = other.in_interpolation_type
+        else:
+            while adjacent._is_roving_run_key:
+                adjacent = cast("Keyframe", adjacent._prev)
+            adjacent_interp = adjacent.out_interpolation_type
+        if (
+            adjacent_interp == KeyframeInterpolationType.HOLD
+            and not adjacent._is_roving_run_key
+        ):
+            return [
+                KeyframeEase(speed=0.0, influence=_DEFAULT_INFLUENCE) for _ in raw_ease
+            ]
+        prop = self._property
+        kind = prop._parallel_kind() if prop is not None else None
+        if kind is not None and kind.linear_ease_speed is not None:
+            # A path and an Orientation have no scalar magnitude for a
+            # speed to measure, so AE reports a LINEAR side's speed as
+            # the unit chord slope rather than a rate. Measured on AE
+            # 2026 across three Orientation segments of different
+            # rotation and duration, and on a mask path: always 1.
+            # Reporting only - `_single_progress` forces the LINEAR
+            # control points and never reads the speed back.
+            return [
+                KeyframeEase(speed=kind.linear_ease_speed, influence=_DEFAULT_INFLUENCE)
+                for _ in raw_ease
+            ]
+        left, right = (self, other) if direction == "out" else (other, self)
+        if prop is not None and prop._color:
+            # One ease along the colour line, in 0-255 units per second
+            # (measured on AE 2026: 191.25 for [1,0,0,1] -> [0,0.5,1,1] over
+            # 2 s), not one per channel.
+            span = right._layer_time - left._layer_time
+            speed = (
+                color_distance(
+                    cast("list[float]", left.value), cast("list[float]", right.value)
+                )
+                / span
+                if span > 0
+                else 0.0
+            )
+            return [
+                KeyframeEase(speed=speed, influence=_DEFAULT_INFLUENCE)
+                for _ in raw_ease
+            ]
+        if prop is not None and prop._has_motion_path and kind is None:
+            index = prop._keyframe_index(left)
+            if index is not None and isinstance(left.value, list):
+                speed = linear_path_speed(prop.keyframes, index, prop._arc_metric)
+                return [
+                    KeyframeEase(speed=speed, influence=_DEFAULT_INFLUENCE)
+                    for _ in raw_ease
+                ]
+        speeds = _segment_speed(left, right)
+        return [KeyframeEase(speed=s, influence=_DEFAULT_INFLUENCE) for s in speeds]
 
     @property
     def spatial_auto_bezier(self) -> bool:
@@ -856,17 +1062,18 @@ class Keyframe:
     def _timebase(self) -> float:
         """Keyframe units per second, in the owning LAYER's own time.
 
-        A time-stretched layer counts its ticks against a stretched base
-        (`cdta.internal_timebase * max(1, |stretch| / 100)`), so the comp's
-        own base only applies at 100 %. Falls back to the cached comp rates
-        when the keyframe has no property yet (construction).
+        A layer stretched past 100 % counts its ticks against a stretched
+        base (`layer_timebase`: about `cdta.internal_timebase * |stretch| /
+        100`, at most 115200), so the comp's own base only applies up to
+        100 %. Falls back to the cached comp rates when the keyframe has no
+        property yet (construction).
         """
         prop = self._property
         if prop is not None:
             base = prop._layer_timebase
             if base:
                 return base
-        return _timebase_units(self._time_scale, self._frame_rate)
+        return _timebase_units(self._frame_rate)
 
     @property
     def _layer_time(self) -> float:
@@ -892,11 +1099,7 @@ class Keyframe:
 
     def _set_time_units(self, units: int) -> None:
         """Move this keyframe to `units`, re-sorting the property if needed."""
-        if not -0x80000000 <= units <= 0x7FFFFFFF:
-            raise ValueError(
-                f"keyframe time out of supported range: {units} units "
-                f"does not fit the 32-bit keyframe time field"
-            )
+        _check_time_units(units)
         prop = self._property
         if prop is not None:
             prop._guard_keyframe_move(self, units)
@@ -971,14 +1174,12 @@ class Keyframe:
 def _segment_speed(
     kf_a: Keyframe,
     kf_b: Keyframe,
-    is_spatial: bool,
 ) -> list[float]:
     """Compute the constant speed between two adjacent keyframes.
 
-    For spatial properties a single scalar speed (magnitude of the velocity
-    vector) is returned.  For non-spatial multi-dimensional properties a
-    per-dimension speed list is returned.  For 1-D properties a single-element
-    list is returned.
+    For multi-dimensional properties a per-dimension speed list is returned.
+    For 1-D properties a single-element list is returned. (A motion path and
+    a colour report one speed along their line, see `Keyframe._linear_ease`.)
     """
     # Seconds rather than whole frames: two keyframes can sit inside the
     # same frame at different sub-frame times, and rounding them together
@@ -988,8 +1189,8 @@ def _segment_speed(
     time_seconds = kf_b._layer_time - kf_a._layer_time
     if time_seconds == 0:
         return [0.0]
-    val_a = kf_a.value
-    val_b = kf_b.value
+    val_a = kf_a._stored_value
+    val_b = kf_b._stored_value
 
     if not isinstance(val_a, (int, float, list)):
         return [0.0]
@@ -1000,9 +1201,6 @@ def _segment_speed(
         return [(float(val_b) - float(val_a)) / time_seconds]
 
     if isinstance(val_a, list) and isinstance(val_b, list):
-        if is_spatial:
-            distance = math.sqrt(sum((b - a) ** 2 for a, b in zip(val_a, val_b)))
-            return [distance / time_seconds]
         return [(b - a) / time_seconds for a, b in zip(val_a, val_b)]
 
     return [0.0]

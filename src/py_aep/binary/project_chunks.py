@@ -12,7 +12,7 @@ from __future__ import annotations
 from attrs import define
 
 from .chunk import Chunk
-from .fmt_field import bytes_field, u1_field, u2_field, u4_field
+from .fmt_field import bytes_field, s2_field, u1_field, u2_field, u4_field
 from .registry import register
 
 # ---------------------------------------------------------------------------
@@ -37,14 +37,18 @@ class SvapChunk(Chunk):
 
 
 # ---------------------------------------------------------------------------
-# cpid - project id (16 bytes, all 0xFF in a new project)
+# cpid - working-space ICC profile id (16 bytes)
 # ---------------------------------------------------------------------------
 
 
 @register("cpid")
 @define
 class CpidChunk(Chunk):
-    """Project id chunk (16 bytes). AE writes all-`0xFF` for a new project."""
+    """Working-space profile id (16 bytes): the ICC Profile ID (ISO
+    15076-1 MD5) of the working color space, whose ICC is embedded after
+    `PwCs` (AE 22+) or kept in `LIST:CPPl` (older files). All `0xFF` when
+    the working space is None or the project uses OCIO; a new project
+    has no working space."""
 
     chunk_type: str = "cpid"
     data: bytes = b"\xff" * 16
@@ -95,7 +99,7 @@ class RhedChunk(Chunk):
 
 
 # ---------------------------------------------------------------------------
-# wsns - workspace-name byte length (U2); wsnm - workspace name (UTF-16-LE)
+# wsns - workspace-name byte length (S2); wsnm - workspace name (UTF-16-LE)
 # ---------------------------------------------------------------------------
 
 
@@ -109,7 +113,7 @@ class WsnsChunk(Chunk):
     """
 
     chunk_type: str = "wsns"
-    value: int = u2_field(default=14)
+    value: int = s2_field(default=14)
 
 
 @register("wsnm")

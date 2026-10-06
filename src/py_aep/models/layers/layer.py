@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import AutoOrientType, Label, LayerType
 
+from ...ae_version import ae_writes
 from ...binary.chunk import ListChunk
+from ...binary.composition_chunks import layer_timebase, rescale_ticks
 from ...binary.item_chunks import CmtaChunk
 from ...binary.mutations import (
     build_gide_list,
+    build_ovdg,
     clone_chunk_tree,
     remap_layer_ref_tdpi,
     rewrite_owner_tdpi,
@@ -21,10 +25,15 @@ from ...parsers.property import parse_properties
 from ...parsers.utils import get_match_name_runs
 from ...resolvers.transform import (
     Mat4,
+    aspect_scale,
     build_world_matrix,
     compose_orientation,
     decompose_transform,
+    layer_source_aspect,
+    position_space_aspect,
+    rig_aims_at_poi,
     rotation_part,
+    square_pixels,
     strip_orientation,
 )
 from ..descriptors import ChunkField
@@ -33,6 +42,7 @@ from ..properties.property import Property
 from ..properties.property_base import PropertyBase
 from ..properties.property_group import PropertyGroup
 from ..validators import (
+    _validate_number,
     validate_int,
     validate_number,
     validate_string,
@@ -46,6 +56,37 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# AE turns any stretch under 1 % into 655 / 65536 (1 % in 16.16, rounded
+# down), in percent.
+_MIN_STRETCH = 655 * 100 / 65536
+
+# The stretch is a float32 stored as a ratio with a signed 32-bit dividend;
+# 2147483520 is the largest float32 under 2**31.
+_validate_stretch = _validate_number(min=-2147483520 * 100.0, max=2147483520 * 100.0)
+
+# The start time is a signed 32-bit count of the layer's timebase ticks.
+_validate_start_time = _validate_number(
+    min=lambda layer: -0x80000000 / layer._layer_timebase(),
+    max=lambda layer: 0x7FFFFFFF / layer._layer_timebase(),
+)
+
+#: Sentinel value indicating an undefined source id in the binary format.
+_UNDEFINED_ID = 0xFFFFFFFF
+
+
+def _no_source_id(comp: CompItem) -> int:
+    """The ldta source id of a light without a source: 0 before AE 23, which
+    writes the undefined id."""
+    major = comp._project._head.ae_version_major
+    return _UNDEFINED_ID if ae_writes("light source id", major) else 0
+
+
+def _parent_world(parent: Layer | None, time: float, child_is_3d: bool) -> Mat4:
+    """World matrix a child of `parent` is placed in, at comp `time`."""
+    if parent is None:
+        return Mat4.identity()
+    return build_world_matrix(parent, time, flatten_2d=not child_is_3d, as_parent=True)
 
 
 class Layer(PropertyGroup):
@@ -129,9 +170,26 @@ class Layer(PropertyGroup):
     )
     """When `True`, the layer is soloed. Read / Write."""
 
-    start_time = ChunkField[float]("_ldta", "start_time")
-    """The start time of the layer, expressed in composition time (seconds).
-    Read / Write."""
+    @property
+    def start_time(self) -> float:
+        """The start time of the layer, expressed in composition time
+        (seconds). Read / Write.
+
+        Writing snaps the time to the nearest tick of the layer's own
+        timebase (see [stretch][]), a tie rounding up, as After Effects does:
+        on AE 2026, 1.3 s on a 24 fps layer reads back as 1.3000081 s
+        (31949 / 24576) and on a 150 % one as 1.2999946 s (47923 / 36864).
+        A later stretch change leaves the stored start alone.
+        """
+        return self._ldta.start_time
+
+    @start_time.setter
+    def start_time(self, value: float) -> None:
+        _validate_start_time(value, self)
+        timebase = self._layer_timebase()
+        ldta = self._ldta
+        ldta.start_time_dividend = math.floor(value * timebase + 0.5)
+        ldta.start_time_divisor = timebase
 
     _stretch = ChunkField[float]("_ldta", "stretch")
 
@@ -143,30 +201,43 @@ class Layer(PropertyGroup):
 
         Writing also rescales every keyframe on the layer. A layer counts its
         keyframe ticks against its own timebase,
-        `comp internal_timebase * max(1, |stretch| / 100)`, so stretching it
+        `comp internal_timebase * max(1, |stretch| / 100)` (at most 115200
+        ticks a second), so stretching it
         while leaving the counts alone would halve or double each keyframe's
         position in LAYER time. After Effects keeps them fixed there and
         rescales the counts (measured on AE 2026: a key at layer-second 1 on
         a 24 fps comp holds 24576 ticks, and 49152 after the layer is
         stretched to 200 %, where its composition time becomes 2 s).
+
+        The stretch is stored as AE writes it, a float32 of the percentage
+        / 100: 133.33 reads back as 133.32999944686890. A value under 1
+        (0 included) becomes the smallest stretch AE stores, 655 / 65536,
+        which reads back as 0.99945068359375 (with the sign of a negative
+        value), as on AE 2026. AE refuses more than 9900 % from a script
+        but opens a file holding 1000000 %; py_aep accepts any stretch the
+        file's signed 32-bit ratio can hold.
         """
         return cast("float", self._ldta.stretch)
 
     @stretch.setter
     def stretch(self, value: float) -> None:
-        validate_number(value)
+        _validate_stretch(value, self)
+        if abs(value) < 1.0:
+            value = -_MIN_STRETCH if value < 0 else _MIN_STRETCH
         old = self._layer_timebase()
         self._stretch = value
         self._retime_to_layer_timebase(old, self._layer_timebase())
 
-    def _layer_timebase(self) -> int:
-        """Keyframe units per second of this layer's own time."""
-        base = self.containing_comp._cdta.internal_timebase
-        stretch = abs(float(self._ldta.stretch or 100.0)) / 100.0
-        return int(base * max(1.0, stretch))
+    def _layer_timebase(self, internal_timebase: int | None = None) -> int:
+        """Keyframe units per second of this layer's own time, in its
+        composition or one of `internal_timebase`."""
+        if internal_timebase is None:
+            internal_timebase = self.containing_comp._cdta.internal_timebase
+        return layer_timebase(internal_timebase, self._stretch_factor)
 
     def _retime_to_layer_timebase(self, old: int, new: int) -> None:
-        """Hold every keyframe at the same LAYER time across a stretch change."""
+        """Hold every keyframe at the same LAYER time across a stretch change
+        (`rescale_ticks`)."""
         if new == old or old <= 0:
             return
         for prop in self._leaf_properties():
@@ -174,7 +245,7 @@ class Layer(PropertyGroup):
                 prop._ensure_time_base()
             for keyframe in prop.keyframes:
                 item = keyframe._ldat_item
-                item.time_units = round(item.time_units * new / old)
+                item.time_units = rescale_ticks(item.time_units, old, new)
 
     auto_orient = ChunkField.enum(
         AutoOrientType,
@@ -188,6 +259,11 @@ class Layer(PropertyGroup):
     # which could produce unexpected results or hit circular references.
     __eq__ = object.__eq__
     __hash__ = object.__hash__
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Layers set public instance attributes of their own, which
+        # `PropertyGroup.__setattr__` would refuse.
+        object.__setattr__(self, name, value)
 
     def __init__(
         self,
@@ -260,11 +336,16 @@ class Layer(PropertyGroup):
         # file"). Synthesized children are inserted before this marker.
         tdgp_chunks.append(TdmnChunk(value="ADBE Group End"))
         root_tdgp = ListChunk(list_type="tdgp", chunks=tdgp_chunks)
+        ae_major = containing_comp._project._head.ae_version_major
+        # The ldta matte-layer field (164- instead of 160-byte records).
+        ldta.matte_layer_id = 0 if ae_writes("matte layer id", ae_major) else None
         gide, _lhd3, _inner = build_gide_list()
         layer_list = ListChunk(
             list_type="Layr",
             chunks=[ldta, name_utf8, root_tdgp, gide],
         )
+        if ae_writes("layer OvdG", ae_major):
+            layer_list.chunks.append(build_ovdg())
 
         layer = cls(
             _ldta=ldta,
@@ -326,19 +407,32 @@ class Layer(PropertyGroup):
     @property
     def comment(self) -> str:
         """A descriptive comment for the layer. Read / Write."""
-        if self._cmta is None:
+        # AE 2026 shows no comment for a `cmta` whose ldta flag is unset.
+        if self._cmta is None or not self._ldta.has_comment:
             return ""
         return self._cmta.value
 
     @comment.setter
     def comment(self, value: str) -> None:
         validate_string(value)
+        if not value:
+            # AE drops the chunk and the flag rather than store "".
+            if self._cmta is not None:
+                chunks = self._layer_list.chunks
+                del chunks[index_by_identity(chunks, self._cmta)]
+                self._cmta = None
+            self._ldta.has_comment = False
+            return
+        self._ldta.has_comment = True
         if self._cmta is not None:
             self._cmta.value = value
-        elif value:
+        else:
             chunk = CmtaChunk()
             chunk.value = value
-            self._layer_list.chunks.append(chunk)
+            chunks = self._layer_list.chunks
+            # AE 15 writes the comment before the LIST:OvdG closing a layer.
+            ends_with_ovdg = getattr(chunks[-1], "list_type", None) == "OvdG"
+            chunks.insert(len(chunks) - 1 if ends_with_ovdg else len(chunks), chunk)
             self._cmta = chunk
 
     @property
@@ -391,10 +485,30 @@ class Layer(PropertyGroup):
         return stretch / 100.0 if stretch != 0.0 else 1.0
 
     @property
+    def _time_origin(self) -> float:
+        """Composition time of the layer's own time 0.
+
+        The start time, except on a time-reversed layer, which After
+        Effects places `|stretch| / 100 / 3000` s earlier: its in point,
+        out point and keyframes all move by that much (measured on AE
+        2026 at -50 / -100 / -150 / -200 % on solid, null, text and
+        precomp layers, starts 1.3 and -0.7 s, and 24 / 25 / 30 fps).
+        """
+        factor = self._stretch_factor
+        if factor >= 0:
+            return self.start_time
+        return self.start_time + factor / 3000.0
+
+    @property
     def in_point(self) -> float:
         """The "in" point of the layer, expressed in composition time
-        (seconds). Read / Write."""
-        return float(self.start_time + self._ldta.in_point * self._stretch_factor)
+        (seconds). Read / Write.
+
+        On a time-reversed layer the in point is the later end, and sits
+        `|stretch| / 100 / 3000` s before the start time (1.2995 s for a
+        -150 % layer starting at 1.3 s), as After Effects reports it.
+        """
+        return self._time_origin + self._ldta.in_point * self._stretch_factor
 
     @in_point.setter
     def in_point(self, value: float) -> None:
@@ -404,8 +518,12 @@ class Layer(PropertyGroup):
     @property
     def out_point(self) -> float:
         """The "out" point of the layer, expressed in composition time
-        (seconds). Read / Write."""
-        return float(self.start_time + self._ldta.out_point * self._stretch_factor)
+        (seconds). Read / Write.
+
+        On a time-reversed layer the out point is the earlier end (see
+        [in_point][]).
+        """
+        return self._time_origin + self._ldta.out_point * self._stretch_factor
 
     @out_point.setter
     def out_point(self, value: float) -> None:
@@ -643,6 +761,10 @@ class Layer(PropertyGroup):
         For example, if the new parent has a rotation of 30 degrees, the child layer is
         assigned a rotation of -30 degrees.
 
+        Like After Effects, the offsets are computed from the transforms at the
+        composition's current [time][Layer.time], and a parent scaled to 0 is
+        set without any offset.
+
         To set the parent without changing the child layer's transform values, use the
         set_parent_with_jump method.
 
@@ -655,59 +777,100 @@ class Layer(PropertyGroup):
     def parent(self, value: Layer | None) -> None:
         self._validate_parent(value)
         old_parent = self.parent
-        new_parent = value
-
-        if old_parent is new_parent:
+        if old_parent is value:
             return
 
+        # AE compensates once, from the transforms at the comp's current
+        # time (measured on AE 2026: with the playhead at 1 s, a child of a
+        # parent animated from 0 to 90 degrees gets Rotate Z -45).
+        time = self.containing_comp.time
         # A 2D child cannot store an out-of-plane rotation, and AE does not
         # try: it compensates as though every ancestor were 2D. Building the
         # matrices the same way keeps our answer on AE's.
         is_3d = self.is_3d
-        child_world = build_world_matrix(self, flatten_2d=not is_3d)
-        old_parent_world = (
-            build_world_matrix(old_parent, flatten_2d=not is_3d)
-            if old_parent is not None
-            else Mat4.identity()
-        )
-        new_parent_world = (
-            build_world_matrix(new_parent, flatten_2d=not is_3d)
-            if new_parent is not None
-            else Mat4.identity()
+        comp = self.containing_comp
+        self._compensate_reparent(
+            value,
+            build_world_matrix(self, time, flatten_2d=not is_3d),
+            _parent_world(old_parent, time, is_3d),
+            _parent_world(value, time, is_3d),
+            time,
+            (comp.pixel_aspect, position_space_aspect(old_parent, comp)),
+            (comp.pixel_aspect, position_space_aspect(value, comp)),
         )
 
-        self._parent_id = value.id if value is not None else 0
+    def _compensate_reparent(
+        self,
+        new_parent: Layer | None,
+        child_world: Mat4,
+        old_parent_world: Mat4,
+        new_parent_world: Mat4,
+        time: float,
+        old_aspects: tuple[float, float],
+        new_aspects: tuple[float, float],
+    ) -> None:
+        """Parent this layer to `new_parent` (`None` to unparent), rewriting
+        its transform so `child_world` (its world matrix under the old
+        parent, at comp `time`) does not move.
 
-        new_parent_inverse = new_parent_world.inverse()
-        new_local = new_parent_inverse @ child_world
+        `old_aspects` / `new_aspects` are the `(comp, Position space)` pixel
+        aspects under the old / new parent (see
+        `resolvers.transform.position_space_aspect`): the transform values
+        live in square pixels, so the matrices are squared before they are
+        decomposed."""
+        try:
+            new_parent_inverse = new_parent_world.inverse()
+        except ValueError:
+            # A parent scaled to 0 has no inverse; AE 2026 parents to it
+            # anyway and leaves the child's values untouched.
+            self._parent_id = new_parent.id if new_parent is not None else 0
+            return
+        self._parent_id = new_parent.id if new_parent is not None else 0
+        is_3d = self.is_3d
+        new_space = new_aspects[1]
+        own_aspect = layer_source_aspect(self)
+        # The local matrix is `T(pos) . Sp^-1 . R . S . Sl . T(-anchor)`
+        # (`build_local_matrix`); undo the two aspect scalings to decompose
+        # the square-pixel `T(Sp pos) . R . S . T(-Sl anchor)`.
+        new_local = (
+            aspect_scale(new_space)
+            @ new_parent_inverse
+            @ child_world
+            @ aspect_scale(1.0 / own_aspect)
+        )
         # Maps a point from the old parent's space into the new one; used by
         # both keyframed-Position branches below.
         parent_remap = new_parent_inverse @ old_parent_world
 
-        # Decompose into AE transform components, keeping anchor fixed.
-        anchor = cast(
-            "list[float]", cast("Property", self.transform["ADBE Anchor Point"]).value
-        )
-
         transform = self.transform
+
+        def current(match_name: str) -> Any:
+            prop = cast("Property", transform[match_name])
+            return prop.value_at_time(time) if prop.keyframes else prop.value
+
+        # Decompose into AE transform components, keeping anchor fixed.
+        anchor = cast("list[float]", current("ADBE Anchor Point"))
+        square_anchor = [anchor[0] * own_aspect] + list(anchor[1:])
 
         # Position and scale come straight from the local matrix - neither
         # depends on how the rotation is split between Orientation and
         # Rotate X/Y/Z. `new_rz` is only used on the 2D path below, where the
         # orientation is divided out of the 3x3 first so it cannot leak into
         # the rotation (a layer switched from 3D to 2D can still carry one).
-        orientation = cast(
-            "list[float]", cast("Property", transform["ADBE Orientation"]).value
-        )
-        new_pos = decompose_transform(new_local, anchor)[0]
+        orientation = cast("list[float]", current("ADBE Orientation"))
+        new_pos = decompose_transform(new_local, square_anchor)[0]
+        new_pos = [new_pos[0] / new_space] + list(new_pos[1:])
         _, new_scale, new_rz, _, _ = decompose_transform(
-            strip_orientation(new_local, orientation), anchor
+            strip_orientation(new_local, orientation), square_anchor
         )
-        if new_scale[0] < 0:
+        if new_scale[0] < 0 and is_3d:
             # `decompose_transform` signals a mirrored basis by negating x
             # alone. AE spreads the flip across all three axes and keeps the
             # rotation proper: a parent scaled [-100, 100, 100] leaves the
-            # child at [-100, -100, -100] with Orientation [180, 0, 0].
+            # child at [-100, -100, -100] with Orientation [180, 0, 0]. A 2D
+            # layer has no Orientation to absorb that and keeps the x-only
+            # flip (AE 2026: a [-100, 100] child under a 150 % parent gets
+            # [-66.7, 66.7, 100]).
             new_scale = [-abs(component) for component in new_scale]
 
         def write_compensation(match_name: str, new_value: Any) -> None:
@@ -754,10 +917,10 @@ class Layer(PropertyGroup):
         # the layer 25 px out at one time and 62 px at another.
         scale_prop = cast("Property", transform["ADBE Scale"])
         if scale_prop.keyframes:
-            current = cast("list[float]", scale_prop.value)
+            scale_now = cast("list[float]", current("ADBE Scale"))
             factors = [
-                new_scale[axis] / current[axis]
-                if axis < len(current) and current[axis]
+                new_scale[axis] / scale_now[axis]
+                if axis < len(scale_now) and scale_now[axis]
                 else 1.0
                 for axis in range(len(new_scale))
             ]
@@ -803,9 +966,34 @@ class Layer(PropertyGroup):
         else:
             write_compensation("ADBE Position", new_pos)
 
-        rotation_delta = rotation_part(new_parent_world).inverse() @ rotation_part(
-            old_parent_world
-        )
+        if self._ldta.layer_type in (LayerType.CAMERA, LayerType.LIGHT):
+            # A camera or light keeps its point of interest in the Anchor
+            # Point slot, in its parent's space: AE 2026 remaps it like
+            # Position (a two-node camera's POI [900, 500, 0] under a null at
+            # [700, 400, -100] turned 30 degrees about Y became
+            # [123.2, 100, 186.6]).
+            poi = cast("Property", transform["ADBE Anchor Point"])
+            if poi.keyframes:
+                for kf in poi.keyframes:
+                    kf_value = cast("list[float]", kf.value)
+                    kf.value = parent_remap.transform_point(kf_value)[: len(kf_value)]
+            else:
+                remapped = parent_remap.transform_point(anchor)[: len(anchor)]
+                if remapped != anchor:
+                    poi.value = remapped
+            if rig_aims_at_poi(self):
+                # The look-at toward the remapped POI already turns the rig;
+                # AE leaves its Orientation alone.
+                return
+
+        if self.auto_orient == AutoOrientType.ALONG_PATH:
+            # The path, remapped with Position, carries the parent's turn;
+            # AE 2026 leaves the rotations alone (a 2D layer's Rotate Z and
+            # a 3D layer's Orientation, animated path or static).
+            return
+        rotation_delta = rotation_part(
+            square_pixels(new_parent_world, *new_aspects)
+        ).inverse() @ rotation_part(square_pixels(old_parent_world, *old_aspects))
         if not is_3d:
             # A 2D layer has no Orientation to use, so AE puts the rotation
             # into Rotate Z (measured: a 2D child under a 30-degree parent
@@ -896,15 +1084,24 @@ class Layer(PropertyGroup):
 
         return True
 
+    def _layer_relative(self, value: float) -> float:
+        """Layer time of a composition time written to the in or out point.
+
+        AE first snaps the time to the layer's tick grid, a tie rounding up
+        (measured on AE 2026: 2.5 / 24576 s becomes 3 / 24576 s on a 24 fps
+        layer, 1 / 36864 s stays put at 150 %).
+        """
+        timebase = self._layer_timebase()
+        snapped = math.floor(value * timebase + 0.5) / timebase
+        return (snapped - self._time_origin) / self._stretch_factor
+
     def _set_raw_in_point(self, value: float) -> None:
         """Write a new in_point (comp time) to the binary chunk."""
-        layer_relative = (value - self.start_time) / self._stretch_factor
-        self._ldta.in_point = layer_relative
+        self._ldta.in_point = self._layer_relative(value)
 
     def _set_raw_out_point(self, value: float) -> None:
         """Write a new out_point (comp time) to the binary chunk."""
-        layer_relative = (value - self.start_time) / self._stretch_factor
-        self._ldta.out_point = layer_relative
+        self._ldta.out_point = self._layer_relative(value)
 
     # ------------------------------------------------------------------
     # Structural mutations
@@ -962,32 +1159,59 @@ class Layer(PropertyGroup):
         Returns:
             The newly created [Layer][].
         """
-        return self.copy_to_comp(self.containing_comp)
+        return self._clone_into(self.containing_comp, duplicate=True)
 
     def copy_to_comp(self, into_comp: CompItem) -> Layer:
-        """Copy this layer into another composition.
+        """Copy this layer into a composition, as After Effects'
+        `copyToComp()` does.
 
-        If the target is the same as this layer's [containing_comp][], the
-        copy behaves like [duplicate][]: it is placed directly above the
-        original and preserves parent and track matte references.
-
-        If the target is a different composition, the copy is placed at the
-        top of the target layer stack and parent and track matte references
-        are cleared.
+        The copy is placed at the top of the target layer stack. Its parent
+        is cleared and its transform rewritten so it keeps its place (the
+        parent's transform at time 0 is baked in, whatever the playhead),
+        and the layers its effects reference are cleared - also when the
+        target is this layer's own [containing_comp][] (use [duplicate][]
+        to keep them). Into another composition the track matte and an
+        environment light's source are cleared too, and keyframe and
+        marker times are kept in seconds whatever the target's frame rate
+        (measured on AE 2026).
 
         Args:
             into_comp: The target [CompItem][].
         Returns:
             The newly created [Layer][] in the target composition.
         """
-        # Circular: parsers.layer -> models.layers.av_layer -> layer
-        from ...parsers.layer import parse_layer  # noqa: PLC0415
+        # Circular: models.items.composition -> models.layers -> layer
         from ..items.composition import CompItem  # noqa: PLC0415
 
         if not isinstance(into_comp, CompItem):
             raise ValueError("Target composition must be a CompItem.")
+        return self._clone_into(into_comp, duplicate=False)
+
+    def _clone_into(self, into_comp: CompItem, *, duplicate: bool) -> Layer:
+        """Clone this layer's chunks into `into_comp` and parse the copy:
+        a [duplicate][] (directly above, references kept) or a
+        [copy_to_comp][] (on top, references cleared)."""
+        # Circular: parsers.layer -> models.layers.av_layer -> layer
+        from ...parsers.layer import parse_layer  # noqa: PLC0415
 
         same_comp = into_comp is self.containing_comp
+        # Names before the copy joins the comp: it only clashes with others.
+        existing = {lyr.name for lyr in into_comp.layers}
+        old_timebase = self._layer_timebase()
+        # The copy keeps its place without its parent: AE bakes the parent's
+        # transform at time 0 into it, whatever the playhead (measured on
+        # AE 2026: a child at [960, 540] under a parent at [100, 100] with
+        # anchor [100, 50] lands at [960, 590]; with the playhead at 0.5 s,
+        # an animated parent is still taken at 0).
+        unparent = None
+        if not duplicate and self.parent is not None:
+            is_3d = self.is_3d
+            src_comp = self.containing_comp
+            unparent = (
+                build_world_matrix(self, 0.0, flatten_2d=not is_3d),
+                _parent_world(self.parent, 0.0, is_3d),
+                (src_comp.pixel_aspect, position_space_aspect(self.parent, src_comp)),
+            )
 
         # Clone the full layer block (LIST:Layr + trailing view chunks)
         src_start, src_end = self.containing_comp._layer_block_slice(self)
@@ -1011,13 +1235,21 @@ class Layer(PropertyGroup):
         rewrite_owner_tdpi(cloned_list, cloned_ldta.layer_id)
 
         # Determine chunk insertion point
-        if same_comp:
+        if duplicate:
             model_idx = into_comp._layers.index(self)
             chunk_idx = src_start
         else:
-            # Clear parent/matte when copying across compositions
+            # AE's copyToComp clears the parent and the effect layer
+            # references even within the same comp; the matte (a pre-AE 23
+            # record has no matte field and must stay that size) and an
+            # environment light's source only when they would point into
+            # another comp.
             cloned_ldta.parent_id = 0
-            cloned_ldta.matte_layer_id = 0
+            if not same_comp:
+                if cloned_ldta.matte_layer_id is not None:
+                    cloned_ldta.matte_layer_id = 0
+                if cloned_ldta.layer_type == LayerType.LIGHT:
+                    cloned_ldta.source_id = _no_source_id(into_comp)
             # A LAYER parameter (Set Matte, Layer Control, CC Sphere's light
             # layer, ...) names a layer of the SOURCE comp; left as-is the
             # destination comp cannot resolve it and AE refuses the whole file
@@ -1030,10 +1262,8 @@ class Layer(PropertyGroup):
             # layer's own stretch scales it, exactly as `_layer_timebase`
             # derives it - a 200 % layer counts ticks against twice the
             # comp's base.
-            stretch = abs(float(self.stretch or 100.0)) / 100.0
             rewrite_time_base(
-                cloned_list,
-                int(into_comp._cdta.internal_timebase * max(1.0, stretch)),
+                cloned_list, self._layer_timebase(into_comp._cdta.internal_timebase)
             )
             model_idx = 0
             if into_comp.layers:
@@ -1052,12 +1282,31 @@ class Layer(PropertyGroup):
 
         if not same_comp:
             self._carry_comp_relative_transform(new_layer)
+            # Keyframe ticks count against the layer's timebase; keep every
+            # key (markers included) at the same second, as AE does (a key
+            # at 1 s copied from 25 to 24 fps stays at 1 s).
+            new_layer._retime_to_layer_timebase(
+                old_timebase, new_layer._layer_timebase()
+            )
+        if unparent is not None:
+            # Unparented as in the source comp: the copy carries those values
+            # whatever the target's pixel aspect (AE 2026 keeps Scale 100
+            # copying into a 2:1 comp).
+            child_world, parent_world, old_aspects = unparent
+            source_aspect = old_aspects[0]
+            new_layer._compensate_reparent(
+                None,
+                child_world,
+                parent_world,
+                Mat4.identity(),
+                0.0,
+                old_aspects,
+                (source_aspect, source_aspect),
+            )
 
         # Increment user-defined name
-        if new_layer.is_name_set:
-            existing = {lyr.name for lyr in into_comp.layers}
-            if new_layer.name in existing:
-                new_layer.name = auto_name(new_layer.name, existing)
+        if new_layer.is_name_set and new_layer.name in existing:
+            new_layer.name = auto_name(new_layer.name, existing)
 
         into_comp._invalidate_layer_cache()
 

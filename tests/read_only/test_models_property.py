@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,25 @@ def _get_json_transform_properties(expected: dict, comp_name: str = "") -> list[
                 if group.get("matchName") == "ADBE Transform Group":
                     return group["properties"]
     return []
+
+
+def _json_values_by_match_name(expected: dict) -> dict:
+    """Map each property match name in an ExtendScript export to its value
+    (the first occurrence wins)."""
+    values: dict = {}
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            if node.get("propertyType") == "Property" and "matchName" in node:
+                values.setdefault(node["matchName"], node.get("value"))
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(expected)
+    return values
 
 
 def _get_mask_shape(layer) -> Property:  # type: ignore[type-arg]
@@ -117,6 +137,20 @@ class TestExpressions:
             if prop["matchName"] == "ADBE Rotate Z":
                 assert prop["expressionEnabled"] is True
                 assert prop["expression"] == "time * 36"
+
+
+class TestKeyframeLabel:
+    """Keyframe labels as After Effects stored them."""
+
+    def test_labels_set_by_after_effects(self) -> None:
+        """AE 2026 `setLabelAtKey(1, 5, 16)` on the first three Opacity keys
+        of keyframe_bezier_multi_ease_1D.aep, saved as keyframe_labels.aep."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "keyframe_labels.aep"), "TestComp"
+        )
+        opacity = _find_property(layer, "ADBE Opacity")
+        assert opacity is not None
+        assert [int(kf.label) for kf in opacity.keyframes] == [1, 5, 16, 0, 0]
 
 
 class TestKeyframes:
@@ -500,6 +534,49 @@ class TestEffectProperties:
                                 assert prop.value == 0
                                 return
         pytest.fail("S_BlurDirectional 'Matte from Layer' property not found")
+
+    def test_omitted_popup_takes_pard_default(self) -> None:
+        """A popup parameter absent from the effect instance holds the pard
+        default (s2 at 0x3E), not the cached value at 0x38: S_BlurDirectional
+        Edge Mode / Opacity cache 1 but default to 3 / 2, which is what
+        ExtendScript reports."""
+        project = parse_project(BUGS_DIR / "29.97_fps_time_scale_3.125.aep")
+        expected = load_expected(BUGS_DIR, "29.97_fps_time_scale_3.125")
+        json_values = _json_values_by_match_name(expected)
+        checked = 0
+        for comp in project.compositions:
+            for layer in comp.layers:
+                if layer.effects is None:
+                    continue
+                for effect in layer.effects:
+                    if effect.match_name != "S_BlurDirectional":
+                        continue
+                    for match_name in (
+                        "S_BlurDirectional-0063",
+                        "S_BlurDirectional-0068",
+                    ):
+                        prop = effect[match_name]
+                        assert prop.value == json_values[match_name]
+                        assert prop.is_modified is False
+                        checked += 1
+        assert json_values["S_BlurDirectional-0063"] == 3
+        assert json_values["S_BlurDirectional-0068"] == 2
+        assert checked
+
+    def test_omitted_point_takes_pard_default(self) -> None:
+        """An omitted point parameter is its pard default percentage of the
+        layer size: Path Text's 80 % x 50 % on a 100 x 100 layer reports
+        exactly [80, 50] in ExtendScript, not the cached 16.16 fraction
+        (0.79998779 x 100)."""
+        canvary = SAMPLES_DIR.parent.parent / "debug" / "canvary"
+        project = parse_project(canvary / "effects_canvary.aep")
+        expected = load_expected(canvary, "effects_canvary")
+        assert _json_values_by_match_name(expected)["ADBE Path Text-0020"] == [80, 50]
+        layer = get_layer(project, "type_null")
+        assert layer.effects is not None
+        prop = layer.effects["ADBE Path Text"]["ADBE Path Text-0020"]
+        assert prop.value == [80.0, 50.0]
+        assert prop.is_modified is False
 
     def test_mask_index_value(self) -> None:
         """MASK_INDEX effect property reads mask index from tdli chunk.
@@ -2249,3 +2326,109 @@ class TestEffectPointNormalization:
         # divisor itself: [width, height, height], not [width, height, 1] or
         # the comp size.
         assert point._effect_scale == [200.0, 100.0, 100.0]
+
+
+_MASK_LAYER_SPACE_PROBE: dict = json.loads(
+    (SAMPLES_DIR / "mask_layer_space_probe.json").read_text(encoding="utf-8")
+)
+
+
+class TestMaskLayerSpace:
+    """Mask Path values against AE 2026 (`mask_layer_space_probe.json`).
+
+    A fresh mask stores no path: AE reports the rectangle bounding the
+    layer's mask space - its source's size, a unit square on a text or
+    shape layer, where a stored path is kept in layer pixels.
+    """
+
+    @pytest.fixture(scope="class")
+    def comp(self):  # type: ignore[no-untyped-def]
+        project = parse_project(SAMPLES_DIR / "mask_layer_space.aep")
+        return get_comp(project, "MASK_LAYER_SPACE")
+
+    @pytest.mark.parametrize("key", sorted(_MASK_LAYER_SPACE_PROBE))
+    def test_mask_path_matches_ae(self, comp, key: str) -> None:  # type: ignore[no-untyped-def]
+        layer_name, mask_name = key.split("/")
+        expected = _MASK_LAYER_SPACE_PROBE[key]
+        layer = next(lay for lay in comp.layers if lay.name == layer_name)
+        mask = next(m for m in layer.masks.properties if m.name == mask_name)
+        # The fixture's fresh masks really are path-less.
+        assert (mask._mask_shape_tdsb is None) is (mask_name == "Mask 1")
+        mask_path = mask.property("ADBE Mask Shape")
+        assert mask_path.property_value_type == PropertyValueType.SHAPE
+        assert mask_path.can_set_expression is expected["canSetExpression"]
+        assert mask_path.can_vary_over_time is expected["canVaryOverTime"]
+        assert mask_path.is_modified is expected["isModified"]
+        shape = mask_path.value
+        assert shape.closed is expected["closed"]
+        for attr, name in (
+            ("vertices", "vertices"),
+            ("in_tangents", "inTangents"),
+            ("out_tangents", "outTangents"),
+        ):
+            got = [c for point in getattr(shape, attr) for c in point]
+            want = [c for point in expected[name] for c in point]
+            assert got == pytest.approx(want, abs=1e-4), attr
+
+
+def _rotobezier_cases() -> list[tuple[str, str, str | None]]:
+    """(fixture stem, mask name, sampled time / key or None for static)."""
+    cases: list[tuple[str, str, str | None]] = []
+    for stem in ("mask_rotobezier_shapes", "mask_rotobezier_tensions"):
+        probe = load_expected(SAMPLES_DIR, f"{stem}_probe")
+        for mask, value in sorted(probe.items()):
+            if "vertices" in value:
+                cases.append((stem, mask, None))
+            else:
+                cases.extend((stem, mask, sample) for sample in sorted(value))
+    return cases
+
+
+class TestRotoBezierTangents:
+    """A RotoBezier mask reports the tangents After Effects derives from its
+    vertices and per-vertex tensions, not its stored handles
+    (`resolvers.roto_bezier`). Ground truth: AE 2026 reading each fixture in
+    a fresh session (`<stem>_probe.json`). `mask_rotobezier_shapes` holds
+    AE-scripted masks (tension 1, zero tangents, except one converted from
+    handles at 1/3); `mask_rotobezier_tensions` is the same file with the
+    tensions and Mask Path aspects byte-patched per layer (mixed tensions,
+    aspect 1.0, missing tensions, a keyframe without tensions)."""
+
+    @pytest.mark.parametrize("stem,mask_name,sample", _rotobezier_cases())
+    def test_tangents_match_ae(
+        self, stem: str, mask_name: str, sample: str | None
+    ) -> None:
+        probe = load_expected(SAMPLES_DIR, f"{stem}_probe")
+        expected = probe[mask_name] if sample is None else probe[mask_name][sample]
+        comp = get_comp(parse_project(SAMPLES_DIR / f"{stem}.aep"), "ROTO")
+        mask = next(
+            m
+            for layer in comp.layers
+            for m in layer.masks.properties
+            if m.name == mask_name
+        )
+        assert mask.roto_bezier is True
+        mask_path = mask.property("ADBE Mask Shape")
+        if sample is None:
+            shape = mask_path.value
+        elif sample.startswith("key"):
+            shape = mask_path.keyframes[int(sample[3:]) - 1].value
+        else:
+            shape = mask_path.value_at_time(float(sample))
+        assert shape.closed is expected["closed"]
+        for attr, name in (
+            ("vertices", "vertices"),
+            ("in_tangents", "inTangents"),
+            ("out_tangents", "outTangents"),
+        ):
+            got = [c for point in getattr(shape, attr) for c in point]
+            want = [c for point in expected[name] for c in point]
+            assert got == pytest.approx(want, abs=1e-3), attr
+
+    def test_stale_aspect_sample_matches_extendscript(self) -> None:
+        # Tensions missing (1/3) and a Mask Path aspect of 1.0: AE measures
+        # the full-layer rectangle as a unit square (mask_rotobezier_on.json).
+        layer = get_first_layer(parse_project(SAMPLES_DIR / "mask_rotobezier_on.aep"))
+        shape = _get_mask_shape(layer).value
+        assert shape.in_tangents[0] == pytest.approx([452.5483, -254.5584], abs=1e-3)
+        assert shape.out_tangents[3] == pytest.approx([-452.5483, -254.5584], abs=1e-3)

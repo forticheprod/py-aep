@@ -15,7 +15,14 @@ from attrs import Factory, define
 from .bin_utils import read_bytes, write_bytes
 from .bitfield import BitField
 from .chunk import Chunk, ContainerChunk
-from .fmt_field import bool_field, f8_field, u1_field, u2_field, u4_field, u8_field
+from .fmt_field import (
+    bool_field,
+    bytes_field,
+    f8_field,
+    u1_field,
+    u2_field,
+    u4_field,
+)
 from .registry import register
 from .scalar_chunks import Utf8Chunk, _StringChunkBase
 from .utils import find_by_type
@@ -48,7 +55,11 @@ class TdsbChunk(Chunk):
     _enable_flags: int = u1_field(default=1, repr=False)
 
     # -- Bit-level accessors (not attrs fields) ----------------------------
-    locked_ratio = BitField("_lock_flags", 4)
+    ratio_unlinked = BitField("_lock_flags", 5)
+    """Set when a Scale or Mask Feather's dimensions are unlinked (its
+    constrain-proportions switch off). Clear on new layers; in AE-saved
+    projects only those two streams carry it, mostly on non-uniform
+    values."""
     dimensions_separated = BitField("_lock_flags", 3)
     """Whether a separation leader's dimensions are split.
 
@@ -92,15 +103,14 @@ class TdsbChunk(Chunk):
 #   H   pad6b
 #   B   pad6c
 #   B   animated
-#   I   pad7a
-#   I   pad7b
-#   H   pad7c
+#   3s  pad
+#   I   reserved_48
+#   B   reserved_4c
+#   B   reserved_4d
+#   B   pad
 #   B   spatial_marker
-#   I   pad7d
-#   Q   pad8a
-#   Q   pad8b
-#   Q   pad8c
-#   Q   pad8d
+#   I   pad
+#   4d  reserved_54 / 5c / 64 / 6c
 #   H   pad9a
 #   B   pad9b
 #   B   expression_disabled flags
@@ -125,7 +135,8 @@ class Tdb4Chunk(Chunk):
     _time_base: int = u4_field(repr=False)
     """Keyframe time units per second for the OWNING LAYER.
 
-    `floor(cdta.internal_timebase * max(1, |layer.stretch| / 100))` - a full
+    `layer_timebase(cdta.internal_timebase, layer.stretch / 100)` (see
+    `composition_chunks.layer_timebase`) - a full
     32-bit field, not a 16-bit one: a 300 % stretched layer at 24 fps stores
     73728 (0x00012000), which does not fit in two bytes (measured on AE 2026
     across 50 / 101 / 150 / 300 / -150 % stretch)."""
@@ -150,15 +161,24 @@ class Tdb4Chunk(Chunk):
     _pad6b: int = u2_field(repr=False)
     _pad6c: int = u1_field(repr=False)
     animated: bool = bool_field()
-    _pad7a: int = u4_field(repr=False)
-    _pad7b: int = u4_field(repr=False)
-    _pad7c: int = u2_field(repr=False)
-    _spatial_marker: bool = bool_field(repr=False)
-    _pad7d: int = u4_field(repr=False)
-    _pad8a: int = u8_field(repr=False)
-    _pad8b: int = u8_field(repr=False)
-    _pad8c: int = u8_field(repr=False)
-    _pad8d: int = u8_field(repr=False)
+    _pad_45: bytes = bytes_field(3, repr=False)
+    _reserved_48: int = u4_field(repr=False)
+    """A time in timebase units, or 0x80000000, in the samples."""
+    _reserved_4c: int = u1_field(repr=False)
+    _reserved_4d: int = u1_field(repr=False)
+    _pad_4e: int = u1_field(repr=False)
+    _spatial_marker: int = u1_field(repr=False)
+    """Byte 0x4F, the keyframe record's key flags: non-zero (bit 0) on a
+    spatial stream. Kept as the whole byte, not a `bool`: After Effects
+    writes 0x07 on the Transform effect's points in some production
+    projects, and coercing it to 1 changed those bytes as soon as their
+    layer was read."""
+    _pad_50: int = u4_field(repr=False)
+    # Four doubles: 0.0 in the samples, 0x5C / 0x6C sometimes 0.16666666667.
+    _reserved_54: float = f8_field(repr=False)
+    _reserved_5c: float = f8_field(repr=False)
+    _reserved_64: float = f8_field(repr=False)
+    _reserved_6c: float = f8_field(repr=False)
     _pad9a: int = u2_field(repr=False)
     _pad9b: int = u1_field(repr=False)
     _expr_flags: int = u1_field(repr=False)
@@ -187,15 +207,15 @@ class Tdb4Chunk(Chunk):
 # ---------------------------------------------------------------------------
 # tdb4 state-template helpers
 #
-# These encode AE's exact animated / static field sets for the three
-# property classes (color / spatial / plain numeric).  They are free
-# functions rather than methods because the business logic lives in the
-# model layer; chunk classes are data containers.
+# The animated helper encodes AE's animated field sets for the three
+# property classes (color / spatial / plain numeric); the static helper
+# encodes AE's animated -> static transition. They are free functions
+# rather than methods because the business logic lives in the model layer;
+# chunk classes are data containers.
 #
-# Both helpers were reverse-engineered from AE 2026 output across 1D /
-# 2D / 3D / spatial / color property pairs; `_animate_tdb4` and
-# `_static_tdb4` in property.py are the primary callers and must match
-# these tables exactly.
+# Both were measured on AE 2026 output across 1D / 2D / 3D / spatial /
+# color properties; `_animate_tdb4` and `_static_tdb4` in property.py are
+# the callers.
 # ---------------------------------------------------------------------------
 
 
@@ -239,38 +259,49 @@ def tdb4_apply_animated_template(t: Tdb4Chunk, *, color: bool, spatial: bool) ->
         t._pad2a = 0
 
 
-def tdb4_apply_static_template(t: Tdb4Chunk, *, color: bool, spatial: bool) -> None:
-    """Apply AE's static-property tdb4 field set in-place.
+def tdb4_clear_keyframe_record(t: Tdb4Chunk) -> None:
+    """Zero the keyframe record a static stream keeps (0x48-0x73), as AE
+    does on every animated stream."""
+    t._reserved_48 = t._reserved_4c = t._reserved_4d = t._pad_4e = 0
+    t._spatial_marker = False
+    t._pad_50 = 0
+    t._reserved_54 = t._reserved_5c = t._reserved_64 = t._reserved_6c = 0.0
 
-    Inverse of `tdb4_apply_animated_template`: restores the fields to the static
-    state AE writes when a property has no keyframes.  `_type_flags` is
-    intentionally left unchanged because its non-`animated` bits
-    (vector / color) are property-intrinsic.
+
+def tdb4_apply_static_template(
+    t: Tdb4Chunk,
+    *,
+    in_interpolation: int,
+    out_interpolation: int,
+    spatial_flags: int,
+) -> None:
+    """Apply AE's animated -> static transition in-place (the last keyframe
+    was removed).
+
+    AE sets the static bit, clears the animated flag, sets the record's
+    key-flag bit 0 (0x4F) when the stream flags have bit 1, and stores the
+    removed keyframe's in/out interpolation (0x4C/0x4D) and spatial flags
+    (0x50); every other byte keeps its animated value - category,
+    value-hint and cvot bytes and time base included (measured on AE 2026
+    for Position, Scale, Rotation, Opacity, an effect colour, a mask path
+    and a shape group's Position and Fill Color). Restoring the bytes of a
+    never-animated stream instead makes AE ignore the static value: a layer
+    or shape Position reads back at its default and a shape Fill Color
+    fails to evaluate.
 
     Args:
         t: The `Tdb4Chunk` to mutate.
-        color: `True` for color properties.
-        spatial: `True` for spatial (position / point) properties.
+        in_interpolation: The removed keyframe's in interpolation code.
+        out_interpolation: The removed keyframe's out interpolation code.
+        spatial_flags: The removed keyframe's spatial flags (0 for a
+            non-spatial keyframe).
     """
+    t.static = True
     t.animated = False
-    t._cvot_flags = 0x02
-    t._value_hint_flag = 0
-    t._value_hint_type = 0
-    # Do NOT zero _time_base: AE always keeps the comp-frame-rate-derived
-    # divisor (round(fps*1024)) on static numeric props and uses it as a
-    # ratio denominator - 0 triggers "zero denominator converting ratio
-    # denominators" on open. De-animation always follows _animate_tdb4
-    # (which set a non-zero _time_base), so preserving it is safe.
-    t._property_category = 0
-    if color:
-        t._spatial_static_flags = 6
-        t._pad2a = 1
-    elif spatial:
-        t._spatial_static_flags = 9
-        t._pad2a = 0
-    else:
-        t._spatial_static_flags = 1
-        t._pad2a = 0
+    t._spatial_marker = bool(t._spatial_static_flags & 0x02)
+    t._reserved_4c = in_interpolation
+    t._reserved_4d = out_interpolation
+    t._pad_50 = spatial_flags
 
 
 def tdb4_apply_vf_axis_template(t: Tdb4Chunk) -> None:
@@ -358,8 +389,10 @@ class TdumChunk(Chunk):
 
     Layout depends on sibling tdb4 flags:
     - color: 4 x f4 (big-endian floats)
-    - integer: 1 x u4 (big-endian uint32)
-    - otherwise: N x f8 (big-endian doubles, N = size / 8)
+    - integer with a 4-byte body: 1 x u4 (big-endian uint32)
+    - otherwise: N x f8 (big-endian doubles, N = size / 8). After Effects
+      writes integer-flagged bounds as doubles too: every one of the 47652
+      in the sample corpus is 8 bytes.
     """
 
     values: list[float] = Factory(list)
@@ -383,11 +416,13 @@ class TdumChunk(Chunk):
         if is_color:
             vals = list(struct.unpack(">4f", raw[:16]))
             trailing = raw[16:]
-        elif is_integer:
+        elif is_integer and size < 8:
             (v,) = struct.unpack(">I", raw[:4])
             vals = [float(v)]
             trailing = raw[4:]
         else:
+            # Read as a u4, a double's high word turned 100.0 into 1079574528.
+            is_integer = False
             count = size // 8
             vals = list(struct.unpack(f">{count}d", raw[: count * 8]))
             trailing = raw[count * 8 :]

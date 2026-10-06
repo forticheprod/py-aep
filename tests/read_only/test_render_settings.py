@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import parse_project
+from conftest import load_expected, parse_project
 
 from py_aep.enums import PostRenderAction
 
@@ -338,6 +338,26 @@ class TestOutputModuleSettings:
         settings = project.render_queue.items[0].output_modules[0].settings
 
         assert settings["Output Audio"] == expected_output_audio
+
+    def test_audio_settings_match_after_effects(self) -> None:
+        # One render queue item per audio edit chain, made by After Effects
+        # (scripts/jsx/generate_audio_settings_matrix.jsx); the JSON holds
+        # AE's own getSettings() for each item.
+        project = parse_project(OM_SAMPLES_DIR / "audio_settings_matrix.aep")
+        expected = load_expected(OM_SAMPLES_DIR, "audio_settings_matrix")
+        keys = (
+            "Output Audio",
+            "Audio Bit Depth",
+            "Audio Channels",
+            "Audio Sample Rate",
+        )
+        items = expected["renderQueue"]["items"]
+        assert len(items) == len(project.render_queue.items)
+        for rqi, rqi_json in zip(project.render_queue.items, items):
+            settings = rqi.output_modules[0].settings
+            want = rqi_json["outputModules"][0]["settings"]
+            got = {k: int(settings[k]) for k in keys}
+            assert got == {k: want[k] for k in keys}, rqi_json["outputModules"][0]
 
     def test_audio_mono(self) -> None:
         """Test mono audio channel."""

@@ -57,6 +57,9 @@ IDENTITY = Affine()
 _FUNC_RE = re.compile(r"([a-zA-Z]+)\s*\(([^)]*)\)")
 
 
+_FUNCTIONS = frozenset({"matrix", "translate", "scale", "rotate", "skewX", "skewY"})
+
+
 def _numbers(text: str) -> list[float]:
     return [float(m) for m in NUMBER_RE.findall(text)]
 
@@ -72,7 +75,9 @@ def parse_transform(value: str) -> Affine:
         value: The `transform` attribute string.
 
     Returns:
-        The composed transform (identity for an empty string).
+        The composed transform (identity for an empty string, and for a
+        malformed list: a known function with the wrong number of
+        arguments or a non-finite one).
 
     Raises:
         UnsupportedSVGError: For an unknown transform function.
@@ -82,12 +87,24 @@ def parse_transform(value: str) -> Affine:
         return result
     for name, args in _FUNC_RE.findall(value):
         nums = _numbers(args)
+        if name not in _FUNCTIONS:
+            raise UnsupportedSVGError(f"Unsupported transform function: {name!r}")
+        if (
+            not all(math.isfinite(x) for x in nums)
+            or (name == "matrix" and len(nums) != 6)
+            or (name in ("skewX", "skewY") and not nums)
+        ):
+            # An attribute in error is ignored as a whole (SVG 1.1 7.6); AE
+            # 2026 imports a `matrix(1 0 0 1)` group untransformed.
+            return IDENTITY
         result = result.multiply(_single_transform(name, nums))
     return result
 
 
 def _single_transform(name: str, n: list[float]) -> Affine:
-    if name == "matrix" and len(n) == 6:
+    """One transform function, its name and argument count already checked
+    by `parse_transform`."""
+    if name == "matrix":
         return Affine(n[0], n[1], n[2], n[3], n[4], n[5])
     if name == "translate":
         tx = n[0] if n else 0.0
@@ -106,8 +123,6 @@ def _single_transform(name: str, n: list[float]) -> Affine:
             # translate(cx,cy) . rotate . translate(-cx,-cy)
             return Affine(e=cx, f=cy).multiply(rot).multiply(Affine(e=-cx, f=-cy))
         return rot
-    if name == "skewX" and n:
+    if name == "skewX":
         return Affine(c=math.tan(math.radians(n[0])))
-    if name == "skewY" and n:
-        return Affine(b=math.tan(math.radians(n[0])))
-    raise UnsupportedSVGError(f"Unsupported transform function: {name!r}")
+    return Affine(b=math.tan(math.radians(n[0])))  # skewY

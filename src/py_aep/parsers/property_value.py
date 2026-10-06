@@ -113,11 +113,7 @@ def parse_property(
     except ChunkNotFoundError:
         tduM = None
 
-    keyframes = _parse_keyframes(
-        tdbs_child_chunks,
-        composition.time_scale,
-        frame_rate=composition.frame_rate,
-    )
+    keyframes = _parse_keyframes(tdbs_child_chunks, frame_rate=composition.frame_rate)
 
     # Resolve _name_utf8 from the LIST:tdbs tdsn child.
     tdsn = cast("TdsnChunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdsn"))
@@ -146,14 +142,12 @@ def parse_property(
 
 def _parse_keyframes(
     tdbs_child_chunks: list[Chunk],
-    time_scale: float,
     frame_rate: float,
 ) -> list[Keyframe]:
     """Parse keyframes from a property's child chunks.
 
     Args:
         tdbs_child_chunks: The child chunks of the TDBS chunk.
-        time_scale: The time scale of the parent composition.
         frame_rate: The frame rate of the parent composition.
     """
     try:
@@ -170,11 +164,4 @@ def _parse_keyframes(
 
     kf_items = ldat.items
 
-    return [
-        Keyframe(
-            _ldat_item=kf,
-            _time_scale=time_scale,
-            _frame_rate=frame_rate,
-        )
-        for kf in kf_items
-    ]
+    return [Keyframe(_ldat_item=kf, _frame_rate=frame_rate) for kf in kf_items]

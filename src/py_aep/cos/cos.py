@@ -340,15 +340,14 @@ class CosParser:
         raise SyntaxError(msg)
 
     def get_char(self) -> bytes | None:
-        if self.max_pos is None:
-            return self.file.read(1)
-
-        if self.max_pos <= 0:
-            return None
-
-        char = self.file.read(1)
-        self.max_pos -= 1
-        return char
+        if self.max_pos is not None:
+            if self.max_pos <= 0:
+                return None
+            self.max_pos -= 1
+        # `read(1)` gives `b""` at the end of the data. Every lexer loop stops
+        # on `None`, so passing `b""` on spun them forever on a truncated
+        # document (an empty byte also matched `in b".+-"` as a number start).
+        return self.file.read(1) or None
 
     def unget(self) -> None:
         self.file.seek(-1, io.SEEK_CUR)
@@ -437,17 +436,27 @@ class CosParser:
         elif char != b"\n":
             raise SyntaxError("Expected newline after `stream`")
 
-        stream = b""
+        # Read in blocks up to the first `endstream`: a byte at a time (with a
+        # growing bytes object) took seconds for a 0.5 MB embedded ICC profile.
         marker = b"endstream"
+        stream = bytearray()
         while True:
-            char = self.get_char()
-            if char is None:
+            size = 65536 if self.max_pos is None else min(65536, self.max_pos)
+            block = self.file.read(size) if size > 0 else b""
+            if not block:
                 raise SyntaxError("Unterminated stream")
-            stream += char
-            if stream.endswith(marker):
-                break
-
-        return Token(TokenType.Stream, stream[: -len(marker)])
+            if self.max_pos is not None:
+                self.max_pos -= len(block)
+            search_from = max(0, len(stream) - len(marker) + 1)
+            stream += block
+            end = stream.find(marker, search_from)
+            if end >= 0:
+                # Give back what was read past the marker.
+                extra = len(stream) - end - len(marker)
+                self.file.seek(-extra, io.SEEK_CUR)
+                if self.max_pos is not None:
+                    self.max_pos += extra
+                return Token(TokenType.Stream, bytes(stream[:end]))
 
     def lex_string(self) -> Token:
         # Read the entire string content first

@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import math
 import uuid
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Iterator, List, Mapping, cast
 
-from ...ae_version import requires_version
+from ...ae_version import ae_writes, get_ae_version_major, requires_version
 from ...binary.chunk import Chunk, DeferredListChunk, ListChunk
 from ...binary.comp_skeleton import (
+    _duration_units,
+    _frame_units,
     build_cps2,
     build_item_view_chunks,
     build_layer_view_block,
     build_new_comp_item,
 )
-from ...binary.composition_chunks import CdtaChunk
-from ...binary.item_chunks import IdtaChunk, IideChunk
+from ...binary.composition_chunks import (
+    WORK_AREA_TO_END,
+    CdtaChunk,
+    frame_grid,
+    layer_timebase,
+    rescale_ticks,
+)
+from ...binary.item_chunks import IdtaChunk
 from ...binary.layer_chunks import (
     _LDTA_SOURCE_ID_END,
     _LDTA_SOURCE_ID_OFFSET,
@@ -41,7 +51,14 @@ from ...binary.property_chunks import (
     TdsbChunk,
     TdsnChunk,
 )
-from ...binary.scalar_chunks import F8Chunk, S4Chunk, U1Chunk, U4Chunk, Utf8Chunk
+from ...binary.scalar_chunks import (
+    F8Chunk,
+    S4Chunk,
+    U1Chunk,
+    U4Chunk,
+    U4LeChunk,
+    Utf8Chunk,
+)
 from ...binary.utils import (
     ChunkNotFoundError,
     block_slice,
@@ -89,9 +106,10 @@ from ..text.text_document import TextDocument
 from ..validators import (
     _validate_number,
     validate_box_size,
+    validate_comp_duration,
+    validate_comp_frame_rate,
     validate_duration,
     validate_footage_dimension,
-    validate_frame_rate,
     validate_name,
     validate_one_of,
     validate_pixel_aspect,
@@ -140,6 +158,57 @@ _LAYER_BOUNDARY_TYPES = frozenset({"Layr", "DLay", "SLay", "CLay", "SecL", "CIFO
 
 _validate_renderer = validate_one_of(list(_RENDERER_EXTENDSCRIPT_TO_BINARY.keys()))
 
+# The NTSC internal timebase (23.976, 29.97, 59.94 fps and their multiples).
+_NTSC_TIMEBASE = 23976
+
+# On the NTSC timebase AE keeps a display start stored as a float32 time
+# (`displayStartTime = 52 / 29.97`) on the frame it is a hair past: 1/10000
+# of a frame is the best fit to 490 such starts per rate measured on AE 2026
+# (472 match; AE's own rounding of the rest is not reproduced). On every other
+# timebase the same measurement is exact with no tolerance.
+_NTSC_FRAME_TOLERANCE = Fraction(1, 10000)
+
+
+def _grid(cdta: CdtaChunk) -> tuple[int, int]:
+    """The composition's frame grid: `(timebase, units per frame)` from its
+    frame rate (`frame_grid`), as AE derives it on open. The stored 16.16
+    rate only approximates the grid's rate (29.970001220703125 for 23976 /
+    800), so comp times snap to the grid, never to the 16.16 value."""
+    return frame_grid(cdta.frame_rate)
+
+
+def _grid_rate(cdta: CdtaChunk) -> float:
+    """Frames per second of the composition's frame grid."""
+    timebase, units_per_frame = _grid(cdta)
+    return timebase / units_per_frame
+
+
+def _frame_number(cdta: CdtaChunk, dividend: int, divisor: int) -> int:
+    """The frame a stored comp time falls on, as After Effects reports
+    `displayStartFrame` / `frameTime`.
+
+    AE counts the time in exact timebase units and rounds the frame count
+    away from zero (measured on AE 2026 over 2900 display starts at 24, 25,
+    30, 12.5 and 7.3 fps: 1/24 s stored as float32 0.0416666679 is frame 2,
+    -0.51 s at 24 fps frame -13), with `_NTSC_FRAME_TOLERANCE` on the NTSC
+    timebase. Counting in whole units keeps 246 frames at 29.97 fps on 246,
+    where the 16.16 rate reads 246.00001.
+    """
+    timebase, units_per_frame = _grid(cdta)
+    frames = Fraction(dividend, divisor) * timebase / units_per_frame
+    magnitude = abs(frames)
+    if timebase == _NTSC_TIMEBASE:
+        magnitude -= _NTSC_FRAME_TOLERANCE
+    whole = max(math.ceil(magnitude), 0)
+    return whole if frames >= 0 else -whole
+
+
+# Top-level layer groups not every release writes: (match name, part).
+_VERSION_GATED_GROUPS = (
+    ("ADBE Layer Sets", "layer sets"),
+    ("ADBE Source Options Group", "source options"),
+)
+
 
 def _materialize_layer(layer: Layer) -> None:
     """Materialize properties for a newly created layer.
@@ -183,8 +252,19 @@ def _materialize_layer(layer: Layer) -> None:
             elif isinstance(child, Property):
                 _materialize_prop(child, in_transform)
 
+    ae_major = get_ae_version_major(layer)
+    # Groups the project's release does not write for a new layer (they
+    # stay synthesized, as when reading that release's own files).
+    unwritten = {
+        match_name
+        for match_name, part in _VERSION_GATED_GROUPS
+        if not ae_writes(part, ae_major)
+    }
+
     for top in layer.properties:
         if isinstance(top, PropertyGroup):
+            if top.match_name in unwritten:
+                continue
             if top.match_name in _OMITTED_EMPTY_GROUPS and not top.properties:
                 continue
             _materialize_tree(top)
@@ -199,12 +279,18 @@ def _materialize_layer(layer: Layer) -> None:
         if (
             isinstance(top, PropertyGroup)
             and top.match_name == "ADBE Source Options Group"
+            and top.match_name not in unwritten
         ):
             for child in top.properties:
                 if child.match_name == "ADBE Layer Source Alternate" and isinstance(
                     child, Property
                 ):
-                    child._ensure_materialized()
+                    if ae_writes("source alternate value", ae_major):
+                        child._ensure_materialized()
+                    elif child._tdmn is not None:
+                        # AE 22 writes the match name (then blsv/blsi) but
+                        # no value.
+                        child._tdmn.synthetic = False
             break
 
     _insert_layer_skeleton_extras(layer)
@@ -493,15 +579,15 @@ class CompItem(AVItem):
         it every keyframe time in the composition. After Effects keeps
         keyframe times fixed in *seconds* across a frame-rate change and
         stores them as an integer count of `internal_timebase` units, so the
-        stored counts are rescaled to match. Composition duration and work
-        area are requantized onto the new frame grid; layer timing and
-        nested compositions are left untouched.
+        stored counts are rescaled to match. Composition duration, work area
+        and current time are requantized onto the new frame grid; layer
+        timing and nested compositions are left untouched.
         """
         return cast("float", self._cdta.frame_rate)
 
     @frame_rate.setter
     def frame_rate(self, value: float) -> None:
-        validate_frame_rate(value)
+        validate_comp_frame_rate(value)
         cdta = self._cdta
         if cdta.frame_rate == value:
             # A no-op write must stay a no-op: retiming an already-consistent
@@ -512,7 +598,7 @@ class CompItem(AVItem):
         # (CdtaChunk._update_timebase), so capture the old base first.
         cdta.frame_rate = value
         self._retime_to_timebase(old_timebase, cdta.internal_timebase)
-        self._requantize_comp_timing(value)
+        self._requantize_comp_timing()
 
     def _walk_properties(self) -> Iterator[Property]:
         """Every `Property` under this comp's layers, plus its markers.
@@ -524,8 +610,9 @@ class CompItem(AVItem):
 
         for layer in self.layers:
             yield from layer._leaf_properties()
-        if self._marker_property is not None:
-            yield self._marker_property
+        # Through the property: the comp's markers are parsed on first access.
+        if self.marker_property is not None:
+            yield self.marker_property
 
     def _retime_to_timebase(self, old: int, new: int) -> None:
         """Rescale keyframe times and restamp per-property timebases.
@@ -533,68 +620,129 @@ class CompItem(AVItem):
         `seconds = time_units / internal_timebase`, so holding a keyframe at
         the same time in seconds means scaling its stored unit count by
         `new / old`. That ratio is 1 whenever only `time_scale` moved - the
-        whole NTSC family, and 30 <-> 60 - but the cached conversion factors
-        on each `Keyframe` still have to be refreshed, because `frame_time`
-        is derived from `time_scale`.
+        whole NTSC family, and 30 <-> 60 - but the frame rate cached on each
+        `Keyframe` still has to be refreshed, because `frame_time` is derived
+        from it.
 
         Every property's `tdb4` also carries the comp's timebase, and AE
         rejects a file whose copy is wrong ("zero denominator converting
         ratio denominators").
+
+        A stretched layer's ticks count against its own timebase
+        (`layer_timebase`), so they scale by that ratio instead: 1 for a
+        layer at the 115200 cap. A tie rounds up. Both measured on AE 2026
+        going from 24 to 25 fps: ticks 12 and -84 became 13 and -87, and a
+        500 % layer's ticks did not move.
         """
         rescale = new != old and old > 0
-        time_scale = self.time_scale
         frame_rate = self._cdta.frame_rate
         for prop in self._walk_properties():
             if prop._is_live():
                 prop._ensure_time_base()
+            prop_old = prop_new = 0
+            if rescale:
+                stretch = prop._time_stretch
+                prop_old = layer_timebase(old, stretch)
+                prop_new = layer_timebase(new, stretch)
             for keyframe in prop.keyframes:
-                if rescale:
+                if prop_old != prop_new:
                     item = keyframe._ldat_item
-                    item.time_units = round(item.time_units * new / old)
-                keyframe._time_scale = time_scale
+                    item.time_units = rescale_ticks(item.time_units, prop_old, prop_new)
                 keyframe._frame_rate = frame_rate
 
-    def _requantize_comp_timing(self, frame_rate: float) -> None:
-        """Snap comp duration and work area onto the new frame grid.
+    def _requantize_comp_timing(self) -> None:
+        """Snap comp duration, work area and current time onto the new
+        frame grid.
 
-        AE rounds rather than truncates: a 253-frame 24 fps comp becomes 264
-        frames at 25 fps, where truncation would give 263. Layer in / out /
-        start times are not requantized.
+        AE rounds to the nearest frame, half a frame up: a 253-frame 24 fps
+        comp becomes 264 frames at 25 fps, a 12-frame one 13 frames. Each
+        time is stored in whole units of the new timebase. The work area's
+        start and end snap independently and its duration follows from them
+        (61 frames from frame 12 at 24 fps become 63 at 25 fps, not the 64
+        its duration alone would round to), then everything is kept inside
+        the comp (`_keep_times_inside`). Measured on AE 2026. Display start
+        and layer in / out / start times are not requantized.
         """
         cdta = self._cdta
+        timebase, units_per_frame = _grid(cdta)
+        # The work area's end reads through its start and the duration, so
+        # take it in seconds before either is rewritten. 0xFFFFFFFF means
+        # "the work area runs to the end of the comp": that end already
+        # follows `duration`, and writing one would pin it.
+        runs_to_end = cdta.work_area_end_dividend == WORK_AREA_TO_END
+        work_area_end = cdta.work_area_start + cdta.work_area_duration
 
-        def on_grid(seconds: float) -> float:
-            return round(seconds * frame_rate) / frame_rate
-
-        # 0xFFFFFFFF means "the work area runs to the end of the comp": that
-        # end already follows `duration`, and writing a duration would pin it
-        # to a fixed one. The START is stored either way, so it is snapped
-        # either way.
-        end_is_pinned = cdta.work_area_end_dividend != 0xFFFFFFFF
-        work_area_start = cdta.work_area_start
-        work_area_duration = cdta.work_area_duration
-
-        cdta.duration = on_grid(cdta.duration)
-        cdta.work_area_start = on_grid(work_area_start)
-        if not end_is_pinned:
-            return
-        cdta.work_area_duration = max(
-            0.0, min(on_grid(work_area_duration), cdta.duration - cdta.work_area_start)
+        cdta.duration_dividend = _duration_units(
+            cdta.duration, timebase, units_per_frame
         )
+        cdta.duration_divisor = timebase
+        self._restore_times_in_timebase()
+        if not runs_to_end:
+            cdta.work_area_end_dividend = _frame_units(
+                work_area_end, timebase, units_per_frame
+            )
+            cdta.work_area_end_divisor = timebase
+        self._keep_times_inside()
 
-    duration = ChunkField[float]("_cdta", "duration", validate=validate_duration)
-    """The duration of the item in seconds. Read / Write."""
+    def _keep_times_inside(self) -> None:
+        """Pull the current time and the work area back inside the comp.
 
-    frame_duration = ChunkField[int](
-        "_cdta",
-        "frame_duration",
-        validate=_validate_number(
-            min=1,
-            max=lambda self: int(self.duration * self.frame_rate),
-            integer=True,
-        ),
-    )
-    """The duration of the item in frames. Read / Write."""
+        Measured on AE 2026 after a duration or frame-rate change: a current
+        time or a work-area start at or past the end moves to the last frame
+        (a 5 s start in a comp cut to 4 s becomes 3.9583 s, one frame long),
+        and a work-area end at or past the end becomes "runs to the end"
+        (0xFFFFFFFF). Expects the duration, the time and the work-area start
+        stored in units of the timebase.
+        """
+        cdta = self._cdta
+        timebase, units_per_frame = _grid(cdta)
+        end_of_comp = round(cdta.duration * timebase)
+        last_frame = end_of_comp - units_per_frame
+        if cdta.time_dividend > last_frame:
+            cdta.time_dividend = last_frame
+        if cdta.work_area_start_dividend > last_frame:
+            cdta.work_area_start_dividend = last_frame
+            cdta.work_area_end_dividend = WORK_AREA_TO_END
+        elif cdta.work_area_end_dividend != WORK_AREA_TO_END and (
+            Fraction(cdta.work_area_end_dividend, cdta.work_area_end_divisor) * timebase
+            >= end_of_comp
+        ):
+            cdta.work_area_end_dividend = WORK_AREA_TO_END
+            cdta.work_area_end_divisor = timebase
+
+    @property
+    def duration(self) -> float:
+        """The duration of the item in seconds. Read / Write.
+
+        Writing snaps the value to the nearest frame, half a frame rounding
+        up, as After Effects does. A value under half a frame becomes one
+        frame, where After Effects would store a zero-length composition.
+        A current time or work area that the new duration leaves outside the
+        composition moves inside it, as in After Effects.
+        """
+        return self._cdta.duration
+
+    @duration.setter
+    def duration(self, value: float) -> None:
+        validate_comp_duration(value)
+        cdta = self._cdta
+        timebase, units_per_frame = _grid(cdta)
+        cdta.duration_dividend = _duration_units(value, timebase, units_per_frame)
+        cdta.duration_divisor = timebase
+        # AE also re-stores the time and work-area start over the timebase
+        # on a duration write (a 0/600 time becomes 0/24576 at 24 fps).
+        self._restore_times_in_timebase()
+        self._keep_times_inside()
+
+    @property
+    def frame_duration(self) -> int:
+        """The duration of the item in frames. Read / Write."""
+        return self._cdta.frame_duration
+
+    @frame_duration.setter
+    def frame_duration(self, value: int) -> None:
+        _validate_number(min=1, integer=True)(value)
+        self.duration = value / _grid_rate(self._cdta)
 
     pixel_aspect = ChunkField[float](
         "_cdta", "pixel_aspect", validate=validate_pixel_aspect
@@ -607,92 +755,181 @@ class CompItem(AVItem):
     display_start_time = ChunkField[float](
         "_cdta",
         "display_start_time",
-        validate=_validate_number(min=-10800.0, max=86339.0),
+        # AE 2026's own bounds ("out of range -10800 to 86400").
+        validate=_validate_number(min=-10800.0, max=86400.0),
+        post_set="_restore_times_in_timebase",
     )
     """The time set as the beginning of the composition, in seconds. This
     is the equivalent of the Start Timecode or Start Frame setting in the
     Composition Settings dialog box. Read / Write."""
 
-    display_start_frame = ChunkField[int](
-        "_cdta",
-        "display_start_frame",
-        validate=_validate_number(
-            min=lambda self: int(-10800.0 * self.frame_rate),
-            max=lambda self: int(86339.0 * self.frame_rate),
+    @property
+    def display_start_frame(self) -> int:
+        """The frame value of the beginning of the composition. Read / Write."""
+        cdta = self._cdta
+        return _frame_number(
+            cdta, cdta.display_start_time_dividend, cdta.display_start_time_divisor
+        )
+
+    @display_start_frame.setter
+    def display_start_frame(self, value: int) -> None:
+        # AE 2026 accepts the frames from -10800 s to 86340 s (at 24 fps
+        # -259200 to 2072160, at 29.97 -323676 to 2587609), although its
+        # `displayStartTime` goes on to 86400 s.
+        _validate_number(
+            min=lambda self: math.ceil(-10800 * Fraction(*_grid(self._cdta))),
+            max=lambda self: math.floor(86340 * Fraction(*_grid(self._cdta))),
             integer=True,
-        ),
-    )
-    """The frame value of the beginning of the composition. Read / Write."""
+        )(value, self)
+        cdta = self._cdta
+        timebase, units_per_frame = _grid(cdta)
+        # AE stores a start frame as whole timebase units (13 frames at 24 fps
+        # is 13312/24576); past the signed 32-bit range, as a plain ratio.
+        units = value * units_per_frame
+        if -(2**31) <= units < 2**31:
+            cdta.display_start_time_dividend = units
+            cdta.display_start_time_divisor = timebase
+        else:
+            cdta.display_start_time = units / timebase
+        self._restore_times_in_timebase()
 
-    work_area_start = ChunkField[float](
-        "_cdta",
-        "work_area_start",
-        validate=_validate_number(
-            min=0.0,
-            max=lambda self: self.duration - 1 / self.frame_rate,
-        ),
-    )
-    """The work area start time relative to composition start.
-    Read / Write."""
+    def _restore_times_in_timebase(self) -> None:
+        """AE re-stores the work area start and the current time in whole
+        timebase units whenever the display start changes (AE 2026: a new
+        comp's `0/600` start becomes `0/24576` at 24 fps)."""
+        cdta = self._cdta
+        timebase, units_per_frame = _grid(cdta)
+        cdta.work_area_start_dividend = _frame_units(
+            cdta.work_area_start, timebase, units_per_frame
+        )
+        cdta.work_area_start_divisor = timebase
+        cdta.time_dividend = _frame_units(cdta.time_seconds, timebase, units_per_frame)
+        cdta.time_divisor = timebase
 
-    work_area_start_frame = ChunkField[int](
-        "_cdta",
-        "work_area_start_frame",
-        validate=_validate_number(
-            min=0,
-            max=lambda self: self.frame_duration - 1,
-            integer=True,
-        ),
-    )
-    """The work area start frame relative to composition start.
-    Read / Write."""
+    @property
+    def work_area_start(self) -> float:
+        """The work area start time relative to composition start.
+        Read / Write.
 
-    work_area_duration = ChunkField[float](
-        "_cdta",
-        "work_area_duration",
-        validate=_validate_number(
+        Writing snaps the value to the nearest frame, half a frame rounding
+        up, and keeps the work area's duration, as After Effects does. When
+        that would carry the work area past the end of the composition, it
+        ends there instead; After Effects moves the start back.
+        """
+        return self._cdta.work_area_start
+
+    @work_area_start.setter
+    def work_area_start(self, value: float) -> None:
+        _validate_number(min=0.0, max=lambda self: self.duration - 1 / self.frame_rate)(
+            value, self
+        )
+        runs_to_end = self._cdta.work_area_end_dividend == WORK_AREA_TO_END
+        self._set_work_area(
+            value, None if runs_to_end else value + self.work_area_duration
+        )
+
+    @property
+    def work_area_start_frame(self) -> int:
+        """The work area start frame relative to composition start.
+        Read / Write."""
+        cdta = self._cdta
+        return _frame_number(
+            cdta, cdta.work_area_start_dividend, cdta.work_area_start_divisor
+        )
+
+    @work_area_start_frame.setter
+    def work_area_start_frame(self, value: int) -> None:
+        _validate_number(min=0, max=lambda self: self.frame_duration - 1, integer=True)(
+            value, self
+        )
+        self.work_area_start = value / _grid_rate(self._cdta)
+
+    @property
+    def work_area_duration(self) -> float:
+        """The work area duration in seconds. Read / Write.
+
+        Writing snaps the end of the work area to the nearest frame, half a
+        frame rounding up, as After Effects does.
+        """
+        return self._cdta.work_area_duration
+
+    @work_area_duration.setter
+    def work_area_duration(self, value: float) -> None:
+        _validate_number(
             min=lambda self: 1 / self.frame_rate,
             max=lambda self: self.duration - self.work_area_start,
-        ),
-    )
-    """The work area duration in seconds. Read / Write."""
+        )(value, self)
+        start = self.work_area_start
+        self._set_work_area(start, start + value)
 
-    work_area_duration_frame = ChunkField[int](
-        "_cdta",
-        "work_area_duration_frame",
-        validate=_validate_number(
+    @property
+    def work_area_duration_frame(self) -> int:
+        """The work area duration in frames. Read / Write."""
+        return self._cdta.work_area_duration_frame
+
+    @work_area_duration_frame.setter
+    def work_area_duration_frame(self, value: int) -> None:
+        _validate_number(
             min=1,
             max=lambda self: self.frame_duration - self.work_area_start_frame,
             integer=True,
-        ),
-    )
-    """The work area duration in frames. Read / Write."""
+        )(value, self)
+        self.work_area_duration = value / _grid_rate(self._cdta)
 
-    time = ChunkField[float](
-        "_cdta",
-        "time_seconds",
-        validate=_validate_number(
-            min=lambda self: self.display_start_time,
-            max=lambda self: (
-                self.display_start_time + self.duration - 1 / self.frame_rate
-            ),
-        ),
-    )
-    """The current time of the item when it is being previewed directly from
-    the Project panel. This value is a number of seconds. It is an error to set
-    this value for a [FootageItem][] whose `main_source` is still. Read / Write."""
+    def _set_work_area(self, start: float, end: float | None) -> None:
+        """Store the work area the way AE's setters do: in whole timebase
+        units, snapped to frames, and with an end at or past the end of the
+        composition (or `None`) stored as "runs to the end"."""
+        cdta = self._cdta
+        timebase, units_per_frame = _grid(cdta)
+        cdta.work_area_start_dividend = _frame_units(start, timebase, units_per_frame)
+        cdta.work_area_start_divisor = timebase
+        end_units = (
+            None if end is None else _frame_units(end, timebase, units_per_frame)
+        )
+        if end_units is None or end_units >= round(cdta.duration * timebase):
+            end_units = WORK_AREA_TO_END
+        cdta.work_area_end_dividend = end_units
+        cdta.work_area_end_divisor = timebase
 
-    frame_time = ChunkField[int](
-        "_cdta",
-        "frame_time",
-        validate=_validate_number(
-            min=lambda self: self.display_start_frame,
-            max=lambda self: self.display_start_frame + self.frame_duration - 1,
+    @property
+    def time(self) -> float:
+        """The current time of the item when it is being previewed directly
+        from the Project panel. This value is a number of seconds. It is an
+        error to set this value for a [FootageItem][] whose `main_source` is
+        still. Read / Write.
+
+        Writing snaps the value to the nearest frame, half a frame rounding
+        up, as After Effects does, which accepts 0 to 10800 seconds whatever
+        the display start time.
+        """
+        return self._cdta.time_seconds
+
+    @time.setter
+    def time(self, value: float) -> None:
+        _validate_number(min=0.0, max=10800.0)(value)
+        cdta = self._cdta
+        timebase, units_per_frame = _grid(cdta)
+        cdta.time_dividend = _frame_units(value, timebase, units_per_frame)
+        cdta.time_divisor = timebase
+
+    @property
+    def frame_time(self) -> int:
+        """The current time of the item when it is being previewed directly
+        from the Project panel. This value is a number of frames.
+        Read / Write."""
+        cdta = self._cdta
+        return _frame_number(cdta, cdta.time_dividend, cdta.time_divisor)
+
+    @frame_time.setter
+    def frame_time(self, value: int) -> None:
+        # The frames `time`'s 0 to 10800 s range holds.
+        _validate_number(
+            min=0,
+            max=lambda self: math.floor(10800 * _grid_rate(self._cdta)),
             integer=True,
-        ),
-    )
-    """The current time of the item when it is being previewed directly from
-    the Project panel. This value is a number of frames. Read / Write."""
+        )(value, self)
+        self.time = value / _grid_rate(self._cdta)
 
     drop_frame = ChunkField.bool(
         "_cdrp",
@@ -716,6 +953,7 @@ class CompItem(AVItem):
         *,
         project: Project,
         parent_folder: FolderItem,
+        min_dimension: int = 4,
     ) -> CompItem:
         """Create a new empty composition.
 
@@ -728,15 +966,20 @@ class CompItem(AVItem):
             frame_rate: The frame rate in frames per second.
             project: The project that owns this composition.
             parent_folder: The folder that will contain this composition.
+            min_dimension: The smallest width / height accepted: 4, as
+                `addComp`, except for an import that AE builds smaller (an
+                SVG canvas can be 1 px a side).
         """
         validate_string(name)
-        validate_footage_dimension(width)
-        validate_footage_dimension(height)
+        validate_size = _validate_number(min=min_dimension, max=30000, integer=True)
+        validate_size(width)
+        validate_size(height)
         validate_pixel_aspect(pixel_aspect)
-        validate_duration(duration)
-        validate_frame_rate(frame_rate)
+        validate_comp_duration(duration)
+        validate_comp_frame_rate(frame_rate)
 
         new_id = project._allocate_id()
+        ae_major = project._head.ae_version_major
 
         # AE hard-crashes opening a comp item without the full view-state
         # skeleton (~180 chunks of viewer pseudo-layers and panel state),
@@ -750,13 +993,14 @@ class CompItem(AVItem):
             duration=duration,
             frame_rate=frame_rate,
             allocate_layer_id=project._allocate_id,
+            ae_major=ae_major,
             label=label_index(project._preferences, "Comp Label Index 2", 15),
         )
 
         # View data chunks that AE expects after every comp's LIST:Item
         fee = ListChunk(
             list_type="FEE ",
-            chunks=[F8Chunk(chunk_type="ppSn")],
+            chunks=[F8Chunk(chunk_type="ppSn")] if ae_writes("ppSn", ae_major) else [],
         )
         view_data: list[Chunk] = [fee, *build_item_view_chunks()]
 
@@ -917,7 +1161,7 @@ class CompItem(AVItem):
         try:
             # Pre-2020 files have no iide; the id then lives only in idta.
             cast(
-                "IideChunk", find_by_type(chunks=cloned_item.chunks, chunk_type="iide")
+                "U4LeChunk", find_by_type(chunks=cloned_item.chunks, chunk_type="iide")
             ).value = new_comp_id
         except ChunkNotFoundError:
             pass
@@ -960,6 +1204,13 @@ class CompItem(AVItem):
         cast(
             "Utf8Chunk", find_by_type(chunks=cloned_item.chunks, chunk_type="Utf8")
         ).value = auto_name(self.name, existing)
+
+        # AE parks the duplicate's current time at 0 (AE 2026: a copy of a
+        # comp whose time is 2.5 s reads time 0).
+        cdta = cast(
+            "CdtaChunk", find_by_type(chunks=cloned_item.chunks, chunk_type="cdta")
+        )
+        cdta.time_dividend, cdta.time_divisor = 0, 600
 
         # Insert right after the original's block, then build the model
         # through the normal parse path (registers it in project.items).
@@ -1200,7 +1451,7 @@ class CompItem(AVItem):
                 list_type="CIF3",
                 chunks=[
                     cps2,
-                    U4Chunk(chunk_type="CcCt"),
+                    S4Chunk(chunk_type="CcCt"),
                 ],
             )
             self._item_list.chunks.append(cif3)
@@ -1234,7 +1485,8 @@ class CompItem(AVItem):
 
     def _cif_containers(self) -> list[ListChunk]:
         """The `CIFO`/`CIF2`/`CIF3` Essential Graphics containers of this comp,
-        in file order (every comp AE or py_aep writes has all three)."""
+        in file order (every comp AE or py_aep writes has all three, except
+        AE 15's, which have no CIF3)."""
         return [
             c
             for c in self._item_list.chunks
@@ -1307,7 +1559,7 @@ class CompItem(AVItem):
         for cif in containers:
             cctl, name_utf8, ctyp = build()
             cif.chunks.append(cctl)
-            ccct = cast("U4Chunk", find_by_type(chunks=cif.chunks, chunk_type="CcCt"))
+            ccct = cast("S4Chunk", find_by_type(chunks=cif.chunks, chunk_type="CcCt"))
             ccct.value += 1
             if cif.list_type == "CIF3" or model_name_utf8 is None:
                 model_name_utf8, model_ctyp = name_utf8, ctyp
@@ -1746,10 +1998,14 @@ class CompItem(AVItem):
         if duration is not None:
             validate_duration(duration)
 
-        existing = {lyr.name for lyr in self.layers}
+        # AE numbers a new null after every project item named "Null N" -
+        # solids, comps and folders alike, not the comp's layer names (AE
+        # 2026: "Null 21" once a folder "Null 20" exists).
+        existing = {item.name for item in self._project.items.values()}
         name = auto_name("Null", existing)
 
-        solid_source = SolidSource._new(name=name)
+        # AE's addNull source is a white 100x100 solid (probed in AE 2026).
+        solid_source = SolidSource._new(name=name, color=(1.0, 1.0, 1.0))
         solids_folder = self._project._solids_folder
         footage = FootageItem._new(
             source=solid_source,

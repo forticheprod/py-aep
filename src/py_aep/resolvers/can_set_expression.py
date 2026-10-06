@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from py_aep.enums import PropertyControlType, PropertyValueType
+from py_aep.enums import LayerType, PropertyControlType, PropertyValueType
 from py_aep.models.properties.overrides import (
     _CAMERA_NO_EXPRESSION,
     _CANSETEXPR_2D_ONLY,
@@ -152,7 +152,7 @@ def resolve_can_set_expression(prop: Property) -> bool:
     layer_type = layer._ldta.layer_type
 
     # Parametric mesh layers have their own expression rules.
-    if layer_type == 7:
+    if layer_type == LayerType.PARAMETRIC_MESH:
         mesh_result = _can_set_expression_parametric_mesh(prop, layer, mn)
         if mesh_result is not None:
             return mesh_result
@@ -161,7 +161,7 @@ def resolve_can_set_expression(prop: Property) -> bool:
         return False
 
     # Camera layers cannot set expressions on Scale/Opacity
-    if layer_type == 2:
+    if layer_type == LayerType.CAMERA:
         # Point of Interest (the camera's anchor point) is expressionable
         # only on a two-node camera (orient towards POI); a one-node camera
         # leaves the POI inactive (probed AE 2026). poi_auto_orient is the
@@ -171,14 +171,14 @@ def resolve_can_set_expression(prop: Property) -> bool:
         return mn not in _CAMERA_NO_EXPRESSION
 
     # Light layers have complex rules depending on light type
-    if layer_type == 1:
+    if layer_type == LayerType.LIGHT:
         return _can_set_expression_light(layer, mn)
 
     three_d = bool(layer._ldta.three_d_layer)
     renderer = layer.containing_comp.renderer
 
     if (
-        layer_type == 5
+        layer_type == LayerType.THREE_D_MODEL
         and mn in _MODEL_LAYER_HIDDEN_MATERIALS
         and parent is not None
         and parent.match_name == "ADBE Material Options Group"
@@ -203,10 +203,14 @@ def resolve_can_set_expression(prop: Property) -> bool:
 
     classic_3d = three_d and renderer == _CLASSIC_3D
     if mn in _CANSETEXPR_2D_ONLY:
-        return layer.null_layer or layer_type in (5, 7) or not classic_3d
+        return (
+            layer.null_layer
+            or layer_type in (LayerType.THREE_D_MODEL, LayerType.PARAMETRIC_MESH)
+            or not classic_3d
+        )
 
     if mn in _CANSETEXPR_EXTRUSION_DEPTHS:
-        return not (classic_3d and layer_type in (3, 4))
+        return not (classic_3d and layer_type in (LayerType.TEXT, LayerType.SHAPE))
 
     # AE shows a stroke's miter limit only while it joins by miter.
     if mn == "ADBE Vector Stroke Miter Limit" and parent is not None:
