@@ -46,14 +46,23 @@ class TestVersionValidation:
             "19.0x1",
             "20.0x1",
             "21.0x1",
-            "27.0x1",
-            "185.0x1",
             "256.0x1",
         ],
     )
     def test_unknown_major_rejected(self, version: str) -> None:
         with pytest.raises(ValueError):
             py_aep.new(version)
+
+    @pytest.mark.parametrize("version", ["27.0x67", "185.0x67", "255.0x67"])
+    def test_newer_major_takes_the_ae_2026_project(self, version: str) -> None:
+        # No stamp to take for a release after 26: the AE 2026 project and
+        # stamp, which AE 2026 opens. Only the version differs.
+        app = py_aep.new(version)
+        assert app.version == version
+        head = app._head
+        assert (head.file_format_version, head._format_subversion) == (97, 2)
+        app.version = "26.0x67"
+        assert project_bytes(app.project) == project_bytes(py_aep.new().project)
 
     @pytest.mark.parametrize("version", ["26.16x1", "26.0x256", "26.99x1"])
     def test_field_overflow_rejected(self, version: str) -> None:

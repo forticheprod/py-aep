@@ -244,13 +244,15 @@ class HeadChunk(Chunk):
         minor for the current major version, as After Effects saves for that
         release (`FORMAT_VERSIONS`). AE opens a file whose format version is
         at most its own and reads it with the rules of the (format, minor)
-        pair, so a major with no release to take a stamp from is refused: a
-        derived pair (AE 2026 measured on `py_aep.new` 12-14 and 19-21) makes
-        AE misread every property name or reject the file (`validate_ae_version`
-        refuses such a major before it reaches the head chunk)."""
-        self.file_format_version, self._format_subversion = FORMAT_VERSIONS[
-            self.ae_version_major
-        ]
+        pair, so a major with no release to take a stamp from (a newer AE,
+        or one that never existed) keeps the current pair: a derived pair
+        (AE 2026 measured on `py_aep.new` 12-14 and 19-21) makes AE misread
+        every property name or reject the file, while the version word
+        alone does not matter to it (AE 2026 opens projects relabelled 0,
+        12, 20, 21, 27, 99 and 255 with their own pair kept)."""
+        pair = FORMAT_VERSIONS.get(self.ae_version_major)
+        if pair is not None:
+            self.file_format_version, self._format_subversion = pair
 
 
 # ---------------------------------------------------------------------------

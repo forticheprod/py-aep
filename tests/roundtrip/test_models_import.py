@@ -858,6 +858,66 @@ class TestReplaceKeepsInterpretation:
         assert item.frame_rate == 25.0
         assert item.duration == 0.48
 
+    @pytest.mark.parametrize(
+        ("movie", "rate", "dividend", "divisor"),
+        [("mov_23_976.mov", 23.976, 1500, 2997), ("mov_alpha_small.mov", 25.0, 12, 25)],
+    )
+    def test_movie_rate_carries_to_a_sequence(
+        self, tmp_path: Path, movie: str, rate: float, dividend: int, divisor: int
+    ) -> None:
+        """A movie with no conform hands its own rate to the sequence that
+        replaces it. AE 2026 gives the sequence the movie's rate, not the
+        24 fps of the placeholder the movie replaced, stored like a
+        placeholder's carried rate."""
+        project = parse_aep(BASE).project
+        item = project.import_placeholder("PH", 2356, 1002, 24.0, 10.0)
+        item.replace(ASSETS / movie)
+        item.replace_with_sequence(self._twelve_frame_sequence(tmp_path / "seq"), True)
+        out = tmp_path / "movie.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == item.id)
+        sspc = reparsed.main_source._sspc
+        assert reparsed.frame_rate == pytest.approx(rate, abs=1e-4)
+        assert sspc.conform_frame_rate == 0.0
+        assert (sspc.duration_dividend, sspc.duration_divisor) == (dividend, divisor)
+
+    @pytest.mark.parametrize(
+        "steps", [["wav.wav"], ["mov_23_976.mov", "image_with_alpha.png"]]
+    )
+    def test_no_rate_to_carry_to_a_sequence(
+        self, tmp_path: Path, steps: list[str]
+    ) -> None:
+        # AE 2026: audio and stills have no frame rate, so the sequence
+        # replacing them runs at the default sequence rate - even when a
+        # movie came before the still.
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / steps[0]))
+        for name in steps[1:]:
+            item.replace(ASSETS / name)
+        item.replace_with_sequence(self._twelve_frame_sequence(tmp_path / "seq"), True)
+        assert item.frame_rate == 30.0
+        assert item.duration == 0.4
+
+    def test_sequence_proxy_reads_its_own_assumed_rate(self, tmp_path: Path) -> None:
+        """A sequence proxy keeps its rate like a main sequence: setting it
+        writes the native slot and rescales the duration, as AE 2026 does,
+        and `0` is ignored. ExtendScript would read 0 here, because the
+        item's main source is a movie."""
+        project = parse_aep(BASE).project
+        item = project.import_file(ImportOptions(ASSETS / "mov_23_976.mov"))
+        item.set_proxy_with_sequence(self._twelve_frame_sequence(tmp_path / "seq"))
+        assert item.proxy_source.conform_frame_rate == 30.0
+        item.proxy_source.conform_frame_rate = 25.0
+        item.proxy_source.conform_frame_rate = 0.0
+        out = tmp_path / "proxy.aep"
+        project.save(out)
+        reparsed = next(f for f in parse_aep(out).project.footages if f.id == item.id)
+        proxy = reparsed.proxy_source
+        sspc = proxy._sspc
+        assert proxy.conform_frame_rate == 25.0
+        assert (sspc.native_frame_rate, sspc.conform_frame_rate) == (25.0, 0.0)
+        assert (sspc.duration_dividend, sspc.duration_divisor) == (12, 25)
+
     @pytest.mark.parametrize("conform", [None, 25.0])
     def test_placeholder_rate_does_not_carry_to_a_movie(
         self, conform: float | None

@@ -525,7 +525,9 @@ class Project:
         head.version = version
         # AE refuses to open a file whose file_format_version exceeds its
         # own; deriving it from the requested version lets new(old_version)
-        # open in that AE (validated AE 2022-2026).
+        # open in that AE (validated AE 2022-2026). A release newer than any
+        # with a known stamp keeps the AE 2026 one HeadChunk defaults to,
+        # matching the AE 2026 skeleton built below.
         head.sync_file_format_version()
         major = head.ae_version_major
         # Saving-platform stamps, constant per platform across the sample

@@ -449,14 +449,18 @@ version of After Effects can author a file that uses it.
 
 ## Project Versions
 
-`py_aep.new(version)` and `Application.version` take the After Effects
-releases py_aep has a file-format stamp for: 15 (CC 2018) to 18, and 22 to
-26 (there was no After Effects 19 to 21). Setting `Application.version` only
-relabels the project, so it raises `ValueError` across a change After Effects
-reads from the format version alone: the AE 23 layer record (a 22-or-older
-project relabelled 23 or later, or the reverse) and the AE 17 Media
-Replacement folder id. After Effects 2026 opens none of those relabelled
-files. Open and re-save the project in the target release instead.
+`py_aep.new(version)` takes the After Effects releases py_aep has a
+file-format stamp for, 15 (CC 2018) to 18 and 22 to 26 (there was no After
+Effects 19 to 21), and any newer release, which gets the After Effects 2026
+project and stamp. `Application.version` takes any version; for a major
+outside that list it changes the version alone and keeps the file-format
+stamp the project already has. Setting it only
+relabels the project, so it raises `ValueError` across a change After
+Effects reads from the format version alone: the AE 23 layer record (a
+22-or-older project relabelled 23 or later, or the reverse) and the AE 17
+Media Replacement folder id. After Effects 2026 opens none of those
+relabelled files. Open and re-save the project in the target release
+instead.
 
 Projects saved by After Effects CC (12.x) can be read and edited. They
 store names as bare strings, so py_aep writes new names that way too, and

@@ -25,7 +25,7 @@ _LAYOUT_PARTS = ("matte layer id", "media replacement folder id")
 
 
 def _validate_version(value: object, obj: Application) -> None:
-    """A release py_aep writes whose file layout matches the project's."""
+    """A version whose file layout matches the project's."""
     validate_ae_version(value)
     current = obj._head.ae_version_major
     target = int(str(value).split(".", 1)[0])
@@ -91,9 +91,11 @@ class Application:
     Setting it also updates the file-format compatibility marker (which
     determines the oldest AE that can open the file, and the rules AE reads
     it with) to the one After Effects writes for that release, so the file
-    claims to be openable by that AE. The major must be an After Effects
-    release (15 to 18, or 22 to 26), the minor at most 15 and the build at
-    most 255.
+    claims to be openable by that AE. A major py_aep has no marker for (a
+    release newer than 26, or one After Effects skipped) only changes the
+    version: the marker is kept, so the file opens wherever it opened
+    before. The major and the build must be at most 255, the minor at most
+    15.
 
     Warning:
         Setting the version does **not** migrate the project structure: the

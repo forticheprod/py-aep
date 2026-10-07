@@ -159,7 +159,7 @@ from .models import (
     ViewOptions,
     XmlFormatOptions,
 )
-from .models.validators import validate_ae_version, validate_platform
+from .models.validators import validate_ae_release, validate_platform
 from .parsers.comp_presets import CompPreset
 from .resolvers.source_layers import list_layers
 
@@ -400,7 +400,9 @@ def new(
             formatted as `"{major}.{minor}x{build}"` (e.g. `"26.0x67"`).
             A file stamped at version N opens in After Effects N and later.
             The major must be an After Effects release: 15 (CC 2018) to 18,
-            or 22 to 26.
+            or 22 and later. A release newer than 26 gets the After Effects
+            2026 project and file-format stamp, so the file also opens in
+            After Effects 2026.
         ae_preferences_dir: Optional path to the AE preferences directory
             (e.g. `C:/Users/<user>/AppData/Roaming/Adobe/After Effects/26.0`),
             required only for adding items to the render queue.
@@ -411,9 +413,10 @@ def new(
             system.
 
     Raises:
-        ValueError: If `version` is malformed, names a major that is not an
-            After Effects release py_aep writes, or has a minor above 15 or
-            a build above 255 (the head chunk's field widths).
+        ValueError: If `version` is malformed, names a major before 26 that
+            py_aep has no file-format stamp for (before 15, or 19 to 21), or
+            has a major or build above 255 or a minor above 15 (the head
+            chunk's field widths).
 
     Example:
         ```python
@@ -424,7 +427,7 @@ def new(
         app.project.save("new_project.aep")
         ```
     """
-    validate_ae_version(version)
+    validate_ae_release(version)
     if platform is not None:
         validate_platform(platform)
     prefs_path = Path(ae_preferences_dir) if ae_preferences_dir else None
