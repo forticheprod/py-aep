@@ -53,14 +53,19 @@ class TestVersionUpdatesFormatGate:
         head = app._head
         assert (head.file_format_version, head._format_subversion) == (94, 9)
 
-    def test_unknown_release_rejected(self) -> None:
-        # No After Effects release 20 or 27 to take a stamp from; a derived
-        # one makes AE 2026 misread or reject the file.
+    @pytest.mark.parametrize("version", ["27.0x1", "255.15x255"])
+    def test_unknown_release_keeps_the_format_stamp(
+        self, tmp_path: Path, version: str
+    ) -> None:
+        # No After Effects release to take a stamp from: only the version
+        # changes. AE 2026 opens such a relabel; it misreads a stamp derived
+        # from the major instead.
         app = parse_aep(SAMPLE)
-        for version in ("20.0x1", "27.0x1"):
-            with pytest.raises(ValueError):
-                app.version = version
-        head = app._head
+        app.version = version
+        out = tmp_path / "relabelled.aep"
+        app.project.save(out)
+        head = parse_aep(out)._head
+        assert head.version == version
         assert (head.file_format_version, head._format_subversion) == (96, 9)
 
     def test_relabel_across_the_layer_record_change_rejected(self) -> None:

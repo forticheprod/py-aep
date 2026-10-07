@@ -195,6 +195,13 @@ class FootageSource:
         always runs at some assumed rate). A placeholder keeps its rate the
         same way, but its duration stays in seconds. Matches After Effects.
 
+        Note:
+            Unlike ExtendScript, a proxy reports its own rate. ExtendScript
+            reads a proxy's rate as assumed only when the item's main source
+            is a sequence or a placeholder: a sequence or placeholder proxy
+            of a movie or comp reads 0, even right after setting it, and an
+            unconformed movie proxy of a sequence reads its native rate.
+
         Raises:
             ValueError: If the rate is outside 0-999 or between 0 and 0.0005
                 (After Effects cannot open a project holding such a rate).
@@ -381,10 +388,13 @@ class FootageSource:
         # slot at 0; a placeholder keeps its rate the same way. That assumed
         # rate is not a conform: it carries to another sequence, but
         # replacing with a movie leaves the movie playing at its own rate. A
-        # real conform carries to either. A still keeps no rate at all, and
-        # a new placeholder takes its rate from the call's arguments.
+        # real conform carries to either. A new sequence takes whatever rate
+        # the old source plays at, so an unconformed movie hands on its own
+        # rate; a still or an audio file has none (its native slot is 0),
+        # and a new placeholder takes its rate from the call's arguments.
         rate = self.conform_frame_rate
         if new._is_sequence:
+            rate = rate or self._sspc.native_frame_rate
             if rate and not new._rate_from_media:
                 # A sequence's stored duration is its frame count over its
                 # rate, so it has to move with the rate; a movie keeps the

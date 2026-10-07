@@ -402,9 +402,8 @@ validate_f4_point = validate_sequence(length=2, min=-FLOAT32_MAX, max=FLOAT32_MA
 def validate_ae_version(value: object, instance: object | None = None) -> None:
     """Validate an After Effects version string, `"{major}.{minor}x{build}"`.
 
-    The major must be a release py_aep has a file-format stamp for
-    (`FORMAT_VERSIONS`: AE 15-18 and 22-26, there was no AE 19-21); the
-    head chunk holds the minor in 4 bits and the build in 8.
+    The head chunk holds the major in 8 bits, the minor in 4 and the build
+    in 8.
     """
     if not isinstance(value, str):
         raise TypeError(f"expected a version string, got {type(value).__name__}")
@@ -415,12 +414,22 @@ def validate_ae_version(value: object, instance: object | None = None) -> None:
             f"(e.g. '25.6x101'), got {value!r}"
         )
     major, minor, build = (int(part) for part in match.groups())
-    if major not in FORMAT_VERSIONS:
-        raise ValueError(
-            f"After Effects {major} is not a release py_aep writes; "
-            f"supported majors: {sorted(FORMAT_VERSIONS)}"
-        )
+    if major > 0xFF:
+        raise ValueError(f"version major must be <= 255, got {major}")
     if minor > 0x0F:
         raise ValueError(f"version minor must be <= 15, got {minor}")
     if build > 0xFF:
         raise ValueError(f"version build must be <= 255, got {build}")
+
+
+def validate_ae_release(value: object, instance: object | None = None) -> None:
+    """Validate a version string (see `validate_ae_version`) whose major is a
+    release py_aep has a file-format stamp for (`FORMAT_VERSIONS`: AE 15-18
+    and 22-26, there was no AE 19-21), or a newer one."""
+    validate_ae_version(value)
+    major = int(str(value).split(".", 1)[0])
+    if major not in FORMAT_VERSIONS and major < max(FORMAT_VERSIONS):
+        raise ValueError(
+            f"After Effects {major} is not a release py_aep writes; "
+            f"supported majors: {sorted(FORMAT_VERSIONS)} and later"
+        )
