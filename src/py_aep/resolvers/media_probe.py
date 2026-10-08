@@ -2431,6 +2431,986 @@ def _probe_heif(fp: IO[bytes]) -> MediaInfo:
         depth=_deep_color_depth(has_alpha, bit_depth),
     )
 
+# ---------------------------------------------------------------------------
+# MXF - KLV header metadata
+#
+# Supports the normal SMPTE MXF structural-metadata model used by OP1a/OP1b
+# and common broadcast MXF variants.
+#
+# The essence itself is deliberately NOT parsed. We only read the Header
+# Partition and its Primer Pack / metadata sets.
+# ---------------------------------------------------------------------------
+
+# MXF keys/classes we care about.
+_MXF_PARTITION_KEY_PREFIX = b"\x06\x0e\x2b\x34\x02\x06\x01\x01\x0d\x01\x02\x00"
+
+_MXF_PRIMER_PACK_KEY = bytes.fromhex(
+    "060e2b34020501010d01020101010000"
+)
+
+_MXF_PREFACE_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101012f00"
+)
+
+_MXF_CONTENT_STORAGE_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101011800"
+)
+
+_MXF_MATERIAL_PACKAGE_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101013600"
+)
+
+_MXF_SOURCE_PACKAGE_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101013700"
+)
+
+_MXF_TRACK_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101013b00"
+)
+
+_MXF_SEQUENCE_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101010f00"
+)
+
+_MXF_FILE_DESCRIPTOR_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101012500"
+)
+
+_MXF_GENERIC_PICTURE_DESCRIPTOR_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101012700"
+)
+
+_MXF_CDCI_DESCRIPTOR_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101012800"
+)
+
+_MXF_RGBA_DESCRIPTOR_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101012900"
+)
+
+_MXF_GENERIC_SOUND_DESCRIPTOR_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101014200"
+)
+
+_MXF_WAVE_AUDIO_DESCRIPTOR_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101014800"
+)
+
+_MXF_MULTIPLE_DESCRIPTOR_KEY = bytes.fromhex(
+    "060e2b34025301010d01010101014400"
+)
+
+
+# Structural metadata property ULs.
+_MXF_UL_CONTENT_STORAGE_OBJECT = bytes.fromhex(
+    "060e2b34010101020601010402010000"
+)
+
+_MXF_UL_PACKAGES = bytes.fromhex(
+    "060e2b34010101020601010405010000"
+)
+
+_MXF_UL_PACKAGE_UID = bytes.fromhex(
+    "060e2b34010101010101151000000000"
+)
+
+_MXF_UL_TRACKS = bytes.fromhex(
+    "060e2b34010101020601010406050000"
+)
+
+_MXF_UL_DESCRIPTOR = bytes.fromhex(
+    "060e2b34010101020601010402030000"
+)
+
+_MXF_UL_TRACK_ID = bytes.fromhex(
+    "060e2b34010101020107010100000000"
+)
+
+_MXF_UL_TRACK_NUMBER = bytes.fromhex(
+    "060e2b34010101020104010300000000"
+)
+
+_MXF_UL_EDIT_RATE = bytes.fromhex(
+    "060e2b34010101020530040500000000"
+)
+
+_MXF_UL_TRACK_SEGMENT = bytes.fromhex(
+    "060e2b34010101020601010402040000"
+)
+
+_MXF_UL_STRUCTURAL_COMPONENTS = bytes.fromhex(
+    "060e2b34010101020601010406090000"
+)
+
+_MXF_UL_COMPONENT_LENGTH = bytes.fromhex(
+    "060e2b34010101020702020101030000"
+)
+
+_MXF_UL_LINKED_TRACK_ID = bytes.fromhex(
+    "060e2b34010101050601010305000000"
+)
+
+_MXF_UL_SAMPLE_RATE = bytes.fromhex(
+    "060e2b34010101010406010100000000"
+)
+
+_MXF_UL_CONTAINER_DURATION = bytes.fromhex(
+    "060e2b34010101010406010200000000"
+)
+
+_MXF_UL_STORED_WIDTH = bytes.fromhex(
+    "060e2b34010101010401050202000000"
+)
+
+_MXF_UL_STORED_HEIGHT = bytes.fromhex(
+    "060e2b34010101010401050201000000"
+)
+
+_MXF_UL_ASPECT_RATIO = bytes.fromhex(
+    "060e2b34010101010401010101000000"
+)
+
+_MXF_UL_FRAME_LAYOUT = bytes.fromhex(
+    "060e2b34010101010401030104000000"
+)
+
+_MXF_UL_ALPHA_TRANSPARENCY = bytes.fromhex(
+    "060e2b34010101010205200102000000"
+)
+
+_MXF_UL_ALPHA_SAMPLE_DEPTH = bytes.fromhex(
+    "060e2b34010101010204010503070000"
+)
+
+_MXF_UL_PIXEL_LAYOUT = bytes.fromhex(
+    "060e2b34010101010204010503060000"
+)
+
+_MXF_UL_COMPONENT_DEPTH = bytes.fromhex(
+    "060e2b340101010102040105030a0000"
+)
+
+_MXF_UL_AUDIO_SAMPLING_RATE = bytes.fromhex(
+    "060e2b34010101050402030101010000"
+)
+
+_MXF_UL_FILE_DESCRIPTORS = bytes.fromhex(
+    "060e2b340101010406010104060b0000"
+)
+
+
+def _mxf_ber_length(data: bytes, off: int) -> tuple[int, int]:
+    """Return (value_length, bytes_consumed), or (0, 0) on invalid BER."""
+
+    if off >= len(data):
+        return 0, 0
+
+    first = data[off]
+
+    if first < 0x80:
+        return first, 1
+
+    n = first & 0x7F
+
+    # Indefinite-length BER is not valid for MXF KLV.
+    if n == 0 or n > 8 or off + 1 + n > len(data):
+        return 0, 0
+
+    value = int.from_bytes(data[off + 1 : off + 1 + n], "big")
+    return value, 1 + n
+
+
+def _mxf_klvs(
+    data: bytes,
+    start: int,
+    end: int,
+) -> Iterator[tuple[bytes, int, int]]:
+    """Yield (key, value_start, value_end) KLV packets."""
+
+    pos = start
+
+    while pos + 17 <= end:
+        key = data[pos : pos + 16]
+        length, n = _mxf_ber_length(data, pos + 16)
+
+        if not n:
+            return
+
+        value_start = pos + 16 + n
+        value_end = value_start + length
+
+        if value_end > end:
+            return
+
+        yield key, value_start, value_end
+        pos = value_end
+
+
+def _mxf_is_partition_key(key: bytes) -> bool:
+    """Return True for Header/Body/Footer Partition Pack keys."""
+
+    # Partition Pack keys share the first 14 bytes. Byte 14 identifies the
+    # partition kind and byte 15 identifies open/closed + complete/incomplete.
+    return (
+        len(key) == 16
+        and key[:13]
+        == bytes.fromhex("060e2b34020601010d010200")
+        and key[13] == 0x00
+    ) or (
+        len(key) == 16
+        and key[:12]
+        == bytes.fromhex("060e2b34020601010d0102")
+    )
+
+
+def _mxf_find_header_partition(fp: IO[bytes]) -> tuple[int, int, int]:
+    """
+    Return (partition_offset, metadata_offset, metadata_size).
+
+    Only the first Header Partition is considered. For normal OP1a/OP1b
+    broadcast files this contains the complete structural metadata.
+    """
+
+    fp.seek(0, 2)
+    file_end = fp.tell()
+    fp.seek(0)
+
+    # MXF files normally begin with the Header Partition. Reading a modest
+    # prefix avoids loading large essence files.
+    scan_size = min(file_end, 1024 * 1024)
+    data = fp.read(scan_size)
+
+    # First try the normal beginning-of-file location.
+    candidates = [0]
+
+    # Some files have a small leading area. Find additional partition keys.
+    prefix = bytes.fromhex("060e2b34020601010d0102")
+    pos = data.find(prefix, 16)
+    while pos >= 0:
+        if pos not in candidates:
+            candidates.append(pos)
+        pos = data.find(prefix, pos + 1)
+
+    for partition_offset in candidates:
+        if partition_offset + 17 > file_end:
+            continue
+
+        fp.seek(partition_offset)
+        key = fp.read(16)
+
+        if len(key) != 16:
+            continue
+
+        length_bytes = fp.read(1)
+        if not length_bytes:
+            continue
+
+        first = length_bytes[0]
+
+        if first < 0x80:
+            partition_length = first
+            ber_size = 1
+        else:
+            n = first & 0x7F
+            if n == 0 or n > 8:
+                continue
+
+            raw = fp.read(n)
+            if len(raw) != n:
+                continue
+
+            partition_length = int.from_bytes(raw, "big")
+            ber_size = 1 + n
+
+        partition_body = partition_offset + 16 + ber_size
+        partition_end = partition_body + partition_length
+
+        if partition_end > file_end:
+            continue
+
+        # Header Partition Pack fields:
+        #
+        # major/minor       2 + 2
+        # KAG size          4
+        # ThisPartition     8
+        # PreviousPartition 8
+        # FooterPartition   8
+        # HeaderByteCount   8
+        # IndexByteCount    8
+        # IndexSID          4
+        # BodySID           4
+        # BodyOffset        8
+        # OperationalPattern 16
+        #
+        # HeaderByteCount is therefore at offset 56 from the partition
+        # value start.
+        if partition_length < 72:
+            continue
+
+        fp.seek(partition_body + 56)
+        raw = fp.read(8)
+
+        if len(raw) != 8:
+            continue
+
+        header_byte_count = int.from_bytes(raw, "big")
+
+        metadata_offset = partition_end
+
+        if (
+            header_byte_count
+            and metadata_offset + header_byte_count <= file_end
+        ):
+            return (
+                partition_offset,
+                metadata_offset,
+                header_byte_count,
+            )
+
+        # Some MXF writers leave HeaderByteCount at zero for an incomplete
+        # header. We cannot safely infer the metadata extent in that case.
+        if header_byte_count == 0:
+            continue
+
+    return -1, -1, 0
+
+
+def _mxf_read_header_metadata(fp: IO[bytes]) -> bytes:
+    """Read only the Header Metadata KLV region."""
+
+    _partition, metadata_offset, metadata_size = _mxf_find_header_partition(fp)
+
+    if metadata_offset < 0 or metadata_size <= 0:
+        return b""
+
+    fp.seek(metadata_offset)
+    return fp.read(metadata_size)
+
+
+def _mxf_parse_primer(value: bytes) -> dict[int, bytes]:
+    """
+    Parse the MXF Primer Pack.
+
+    Primer value:
+        UInt32 entry_count
+        repeated:
+            UInt16 local_tag
+            AUID   global UL
+    """
+
+    if len(value) < 8:
+        return {}
+
+    # The Primer Pack has an entry batch. The standard encoding is:
+    # count (UInt32), followed by repeated 18-byte entries.
+    count = int.from_bytes(value[0:4], "big")
+
+    # Some encoders include a batch header:
+    #
+    #   count (4)
+    #   item_size (4)
+    #
+    # Detect that form when possible.
+    entry_start = 4
+
+    if len(value) >= 8:
+        item_size = int.from_bytes(value[4:8], "big")
+        if item_size == 18 and 8 + count * 18 <= len(value):
+            entry_start = 8
+
+    primer: dict[int, bytes] = {}
+
+    for i in range(count):
+        off = entry_start + i * 18
+
+        if off + 18 > len(value):
+            break
+
+        local_tag = int.from_bytes(value[off : off + 2], "big")
+        global_ul = value[off + 2 : off + 18]
+
+        if len(global_ul) == 16:
+            primer[local_tag] = global_ul
+
+    return primer
+
+
+def _mxf_parse_local_set(
+    data: bytes,
+    start: int,
+    end: int,
+    primer: dict[int, bytes],
+) -> dict[bytes, list[bytes]]:
+    """
+    Decode an MXF metadata local set into:
+
+        global_property_UL -> [one or more property values]
+
+    Unknown local tags are retained only if the Primer resolves them.
+    """
+
+    props: dict[bytes, list[bytes]] = {}
+
+    pos = start
+
+    while pos + 3 <= end:
+        local_tag = int.from_bytes(data[pos : pos + 2], "big")
+        length, n = _mxf_ber_length(data, pos + 2)
+
+        if not n:
+            break
+
+        value_start = pos + 2 + n
+        value_end = value_start + length
+
+        if value_end > end:
+            break
+
+        ul = primer.get(local_tag)
+
+        if ul is not None:
+            props.setdefault(ul, []).append(
+                data[value_start:value_end]
+            )
+
+        pos = value_end
+
+    return props
+
+
+def _mxf_first(props: dict[bytes, list[bytes]], ul: bytes) -> bytes:
+    values = props.get(ul)
+
+    if not values:
+        return b""
+
+    return values[0]
+
+
+def _mxf_u(props: dict[bytes, list[bytes]], ul: bytes, default: int = 0) -> int:
+    value = _mxf_first(props, ul)
+
+    if not value:
+        return default
+
+    return int.from_bytes(value, "big", signed=False)
+
+
+def _mxf_i(props: dict[bytes, list[bytes]], ul: bytes, default: int = 0) -> int:
+    value = _mxf_first(props, ul)
+
+    if not value:
+        return default
+
+    return int.from_bytes(value, "big", signed=True)
+
+
+def _mxf_uid(props: dict[bytes, list[bytes]], ul: bytes) -> bytes:
+    value = _mxf_first(props, ul)
+
+    if len(value) == 16:
+        return value
+
+    return b""
+
+
+def _mxf_uuid(value: bytes) -> bytes:
+    """
+    Return the UUID portion of a UUID/UMID-style strong reference.
+
+    Normal strong references in baseline MXF metadata are 16-byte UUIDs.
+    """
+
+    return value if len(value) == 16 else b""
+
+
+def _mxf_rational(
+    props: dict[bytes, list[bytes]],
+    ul: bytes,
+) -> tuple[int, int]:
+    value = _mxf_first(props, ul)
+
+    if len(value) != 8:
+        return 0, 1
+
+    numerator = int.from_bytes(value[0:4], "big", signed=True)
+    denominator = int.from_bytes(value[4:8], "big", signed=True)
+
+    if denominator == 0:
+        return 0, 1
+
+    return numerator, denominator
+
+
+def _mxf_strong_refs(
+    props: dict[bytes, list[bytes]],
+    ul: bytes,
+) -> list[bytes]:
+    """
+    Decode a StrongReferenceVector/Set.
+
+    MXF arrays use:
+        UInt32 number_of_items
+        UInt32 item_size
+        items...
+
+    Strong references are 16-byte UUIDs.
+    """
+
+    value = _mxf_first(props, ul)
+
+    if len(value) < 8:
+        return []
+
+    count = int.from_bytes(value[0:4], "big")
+    item_size = int.from_bytes(value[4:8], "big")
+
+    if item_size <= 0:
+        return []
+
+    refs: list[bytes] = []
+
+    pos = 8
+
+    for _ in range(count):
+        if pos + item_size > len(value):
+            break
+
+        item = value[pos : pos + item_size]
+
+        if len(item) >= 16:
+            refs.append(item[:16])
+
+        pos += item_size
+
+    return refs
+
+
+def _mxf_array_values(
+    props: dict[bytes, list[bytes]],
+    ul: bytes,
+) -> list[bytes]:
+    """Return raw elements of an MXF array property."""
+
+    value = _mxf_first(props, ul)
+
+    if len(value) < 8:
+        return []
+
+    count = int.from_bytes(value[0:4], "big")
+    item_size = int.from_bytes(value[4:8], "big")
+
+    if item_size <= 0:
+        return []
+
+    result: list[bytes] = []
+
+    pos = 8
+
+    for _ in range(count):
+        if pos + item_size > len(value):
+            break
+
+        result.append(value[pos : pos + item_size])
+        pos += item_size
+
+    return result
+
+
+def _mxf_extract_sets(
+    data: bytes,
+) -> list[tuple[bytes, dict[bytes, list[bytes]]]]:
+    """
+    Return all decoded Header Metadata sets.
+
+    The Primer Pack is required to decode local-set properties.
+    """
+
+    primer: dict[int, bytes] = {}
+    sets: list[tuple[bytes, dict[bytes, list[bytes]]]] = []
+
+    # HeaderByteCount includes the Primer Pack and all following metadata.
+    # KLV Fill can occur between the Primer and metadata sets.
+    for key, body, end in _mxf_klvs(data, 0, len(data)):
+        if key == _MXF_PRIMER_PACK_KEY:
+            primer = _mxf_parse_primer(data[body:end],)
+            continue
+
+        # KLV Fill and other non-metadata packets can be ignored.
+        if not primer:
+            continue
+
+        # Metadata sets are local sets whose value is a sequence of
+        # local-tag/BER-length/value properties.
+        #
+        # There are also global-set variants in the wider MXF ecosystem.
+        # For common OP1a/OP1b broadcast MXF, local sets are the normal case.
+        if key.startswith(b"\x06\x0e\x2b\x34\x02\x53\x01\x01\x0d\x01\x01\x01\x01\x01"):
+            props = _mxf_parse_local_set(data, body, end, primer)
+            sets.append((key, props))
+
+    return sets
+
+
+def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
+    """
+    Probe MXF structural metadata.
+
+    The resolver intentionally does not inspect essence KLV packets. This
+    keeps probing fast even for multi-gigabyte MXF files.
+    """
+
+    data = _mxf_read_header_metadata(fp)
+
+    if not data:
+        return MediaInfo(
+            width=0,
+            height=0,
+            duration=0.0,
+            frame_rate=0.0,
+            has_alpha=False,
+            has_audio=False,
+            audio_sample_rate=0.0,
+            pixel_aspect=1.0,
+        )
+
+    sets = _mxf_extract_sets(data)
+
+    # UUID -> (set key, properties)
+    objects: dict[
+        bytes,
+        tuple[bytes, dict[bytes, list[bytes]]],
+    ] = {}
+
+    for key, props in sets:
+        instance_uid = _mxf_uid(
+            props,
+            _MXF_UL_INSTANCE_UID,
+        )
+
+        if instance_uid:
+            objects[instance_uid] = (key, props)
+
+    # ------------------------------------------------------------------
+    # First pass: collect descriptors.
+    # ------------------------------------------------------------------
+
+    picture_descriptors: list[
+        tuple[bytes, dict[bytes, list[bytes]]]
+    ] = []
+
+    sound_descriptors: list[
+        tuple[bytes, dict[bytes, list[bytes]]]
+    ] = []
+
+    descriptor_by_linked_track: dict[
+        int,
+        tuple[bytes, dict[bytes, list[bytes]]],
+    ] = {}
+
+    for key, props in sets:
+        if key in (
+            _MXF_GENERIC_PICTURE_DESCRIPTOR_KEY,
+            _MXF_CDCI_DESCRIPTOR_KEY,
+            _MXF_RGBA_DESCRIPTOR_KEY,
+        ):
+            picture_descriptors.append((key, props))
+
+            linked_track_id = _mxf_u(
+                props,
+                _MXF_UL_LINKED_TRACK_ID,
+            )
+
+            if linked_track_id:
+                descriptor_by_linked_track[linked_track_id] = (
+                    key,
+                    props,
+                )
+
+        elif key in (
+            _MXF_GENERIC_SOUND_DESCRIPTOR_KEY,
+            _MXF_WAVE_AUDIO_DESCRIPTOR_KEY,
+        ):
+            sound_descriptors.append((key, props))
+
+            linked_track_id = _mxf_u(
+                props,
+                _MXF_UL_LINKED_TRACK_ID,
+            )
+
+            if linked_track_id:
+                descriptor_by_linked_track[linked_track_id] = (
+                    key,
+                    props,
+                )
+
+    # MultipleDescriptor is common when an MXF file interleaves multiple
+    # essence types. Its FileDescriptors property points at the actual
+    # picture/audio descriptors.
+    for key, props in sets:
+        if key != _MXF_MULTIPLE_DESCRIPTOR_KEY:
+            continue
+
+        refs = _mxf_strong_refs(
+            props,
+            _MXF_UL_FILE_DESCRIPTORS,
+        )
+
+        for ref in refs:
+            obj = objects.get(ref)
+
+            if not obj:
+                continue
+
+            obj_key, obj_props = obj
+
+            if obj_key in (
+                _MXF_GENERIC_PICTURE_DESCRIPTOR_KEY,
+                _MXF_CDCI_DESCRIPTOR_KEY,
+                _MXF_RGBA_DESCRIPTOR_KEY,
+            ):
+                picture_descriptors.append((obj_key, obj_props))
+
+            elif obj_key in (
+                _MXF_GENERIC_SOUND_DESCRIPTOR_KEY,
+                _MXF_WAVE_AUDIO_DESCRIPTOR_KEY,
+            ):
+                sound_descriptors.append((obj_key, obj_props))
+
+    # ------------------------------------------------------------------
+    # Select video descriptor.
+    #
+    # Prefer one explicitly linked to a Track. This matters for OP1b and
+    # files containing multiple picture essence descriptors.
+    # ------------------------------------------------------------------
+
+    video_desc = None
+
+    for _key, props in picture_descriptors:
+        linked_track_id = _mxf_u(
+            props,
+            _MXF_UL_LINKED_TRACK_ID,
+        )
+
+        if linked_track_id and linked_track_id in descriptor_by_linked_track:
+            video_desc = props
+            break
+
+    if video_desc is None and picture_descriptors:
+        video_desc = picture_descriptors[0][1]
+
+    # ------------------------------------------------------------------
+    # Select audio descriptor.
+    # ------------------------------------------------------------------
+
+    audio_desc = None
+
+    if sound_descriptors:
+        audio_desc = sound_descriptors[0][1]
+
+    # ------------------------------------------------------------------
+    # Extract video properties.
+    # ------------------------------------------------------------------
+
+    width = 0
+    height = 0
+    frame_rate = 0.0
+    duration = 0.0
+    pixel_aspect = 1.0
+    has_alpha = False
+
+    if video_desc is not None:
+        width = _mxf_u(
+            video_desc,
+            _MXF_UL_STORED_WIDTH,
+        )
+
+        height = _mxf_u(
+            video_desc,
+            _MXF_UL_STORED_HEIGHT,
+        )
+
+        # AspectRatio is the intended presentation ratio of the image.
+        # This is equivalent to pixel aspect ratio only when width/height
+        # correspond to the displayed image. For AE's MediaInfo.pixel_aspect,
+        # prefer the mathematically equivalent PAR when dimensions exist.
+        ar_num, ar_den = _mxf_rational(
+            video_desc,
+            _MXF_UL_ASPECT_RATIO,
+        )
+
+        if (
+            ar_num
+            and ar_den
+            and width
+            and height
+        ):
+            display_ar = ar_num / ar_den
+            coded_ar = width / height
+
+            if coded_ar:
+                pixel_aspect = round(
+                    display_ar / coded_ar,
+                    5,
+                )
+
+        # SampleRate is the essence/container edit rate.
+        sr_num, sr_den = _mxf_rational(
+            video_desc,
+            _MXF_UL_SAMPLE_RATE,
+        )
+
+        if sr_num and sr_den:
+            frame_rate = round(
+                sr_num / sr_den,
+                6,
+            )
+
+        # Interlaced MXF descriptors often store field height.
+        # SMPTE/GStreamer convention treats layouts 1, 2 and 4 as separate
+        # fields and therefore doubles stored height to obtain frame height.
+        frame_layout = _mxf_u(
+            video_desc,
+            _MXF_UL_FRAME_LAYOUT,
+            255,
+        )
+
+        if frame_layout in (1, 2, 4):
+            height *= 2
+
+        # Explicit alpha depth is the strongest indication.
+        alpha_depth = _mxf_u(
+            video_desc,
+            _MXF_UL_ALPHA_SAMPLE_DEPTH,
+        )
+
+        if alpha_depth:
+            has_alpha = True
+
+        # RGBA descriptors can carry a PixelLayout. The layout consists of
+        # 8-byte RGBALayoutItems: Code + Depth. A non-zero alpha component
+        # indicates an alpha channel.
+        pixel_layout = _mxf_first(
+            video_desc,
+            _MXF_UL_PIXEL_LAYOUT,
+        )
+
+        if pixel_layout:
+            # RGBALayoutItem is Code(1) + Depth(1) followed by 6 bytes
+            # reserved/padding in the standard representation.
+            #
+            # We conservatively look for the Alpha component code. In MXF
+            # RGBACode, A is value 4.
+            for off in range(0, len(pixel_layout) - 1, 8):
+                code = pixel_layout[off]
+                depth = pixel_layout[off + 1]
+
+                if code == 4 and depth:
+                    has_alpha = True
+                    break
+
+        # RGBA descriptor itself is also a useful fallback.
+        for key, _props in picture_descriptors:
+            if key == _MXF_RGBA_DESCRIPTOR_KEY:
+                has_alpha = True
+                break
+
+    # ------------------------------------------------------------------
+    # Audio properties.
+    # ------------------------------------------------------------------
+
+    has_audio = bool(sound_descriptors)
+    audio_sample_rate = 0.0
+
+    if audio_desc is not None:
+        ar_num, ar_den = _mxf_rational(
+            audio_desc,
+            _MXF_UL_AUDIO_SAMPLING_RATE,
+        )
+
+        if ar_num and ar_den:
+            audio_sample_rate = round(
+                ar_num / ar_den,
+                3,
+            )
+
+    # ------------------------------------------------------------------
+    # Duration.
+    #
+    # Descriptor ContainerDuration is the preferred value for essence
+    # duration. It is expressed in the descriptor's SampleRate edit units.
+    #
+    # For OP1b, there can be multiple source packages. Select the longest
+    # valid picture descriptor duration rather than arbitrarily taking the
+    # first descriptor encountered.
+    # ------------------------------------------------------------------
+
+    durations: list[float] = []
+
+    for _key, props in picture_descriptors:
+        container_duration = _mxf_u(
+            props,
+            _MXF_UL_CONTAINER_DURATION,
+        )
+
+        sr_num, sr_den = _mxf_rational(
+            props,
+            _MXF_UL_SAMPLE_RATE,
+        )
+
+        if (
+            container_duration
+            and sr_num
+            and sr_den
+        ):
+            durations.append(
+                container_duration
+                * sr_den
+                / sr_num
+            )
+
+    if durations:
+        duration = max(durations)
+
+    # Audio-only MXF.
+    if width == 0 and audio_desc is not None:
+        durations = []
+
+        for _key, props in sound_descriptors:
+            container_duration = _mxf_u(
+                props,
+                _MXF_UL_CONTAINER_DURATION,
+            )
+
+            sr_num, sr_den = _mxf_rational(
+                props,
+                _MXF_UL_SAMPLE_RATE,
+            )
+
+            if (
+                container_duration
+                and sr_num
+                and sr_den
+            ):
+                durations.append(
+                    container_duration
+                    * sr_den
+                    / sr_num
+                )
+
+        if durations:
+            duration = max(durations)
+
+    return MediaInfo(
+        width=width,
+        height=height,
+        duration=duration,
+        frame_rate=frame_rate,
+        has_alpha=has_alpha,
+        has_audio=has_audio,
+        audio_sample_rate=audio_sample_rate,
+        pixel_aspect=pixel_aspect,
+    )
 
 _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".png": _probe_png,
@@ -2471,4 +3451,5 @@ _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".cin": _probe_dpx_cineon,
     ".heic": _probe_heif,
     ".heif": _probe_heif,
+    ".mxf": _probe_mxf,
 }
