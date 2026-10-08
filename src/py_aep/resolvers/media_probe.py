@@ -35,6 +35,9 @@ class MediaInfo(NamedTuple):
     """Raw media duration in seconds (0 for a still image)."""
     frame_rate: float = 0.0
     """Native frame rate in fps (0 for stills and audio-only media)."""
+    is_interlaced: bool = False
+    field_order: str = ""
+    """Whether the video is interlaced."""
     has_alpha: bool = False
     has_audio: bool = False
     audio_sample_rate: float = 0.0
@@ -2444,8 +2447,21 @@ def _probe_heif(fp: IO[bytes]) -> MediaInfo:
 # MXF keys/classes we care about.
 _MXF_PARTITION_KEY_PREFIX = b"\x06\x0e\x2b\x34\x02\x06\x01\x01\x0d\x01\x02\x00"
 
-_MXF_PRIMER_PACK_KEY = bytes.fromhex(
-    "060e2b34020501010d01020101010000"
+_MXF_UL_VIDEO_LINE_MAP = bytes.fromhex(
+    "060e2b34010101020401030205000000"
+)
+
+_MXF_UL_FIELD_ORDER = bytes.fromhex(
+    "060e2b34010101020401030106000000"
+)
+
+_MXF_PRIMER_PACK_KEYS = {
+    bytes.fromhex("060e2b34020501010d01020101010000"),
+    bytes.fromhex("060e2b34020501010d01020101050100"),
+}
+
+_MXF_UL_INSTANCE_UID = bytes.fromhex(
+    "060e2b34010101010101150200000000"
 )
 
 _MXF_PREFACE_KEY = bytes.fromhex(
@@ -2730,24 +2746,24 @@ def _mxf_find_header_partition(fp: IO[bytes]) -> tuple[int, int, int]:
 
         # Header Partition Pack fields:
         #
-        # major/minor       2 + 2
-        # KAG size          4
-        # ThisPartition     8
-        # PreviousPartition 8
-        # FooterPartition   8
-        # HeaderByteCount   8
-        # IndexByteCount    8
-        # IndexSID          4
-        # BodySID           4
-        # BodyOffset        8
-        # OperationalPattern 16
+        # major/minor          2 + 2
+        # KAG size             4
+        # ThisPartition        8
+        # PreviousPartition    8
+        # FooterPartition      8
+        # HeaderByteCount      8  <-- offset 32
+        # IndexByteCount       8
+        # IndexSID             4
+        # BodyOffset           8
+        # BodySID              4
+        # OperationalPattern  16
         #
-        # HeaderByteCount is therefore at offset 56 from the partition
+        # HeaderByteCount is therefore at offset 32 from the partition
         # value start.
-        if partition_length < 72:
+        if partition_length < 80:
             continue
 
-        fp.seek(partition_body + 56)
+        fp.seek(partition_body + 32)
         raw = fp.read(8)
 
         if len(raw) != 8:
@@ -2853,14 +2869,11 @@ def _mxf_parse_local_set(
 
     pos = start
 
-    while pos + 3 <= end:
+    while pos + 4 <= end:
         local_tag = int.from_bytes(data[pos : pos + 2], "big")
-        length, n = _mxf_ber_length(data, pos + 2)
+        length = int.from_bytes(data[pos + 2 : pos + 4], "big")
 
-        if not n:
-            break
-
-        value_start = pos + 2 + n
+        value_start = pos + 4
         value_end = value_start + length
 
         if value_end > end:
@@ -2876,7 +2889,6 @@ def _mxf_parse_local_set(
         pos = value_end
 
     return props
-
 
 def _mxf_first(props: dict[bytes, list[bytes]], ul: bytes) -> bytes:
     values = props.get(ul)
@@ -3032,8 +3044,8 @@ def _mxf_extract_sets(
     # HeaderByteCount includes the Primer Pack and all following metadata.
     # KLV Fill can occur between the Primer and metadata sets.
     for key, body, end in _mxf_klvs(data, 0, len(data)):
-        if key == _MXF_PRIMER_PACK_KEY:
-            primer = _mxf_parse_primer(data[body:end],)
+        if key in _MXF_PRIMER_PACK_KEYS:
+            primer = _mxf_parse_primer(data[body:end])
             continue
 
         # KLV Fill and other non-metadata packets can be ignored.
@@ -3041,11 +3053,11 @@ def _mxf_extract_sets(
             continue
 
         # Metadata sets are local sets whose value is a sequence of
-        # local-tag/BER-length/value properties.
+        # local-tag/UInt16-length/value properties.
         #
         # There are also global-set variants in the wider MXF ecosystem.
         # For common OP1a/OP1b broadcast MXF, local sets are the normal case.
-        if key.startswith(b"\x06\x0e\x2b\x34\x02\x53\x01\x01\x0d\x01\x01\x01\x01\x01"):
+        if key.startswith(bytes.fromhex("060e2b34025301010d0101010101")):
             props = _mxf_parse_local_set(data, body, end, primer)
             sets.append((key, props))
 
@@ -3072,6 +3084,8 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
             has_audio=False,
             audio_sample_rate=0.0,
             pixel_aspect=1.0,
+            is_interlaced=False,
+            field_order="",
         )
 
     sets = _mxf_extract_sets(data)
@@ -3218,8 +3232,10 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
     duration = 0.0
     pixel_aspect = 1.0
     has_alpha = False
+    is_interlaced = False
 
     if video_desc is not None:
+
         width = _mxf_u(
             video_desc,
             _MXF_UL_STORED_WIDTH,
@@ -3230,10 +3246,76 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
             _MXF_UL_STORED_HEIGHT,
         )
 
-        # AspectRatio is the intended presentation ratio of the image.
-        # This is equivalent to pixel aspect ratio only when width/height
-        # correspond to the displayed image. For AE's MediaInfo.pixel_aspect,
-        # prefer the mathematically equivalent PAR when dimensions exist.
+        # FrameLayout describes how the stored image is organized.
+        #
+        #   0 = Full Frame
+        #   1 = Separate Fields
+        #   2 = One Field
+        #   3 = Mixed Fields
+        #   4 = Segmented Frame
+        
+        frame_layout = _mxf_u(
+            video_desc,
+            _MXF_UL_FRAME_LAYOUT,
+            255,
+        )
+
+        is_interlaced = frame_layout == 1
+
+        # Field-order metadata:
+        #
+        # Some MXF files contain an explicit field-order property:
+        #     1 = Upper Field First
+        #     2 = Lower Field First
+        #
+        # If it is absent, derive the field order from VideoLineMap. The parity
+        # of the two field-start lines determines the field order:
+        #
+        #     odd, even  -> Upper Field First
+        #     even, odd  -> Upper Field First
+        #     even, even -> Lower Field First
+        #     odd, odd   -> Lower Field First
+
+        field_order_value = _mxf_u(
+            video_desc,
+            _MXF_UL_FIELD_ORDER,
+            0,
+        )
+
+        if field_order_value == 1:
+            field_order = "upper"
+        elif field_order_value == 2:
+            field_order = "lower"
+        else:
+            video_line_map = _mxf_first(
+                video_desc,
+                _MXF_UL_VIDEO_LINE_MAP,
+            )
+
+            if video_line_map and len(video_line_map) >= 8:
+                first_line = int.from_bytes(
+                    video_line_map[-8:-4],
+                    "big",
+                )
+                second_line = int.from_bytes(
+                    video_line_map[-4:],
+                    "big",
+                )
+
+                if (first_line % 2) == (second_line % 2):
+                    field_order = "lower"
+                else:
+                    field_order = "upper"
+            else:
+                field_order = ""
+        
+        # For Separate Fields, StoredHeight is the height of one field.
+        # The presentation frame therefore has twice that height.
+        if frame_layout == 1:
+            height *= 2
+
+        # Convert the descriptor's display aspect ratio to pixel aspect ratio
+        # using the stored/displayed dimensions.
         ar_num, ar_den = _mxf_rational(
             video_desc,
             _MXF_UL_ASPECT_RATIO,
@@ -3254,7 +3336,7 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
                     5,
                 )
 
-        # SampleRate is the essence/container edit rate.
+        # SampleRate is the descriptor's edit/sample rate.
         sr_num, sr_den = _mxf_rational(
             video_desc,
             _MXF_UL_SAMPLE_RATE,
@@ -3265,18 +3347,6 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
                 sr_num / sr_den,
                 6,
             )
-
-        # Interlaced MXF descriptors often store field height.
-        # SMPTE/GStreamer convention treats layouts 1, 2 and 4 as separate
-        # fields and therefore doubles stored height to obtain frame height.
-        frame_layout = _mxf_u(
-            video_desc,
-            _MXF_UL_FRAME_LAYOUT,
-            255,
-        )
-
-        if frame_layout in (1, 2, 4):
-            height *= 2
 
         # Explicit alpha depth is the strongest indication.
         alpha_depth = _mxf_u(
@@ -3340,9 +3410,8 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
     # Descriptor ContainerDuration is the preferred value for essence
     # duration. It is expressed in the descriptor's SampleRate edit units.
     #
-    # For OP1b, there can be multiple source packages. Select the longest
-    # valid picture descriptor duration rather than arbitrarily taking the
-    # first descriptor encountered.
+    # Multiple picture descriptors can be present, for example in files
+    # containing multiple source packages. Use the longest valid duration.
     # ------------------------------------------------------------------
 
     durations: list[float] = []
@@ -3410,6 +3479,8 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
         has_audio=has_audio,
         audio_sample_rate=audio_sample_rate,
         pixel_aspect=pixel_aspect,
+        is_interlaced=is_interlaced,
+        field_order=field_order,
     )
 
 _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
