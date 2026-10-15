@@ -221,6 +221,7 @@ def _scale_point_to_pixels(prop: Property, size: tuple[float, float]) -> None:
 
 def parse_effect_param_defs(
     sspc_child_chunks: list[Chunk],
+    code_page: int,
 ) -> dict[str, dict[str, Any]]:
     """Parse effect parameter definitions from parT chunk.
 
@@ -229,6 +230,8 @@ def parse_effect_param_defs(
 
     Args:
         sspc_child_chunks: The SSPC chunk's child chunks.
+        code_page: The project's system code page (`nnhd`), which older
+            projects store parameter names in.
 
     Returns:
         Dict mapping parameter match names to definition dicts.
@@ -241,9 +244,41 @@ def parse_effect_param_defs(
         # Skip first, it describes parent
         if index == 0:
             continue
-        param_defs[match_name] = _parse_effect_parameter_def(parameter_chunks)
+        param_def = _parse_effect_parameter_def(parameter_chunks, code_page)
+        if match_name in _UNBOUNDED_CHECKBOXES:
+            del param_def["min_value"], param_def["max_value"]
+        param_defs[match_name] = param_def
 
     return param_defs
+
+
+# Checkboxes AE 2026 reports without min / max. Nothing in their pard sets
+# them apart: the other 2067 checkboxes of the effect samples, including
+# ones with the same flags, are bounded 0-1.
+_UNBOUNDED_CHECKBOXES = frozenset(
+    {"ADBE Paint On Transparent", "ADBE FreePin3 On Transparent"}
+)
+
+
+# Python codecs of the `nnhd` code pages that are not `cp<number>`.
+_CODE_PAGE_CODECS = {0x0100: "mac_roman", 65001: "utf-8"}
+
+
+def _decode_pard_name(name: str, code_page: int) -> str:
+    """A `pard` name in the project's code page.
+
+    The chunk decodes the name as UTF-8 (keeping other bytes as surrogates
+    for the round trip), but projects saved before AE 26 store it in the
+    system code page: "Set Red To Source 1's" holds 0x92 in a Windows
+    (1252) project. Names that are valid UTF-8 are returned as they are.
+    """
+    if not any("\udc80" <= ch <= "\udcff" for ch in name):
+        return name
+    codec = _CODE_PAGE_CODECS.get(code_page, f"cp{code_page}")
+    try:
+        return name.encode("utf-8", "surrogateescape").decode(codec)
+    except (LookupError, UnicodeDecodeError):
+        return name
 
 
 def _merge_param_def(
@@ -368,14 +403,15 @@ def _parse_effect_properties(
     """
     from .property import parse_properties
 
-    # Point parameters normalize against the LAYER. The layer is only
-    # reachable once the effect is attached, so callers that already know
-    # it pass its size; during the initial parse it is unknown and the
+    # Point parameters normalize against the LAYER, or the composition for
+    # an adjustment layer (see `Property._effect_point_size`). The layer is
+    # only reachable once the effect is attached, so callers that already
+    # know it pass it; during the initial parse it is unknown and the
     # composition stands in (what py_aep has always used).
-    point_size = (layer._pixel_size if layer is not None else None) or (
-        float(composition.width),
-        float(composition.height),
+    layer_size = (
+        layer._pixel_size if layer is not None and not layer.adjustment_layer else None
     )
+    point_size = layer_size or (float(composition.width), float(composition.height))
 
     # Skip index-0 internal parameters (not exposed in ExtendScript).
     property_runs = [
@@ -490,7 +526,9 @@ def parse_effect(
     tdgp_chunk = find_by_list_type(chunks=sspc_child_chunks, list_type="tdgp")
 
     try:
-        param_defs = parse_effect_param_defs(sspc_child_chunks)
+        param_defs = parse_effect_param_defs(
+            sspc_child_chunks, composition._project._nnhd._system_code_page
+        )
     except ChunkNotFoundError:
         param_defs = {}
 
@@ -695,7 +733,9 @@ def _extract_no_value(body: Any, result: dict[str, Any]) -> None:
     result["property_value_type"] = PropertyValueType.NO_VALUE
 
 
-def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]:
+def _parse_effect_parameter_def(
+    parameter_chunks: list[Chunk], code_page: int
+) -> dict[str, Any]:
     """Parse effect parameter definition from pard chunk, returning a dict of values."""
     pard_chunk = cast(
         "PardChunk", find_by_type(chunks=parameter_chunks, chunk_type="pard")
@@ -704,7 +744,7 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
     control_type = PropertyControlType(pard_chunk.property_control_type)
 
     result: dict[str, Any] = {
-        "name": pard_chunk.name,
+        "name": _decode_pard_name(pard_chunk.name, code_page),
         "property_control_type": control_type,
         # PF param flags bit 1 = CANNOT_TIME_VARY (the tdb4 byte is
         # unreliable for effect parameters).
@@ -733,7 +773,15 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
         pdnm_data = utf8_chunk.value
         if control_type == PropertyControlType.ENUM:
             result["property_parameters"] = pdnm_data.split("|")
-        elif pdnm_data:
+        elif (
+            pdnm_data
+            and control_type == PropertyControlType.BOOLEAN
+            and not result["name"].strip()
+        ):
+            # A checkbox's pdnm is the label beside its box (a button's, the
+            # button text): AE 2026 names the parameter by it only when the
+            # pard name is blank (2102 / 2102 such checkboxes, 279 / 279
+            # named ones keep the pard name, as do buttons).
             result["name"] = pdnm_data
     except ChunkNotFoundError:
         pass
@@ -743,6 +791,7 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
 
 def parse_effect_definitions(
     root_chunks: list[Chunk],
+    code_page: int,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Parse project-level effect definitions from LIST:EfdG.
 
@@ -752,6 +801,7 @@ def parse_effect_definitions(
 
     Args:
         root_chunks: The root chunks of the AEP file.
+        code_page: The project's system code page (`nnhd`).
 
     Returns:
         Dict mapping effect match names to their parameter definitions
@@ -772,7 +822,7 @@ def parse_effect_definitions(
         effect_match_name = cast("TdmnChunk", tdmn_chunk).value
 
         sspc_chunk = find_by_list_type(chunks=efdf_child_chunks, list_type="sspc")
-        param_defs = parse_effect_param_defs(sspc_chunk.chunks)
+        param_defs = parse_effect_param_defs(sspc_chunk.chunks, code_page)
         effect_defs[effect_match_name] = param_defs
 
     return effect_defs

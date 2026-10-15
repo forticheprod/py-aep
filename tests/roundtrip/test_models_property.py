@@ -23,6 +23,7 @@ from py_aep.enums import (
     MaskMotionBlur,
     PropertyControlType,
     PropertyType,
+    PropertyValueType,
 )
 from py_aep.models import (
     AVLayer,
@@ -3923,3 +3924,41 @@ class TestRotoBezierWrites:
         assert value.vertices[0] == pytest.approx([200.0, 150.0], abs=1e-3)
         assert value._stored_tangents(-1)[0] == pytest.approx([-15.0, 5.0], abs=1e-3)
         assert value._stored_tangents(1)[0] == pytest.approx([20.0, -10.0], abs=1e-3)
+
+
+class TestTextPathWrite:
+    @staticmethod
+    def _text_layer(project: Project) -> TextLayer:
+        comp = get_comp(project, "type_text")
+        layer = next(ly for ly in comp.layers if ly.name == "TextLayer")
+        assert isinstance(layer, TextLayer)
+        return layer
+
+    def test_path_set_to_a_mask(self, tmp_path: Path) -> None:
+        """A text layer's Path set to a mask is written as AE 2026 writes it
+        (and reads back py_aep's file): a mask index in a `tdli`."""
+        project = parse_project_fresh(SAMPLES_DIR / "all_animated.aep")
+        layer = self._text_layer(project)
+        assert layer.masks is not None
+        layer.masks.add_property("ADBE Mask Atom")
+        path = layer.text.property("ADBE Text Path Options").property("ADBE Text Path")
+        path.value = 1
+        out = tmp_path / "text_path.aep"
+        project.save(out)
+
+        path = (
+            self._text_layer(parse_project_fresh(out))
+            .text.property("ADBE Text Path Options")
+            .property("ADBE Text Path")
+        )
+        assert path._tdsb.synthetic is False
+        assert path.property_value_type == PropertyValueType.MASK_INDEX
+        assert path.value == 1
+        tdb4 = path._tdb4
+        assert (
+            tdb4._spatial_static_flags,
+            tdb4._value_hint_type,
+            tdb4._cvot_flags,
+            tdb4._type_flags,
+            tdb4._property_category,
+        ) == (0x01, 1, 0x00, 0x04, 0x04)

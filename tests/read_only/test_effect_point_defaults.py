@@ -88,3 +88,30 @@ def test_point_default_is_a_percentage_of_the_layer(
         p for p in _effect_props(comp_name, layer_name) if p.match_name == match_name
     )
     assert prop.default_value == pytest.approx(default, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("layer_name", "center"),
+    [("normal", [100.0, 50.0]), ("adjustment", [960.0, 540.0])],
+)
+def test_adjustment_layer_point_is_a_percentage_of_the_comp(
+    layer_name: str, center: list[float]
+) -> None:
+    """`effect_point_adjustment.aep`: a Transform effect whose Anchor Point
+    and Position AE 2026 set to 30,40 and 10,20 by script on two 200x100
+    solids of a 1920x1080 comp, one of them an adjustment layer. AE stores
+    the adjustment layer's points against the comp, and centres their
+    defaults on it."""
+    comp = get_comp(
+        parse_project(SAMPLES_DIR / "effect_point_adjustment.aep"), "coverage"
+    )
+    layer = next(ly for ly in comp.layers if ly.name == layer_name)
+    assert layer.effects is not None
+    transform = layer.effects.property("ADBE Geometry2")
+    for match_name, value in (
+        ("ADBE Geometry2-0001", [30.0, 40.0]),
+        ("ADBE Geometry2-0002", [10.0, 20.0]),
+    ):
+        prop = transform.property(match_name)
+        assert prop.value == pytest.approx(value), match_name
+        assert prop.default_value == pytest.approx(center), match_name

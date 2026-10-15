@@ -168,6 +168,8 @@ _MATERIAL_SPECS: list[PropSpec] = [
         has_time_base=True,
         spatial_flags=0x07,
         value_hint_type=2,
+        # AE 24.6 lists it, AE 15.1 / 22.5 / 23.6 do not.
+        min_major=24,
     ),
     _spec(
         "ADBE Appears in Reflections",
@@ -1316,9 +1318,15 @@ _TEXT_PATH_OPTIONS_SPECS: list[PropSpec] = [
     _spec(
         "ADBE Text Path",
         "Path",
-        0.0,
-        PropertyValueType.CUSTOM_VALUE,
+        0,
+        PropertyValueType.MASK_INDEX,
         can_vary_over_time=False,
+        # As AE 2026 writes a text layer's Path set to a mask.
+        integer=True,
+        has_time_base=True,
+        spatial_flags=0x01,
+        cvot=0x00,
+        value_hint_type=1,
     ),
     _spec(
         "ADBE Text Reverse Path",

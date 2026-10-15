@@ -20,6 +20,7 @@ from ..binary.utils import (
     find_by_list_type,
     find_by_type,
 )
+from ..enums import PropertyValueType
 from ..models.descriptors import _suppress_materialization
 from ..models.properties.keyframe import Keyframe
 from ..models.properties.property import Property
@@ -86,10 +87,14 @@ def parse_property(
         )
     except ChunkNotFoundError:
         pass
+    # AE writes a tdli only for mask-index properties; their tdb4 alone reads
+    # as OneD (e.g. a text layer's Path).
+    property_value_type: PropertyValueType | None = None
     try:
         value = cast(
             "S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli")
         ).value
+        property_value_type = PropertyValueType.MASK_INDEX
     except ChunkNotFoundError:
         pass
 
@@ -135,6 +140,7 @@ def parse_property(
         property_depth=property_depth,
         keyframes=keyframes,
         value=value,
+        property_value_type=property_value_type,
     )
 
     return prop

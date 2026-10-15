@@ -1977,6 +1977,92 @@ class TestEffectMetadata:
         assert flare_center.value[0] <= comp.width
         assert flare_center.value[1] <= comp.height
 
+    def test_only_dropdown_menu_controls_are_dropdown_effects(self) -> None:
+        """AE 2026 reports isDropdownEffect on a Dropdown Menu Control's menu,
+        not on an effect's own popup."""
+        comp = get_comp(
+            parse_project(
+                SAMPLES_DIR.parent / "essential_graphics" / "dropdown_controller.aep"
+            ),
+            "primary",
+        )
+        layer = next(ly for ly in comp.layers if ly.name == "Gray Solid 1")
+        control = layer.property("ADBE Effect Parade").property(
+            "Pseudo/@@nQHCs0tHTTGgMy9vbNKNrQ"
+        )
+        assert control.property(
+            "Pseudo/@@nQHCs0tHTTGgMy9vbNKNrQ-0001"
+        ).is_dropdown_effect
+
+        layer = get_first_layer(parse_project(SAMPLES_DIR / "2_gaussian.aep"))
+        blur = layer.property("ADBE Effect Parade").property("ADBE Gaussian Blur 2")
+        assert blur.property("ADBE Gaussian Blur 2-0002").is_dropdown_effect is False
+
+    def test_checkboxes_are_bounded_0_1(self) -> None:
+        """AE 2026 bounds a checkbox 0-1 even when it cannot vary over time,
+        except Puppet's (and Paint's) On Transparent."""
+        comp = get_comp(parse_project(SAMPLES_DIR / "all_animated.aep"), "type_camera")
+        layer = next(ly for ly in comp.layers if ly.name == "XF")
+        fill = layer.property("ADBE Effect Parade").property("ADBE Fill")
+        all_masks = fill.property("ADBE Fill-0007")
+        assert all_masks.can_vary_over_time is False
+        assert (all_masks.has_min, all_masks.min_value, all_masks.max_value) == (
+            True,
+            0,
+            1,
+        )
+        layer = get_layer(parse_project(SAMPLES_DIR / "effects.aep"), "effect_puppet")
+        puppet = layer.property("ADBE Effect Parade").property("ADBE FreePin3")
+        on_transparent = puppet.property("ADBE FreePin3 On Transparent")
+        assert (on_transparent.has_min, on_transparent.has_max) == (False, False)
+        auto_rotate = puppet.property("ADBE FreePin3 Auto Rotate Pins")
+        assert (auto_rotate.has_min, auto_rotate.has_max) == (True, True)
+
+
+class TestTextPathOptions:
+    def test_path_is_a_mask_index(self) -> None:
+        """A text layer's Path picks one of its masks, None reading 0."""
+        comp = get_comp(parse_project(SAMPLES_DIR / "all_animated.aep"), "type_text")
+        layer = next(ly for ly in comp.layers if ly.name == "TextLayer")
+        path = (
+            layer.property("ADBE Text Properties")
+            .property("ADBE Text Path Options")
+            .property("ADBE Text Path")
+        )
+        assert path.property_value_type == PropertyValueType.MASK_INDEX
+        assert path.value == 0
+
+
+class TestMaterialOptionsByVersion:
+    """A 2D solid in a Classic 3D comp, each sample read by its own AE."""
+
+    @staticmethod
+    def _materials(version: str) -> PropertyGroup:
+        comp = get_comp(
+            parse_project(VERSIONS_DIR / version / "complete.aep"), "DropFrame_Comp"
+        )
+        layer = next(ly for ly in comp.layers if ly.name == "DF_Solid")
+        assert layer.three_d_layer is False
+        return layer.property("ADBE Material Options Group")
+
+    @pytest.mark.parametrize(
+        ("version", "expected"), [("ae2023", True), ("ae2024", False)]
+    )
+    def test_2d_layer_options_take_expressions_until_ae_23(
+        self, version: str, expected: bool
+    ) -> None:
+        """AE 15.1, 22.5 and 23.6 show these options on a 2D layer too."""
+        materials = self._materials(version)
+        for mn in ("ADBE Light Transmission", "ADBE Diffuse Coefficient"):
+            assert materials.property(mn).can_set_expression is expected, mn
+
+    @pytest.mark.parametrize(
+        ("version", "expected"), [("ae2023", False), ("ae2024", True)]
+    )
+    def test_shadow_color_from_ae_24(self, version: str, expected: bool) -> None:
+        names = [p.match_name for p in self._materials(version).properties]
+        assert ("ADBE Shadow Color" in names) is expected
+
 
 class TestCanSetExpression:
     """Tests for Property.can_set_expression."""

@@ -2945,7 +2945,13 @@ class Property(PropertyBase):
     @property
     def is_dropdown_effect(self) -> bool:
         """`True` if the property is the Menu property of a Dropdown Menu Control effect."""
-        return self._property_control_type == PropertyControlType.ENUM
+        # A Dropdown Menu Control is a `Pseudo/@@<id>` effect (its Essential
+        # Graphics override leaf keeps that match name). AE 2026 reports
+        # False on every other popup, named pseudo effects' ones included.
+        return (
+            self._property_control_type == PropertyControlType.ENUM
+            and self.match_name.startswith("Pseudo/@@")
+        )
 
     @property
     def is_time_varying(self) -> bool:
@@ -4485,7 +4491,7 @@ class Property(PropertyBase):
             # to [100, 50, 7] on a 200x100 layer stores [0.5, 0.5, 0.07], and
             # only 7/100 gives 0.07 (probed in AE 2026 across three
             # comp/layer size pairs).
-            size = self._layer_pixel_size()
+            size = self._effect_point_size()
             if size is not None:
                 scale = list(size)
                 if self.property_control_type == PropertyControlType.THREE_D:
@@ -4512,6 +4518,23 @@ class Property(PropertyBase):
             return self._containing_layer._pixel_size
         except ValueError:
             return None
+
+    def _effect_point_size(self) -> tuple[float, float] | None:
+        """The size an effect point is stored normalized against, or `None`.
+
+        The layer's, except on an adjustment layer, whose effects render in
+        its composition: AE 2026 stores a Transform anchor set to [30, 40]
+        on a 200x100 adjustment solid in a 1920x1080 comp as 30 / 1920,
+        40 / 1080, and defaults it to the comp's centre (as AE 15.1 does).
+        """
+        try:
+            layer = self._containing_layer
+        except ValueError:
+            return None
+        if layer.adjustment_layer:
+            comp = layer.containing_comp
+            return float(comp.width), float(comp.height)
+        return layer._pixel_size
 
 
 def _deactivate_follower(follower: Property) -> None:

@@ -519,6 +519,8 @@ class PropertyGroup(PropertyBase):
             "ADBE Text Animators",
             "ADBE Text Selectors",
             "ADBE Text Animator Properties",
+            # The Paint effect's stroke list.
+            "ADBE Paint Group",
         ):
             self._elided = True
 

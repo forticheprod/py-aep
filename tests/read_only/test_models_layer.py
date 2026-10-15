@@ -723,6 +723,27 @@ class TestAudio:
         assert layer_json["audioEnabled"] is False
         assert layer.audio_enabled == layer_json["audioEnabled"]
 
+    def test_audio_only_anchor_point(self) -> None:
+        """An audio-only layer has no pixels: AE centres its anchor on a 1x1
+        box."""
+        expected = load_expected(SAMPLES_DIR, "audioEnabled")
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "audioEnabled.aep"), "audioEnabled_true"
+        )
+        layer_json = get_layer_from_json_by_comp(expected, "audioEnabled_true")
+        transform_json = next(
+            p
+            for p in layer_json["properties"]
+            if p["matchName"] == "ADBE Transform Group"
+        )
+        anchor_json = next(
+            p
+            for p in transform_json["properties"]
+            if p["matchName"] == "ADBE Anchor Point"
+        )
+        anchor = layer.property("ADBE Transform Group").property("ADBE Anchor Point")
+        assert anchor.value == anchor_json["value"] == [0.5, 0.5, 0]
+
 
 class TestLayerNameEncoding:
     """Regression tests for layer name encoding edge cases."""
@@ -1278,6 +1299,15 @@ class TestTopLevelSpecialCases:
         )
         assert isinstance(layer_sets, PropertyGroup)
         assert layer_sets.elided is True
+
+    def test_trackers_and_layer_sets_are_indexed_groups(self) -> None:
+        """AE 2026 reports both as indexed groups, empty or not."""
+        layer = get_layer(
+            parse_project(SAMPLES_DIR / "avlayer_flags.aep"),
+            "adjustmentLayer_true",
+        )
+        for mn in ("ADBE MTrackers", "ADBE Layer Sets"):
+            assert layer.property(mn).property_type == PropertyType.INDEXED_GROUP, mn
 
     def test_all_canonical_groups_depth_one(self) -> None:
         """Every canonical top-level group has property_depth == 1."""

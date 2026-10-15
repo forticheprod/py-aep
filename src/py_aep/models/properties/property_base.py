@@ -25,8 +25,9 @@ if TYPE_CHECKING:
     from .property_group import PropertyGroup
 
 
-# Match names of groups that support add/remove/move/duplicate on children.
-# "ADBE Vectors Group" is a nested shape group's own contents.
+# Match names of groups that support add/remove/move/duplicate on children
+# (AE 2026 reports them INDEXED_GROUP, empty or not). "ADBE Vectors Group" is
+# a nested shape group's own contents.
 _INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset(
     {
         "ADBE Effect Parade",
@@ -36,6 +37,10 @@ _INDEXED_GROUP_MATCH_NAMES: frozenset[str] = frozenset(
         "ADBE Text Selectors",
         "ADBE Root Vectors Group",
         "ADBE Vectors Group",
+        "ADBE MTrackers",
+        "ADBE Layer Sets",
+        "ADBE Paint Group",
+        "ADBE Samurai Strokes Group",
     }
 )
 
