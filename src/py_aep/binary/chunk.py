@@ -7,6 +7,7 @@ the recursive reader/writer.
 from __future__ import annotations
 
 import struct
+import sys
 from contextvars import ContextVar
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
@@ -47,6 +48,10 @@ class Chunk:
     data: bytes = b""
     synthetic: bool = field(default=False, repr=False)
     _trailing: bytes = field(default=b"", repr=False, eq=False, init=False)
+
+    # Whether `read` takes the nesting context `read_chunks` passes (a class
+    # attribute, not a field).
+    _nests = False
 
     @classmethod
     def read(
@@ -256,6 +261,8 @@ class ListChunk(Chunk):
     chunks: list[Chunk] = Factory(list)
     chunk_type: str = "LIST"
 
+    _nests = True
+
     @classmethod
     def read(
         cls,
@@ -271,7 +278,7 @@ class ListChunk(Chunk):
             raise OSError(f"{chunk_type} body too small: {size}")
         if ctx is None:
             ctx = EMPTY_CTX
-        list_type = read_fmt("4s", fp)[0].decode("ASCII")
+        list_type = sys.intern(read_fmt("4s", fp)[0].decode("ASCII"))
         if list_type == "btdk":
             data = read_bytes(fp, size - 4)
             return cls(
@@ -404,6 +411,8 @@ class ContainerChunk(Chunk):
     """
 
     chunks: list[Chunk] = Factory(list)
+
+    _nests = True
 
     @classmethod
     def read(
@@ -672,7 +681,8 @@ def read_header(fp: IO[bytes]) -> tuple[str, int]:
     if len(data) < 8:
         raise OSError(f"Short read on chunk header: expected 8 bytes, got {len(data)}")
     raw_type, len_body = _HEADER_STRUCT.unpack(data)
-    chunk_type = raw_type.decode("ASCII")
+    # Interned: one shared string per type instead of one per chunk.
+    chunk_type = sys.intern(raw_type.decode("ASCII"))
     return chunk_type, len_body
 
 
@@ -722,16 +732,23 @@ def read_chunks(
         cls = CHUNK_TYPES.get(chunk_type, Chunk)
 
         resolver = _CONTEXT_RESOLVERS.get(chunk_type)
-        ctx_kw = resolver(result, ctx) if resolver else {}
-        chunk = cls.read(
-            fp,
-            len_body,
-            chunk_type=chunk_type,
-            ctx=ctx,
-            parent_result=result,
-            defer_list_types=defer_list_types,
-            **ctx_kw,
-        )
+        if cls._nests:
+            # No resolver targets a nesting chunk (tests/unit/test_binary_io.py).
+            chunk: Chunk = cls.read(
+                fp,
+                len_body,
+                chunk_type=chunk_type,
+                ctx=ctx,
+                parent_result=result,
+                defer_list_types=defer_list_types,
+            )
+        elif resolver is not None:
+            chunk = cls.read(
+                fp, len_body, chunk_type=chunk_type, **resolver(result, ctx)
+            )
+        else:
+            # Leaf chunks take no reading context (no kwargs dict per chunk).
+            chunk = cls.read(fp, len_body, chunk_type=chunk_type)
         result.append(chunk)
 
         # Consume pad byte if len_body is odd

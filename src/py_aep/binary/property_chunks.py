@@ -9,6 +9,7 @@ have variable-length or context-dependent layouts.
 from __future__ import annotations
 
 import struct
+import sys
 from io import BytesIO
 from typing import TYPE_CHECKING, TypeVar
 
@@ -511,7 +512,9 @@ class TdmnChunk(_StringChunkBase):
         cls, fp: IO[bytes], size: int, *, chunk_type: str = "", **kw: Any
     ) -> TdmnChunk:
         raw = read_bytes(fp, size)
-        return cls(chunk_type=chunk_type, value=raw.rstrip(b"\x00").decode("UTF-8"))
+        # Interned: the same few hundred match names recur on every layer.
+        value = sys.intern(raw.rstrip(b"\x00").decode("UTF-8"))
+        return cls(chunk_type=chunk_type, value=value)
 
     def write(self, fp: IO[bytes]) -> int:
         encoded = self.value.encode("UTF-8")[:40]

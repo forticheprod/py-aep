@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any, cast
 
-from py_aep.enums import PropertyType
+from py_aep.enums import PropertyType, PropertyValueType
 
 from ...ae_version import get_ae_version_major
 from ...binary.chunk import ListChunk
@@ -77,6 +77,26 @@ def _renumber_mask_auto_names(parent: PropertyGroup) -> None:
             i += 1
 
 
+def _clear_mask_references(mask: PropertyBase) -> None:
+    """Reset the layer's references to a mask being removed.
+
+    A text Path or an effect's mask parameter (Fill > Fill Mask) stores the
+    id of the mask it names (`Property._mask_index`). Removing that mask
+    resets it to none, left out of the file as an untouched parameter is
+    (AE 2026), so a later mask reusing the id is not picked up.
+    """
+    mask_id = cast("MaskPropertyGroup", mask)._mkif.mask_id
+    for prop in mask._containing_layer._leaf_properties():
+        if prop.property_value_type != PropertyValueType.MASK_INDEX:
+            continue
+        tdli = prop._tdli_chunk()
+        if tdli is None or tdli.value != mask_id:
+            continue
+        tdli.value = 0
+        if not prop.expression:
+            prop._revert_to_synthetic()
+
+
 def _assign_duplicate_mask_identity(
     source: PropertyBase, new_mask: PropertyBase, parent: PropertyGroup
 ) -> None:
@@ -119,6 +139,13 @@ class PropertyBase:
     )
     """Corresponds to the setting of the eyeball icon. Read / Write."""
 
+    # Defaults nearly every instance keeps live on the class (see the class
+    # defaults of `Property`).
+    _name: str | None = None
+    _elided = False
+    _is_effect = False
+    _is_mask = False
+
     def __init__(
         self,
         *,
@@ -135,12 +162,6 @@ class PropertyBase:
         self._auto_name = auto_name
         self._property_depth = property_depth
         self._tdmn: TdmnChunk | None = None
-
-        self._name: str | None = None
-
-        self._elided = False
-        self._is_effect = False
-        self._is_mask = False
         self._parent_property = parent_property
         self._property_type = PropertyType.NAMED_GROUP
 
@@ -511,6 +532,8 @@ class PropertyBase:
             ValueError: If this property is not in an indexed group.
         """
         parent, parent_tdgp = self._can_mutate()
+        if self._is_mask:
+            _clear_mask_references(self)
         start, end = self._find_chunk_span(parent_tdgp)
         del parent_tdgp.chunks[start:end]
         parent.properties.remove(cast("Property | PropertyGroup", self))

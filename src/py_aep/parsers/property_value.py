@@ -66,57 +66,27 @@ def parse_property(
         "Tdb4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdb4")
     )
 
-    try:
-        cdat: CdatChunk | None = cast(
-            "CdatChunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="cdat")
-        )
-    except ChunkNotFoundError:
-        cdat = None
+    # The optional chunks, first of each type, in one pass: a find_by_type
+    # per type rescanned the children and raised for each absent one.
+    optional: dict[str, Chunk] = {}
+    for chunk in tdbs_child_chunks:
+        optional.setdefault(chunk.chunk_type, chunk)
 
-    # Static value is read lazily by Property.value from _cdat via
-    # _resolve_value.  Only extract here for non-cdat overrides.
-    value = None
+    cdat = cast("CdatChunk | None", optional.get("cdat"))
 
     # For LAYER control properties, keep the tdpi chunk reference so the
     # layer index can be resolved lazily (it changes on layer reorder).
-    # tdli stores the 1-based mask index directly and is stable.
-    tdpi: S4Chunk | None = None
-    try:
-        tdpi = cast(
-            "S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdpi")
-        )
-    except ChunkNotFoundError:
-        pass
-    # AE writes a tdli only for mask-index properties; their tdb4 alone reads
-    # as OneD (e.g. a text layer's Path).
+    tdpi = cast("S4Chunk | None", optional.get("tdpi"))
+    # AE writes a tdli (the mask's id, resolved lazily by
+    # `Property._mask_index`) only for mask-index properties; their tdb4
+    # alone reads as OneD (e.g. a text layer's Path).
     property_value_type: PropertyValueType | None = None
-    try:
-        value = cast(
-            "S4Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdli")
-        ).value
+    if "tdli" in optional:
         property_value_type = PropertyValueType.MASK_INDEX
-    except ChunkNotFoundError:
-        pass
 
-    try:
-        expression_utf8 = cast(
-            "Utf8Chunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="Utf8")
-        )
-    except ChunkNotFoundError:
-        expression_utf8 = None
-
-    try:
-        tdum = cast(
-            "TdumChunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tdum")
-        )
-    except ChunkNotFoundError:
-        tdum = None
-    try:
-        tduM = cast(
-            "TdumChunk", find_by_type(chunks=tdbs_child_chunks, chunk_type="tduM")
-        )
-    except ChunkNotFoundError:
-        tduM = None
+    expression_utf8 = cast("Utf8Chunk | None", optional.get("Utf8"))
+    tdum = cast("TdumChunk | None", optional.get("tdum"))
+    tduM = cast("TdumChunk | None", optional.get("tduM"))
 
     keyframes = _parse_keyframes(tdbs_child_chunks, frame_rate=composition.frame_rate)
 
@@ -139,7 +109,8 @@ def parse_property(
         match_name=match_name,
         property_depth=property_depth,
         keyframes=keyframes,
-        value=value,
+        # Read lazily from the chunks (`Property._stored_static_value`).
+        value=None,
         property_value_type=property_value_type,
     )
 

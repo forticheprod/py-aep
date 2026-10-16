@@ -267,7 +267,10 @@ def _reorder_and_fill(
             child = existing[mn]
             child._auto_name = spec.auto_name
             if not isinstance(spec, GroupSpec) and isinstance(child, Property):
-                child.__dict__["_color"] = spec.color
+                # Only where the stored flag disagrees: an override is an
+                # instance-dict key (see the class defaults of `Property`).
+                if child._color != spec.color:
+                    child.__dict__["_color"] = spec.color
                 if spec.chunk_bounds_are_hints:
                     # tdum/tduM hold UI slider hints, not real bounds:
                     # the spec is authoritative (None = unbounded).
@@ -738,11 +741,11 @@ class PropertyGroup(PropertyBase):
             return self.properties[key]
         if isinstance(key, str):
             for prop in self.properties:
-                if (
-                    prop.name == key
-                    or prop.match_name == key
-                    or prop.name.lower().replace(" ", "_") == key
-                ):
+                # The match name first: `name` is derived, not stored.
+                if prop.match_name == key:
+                    return prop
+                name = prop.name
+                if name == key or name.lower().replace(" ", "_") == key:
                     return prop
             raise KeyError(key)
         raise TypeError(f"Property key must be int or str, not {type(key).__name__}")

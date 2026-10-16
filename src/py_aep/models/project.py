@@ -2149,16 +2149,17 @@ class Project:
         # Write to a sibling temp file then rename, so a failed write can
         # never leave a truncated .aep at the target path. The temp name is
         # unique and created exclusively: a fixed one would overwrite, then
-        # move away, any file of the user's carrying it.
+        # move away, any file of the user's carrying it. A failed rename (a
+        # scanner still holding the temp file on Windows) removes it too.
         tmp_path = path_obj.with_name(f"{path_obj.name}.{uuid.uuid4().hex}.tmp")
         try:
             with tmp_path.open("xb") as f:
                 f.write(buffer.getbuffer())
+            os.replace(tmp_path, path_obj)
         except BaseException:
             if tmp_path.exists():  # missing_ok needs Python 3.8
                 tmp_path.unlink()
             raise
-        os.replace(tmp_path, path_obj)
         self._file = str(path)
 
     def _fill_relative_path_counts(

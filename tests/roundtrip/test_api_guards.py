@@ -478,3 +478,18 @@ class TestAtomicSave:
         with pytest.raises(OSError):
             app.project.save(tmp_path / "out.aep")
         assert list(tmp_path.iterdir()) == []
+
+    def test_failed_rename_leaves_no_file(self, tmp_path: Path, monkeypatch) -> None:
+        # The temp file is written, then renaming it fails (a scanner still
+        # holding it on Windows): the temp file is removed.
+        import py_aep.models.project as project_mod
+
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+
+        def boom(*args, **kwargs):
+            raise PermissionError("simulated rename failure")
+
+        monkeypatch.setattr(project_mod.os, "replace", boom)
+        with pytest.raises(PermissionError):
+            app.project.save(tmp_path / "out.aep")
+        assert list(tmp_path.iterdir()) == []

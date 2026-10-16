@@ -2019,6 +2019,27 @@ class TestEffectMetadata:
         assert (auto_rotate.has_min, auto_rotate.has_max) == (True, True)
 
 
+class TestInstanceDictSize:
+    def test_common_keys_fit_the_shared_key_table(self) -> None:
+        """The keys every plain property sets, plus a popup's two (the most
+        common per-kind keys), fit the 30 shared slots (see the class
+        defaults of `Property`); rarer keys spill on their own instances
+        only. Complex values (Orientation, shapes, text) carry their
+        container chunks too."""
+        layer = get_first_layer(parse_project(SAMPLES_DIR / "2_gaussian.aep"))
+        props = list(layer.property("ADBE Transform Group").properties)
+        effect = layer.property("ADBE Effect Parade").property("ADBE Gaussian Blur 2")
+        props += effect.properties
+        plain = [
+            p for p in props if isinstance(p, Property) and p._parallel_kind() is None
+        ]
+        assert len(plain) > 10
+        common = set.intersection(*(set(p.__dict__) for p in plain))
+        popup = set(effect.property("ADBE Gaussian Blur 2-0002").__dict__)
+        assert {"nb_options", "_property_parameters"} <= popup
+        assert len(common | popup) <= 30, sorted(common | popup)
+
+
 class TestTextPathOptions:
     def test_path_is_a_mask_index(self) -> None:
         """A text layer's Path picks one of its masks, None reading 0."""

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import copy
+import gc
+import weakref
 from pathlib import Path
+from typing import cast
 
 import pytest
 from helpers import (
@@ -27,6 +31,7 @@ from py_aep.enums import (
 )
 from py_aep.models import (
     AVLayer,
+    FootageItem,
     Keyframe,
     Layer,
     MaskPropertyGroup,
@@ -3177,7 +3182,8 @@ class TestPlaceholderBoundsValueSetter:
         scale = _find_descendant(self._layer(), "ADBE Scale")
         assert scale is not None and not scale.keyframes
         scale.value = [150.0, 150.0, 150.0]
-        assert scale.value == pytest.approx([150.0, 150.0, 150.0])
+        # A 2-D layer reports Scale Z as 100 whatever was written.
+        assert scale.value == pytest.approx([150.0, 150.0, 100.0])
         assert scale.has_max is False
 
     def test_real_bounds_still_enforced(self) -> None:
@@ -3926,6 +3932,113 @@ class TestRotoBezierWrites:
         assert value._stored_tangents(1)[0] == pytest.approx([20.0, -10.0], abs=1e-3)
 
 
+class TestSyntheticValuesAreOwned:
+    """Default properties a file leaves out are built from shared spec values;
+    each must own its value, as AE hands out a fresh array on every read."""
+
+    AEP = VERSIONS_DIR / "ae2025" / "complete.aep"
+
+    @staticmethod
+    def _audio_levels(project: Project, comp_name: str) -> Property:
+        layer = get_layer(project, comp_name)
+        prop = layer.property("ADBE Audio Group").property("ADBE Audio Levels")
+        assert isinstance(prop, Property)
+        return prop
+
+    def test_read_modify_write_touches_one_property(self) -> None:
+        project = parse_project_fresh(self.AEP)
+        levels = self._audio_levels(project, "DropFrame_Comp")
+        other = self._audio_levels(project, "HighFPS_Comp")
+        assert levels._tdsb.synthetic and other._tdsb.synthetic
+        value = levels.value
+        value[0] = 3.0
+        levels.value = value
+        assert levels.value == [3.0, 0.0]
+        assert other.value == [0.0, 0.0]
+        assert other.default_value == [0.0, 0.0]
+        # Nor does it reach a later parse in the same process.
+        fresh = self._audio_levels(parse_project_fresh(self.AEP), "HighFPS_Comp")
+        assert fresh.value == [0.0, 0.0]
+
+    def test_item_assignment_writes_the_property(self, tmp_path: Path) -> None:
+        project = parse_project_fresh(self.AEP)
+        levels = self._audio_levels(project, "DropFrame_Comp")
+        assert levels._tdsb.synthetic
+        levels.value[0] = 3.0
+        assert levels.value == [3.0, 0.0]
+        assert not levels._tdsb.synthetic
+        value = levels.value
+        value[1] += 1.5
+        assert value == [3.0, 1.5]
+        levels.value[:] = [4.0, 5.0]
+        levels.default_value[0] = 3.0
+        assert self._audio_levels(project, "HighFPS_Comp").value == [0.0, 0.0]
+        assert self._audio_levels(project, "HighFPS_Comp").default_value == [0.0, 0.0]
+        out = tmp_path / "levels.aep"
+        project.save(out)
+        saved = self._audio_levels(parse_project_fresh(out), "DropFrame_Comp")
+        assert saved.value == [4.0, 5.0]
+
+    def test_item_assignment_starts_from_the_current_value(self) -> None:
+        """A list read earlier only sets the item it is given."""
+        project = parse_project_fresh(self.AEP)
+        levels = self._audio_levels(project, "DropFrame_Comp")
+        stale = levels.value
+        levels.value = [1.0, 2.0]
+        stale[0] = 3.0
+        assert levels.value == [3.0, 2.0]
+        assert stale == [3.0, 2.0]
+
+    def test_item_assignment_keeps_a_2d_layers_stored_z(self) -> None:
+        """A 2-D layer reads Position Z as 0 but keeps the stored one."""
+        project = parse_project_fresh(self.AEP)
+        layer = get_layer(project, "DropFrame_Comp")
+        assert layer.three_d_layer is False
+        position = layer.property("ADBE Transform Group").property("ADBE Position")
+        position.value = [10.0, 20.0, 40.0]
+        position.value[0] = 5.0
+        assert position.value == [5.0, 20.0, 0.0]
+        assert position._stored_static_value()[2] == 40.0
+
+    def test_item_assignment_follows_the_setter_rules(self) -> None:
+        project = parse_project_fresh(self.AEP)
+        levels = self._audio_levels(project, "DropFrame_Comp")
+        levels.add_key(0.0)
+        with pytest.raises(ValueError, match="keyframes"):
+            levels.value[0] = 3.0
+
+    def test_keyframe_values_are_detached(self) -> None:
+        """A keyframe keeps a copy of the list it is given and hands out a
+        copy: editing either never reaches another property."""
+        project = parse_project_fresh(self.AEP)
+        levels = self._audio_levels(project, "DropFrame_Comp")
+        other = self._audio_levels(project, "HighFPS_Comp")
+        levels.set_value_at_time(0.0, other.value)
+        levels.keyframes[0].value[0] = 9.0
+        assert levels.keyframes[0].value == [0.0, 0.0]
+        assert other.value == [0.0, 0.0]
+        assert other._tdsb.synthetic
+
+    def test_a_kept_value_does_not_keep_its_project(self) -> None:
+        project = parse_project_fresh(self.AEP)
+        value = self._audio_levels(project, "DropFrame_Comp").value
+        ref = weakref.ref(project)
+        del project
+        gc.collect()
+        assert ref() is None
+        value[0] = 3.0  # the property is gone: a plain list
+        assert value == [3.0, 0.0]
+
+    def test_copies_are_plain_lists(self) -> None:
+        project = parse_project_fresh(self.AEP)
+        levels = self._audio_levels(project, "DropFrame_Comp")
+        for duplicate in (copy.copy(levels.value), copy.deepcopy(levels.value)):
+            assert type(duplicate) is list
+            duplicate[0] = 3.0
+        assert levels.value == [0.0, 0.0]
+        assert levels._tdsb.synthetic
+
+
 class TestTextPathWrite:
     @staticmethod
     def _text_layer(project: Project) -> TextLayer:
@@ -3962,3 +4075,212 @@ class TestTextPathWrite:
             tdb4._type_flags,
             tdb4._property_category,
         ) == (0x01, 1, 0x00, 0x04, 0x04)
+
+    def test_path_value_is_validated(self) -> None:
+        """AE 2026 refuses a mask the layer lacks ("Value 2 out of range 0
+        to 1") and -1 / 1.6 / true ("is not an unsigned integer")."""
+        project = parse_project_fresh(SAMPLES_DIR / "all_animated.aep")
+        layer = self._text_layer(project)
+        assert layer.masks is not None
+        layer.masks.add_property("ADBE Mask Atom")
+        path = layer.text.property("ADBE Text Path Options").property("ADBE Text Path")
+        for bad in (2, -1, 1.6, True, "1"):
+            with pytest.raises((TypeError, ValueError)):
+                path.value = bad
+        path.value = 0
+        assert path.value == 0
+
+
+class TestMaskReferences:
+    """A text Path or an effect's mask parameter stores the id (`mkif`) of
+    the mask it names in a `tdli`, so it follows the mask (AE 2026)."""
+
+    @staticmethod
+    def _text_path(project: Project) -> tuple[TextLayer, Property]:
+        layer = TestTextPathWrite._text_layer(project)
+        path = layer.text.property("ADBE Text Path Options").property("ADBE Text Path")
+        return layer, path
+
+    @staticmethod
+    def _fill_mask(project: Project) -> tuple[AVLayer, Property]:
+        layer = next(
+            ly for ly in get_comp(project, "coverage").layers if ly.name == "normal"
+        )
+        assert isinstance(layer, AVLayer) and layer.effects is not None
+        fill = layer.effects["ADBE Fill"]
+        return layer, fill.property("ADBE Fill-0001")
+
+    def test_reads_the_moved_mask_position(self) -> None:
+        """AE moved the Fill Mask's mask (id 2) first and kept the id."""
+        layer, fill_mask = self._fill_mask(
+            parse_project_fresh(SAMPLES_DIR / "mask_reference_moved.aep")
+        )
+        masks = cast("PropertyGroup", layer.masks).properties
+        assert [cast("MaskPropertyGroup", m)._mkif.mask_id for m in masks] == [2, 1]
+        assert fill_mask._tdli_chunk().value == 2
+        assert fill_mask.value == 1
+
+    def test_follows_a_moved_mask(self, tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "mask_reference_moved.aep")
+        layer, fill_mask = self._fill_mask(project)
+        masks = cast("PropertyGroup", layer.masks)
+        masks.properties[0].move_to(1)
+        assert fill_mask.value == 2
+        out = tmp_path / "moved.aep"
+        project.save(out)
+        assert self._fill_mask(parse_project_fresh(out))[1].value == 2
+
+    def test_follows_masks_removed_or_duplicated_around_it(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "all_animated.aep")
+        layer, path = self._text_path(project)
+        masks = cast("PropertyGroup", layer.masks)
+        for _ in range(3):
+            masks.add_property("ADBE Mask Atom")
+        path.value = 2
+        masks.properties[0].duplicate()  # the copy goes before the path's
+        assert path.value == 3
+        masks.properties[2].duplicate()  # a copy of the path's mask, after it
+        assert path.value == 3
+        masks.properties[0].remove()
+        assert path.value == 2
+        masks.properties[3].remove()
+        assert path.value == 2
+
+    def test_removing_the_named_mask_resets_it(self, tmp_path: Path) -> None:
+        """AE 2026 leaves the reset reference out of the file, and a mask
+        that later takes the removed mask's id is not picked up."""
+        project = parse_project_fresh(SAMPLES_DIR / "all_animated.aep")
+        layer, path = self._text_path(project)
+        masks = cast("PropertyGroup", layer.masks)
+        masks.add_property("ADBE Mask Atom")
+        masks.add_property("ADBE Mask Atom")
+        path.value = 2
+        masks.properties[1].remove()
+        assert path.value == 0
+        assert path._tdsb.synthetic is True
+        masks.add_property("ADBE Mask Atom")  # takes id 2 again
+        assert path.value == 0
+        out = tmp_path / "reset.aep"
+        project.save(out)
+        assert self._text_path(parse_project_fresh(out))[1].value == 0
+
+
+class TestRoundedControls:
+    """AE 2026 stores a checkbox or popup value as given and reports it
+    rounded half up, statically and on keys."""
+
+    def test_popup_value_reported_rounded(self, tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "2_gaussian.aep")
+        effects = get_first_layer(project).effects
+        assert effects is not None
+        dims = effects.properties[0].property("ADBE Gaussian Blur 2-0002")
+        for written, reported in ((1.4, 1), (1.5, 2), (2.5, 3)):
+            dims.value = written
+            assert dims.value == reported
+        out = tmp_path / "rounded.aep"
+        project.save(out)
+        effects = get_first_layer(parse_project_fresh(out)).effects
+        assert effects is not None
+        dims = effects.properties[0].property("ADBE Gaussian Blur 2-0002")
+        assert dims._read_cdat_raw() == 2.5
+        assert dims.value == 3
+
+    def test_non_effect_scalar_not_rounded(self) -> None:
+        """A shape's Star Points infers a BOOLEAN control type, yet 5.5
+        reports 5.5."""
+        project = parse_project_fresh(LAYER_SAMPLES_DIR / "shape_source_rect.aep")
+        layer = next(
+            ly
+            for ly in get_comp(project, "SHAPE_RECTS").layers
+            if ly.name == "ps_k2_p5.5_r50"
+        )
+        points = next(
+            p
+            for p in cast("PropertyGroup", layer)._leaf_properties()
+            if p.match_name == "ADBE Vector Star Points"
+        )
+        assert points.value == 5.5
+
+
+class TestEffectPointBasis:
+    """Effect points are stored normalized to the layer (the comp for an
+    adjustment layer), and AE 2026 re-reads values and pard defaults
+    against the current basis."""
+
+    @staticmethod
+    def _layer(project: Project) -> AVLayer:
+        layer = next(
+            ly for ly in get_comp(project, "coverage").layers if ly.name == "normal"
+        )
+        assert isinstance(layer, AVLayer)
+        return layer
+
+    @staticmethod
+    def _point(layer: AVLayer) -> Property:
+        assert layer.effects is not None
+        effect = layer.effects["ADBE Point Control"]
+        return effect.property("ADBE Point Control-0001")
+
+    def test_untouched_point_follows_an_adjustment_toggle(self, tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "effect_point_adjustment.aep")
+        layer = self._layer(project)
+        assert layer.effects is not None
+        layer.effects.add_property("ADBE Point Control")
+        point = self._point(layer)
+        # A 200 x 100 solid in a 1920 x 1080 comp.
+        assert point.value == point.default_value == [100.0, 50.0]
+        layer.adjustment_layer = True
+        assert point.value == point.default_value == [960.0, 540.0]
+        assert point.is_modified is False
+        out = tmp_path / "toggled.aep"
+        project.save(out)
+        assert self._point(self._layer(parse_project_fresh(out))).value == [
+            960.0,
+            540.0,
+        ]
+
+    def test_written_point_follows_a_resize(self) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "effect_point_adjustment.aep")
+        layer = self._layer(project)
+        assert layer.effects is not None
+        layer.effects.add_property("ADBE Point Control")
+        point = self._point(layer)
+        point.value = [30.0, 40.0]
+        source = layer.source
+        assert isinstance(source, FootageItem)
+        source.replace_with_solid([1.0, 0.0, 0.0], "wide", 400, 100)
+        assert point.value == [60.0, 40.0]
+        assert point.default_value == [200.0, 50.0]
+
+
+class TestAudioLayerMasks:
+    """An audio-only layer's mask space is 0 x 0: AE 2026 reports its
+    default path as four points at the origin and hangs writing one."""
+
+    @staticmethod
+    def _mask_path(project: Project) -> Property:
+        layer = get_layer(project, "audioEnabled_true")
+        assert layer.masks is not None
+        mask = layer.masks.add_property("ADBE Mask Atom")
+        return cast("Property", mask.property("ADBE Mask Shape"))
+
+    def test_value_write_refused(self) -> None:
+        path = self._mask_path(
+            parse_project_fresh(LAYER_SAMPLES_DIR / "audioEnabled.aep")
+        )
+        assert path.value.vertices == [[0.0, 0.0]] * 4
+        with pytest.raises(ValueError, match="audio-only"):
+            path.value = Shape([[0, 0], [0, 10], [10, 10], [10, 0]])
+
+    def test_expression_write_saves(self, tmp_path: Path) -> None:
+        """AE 2026 opens py_aep's file and reads the same."""
+        project = parse_project_fresh(LAYER_SAMPLES_DIR / "audioEnabled.aep")
+        self._mask_path(project).expression = "value"
+        out = tmp_path / "audio_mask.aep"
+        project.save(out)
+        layer = get_layer(parse_project_fresh(out), "audioEnabled_true")
+        assert layer.masks is not None
+        path = layer.masks.properties[0].property("ADBE Mask Shape")
+        assert path.expression == "value"
+        assert path.value.vertices == [[0.0, 0.0]] * 4
+        assert path.value.closed is True

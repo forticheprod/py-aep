@@ -4,6 +4,7 @@ import copy
 import logging
 import math
 import re
+import weakref
 from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
@@ -58,7 +59,6 @@ from ...binary.property_chunks import (
     TdsbChunk,
     TdsnChunk,
     TdumChunk,
-    VfdnChunk,
     tdb4_apply_animated_template,
     tdb4_apply_static_template,
     tdb4_clear_keyframe_record,
@@ -118,6 +118,7 @@ if TYPE_CHECKING:
     from ...binary.chunk import Chunk
     from ...binary.ldat_chunks import LdatChunk, LdatItem, Lhd3Chunk
     from ...binary.misc_chunks import ShphChunk
+    from ...binary.property_chunks import VfdnChunk
     from ...binary.scalar_chunks import U4Chunk
     from ...synthesis.property import PropSpec
     from ..items.av_item import AVItem
@@ -215,6 +216,14 @@ _NUMERIC_VALUE_TYPES: set[PropertyValueType] = {
     PropertyValueType.COLOR,
 }
 
+# Effect controls whose values AE reports rounded (`_round_half_up`). Matched
+# against the control type the effect declares (`_property_control_type`):
+# the type inferred for other properties reads BOOLEAN for plain scalars,
+# and a shape's Star Points of 5.5 reports 5.5 (AE 2026).
+_ROUNDED_CONTROL_TYPES = frozenset(
+    {PropertyControlType.BOOLEAN, PropertyControlType.ENUM}
+)
+
 
 def _get_dimensions(prop: Property) -> int:
     d: int = prop.dimensions
@@ -253,6 +262,22 @@ def _validate_value(prop: Property, value: Any) -> None:
         raise TypeError(
             f"{prop.match_name!r} takes a Shape, got {type(value).__name__}"
         )
+    if (
+        prop.match_name == "ADBE Mask Shape"
+        and 0 in cast("AVLayer", prop._containing_layer)._mask_scale
+    ):
+        # Mask paths are stored normalized to the layer's source, so on an
+        # audio-only layer (0 x 0) every path reads back as four points at
+        # the origin. AE 2026 hangs on the same write.
+        raise ValueError("an audio-only layer's mask paths cannot be set")
+    if prop.property_value_type == PropertyValueType.MASK_INDEX:
+        # A mask of the layer, 1-based, or 0 for none: AE 2026 refuses -1,
+        # 1.6 and true ("is not an unsigned integer") and a mask the layer
+        # lacks ("Value 2 out of range 0 to 1").
+        ids = _mask_ids(prop)
+        count = len(ids) if ids is not None else None
+        _validate_number(min=0, max=count, integer=True)(value)
+        return
     if value is None:
         return
     # Variable-font axis properties are 2-dimensional in the binary
@@ -271,6 +296,18 @@ def _validate_value(prop: Property, value: Any) -> None:
         _validate_list(value, prop)
     else:
         _validate_scalar(value, prop)
+
+
+def _mask_ids(prop: Property) -> list[int] | None:
+    """The ids of the masks a mask-index value picks from, in order, or
+    `None` for a property with no layer (an effect definition)."""
+    try:
+        masks = prop._containing_layer.masks
+    except ValueError:
+        return None
+    if masks is None:
+        return []
+    return [cast("MaskPropertyGroup", m)._mkif.mask_id for m in masks.properties]
 
 
 def _validate_key_value(prop: Property, value: Any) -> None:
@@ -337,6 +374,62 @@ def _values_equal(a: Any, b: Any) -> bool:
     return bool(a == b)
 
 
+def _round_half_up(value: Any) -> Any:
+    """A checkbox / popup value as After Effects reports it.
+
+    AE stores what it is given (a float32 0.6 for `setValue(0.6)`) but
+    reports checkbox and popup values rounded half up: 0.4 -> 0, 0.5 -> 1,
+    1.5 -> 2, -0.5 -> 0 (AE 2026: Puppet On Transparent, Gaussian Blur
+    Repeat Edge Pixels, a Checkbox Control and Blur Dimensions; static
+    values, keyframes and `valueAtTime` alike).
+    """
+    return float(math.floor(value + 0.5)) if isinstance(value, float) else value
+
+
+def _own_list(value: Any) -> Any:
+    """`value`, with a list copied so no other holder shares it.
+
+    Synthesized properties start from the spec tables' lists, shared by every
+    property of the spec in the process; a list read or passed in by the user
+    must not stay linked to the property either. Complex values (Shape,
+    TextDocument, ...) write through to their chunks and are kept as is.
+    """
+    return list(value) if isinstance(value, list) else value
+
+
+class _PropertyValueList(list):
+    """A list [value][Property.value] that writes item assignments back.
+
+    `prop.value[0] = 50` sets component 0 of the property through the
+    `value` setter, from the property's current stored value (so a list
+    read earlier does not reset the other components, and a 2-D layer's
+    stored Z, read as 0, is kept). ExtendScript hands out a detached array
+    instead, where the same line does nothing. Other list methods act on
+    this copy only; copying or pickling it gives a plain list. The property
+    is held weakly, so a kept value does not keep its project alive.
+    """
+
+    __slots__ = ("_prop",)
+    _prop: weakref.ref[Property]
+
+    def __setitem__(self, index: Any, item: Any) -> None:
+        prop = self._prop()
+        if prop is None:
+            super().__setitem__(index, item)
+            return
+        # A copy: for a keyed property this is the first key's own value,
+        # which the setter then refuses to replace.
+        new = list(cast("list[Any]", prop._stored_static_value()))
+        new[index] = item
+        prop.value = new
+        super().__setitem__(slice(None), prop.value)
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        # copy / deepcopy / pickle would rebuild the subclass by extending
+        # it item by item; a plain list keeps them from writing back.
+        return list, (list(self),)
+
+
 class Property(PropertyBase):
     """
     The `Property` object contains value, keyframe, and expression information
@@ -372,7 +465,7 @@ class Property(PropertyBase):
     )
     """The number of dimensions in the property value (1, 2, 3, or 4). Read-only."""
 
-    expression_error: str
+    expression_error: str = ""
     """Contains the error, if any, generated by evaluation of the string
     most recently set in [expression][]. If no expression string has been
     specified, or if the last expression string evaluated without error,
@@ -388,8 +481,72 @@ class Property(PropertyBase):
     last_value: Any
     """The last value of the property (before animation)."""
 
-    nb_options: int | None
+    nb_options: int | None = None
     """The number of options in a dropdown property."""
+
+    # Defaults nearly every instance keeps live on the class rather than in
+    # each instance. CPython shares the instance-dict keys of a class's first
+    # 30 attribute names, in the order instances first set them; an instance
+    # setting a name past them gets a full dict (1.9 KB instead of 0.3 KB on
+    # 3.13), and a project holds 100k+ properties. So `__init__` sets the
+    # common keys first and the rare ones only when they have a value.
+    _expression_utf8: Utf8Chunk | None = None
+    _tdpi: S4Chunk | None = None
+    _dimensions_separated: bool | None = None
+    _expression_enabled: bool | None = None
+    _expression: str | None = None
+    _units_text: str | None = None
+
+    _kf_value_container: ListChunk | None = None
+    """Parallel per-keyframe value container for complex value types (otky /
+    mrky / omks / GCky), one value chunk per keyframe, aligned with
+    `keyframes`. Set by the specialized parsers."""
+
+    _wrapper: ListChunk | None = None
+    """The wrapper LIST holding this property's tdbs + value container (otst
+    / mrst / om-s / GCst / btds). Set by the specialized parsers; None for
+    ordinary numeric properties and for complex properties whose pristine
+    state stores a bare tdbs."""
+
+    _blsv: U4Chunk | None = None
+    _blsi: U4Chunk | None = None
+    """Media-replacement slot chunks (blsv/blsi), siblings of this leaf's tdbs
+    inside an `ADBE Layer Source Alternate` group run. Set by the tdbs
+    dispatcher only for that match name. `blsi` is the alternate-source item
+    id (0 = no replacement set)."""
+
+    _expressions_disabled = False
+    """Expressions can never be set on this parameter (from the pard
+    definition header flag; set by _apply_param_def_metadata)."""
+
+    _default_value_source: Callable[[], Any] | None = None
+    """A default that follows other state (a camera's Position follows its
+    Zoom) reads from this callable instead of `_default_value`."""
+
+    _scale_z_override: float | None = None
+
+    _property_parameters: list[str] | None = None
+
+    _vf_tag_cache: float | None = None
+    """Cached raw axis-tag number for variable-font axis properties; survives
+    de-animation (the tag lives in the value data, which keyframe removal
+    deletes before `_deanimate` re-writes it)."""
+
+    _vfdn: VfdnChunk | None = None
+    """The axis display-name container AE writes after an active
+    variable-font axis slot's tdbs (set by the parser)."""
+
+    _arbs: ListChunk | None = None
+    """The Curves effect's curves, its arbitrary data (set by the parser): a
+    LIST:aRbs of one aRbp, or of one per keyframe when keyed, in key order.
+    `value` decodes them as [Curves][]."""
+
+    _curves: Curves | None = None
+    """The static aRbp decoded, on first read."""
+
+    _default_arbp: Chunk | None = None
+    """The Curves effect's default curves, from its parT (set by the
+    parser)."""
 
     _animated = ChunkField[bool]("_tdb4", "animated")
 
@@ -665,11 +822,8 @@ class Property(PropertyBase):
         auto_name: str | None = None,
         keyframes: list[Keyframe],
         value: Any,
-        expression_enabled: bool | None = None,
-        expression: str | None = None,
         property_control_type: PropertyControlType | None = None,
         property_value_type: PropertyValueType | None = None,
-        dimensions_separated: bool | None = None,
         units_text: str | None = None,
         can_vary_over_time: bool | None = None,
     ) -> None:
@@ -683,46 +837,8 @@ class Property(PropertyBase):
         )
         self._tdmn = _tdmn
         self._tdb4 = _tdb4
-        self._expression_utf8 = _expression_utf8
         self._tdbs = _tdbs
-        self._tdum = _tdum
-        self._tduM = _tduM
         self._cdat = _cdat
-        self._tdpi = _tdpi
-        self._composition = _composition
-
-        # Whether AE writes tdum/tduM placeholder bounds for this property
-        # when materialized. Set from the synthesis spec in `_new`.
-        self._bound_chunks_hint = False
-
-        # Parallel per-keyframe value container for complex value types
-        # (otky / mrky / omks / GCky). Set by the specialized parsers.
-        # Holds one value chunk per keyframe, aligned with `keyframes`.
-        self._kf_value_container: ListChunk | None = None
-
-        # The wrapper LIST holding this property's tdbs + value container
-        # (otst / mrst / om-s / GCst / btds). Set by the specialized
-        # parsers; None for ordinary numeric properties and for complex
-        # properties whose pristine state stores a bare tdbs.
-        self._wrapper: ListChunk | None = None
-
-        # Media-replacement slot chunks (blsv/blsi), siblings of this leaf's
-        # tdbs inside an `ADBE Layer Source Alternate` group run. Set by the
-        # tdbs dispatcher only for that match name; None otherwise. `blsi` is
-        # the alternate-source item id (0 = no replacement set).
-        self._blsv: U4Chunk | None = None
-        self._blsi: U4Chunk | None = None
-
-        self._can_vary_over_time = can_vary_over_time
-
-        # Expressions can never be set on this parameter (from the pard
-        # definition header flag; set by _apply_param_def_metadata).
-        self._expressions_disabled = False
-
-        self._dimensions_separated = dimensions_separated
-
-        self._expression_enabled = expression_enabled
-        self._expression = expression
 
         self.keyframes = keyframes
         self._link_keyframes()
@@ -731,52 +847,41 @@ class Property(PropertyBase):
 
         self._property_value_type = property_value_type
 
-        self._value: _ValueType = value
+        self._value: _ValueType = _own_list(value)
 
-        self._units_text = units_text
-
-        # A default that follows other state (a camera's Position follows its
-        # Zoom) reads from this callable instead of `_default_value`.
-        self._default_value_source: Callable[[], Any] | None = None
-        self.default_value = None
-
-        self.expression_error = ""
-
-        self.last_value = None
+        self._default_value: Any = None
 
         self._min_value_fallback: Any = _UNSET
         self._max_value_fallback: Any = _UNSET
-        # The pard UI slider range (effect params only; None elsewhere).
-        self._slider_min: float | None = None
-        self._slider_max: float | None = None
-        self._scale_z_override: float | None = None
-
-        self.nb_options = None
-
-        self._property_parameters: list[str] | None = None
 
         self._property_type = PropertyType.PROPERTY
 
-        # Cached raw axis-tag number for variable-font axis properties;
-        # survives de-animation (the tag lives in the value data, which
-        # keyframe removal deletes before `_deanimate` re-writes it).
-        self._vf_tag_cache: float | None = None
+        # Set on many instances: assigned on all of them, before any rarer
+        # key, so they take the shared-key slots (see the class defaults).
+        self._tdum = _tdum
+        self._tduM = _tduM
+        self._composition = _composition
+        self._can_vary_over_time = can_vary_over_time
+        # Whether AE writes tdum/tduM placeholder bounds for this property
+        # when materialized. Set from the synthesis spec in `_new`.
+        self._bound_chunks_hint = False
+        # The tdum/tduM values AE writes at materialization (UI slider
+        # hints), set from `PropSpec.hint_bounds` in `_new`; `None` keeps the
+        # family behavior in `_ensure_bound_chunks`.
+        self._hint_bounds: tuple[float, float] | None = None
+        self._types_memo: tuple[Any, Any] | None = None
+        self.last_value = None
+        # The pard UI slider range (effect params only; None elsewhere).
+        self._slider_min: float | None = None
+        self._slider_max: float | None = None
 
-        self._vfdn: VfdnChunk | None = None
-        """The axis display-name container AE writes after an active
-        variable-font axis slot's tdbs (set by the parser)."""
-
-        self._arbs: ListChunk | None = None
-        """The Curves effect's curves, its arbitrary data (set by the
-        parser): a LIST:aRbs of one aRbp, or of one per keyframe when keyed,
-        in key order. `value` decodes them as [Curves][]."""
-
-        self._curves: Curves | None = None
-        """The static aRbp decoded, on first read."""
-
-        self._default_arbp: Chunk | None = None
-        """The Curves effect's default curves, from its parT (set by the
-        parser)."""
+        # Rare: stored only when given, the class holds the default.
+        if _expression_utf8 is not None:
+            self._expression_utf8 = _expression_utf8
+        if _tdpi is not None:
+            self._tdpi = _tdpi
+        if units_text is not None:
+            self._units_text = units_text
 
     @property
     def _is_vf_axis(self) -> bool:
@@ -1070,10 +1175,34 @@ class Property(PropertyBase):
         """
         if self.property_value_type != PropertyValueType.MASK_INDEX:
             return
-        if any(getattr(c, "chunk_type", "") == "tdli" for c in self._tdbs.chunks):
+        if self._tdli_chunk() is not None:
             return
-        index = self._value if isinstance(self._value, int) else 0
-        self._tdbs.chunks.append(S4Chunk(chunk_type="tdli", value=index))
+        # No mask; a value write that follows stores its mask's id.
+        self._tdbs.chunks.append(S4Chunk(chunk_type="tdli", value=0))
+
+    def _tdli_chunk(self) -> S4Chunk | None:
+        for chunk in self._tdbs.chunks:
+            if chunk.chunk_type == "tdli":
+                return cast("S4Chunk", chunk)
+        return None
+
+    def _mask_index(self) -> int:
+        """A mask-index property's value: the 1-based position of the mask
+        it names, or 0.
+
+        The `tdli` stores the mask's id (`mkif`), not its position, so the
+        reference follows the mask. On AE 2026, a text Path on mask id 2
+        reads 1 once that mask is moved first, once the mask before it is
+        removed, and after it is duplicated (the copy gets id 3 and goes
+        after it). An id no mask has reads 0.
+        """
+        tdli = self._tdli_chunk()
+        if tdli is None or not tdli.value:
+            return 0
+        ids = _mask_ids(self)
+        if ids is None:
+            return tdli.value
+        return ids.index(tdli.value) + 1 if tdli.value in ids else 0
 
     def _ensure_time_base(self) -> None:
         """Stamp the containing comp's timebase into a py-created tdb4.
@@ -1219,12 +1348,6 @@ class Property(PropertyBase):
             )
         )
 
-    # The tdum/tduM values AE writes for this property at materialization
-    # (UI slider hints); set from `PropSpec.hint_bounds` in `_new`, `None`
-    # (the class default, covering parsed properties) keeps the family
-    # behavior in `_ensure_bound_chunks`.
-    _hint_bounds: tuple[float, float] | None = None
-
     _NUMERIC_PVTS = frozenset(
         {
             PropertyValueType.OneD,
@@ -1353,6 +1476,10 @@ class Property(PropertyBase):
             self._tdb4._property_category = 0x09
         dims = self._tdb4.dimensions
         value = self._value
+        # A synthesized effect point keeps its raw fraction in the cdat and
+        # no cached value (`_normalize_synthetic_point`): re-deriving the
+        # fraction from pixels would round it.
+        keep_cdat = value is None and self._cdat is not None
         if not isinstance(value, (int, float, list)):
             value = self.default_value
         if not isinstance(value, (int, float, list)):
@@ -1369,7 +1496,8 @@ class Property(PropertyBase):
             self._cdat.values = list(self._cdat.values) + [0.0] * (
                 target - len(self._cdat.values)
             )
-        self._write_cdat(value)
+        if not keep_cdat:
+            self._write_cdat(value)
 
     def _materialize_static_orientation(self) -> None:
         """Wrap a materialized static Orientation in the `otst` subtree
@@ -1485,7 +1613,23 @@ class Property(PropertyBase):
         if self._effect_scale is not None:
             if isinstance(raw, list) and len(raw) >= 2:
                 raw = self._apply_effect_scale(raw)
+        # 4. Checkbox / popup: reported rounded, stored as given
+        if self._property_control_type in _ROUNDED_CONTROL_TYPES:
+            raw = _round_half_up(raw)
         return raw
+
+    def _reported(self, value: Any) -> _ValueType:
+        """A cached value (one the setter or synthesis stored) as AE reports
+        it, as `_resolve_value` does for a stored one: a 2-D layer's Scale Z
+        is 100 whatever was written (AE 2026 stores the 40 of
+        `setValue([50, 60, 40])` and reports `[50, 60, 100]`), a checkbox or
+        popup value is rounded."""
+        if isinstance(value, list):
+            if self._scale_z_override is not None and len(value) >= 3:
+                value[2] = self._scale_z_override
+        elif self._property_control_type in _ROUNDED_CONTROL_TYPES:
+            value = _round_half_up(value)
+        return cast("_ValueType", value)
 
     def _unresolve_value(self, value: _ValueType) -> _ValueType:
         """Reverse-transform a user-facing value to raw binary units.
@@ -1668,8 +1812,9 @@ class Property(PropertyBase):
 
     @default_value.setter
     def default_value(self, value: Any) -> None:
-        self._default_value = value
-        self._default_value_source = None
+        self._default_value = _own_list(value)
+        if self._default_value_source is not None:
+            del self._default_value_source  # back to the class default
 
     @property
     def value(self) -> _ValueType:
@@ -1692,8 +1837,22 @@ class Property(PropertyBase):
         text_doc.font_size = 72  # persists automatically
         # prop.value = text_doc  # unnecessary - same object
         ```
+
+        So does item assignment on a list value, one component at a time
+        through the setter (in ExtendScript the array is a copy and the
+        same line does nothing). Other list methods act on a copy:
+
+        ```python
+        position.value[0] = 960  # sets X, keeps Y and Z
+        position.value[1] += 10
+        ```
         """
-        return cast("_ValueType", self._mask_inert_z(self._stored_static_value()))
+        value = self._mask_inert_z(self._stored_static_value())
+        if isinstance(value, list):
+            bound = _PropertyValueList(value)
+            bound._prop = weakref.ref(self)
+            return bound
+        return cast("_ValueType", value)
 
     @value.setter
     def value(self, value: _ValueType) -> None:
@@ -1713,13 +1872,16 @@ class Property(PropertyBase):
             if layer_id == 0:
                 return 0
             return self._composition._layer_id_to_index.get(layer_id, -1) + 1
+        if self._property_value_type == PropertyValueType.MASK_INDEX:
+            return self._mask_index()
         separated = self._separated_value()
         if separated is not None:
             return separated
         if self._arbs is not None and not self.keyframes:
             return self._static_curves()
         if self._value is not None:
-            return self._wire_text_version(self._value)
+            # A copy of a cached list: `value_at_time` hands it out too.
+            return self._reported(_own_list(self._wire_text_version(self._value)))
         if self.keyframes:
             return self._stored_value_at(0)
         if self._cdat is not None:
@@ -1824,17 +1986,15 @@ class Property(PropertyBase):
             self._value = self._write_static_complex_value(value)
             return
         if self.property_value_type == PropertyValueType.MASK_INDEX:
-            # The mask index lives in the `tdli` chunk, not the cdat (which
+            # The mask's id lives in the `tdli` chunk, not the cdat (which
             # stays all-zeros); _ensure_materialized has appended one.
+            ids = _mask_ids(self)
             index = int(value) if isinstance(value, (int, float)) else 0
-            for chunk in self._tdbs.chunks:
-                if getattr(chunk, "chunk_type", "") == "tdli":
-                    cast("S4Chunk", chunk).value = index
-                    break
-            self._value = value
+            tdli = cast("S4Chunk", self._tdli_chunk())
+            tdli.value = ids[index - 1] if index and ids is not None else index
             return
         self._write_cdat(value)
-        self._value = value
+        self._cache_written(value)
 
     def _cache_value(self, value: _ValueType) -> None:
         """Cache a value decoded from chunks (parser-only).
@@ -1846,7 +2006,25 @@ class Property(PropertyBase):
         byte-faithful (a no-op write-back of the values just read).
         """
         self._write_cdat(value)
-        self._value = value
+        self._cache_written(value)
+
+    def _cache_written(self, value: _ValueType) -> None:
+        """Cache a numeric value `_write_cdat` just stored.
+
+        Not an effect point's: it is stored normalized and AE re-reads the
+        stored fraction against the layer's current size - [30, 40] on a
+        200x100 solid reads [60, 40] once the solid is 400 wide, and
+        [288, 432] once it is an adjustment layer in a 1920x1080 comp (AE
+        2026) - so its value is always read back from the cdat.
+        """
+        if (
+            self._cdat is not None
+            and self.match_name != "ADBE Anchor Point"
+            and self._effect_scale is not None
+        ):
+            self._value = None
+        else:
+            self._value = _own_list(value)
 
     def _write_static_complex_value(self, value: Any) -> Any:
         """Rebuild a static complex property's value container chunk.
@@ -2575,14 +2753,14 @@ class Property(PropertyBase):
                 tdb4._spatial_static_flags,
                 tdb4._no_value_flags,
             )
-            memo = self.__dict__.get("_types_memo")
+            memo = self._types_memo
             if memo is not None and memo[0] == key:
                 return cast("tuple[PropertyControlType, PropertyValueType]", memo[1])
         else:
             key = None
         result = self._compute_property_types()
         if key is not None:
-            self.__dict__["_types_memo"] = (key, result)
+            self._types_memo = (key, result)
         return result
 
     def _compute_property_types(
@@ -4116,7 +4294,7 @@ class Property(PropertyBase):
         # the container chunk is inserted above, so set the shadow directly:
         # the public `kf.value` setter would re-route complex kinds back into
         # the container write path, rebuilding the just-inserted chunk.
-        kf._value = new_value
+        kf._value = _own_list(new_value)
         # Re-bind the keyframe's model to the chunk just inserted (when the
         # kind wraps); new_value (held or user-supplied) is backed by a
         # different chunk, so edits to it would never reach the serialized
@@ -4312,11 +4490,11 @@ class Property(PropertyBase):
                 # afterwards would otherwise reach the caller's chunk -
                 # corrupting any other keyframe that shares it.
                 wrapped = kind.wrap_value_chunk(self, value_chunk)
-                kf._value = wrapped if wrapped is not None else value
+                kf._value = wrapped if wrapped is not None else _own_list(value)
             else:
-                kf._value = value
+                kf._value = _own_list(value)
         else:
-            kf._value = value
+            kf._value = _own_list(value)
         kind.bind_keyframe(kf._value, kf)
         self._ensure_materialized()
 
@@ -4490,8 +4668,12 @@ class Property(PropertyBase):
             # A 3D point's Z shares the HEIGHT divisor: a Point3D Control set
             # to [100, 50, 7] on a 200x100 layer stores [0.5, 0.5, 0.07], and
             # only 7/100 gives 0.07 (probed in AE 2026 across three
-            # comp/layer size pairs).
-            size = self._effect_point_size()
+            # comp/layer size pairs). An adjustment layer normalizes against
+            # its composition (`Layer._effect_point_size`).
+            try:
+                size = self._containing_layer._effect_point_size
+            except ValueError:  # an EfdG definition: no layer yet
+                size = None
             if size is not None:
                 scale = list(size)
                 if self.property_control_type == PropertyControlType.THREE_D:
@@ -4518,23 +4700,6 @@ class Property(PropertyBase):
             return self._containing_layer._pixel_size
         except ValueError:
             return None
-
-    def _effect_point_size(self) -> tuple[float, float] | None:
-        """The size an effect point is stored normalized against, or `None`.
-
-        The layer's, except on an adjustment layer, whose effects render in
-        its composition: AE 2026 stores a Transform anchor set to [30, 40]
-        on a 200x100 adjustment solid in a 1920x1080 comp as 30 / 1920,
-        40 / 1080, and defaults it to the comp's centre (as AE 15.1 does).
-        """
-        try:
-            layer = self._containing_layer
-        except ValueError:
-            return None
-        if layer.adjustment_layer:
-            comp = layer.containing_comp
-            return float(comp.width), float(comp.height)
-        return layer._pixel_size
 
 
 def _deactivate_follower(follower: Property) -> None:

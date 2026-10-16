@@ -484,6 +484,21 @@ class Layer(PropertyGroup):
         return None
 
     @property
+    def _effect_point_size(self) -> tuple[float, float] | None:
+        """The size the layer's effect points are stored normalized against.
+
+        The layer's pixel size, except on an adjustment layer, whose effects
+        render in its composition: AE 2026 stores a Transform anchor set to
+        [30, 40] on a 200x100 adjustment solid in a 1920x1080 comp as
+        30 / 1920, 40 / 1080, and defaults it to the comp's centre (as AE
+        15.1 does).
+        """
+        if self.adjustment_layer:
+            comp = self.containing_comp
+            return float(comp.width), float(comp.height)
+        return self._pixel_size
+
+    @property
     def _stretch_factor(self) -> float:
         stretch = self.stretch
         return stretch / 100.0 if stretch != 0.0 else 1.0

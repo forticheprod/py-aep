@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 from typing import TYPE_CHECKING, cast
@@ -96,7 +97,7 @@ def _resolve_effect_value(
     """Resolve value and default_value for a synthesized effect property.
 
     Returns pre-rescale values - point defaults stay in percent of the
-    layer size; `_scale_point_to_pixels` converts them to pixels.
+    layer size; `_normalize_synthetic_point` stores them as fractions.
 
     Args:
         match_name: The property's match name.
@@ -169,10 +170,16 @@ def _apply_param_def_metadata(
     # source of an Essential Graphics slider controller's Smin/Smax.
     prop._slider_min = param_def.get("slider_min")
     prop._slider_max = param_def.get("slider_max")
-    prop.nb_options = param_def.get("nb_options")
+    # Popup-only: written when present, so other properties keep the class
+    # default (`None`) instead of an instance-dict key.
+    nb_options = param_def.get("nb_options")
+    if nb_options is not None:
+        prop.nb_options = nb_options
     # Direct write: the public setter has user-write semantics (validation
     # plus pdnm/pard chunk rewrites).
-    prop._property_parameters = param_def.get("property_parameters")
+    property_parameters = param_def.get("property_parameters")
+    if property_parameters is not None:
+        prop._property_parameters = property_parameters
     units = param_def.get("units_text")
     if units is not None:
         prop._units_text = units
@@ -186,37 +193,45 @@ def _apply_param_def_metadata(
         prop._expressions_disabled = True
 
 
-def _point_default_pixels(raw: Any, size: tuple[float, float]) -> list[float] | None:
-    """A point parameter's parT default, converted to pixel coordinates.
-
-    `raw` is the pard default, in percent of the LAYER size - the same
-    reference the instance `cdat` uses - so the conversion is
-    `raw / 100 * layer_size`, with a 3D point's Z sharing the height
-    divisor (`Property._effect_scale`).
-
-    Measured in AE 2026: an untouched Gradient Ramp `End of Ramp` (pard
-    default 50 %, 100 %) reports [100, 100] on a 200x100 layer in an
-    800x600 comp, and [128, 256] on a 256x256 layer in a 512x512 comp.
-    Only the layer reproduces both; normalizing against the composition
-    gives [400, 600] and [128, 256] - right only when layer and comp match,
-    which is why this went unnoticed.
-
-    Returns `None` when the value is not a point.
-    """
+def _point_fraction(raw: Any) -> list[float] | None:
+    """A point parameter's pard default (percent of the layer) as the
+    fraction its `cdat` stores, or `None` when it is not a point."""
     if not isinstance(raw, list) or len(raw) < 2:
         return None
-    scale = [size[0], size[1], size[1]]
-    return [v / 100.0 * factor for v, factor in zip(raw, scale)]
+    return [v / 100.0 for v in raw]
 
 
-def _scale_point_to_pixels(prop: Property, size: tuple[float, float]) -> None:
-    """Convert a synthesized point property's value and default in place."""
-    value = _point_default_pixels(prop._value, size)
-    if value is not None:
-        prop._value = value
-    default = _point_default_pixels(prop.default_value, size)
-    if default is not None:
-        prop.default_value = default
+def _point_pixels(prop: Property, fraction: list[float]) -> Any:
+    return prop._resolve_value(list(fraction))
+
+
+def _bind_point_default(prop: Property, raw: Any) -> None:
+    """Give a point parameter its pard default, read like its stored value.
+
+    The default is a percentage of the LAYER (the composition for an
+    adjustment layer, `Property._effect_scale`), so it follows the layer's
+    current size as the stored point does. Measured in AE 2026: an untouched
+    Gradient Ramp `End of Ramp` (pard default 50 %, 100 %) reports [100, 100]
+    on a 200x100 layer in an 800x600 comp, and [128, 256] on a 256x256 layer
+    in a 512x512 comp; a fresh Point Control on a 200x100 solid reports
+    [100, 50], then [200, 50] once the solid is 400 wide and [960, 540] once
+    it is an adjustment layer in a 1920x1080 comp - unmodified throughout.
+    """
+    fraction = _point_fraction(raw)
+    if fraction is not None:
+        prop._default_value_source = functools.partial(_point_pixels, prop, fraction)
+
+
+def _normalize_synthetic_point(prop: Property) -> None:
+    """Keep a synthesized point as the fraction AE stores, read through the
+    layer's current size, with the default `_bind_point_default` gives."""
+    raw = prop._value
+    fraction = _point_fraction(raw)
+    if fraction is None or prop._cdat is None:
+        return
+    prop._cdat.values = fraction
+    prop._value = None
+    _bind_point_default(prop, raw)
 
 
 def parse_effect_param_defs(
@@ -261,7 +276,7 @@ _UNBOUNDED_CHECKBOXES = frozenset(
 
 
 # Python codecs of the `nnhd` code pages that are not `cp<number>`.
-_CODE_PAGE_CODECS = {0x0100: "mac_roman", 65001: "utf-8"}
+_CODE_PAGE_CODECS = {0x0100: "mac_roman"}
 
 
 def _decode_pard_name(name: str, code_page: int) -> str:
@@ -281,9 +296,7 @@ def _decode_pard_name(name: str, code_page: int) -> str:
         return name
 
 
-def _merge_param_def(
-    prop: Property, param_def: dict[str, Any], point_size: tuple[float, float]
-) -> None:
+def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
     """Merge parameter definition values into a parsed property.
 
     Overrides auto-detected property attributes with the more precise
@@ -292,8 +305,6 @@ def _merge_param_def(
     Args:
         prop: The property to update in place.
         param_def: The parameter definition dict.
-        point_size: The layer size a point parameter's default is
-            relative to.
     """
     prop._auto_name = param_def["name"] or prop._auto_name
     prop._property_control_type = param_def["property_control_type"]
@@ -314,9 +325,7 @@ def _merge_param_def(
         PropertyControlType.TWO_D,
         PropertyControlType.THREE_D,
     ):
-        prop.default_value = _point_default_pixels(
-            param_def.get("default_value"), point_size
-        )
+        _bind_point_default(prop, param_def.get("default_value"))
     elif param_def["property_control_type"] != PropertyControlType.LAYER:
         prop.default_value = param_def.get("default_value")
     _apply_param_def_metadata(prop, param_def)
@@ -403,16 +412,6 @@ def _parse_effect_properties(
     """
     from .property import parse_properties
 
-    # Point parameters normalize against the LAYER, or the composition for
-    # an adjustment layer (see `Property._effect_point_size`). The layer is
-    # only reachable once the effect is attached, so callers that already
-    # know it pass it; during the initial parse it is unknown and the
-    # composition stands in (what py_aep has always used).
-    layer_size = (
-        layer._pixel_size if layer is not None and not layer.adjustment_layer else None
-    )
-    point_size = layer_size or (float(composition.width), float(composition.height))
-
     # Skip index-0 internal parameters (not exposed in ExtendScript).
     property_runs = [
         (name, chunks)
@@ -440,7 +439,7 @@ def _parse_effect_properties(
         existing = parsed_by_mn.get(match_name)
         if existing is not None:
             if isinstance(existing, Property):
-                _merge_param_def(existing, param_def, point_size)
+                _merge_param_def(existing, param_def)
             ordered.append(existing)
         elif match_name == "ADBE Force CPU GPU":
             # Belongs inside ADBE Effect Built In Params, not here.
@@ -456,7 +455,7 @@ def _parse_effect_properties(
                 PropertyControlType.TWO_D,
                 PropertyControlType.THREE_D,
             ):
-                _scale_point_to_pixels(synth, point_size)
+                _normalize_synthetic_point(synth)
             ordered.append(synth)
 
     # Append tail children not in param_defs (e.g. ADBE Effect Built In
