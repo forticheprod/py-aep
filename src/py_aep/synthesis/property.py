@@ -388,6 +388,7 @@ _COMPOSITING_OPTIONS_SPECS: list[PropSpec | GroupSpec] = [
         min_value=0,
         max_value=100,
     ),
+    # AE 15 lists it among the effect's own parameters (`parT`) instead.
     _spec(
         "ADBE Force CPU GPU",
         "GPU Rendering",
@@ -396,6 +397,7 @@ _COMPOSITING_OPTIONS_SPECS: list[PropSpec | GroupSpec] = [
         min_value=1,
         max_value=3,
         can_vary_over_time=False,
+        min_major=16,
     ),
 ]
 

@@ -17,6 +17,7 @@ from ..binary.utils import (
     filter_by_type,
     find_by_list_type,
     find_by_type,
+    index_by_identity,
 )
 from ..data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..data.spatial_flags import EFFECT_PARAM_SPATIAL_FLAGS
@@ -36,11 +37,13 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
     from typing import Any, Callable
 
     from ..binary.chunk import Chunk, ListChunk
     from ..models.items.composition import CompItem
     from ..models.layers.layer import Layer
+    from ..models.project import Project
 
 
 logger = logging.getLogger(__name__)
@@ -441,9 +444,6 @@ def _parse_effect_properties(
             if isinstance(existing, Property):
                 _merge_param_def(existing, param_def)
             ordered.append(existing)
-        elif match_name == "ADBE Force CPU GPU":
-            # Belongs inside ADBE Effect Built In Params, not here.
-            continue
         else:
             synth = _synthesize_effect_property(
                 match_name,
@@ -478,6 +478,87 @@ def _parse_effect_properties(
         )
 
     return ordered
+
+
+_ITEM_CONTAINERS = frozenset({"Fold", "Item", "Sfdr"})
+
+
+def _effect_instances(chunks: list[Chunk]) -> Iterator[tuple[str, ListChunk]]:
+    """Every effect instance under `chunks` (folder, item or layer lists) as
+    `(match name, sspc)`, in file order. Only the layers' Effects groups are
+    decoded."""
+    for chunk in chunks:
+        list_type = getattr(chunk, "list_type", None)
+        if list_type in _ITEM_CONTAINERS:
+            yield from _effect_instances(cast("ListChunk", chunk).chunks)
+        elif list_type == "Layr":
+            root = filter_by_list_type(
+                chunks=cast("ListChunk", chunk).chunks, list_type="tdgp"
+            )
+            parade = get_chunks_by_match_name(root[0]).get("ADBE Effect Parade")
+            effects = filter_by_list_type(chunks=parade or [], list_type="tdgp")
+            if not effects:
+                continue
+            for name, run in get_chunks_by_match_name(effects[0]).items():
+                for sspc in filter_by_list_type(chunks=run, list_type="sspc"):
+                    yield name, sspc
+
+
+def _held_definitions(sspc: ListChunk) -> ListChunk | None:
+    """The instance's `parT`, if it holds its effect's definitions."""
+    parts = filter_by_list_type(chunks=sspc.chunks, list_type="parT")
+    return parts[0] if parts and parts[0].chunks else None
+
+
+def _project_param_defs(
+    composition: CompItem, match_name: str
+) -> dict[str, dict[str, Any]]:
+    """The parameter definitions of effect `match_name` from the instance in
+    the project that holds them.
+
+    AE writes an effect's `parT` in its first instance in file order only and
+    leaves the others' empty (every effect used more than once in samples/,
+    AE 15 to 26); a project saved by an older version (AE 15 in samples/) has
+    no `LIST:EfdG` to hold them instead.
+    """
+    project = composition._project
+    for name, sspc in _effect_instances(project._rifx.chunks):
+        if name == match_name and _held_definitions(sspc) is not None:
+            return parse_effect_param_defs(sspc.chunks, project._nnhd._system_code_page)
+    return {}
+
+
+def rehome_effect_definitions(
+    project: Project, removed: Iterable[tuple[str, ListChunk]]
+) -> None:
+    """Hand the definitions held by `removed` effect instances to the first
+    remaining instance of each effect, where AE keeps them (see
+    `_project_param_defs`); AE 15 and AE 2026 write them there on their own
+    save. AE rewrites the instance-specific bytes of each `pard` (UI flags
+    such as disabled, last values) when it saves; a moved `parT` keeps the
+    removed instance's, which AE 15 opens with the same parameters.
+
+    Only a project without `LIST:EfdG` needs it: nothing else holds the
+    definitions there, so the other instances would reopen without them.
+    """
+    root_chunks = project._rifx.chunks
+    if filter_by_list_type(chunks=root_chunks, list_type="EfdG"):
+        return
+    held: dict[str, ListChunk] = {}
+    for name, sspc in removed:
+        part = _held_definitions(sspc)
+        if part is not None:
+            held.setdefault(name, part)
+    if not held:
+        return
+    for name, sspc in _effect_instances(root_chunks):
+        part = held.pop(name, None)
+        if part is not None:
+            parts = filter_by_list_type(chunks=sspc.chunks, list_type="parT")
+            if parts and not parts[0].chunks:
+                sspc.chunks[index_by_identity(sspc.chunks, parts[0])] = part
+        if not held:
+            return
 
 
 @_suppress_materialization()
@@ -533,13 +614,18 @@ def parse_effect(
 
     # Layer-level sspc may have an empty parT when the same effect type
     # is used more than once (AE doesn't duplicate the data).  Fall back
-    # to previously cached or project-level EfdG definitions.
-    if not param_defs and group_match_name in effect_param_defs:
+    # to previously cached or project-level EfdG definitions, else to the
+    # instance that holds them, whichever layer was built first.
+    if not param_defs:
+        if group_match_name not in effect_param_defs:
+            effect_param_defs[group_match_name] = _project_param_defs(
+                composition, group_match_name
+            )
         param_defs = effect_param_defs[group_match_name]
 
     # Cache successful parT parsing so later instances of the same
     # effect can reuse the definitions.
-    if param_defs and group_match_name not in effect_param_defs:
+    if param_defs and not effect_param_defs.get(group_match_name):
         effect_param_defs[group_match_name] = param_defs
     # Resolve _name_utf8 from the effect tdgp's tdsn child
     tdsn = cast("TdsnChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn"))

@@ -20,9 +20,15 @@ from ...binary.mutations import (
 )
 from ...binary.property_chunks import TdmnChunk, TdsbChunk, TdsnChunk
 from ...binary.scalar_chunks import Utf8Chunk
-from ...binary.utils import find_by_type, index_by_identity
+from ...binary.utils import (
+    filter_by_list_type,
+    filter_by_type,
+    find_by_type,
+    index_by_identity,
+)
+from ...parsers.effect import _effect_instances, rehome_effect_definitions
 from ...parsers.property import parse_properties
-from ...parsers.utils import get_match_name_runs
+from ...parsers.utils import get_chunks_by_match_name, get_match_name_runs
 from ...resolvers.transform import (
     Mat4,
     aspect_scale,
@@ -36,7 +42,7 @@ from ...resolvers.transform import (
     square_pixels,
     strip_orientation,
 )
-from ..descriptors import ChunkField
+from ..descriptors import ChunkField, _suppress_materialization
 from ..naming import auto_name
 from ..properties.property import Property
 from ..properties.property_base import PropertyBase
@@ -50,6 +56,7 @@ from ..validators import (
 
 if TYPE_CHECKING:
     from ...binary.layer_chunks import LdtaChunk
+    from ..items.av_item import AVItem
     from ..items.composition import CompItem
     from ..properties.keyframe import Keyframe
     from ..properties.marker import MarkerValue
@@ -80,6 +87,28 @@ def _no_source_id(comp: CompItem) -> int:
     writes the undefined id."""
     major = comp._project._head.ae_version_major
     return _UNDEFINED_ID if ae_writes("light source id", major) else 0
+
+
+def _parse_ovg2_uuids(tdgp_chunks: list[Any]) -> list[str]:
+    """Extract Essential Properties override UUIDs from LIST:OvG2 chunks.
+
+    Args:
+        tdgp_chunks: The children of the layer's root `tdgp` group, where
+            `LIST:OvG2` is a direct child (beside the "ADBE Layer Overrides"
+            marker). NOT the layer LIST's own children - `OvG2` sits one
+            level deeper than that.
+
+    Returns:
+        A list of controller UUID strings from the OvG2/CPrp/Utf8 entries;
+        each matches an `EssentialGraphicsController.uuid` on the source comp.
+    """
+    uuids: list[str] = []
+    for ovg2_list in filter_by_list_type(chunks=tdgp_chunks, list_type="OvG2"):
+        for cprp in filter_by_list_type(chunks=ovg2_list.chunks, list_type="CPrp"):
+            utf8_chunks = filter_by_type(chunks=cprp.chunks, chunk_type="Utf8")
+            if utf8_chunks:
+                uuids.append(cast("Utf8Chunk", utf8_chunks[0]).value)
+    return uuids
 
 
 def _parent_world(parent: Layer | None, time: float, child_is_3d: bool) -> Mat4:
@@ -129,7 +158,19 @@ class Layer(PropertyGroup):
 
     # The (group, property) match names whose default follows other state,
     # which `_write_out_moved_defaults` writes once that state moves it.
-    _LIVE_DEFAULTS: tuple[tuple[str, str], ...] = ()
+    _LIVE_DEFAULTS: tuple[tuple[str, str], ...] = (
+        ("ADBE Transform Group", "ADBE Position"),
+    )
+
+    def _comp_centre(self) -> list[float]:
+        comp = self.containing_comp
+        return [comp.width / 2.0, comp.height / 2.0, 0.0]
+
+    def _default_position(self) -> list[float]:
+        """AE's default Position: the comp centre. A left-out Position stays
+        where it was when the comp is resized, and AE writes it: measured on
+        AE 2026 for a solid, a text, a shape and a null layer."""
+        return self._comp_centre()
 
     enabled = ChunkField.bool(
         "_ldta",
@@ -277,18 +318,12 @@ class Layer(PropertyGroup):
         _name_utf8: Utf8Chunk,
         _layer_list: ListChunk,
         containing_comp: CompItem,
-        properties: list[Property | PropertyGroup],
-        essential_property_uuids: list[str],
     ) -> None:
         self._ldta = _ldta
         self._cmta = _cmta
         self._layer_list = _layer_list
-        self.essential_property_uuids: list[str] = essential_property_uuids
-        """UUIDs of Essential Properties overrides on this layer.
-
-        Each UUID corresponds to an [EssentialGraphicsController][] in
-        the source composition's Essential Graphics panel.
-        """
+        # Read from the root tdgp on first access.
+        self._essential_property_uuids: list[str] | None = None
 
         try:
             layer_type_raw = _ldta.layer_type
@@ -309,7 +344,7 @@ class Layer(PropertyGroup):
             match_name=match_name,
             auto_name="",
             property_depth=0,
-            properties=properties,
+            properties=[],
         )
 
         self._containing_comp = containing_comp
@@ -324,8 +359,6 @@ class Layer(PropertyGroup):
         root_tdgp_extra: list[Any] | None = None,
         effect_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> Layer:
-        from ...synthesis.core import synthesize_layer_properties  # noqa: PLC0415
-
         validate_string(name)
 
         name_utf8 = Utf8Chunk(value=name)
@@ -357,24 +390,79 @@ class Layer(PropertyGroup):
             _name_utf8=name_utf8,
             _layer_list=layer_list,
             containing_comp=containing_comp,
-            properties=[],
-            essential_property_uuids=[],
         )
         layer._tdgp = root_tdgp
-
-        props = parse_properties(
-            match_name_runs=get_match_name_runs(root_tdgp),
-            child_depth=1,
-            effect_param_defs=effect_param_defs or {},
-            composition=containing_comp,
-            layer=layer,
-        )
-        layer._properties = props
-        for child in props:
-            child._parent_property = layer
-
-        synthesize_layer_properties(layer)
+        layer._build_property_tree(effect_param_defs or {})
         return layer
+
+    # The effect definitions a parsed layer's property tree is built with on
+    # first access, or `None` once it is built: opening a composition's
+    # layers then only decodes their `ldta`, and a reader of layer
+    # attributes alone (times, names, sources) never pays for the
+    # properties. Until then `_properties` is absent from the instance, so
+    # its first read lands in `__getattr__`; after that it is a plain
+    # attribute, with nothing to check on each access.
+    _tree_param_defs: dict[str, dict[str, dict[str, Any]]] | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        # A public name may be a child looked up by attribute: build first.
+        if self._tree_param_defs is not None and (
+            name == "_properties" or not name.startswith("_")
+        ):
+            self._load_property_tree()
+            return getattr(self, name)
+        return super().__getattr__(name)
+
+    @_suppress_materialization()
+    def _load_property_tree(self) -> None:
+        """Build the property tree of a parsed layer, if not built yet."""
+        effect_param_defs = self._tree_param_defs
+        if effect_param_defs is None:
+            return
+        # Cleared first, with an empty tree in place as during an eager
+        # parse: parsing and synthesis read the layer's own properties.
+        self._tree_param_defs = None
+        self._properties = []
+        try:
+            self._build_property_tree(effect_param_defs)
+        except BaseException:
+            # Unbuilt again, so the next read raises too rather than seeing
+            # a partial tree.
+            del self._properties
+            self._tree_param_defs = effect_param_defs
+            raise
+
+    def _build_property_tree(
+        self, effect_param_defs: dict[str, dict[str, dict[str, Any]]]
+    ) -> None:
+        """Parse the root tdgp into this layer's properties and synthesize
+        the ones the file leaves out."""
+        from ...synthesis.core import synthesize_layer_properties  # noqa: PLC0415
+
+        assert self._tdgp is not None
+        props = parse_properties(
+            match_name_runs=get_match_name_runs(self._tdgp),
+            child_depth=1,
+            effect_param_defs=effect_param_defs,
+            composition=self.containing_comp,
+            layer=self,
+        )
+        self._properties = props
+        for child in props:
+            child._parent_property = self
+        synthesize_layer_properties(self)
+
+    @property
+    def essential_property_uuids(self) -> list[str]:
+        """UUIDs of Essential Properties overrides on this layer.
+
+        Each UUID corresponds to an [EssentialGraphicsController][] in
+        the source composition's Essential Graphics panel.
+        """
+        if self._essential_property_uuids is None:
+            assert self._tdgp is not None
+            self._essential_property_uuids = _parse_ovg2_uuids(self._tdgp.chunks)
+        return self._essential_property_uuids
 
     def __repr__(self) -> str:
         return (
@@ -472,6 +560,14 @@ class Layer(PropertyGroup):
         this. Read-only.
         """
         return False
+
+    @property
+    def _source_item(self) -> AVItem | None:
+        """The layer's source item: none for a camera or a light (see
+        `AVLayer.source`). For code handling any kind of layer, where
+        `getattr(layer, "source", None)` would search the layer's properties
+        for a child of that name."""
+        return None
 
     @property
     def _pixel_size(self) -> tuple[float, float] | None:
@@ -746,6 +842,19 @@ class Layer(PropertyGroup):
             return None
         return group if isinstance(group, PropertyGroup) else None
 
+    def _leaves_out_live_defaults(self) -> bool:
+        """Whether the file leaves out one of `_LIVE_DEFAULTS`, read from the
+        chunks so that the tree stays unbuilt when none is."""
+        assert self._tdgp is not None
+        groups = get_chunks_by_match_name(self._tdgp)
+        for group_name, match_name in self._LIVE_DEFAULTS:
+            group = filter_by_list_type(
+                chunks=groups.get(group_name, []), list_type="tdgp"
+            )
+            if not group or match_name not in get_chunks_by_match_name(group[0]):
+                return True
+        return False
+
     def _write_out_moved_defaults(self) -> None:
         """Write the left-out properties whose default has moved.
 
@@ -756,6 +865,9 @@ class Layer(PropertyGroup):
         it would reopen at the new default instead (measured on AE 2026).
         Run on save, so every way of changing the state is covered.
         """
+        if self._tree_param_defs is not None:
+            # Never built, so nothing moved (`CompItem._build_live_defaults`).
+            return
         for group_name, match_name in self._LIVE_DEFAULTS:
             group = cast("PropertyGroup", self[group_name])
             prop = cast("Property", group[match_name])
@@ -1175,13 +1287,15 @@ class Layer(PropertyGroup):
 
         # Update source _used_in if this layer references a source item
         comp._project._ensure_used_in_linked()
-        source = getattr(self, "source", None)
+        source = self._source_item
         if source is not None and hasattr(source, "_used_in"):
             _unregister_source_usage(source, comp, exclude=self)  # type: ignore[arg-type]
 
         # Remove chunk block from comp's chunk list
         start, end = comp._layer_block_slice(self)
+        removed = comp._item_list.chunks[start:end]
         del comp._item_list.chunks[start:end]
+        rehome_effect_definitions(comp._project, _effect_instances(removed))
 
         # Remove from model list and rebuild caches
         comp._layers.remove(self)
@@ -1349,7 +1463,7 @@ class Layer(PropertyGroup):
 
         # Register source _used_in for the cloned layer
         into_comp._project._ensure_used_in_linked()
-        new_source = getattr(new_layer, "source", None)
+        new_source = new_layer._source_item
         if new_source is not None and hasattr(new_source, "_used_in"):
             new_source._used_in.add(into_comp)
 

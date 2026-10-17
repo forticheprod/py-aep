@@ -19,7 +19,7 @@ type, the comp renderer) and stay stale once saved.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from py_aep.ae_version import get_ae_version_major
 from py_aep.enums import LayerType, PropertyControlType, PropertyValueType
@@ -46,6 +46,7 @@ from py_aep.models.properties.overrides import (
 if TYPE_CHECKING:
     from typing import Any
 
+    from py_aep.models.layers.av_layer import AVLayer
     from py_aep.models.properties.property import Property
 
 # PVT sets where can_set_expression is always True / False regardless
@@ -127,8 +128,8 @@ def resolve_can_set_expression(prop: Property) -> bool:
         return True
 
     if mn == "ADBE Time Remapping":
-        layer = prop._containing_layer
-        return bool(getattr(layer, "time_remap_enabled", False))
+        # Only AV layers have one.
+        return cast("AVLayer", prop._containing_layer).time_remap_enabled
 
     if not prop.can_vary_over_time:
         return False

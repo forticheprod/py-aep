@@ -1252,7 +1252,7 @@ class Property(PropertyBase):
         if scale is None or not scale[1] or not self._has_motion_path:
             return
         layer = self._containing_layer
-        source = getattr(layer, "source", None)
+        source = layer._source_item
         pixel_aspect = (
             source.pixel_aspect
             if source is not None
@@ -1610,9 +1610,8 @@ class Property(PropertyBase):
                 a, r, g, b = raw
                 raw = [r / 255.0, g / 255.0, b / 255.0, a / 255.0]
         # 3. Effect point (0-1 fraction -> pixel coordinates)
-        if self._effect_scale is not None:
-            if isinstance(raw, list) and len(raw) >= 2:
-                raw = self._apply_effect_scale(raw)
+        if isinstance(raw, list) and len(raw) >= 2:
+            raw = self._apply_effect_scale(raw)
         # 4. Checkbox / popup: reported rounded, stored as given
         if self._property_control_type in _ROUNDED_CONTROL_TYPES:
             raw = _round_half_up(raw)
@@ -1651,9 +1650,8 @@ class Property(PropertyBase):
                 return [float(value), tag]
             return value
         # 3. Reverse effect point (pixel coordinates -> 0-1 fraction)
-        if self._effect_scale is not None:
-            if isinstance(value, list) and len(value) >= 2:
-                value = self._apply_effect_scale(value, invert=True)
+        if isinstance(value, list) and len(value) >= 2:
+            value = self._apply_effect_scale(value, invert=True)
         # 2. Reverse color (RGBA 0-1 -> ARGB 0-255)
         if self._color:
             if isinstance(value, list) and len(value) == 4:
@@ -2015,13 +2013,13 @@ class Property(PropertyBase):
         stored fraction against the layer's current size - [30, 40] on a
         200x100 solid reads [60, 40] once the solid is 400 wide, and
         [288, 432] once it is an adjustment layer in a 1920x1080 comp (AE
-        2026) - so its value is always read back from the cdat.
+        2026) - so its value is always read back from the cdat. Nor a
+        footage, solid or precomp layer's Anchor Point, stored normalized
+        against its source: [30, 40] on a 200x100 solid reads [60, 40] once
+        the solid is 400 wide, and [60, 80] after `replaceSource` with a
+        400x200 one (AE 2026).
         """
-        if (
-            self._cdat is not None
-            and self.match_name != "ADBE Anchor Point"
-            and self._effect_scale is not None
-        ):
+        if self._cdat is not None and self._effect_scale is not None:
             self._value = None
         else:
             self._value = _own_list(value)
@@ -3219,7 +3217,7 @@ class Property(PropertyBase):
             isinstance(value, list)
             and len(value) == 3
             and self.match_name in ("ADBE Position", "ADBE Anchor Point")
-            and not getattr(self._containing_layer, "three_d_layer", True)
+            and not self._containing_layer.is_3d
         ):
             return [value[0], value[1], 0.0]
         return value
@@ -3309,7 +3307,7 @@ class Property(PropertyBase):
         if self.match_name != "ADBE Scale":
             return frozenset()
         layer = self._containing_layer
-        if layer is None or getattr(layer, "three_d_layer", False):
+        if layer is None or layer.is_3d:
             return frozenset()
         return frozenset((2,))
 
@@ -4640,8 +4638,9 @@ class Property(PropertyBase):
         if self.match_name == "ADBE Anchor Point":
             # Only footage/comp layers normalize the anchor to source size;
             # source-less layers (shape, text, null) store it in raw pixels.
-            if getattr(self._containing_layer, "source", None) is not None:
-                size = self._layer_pixel_size()
+            layer = self._containing_layer
+            if layer._source_item is not None:
+                size = layer._pixel_size
                 if size is not None:
                     # Z shares the height divisor, as on a 3-D effect point
                     # (AE 2026: an anchor at Z 80 on a 400x300 solid stores

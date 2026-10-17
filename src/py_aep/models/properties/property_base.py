@@ -531,11 +531,23 @@ class PropertyBase:
         Raises:
             ValueError: If this property is not in an indexed group.
         """
+        # Circular: parsers.effect imports the property classes.
+        from ...parsers.effect import rehome_effect_definitions  # noqa: PLC0415
+
         parent, parent_tdgp = self._can_mutate()
         if self._is_mask:
             _clear_mask_references(self)
         start, end = self._find_chunk_span(parent_tdgp)
+        removed = parent_tdgp.chunks[start:end]
         del parent_tdgp.chunks[start:end]
+        rehome_effect_definitions(
+            self._containing_layer.containing_comp._project,
+            [
+                (self.match_name, chunk)
+                for chunk in removed
+                if isinstance(chunk, ListChunk) and chunk.list_type == "sspc"
+            ],
+        )
         parent.properties.remove(cast("Property | PropertyGroup", self))
         if self._is_mask:
             _renumber_mask_auto_names(parent)

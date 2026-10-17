@@ -93,7 +93,7 @@ Properties go through three pipeline stages: binary parsing, type dispatch, and 
 flowchart TD
     AEP[".aep file"] --> Binary["Binary I/O (binary/)"]
     Binary --> Chunks["Raw RIFX chunks"]
-    Chunks --> PL["parse_layer()"]
+    Chunks --> PL["Layer._build_property_tree()\n(first property access)"]
 
     subgraph Phase1["Phase 1 - Effect Definitions (project-level)"]
         EfdG["LIST:EfdG"] --> EfDf["EfDf children"]
@@ -186,6 +186,8 @@ stateDiagram-v2
 
 Every parser entry point (`parse_layer`, `parse_properties`, `parse_effect`, ...) is decorated with `_suppress_materialization()`, which forbids descriptor writes while the parser runs - a guard for round-trip idempotency: parsers must never mutate chunk data. Parsers fill in decoded values with the private `Property._cache_value()` / `Keyframe._cache_value()` helpers (or `__dict__` overrides), never the public setters; the public setters always have user-write semantics (validation, keyframe guard, container rebuilds). Because the parsers own this scope, call sites that re-parse chunks (e.g. `Layer.duplicate()`, deferred layer parsing) need no wrapping. Once the parsers return, end-user writes are allowed.
 
+Layers are built in two steps. `comp.layers` runs `parse_layer`, which builds each layer from its `ldta` and name alone; the property tree waits until something reads a property (`_properties` stays out of the instance until then, so the first read lands in `Layer.__getattr__`, which runs `Layer._load_property_tree` under the same guard). The binary side matches: a layer's root `tdgp` is decoded on first access, and decoding it leaves each top-level group (Transform, Effects, ...) to its own first access (`binary/chunk.py` `_deferred_children`). So a reader of layer attributes alone (names, times, sources, flags) never decodes or builds properties: layer attributes must not read the property tree when the chunks answer (see `AVLayer.time_remap_enabled`). A synthesized value the tree caches is then computed when the tree is built, not at parse time: state that moves a left-out default must build the affected trees before it changes (`CompItem._build_live_defaults`).
+
 Each property in the tree is in one of two states:
 
 | State | Backing | Created by | Value source | Writable? |
@@ -199,10 +201,10 @@ Each property in the tree is in one of two states:
 
 **Phase 2 - Post-processing** (single pass in `synthesis/core.py`):
 
-After `parse_properties` returns, `parse_layer` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use synthetic chunks (the `_suppress_materialization` scope opened by `parse_layer` is still active).
+After `parse_properties` returns, `Layer._build_property_tree` calls `synthesize_layer_properties(layer)` - the single entry point for all static property enrichment. All writes during this phase use synthetic chunks (the `_suppress_materialization` scope opened by `Layer._load_property_tree` is still active).
 
 ```
-parse_layer()
+Layer._build_property_tree()
   |
   +-- synthesize_layer_properties(layer)     # synthesis/core.py
         |

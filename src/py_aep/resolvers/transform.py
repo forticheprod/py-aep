@@ -385,7 +385,7 @@ def build_world_matrix(
 
 def layer_source_aspect(layer: Layer) -> float:
     """Pixel aspect of a layer's own pixels: its source's, else square."""
-    source = getattr(layer, "source", None)
+    source = layer._source_item
     aspect = getattr(source, "pixel_aspect", None)
     return float(aspect) if aspect else 1.0
 

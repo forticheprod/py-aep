@@ -330,6 +330,22 @@ class ListChunk(Chunk):
         return written
 
 
+_TDGP = frozenset({"tdgp"})
+
+
+def _deferred_children(list_type: str, parent_list_type: str) -> frozenset[str] | None:
+    """The children a deferred LIST keeps deferred in turn once decoded.
+
+    A layer's property tree (its root `tdgp`) waits until its properties
+    are read, and decoding that root leaves each top-level group (Transform,
+    Effects, Masks, ...) to its own first access: the root's direct
+    properties, such as Time Remapping, are then readable on their own.
+    """
+    if list_type == "Layr" or (list_type == "tdgp" and parent_list_type == "Layr"):
+        return _TDGP
+    return None
+
+
 class DeferredListChunk(ListChunk):
     """A LIST chunk whose children are parsed lazily from stored raw bytes.
 
@@ -366,7 +382,14 @@ class DeferredListChunk(ListChunk):
         if parsed is None:
             body = self._raw_body
             ctx = self._raw_ctx or EMPTY_CTX
-            parsed = read_chunks(BytesIO(body), len(body), ctx=ctx)
+            parsed = read_chunks(
+                BytesIO(body),
+                len(body),
+                ctx=ctx,
+                defer_list_types=_deferred_children(
+                    self.list_type, ctx.grandparent_list_type
+                ),
+            )
             object.__setattr__(self, "_parsed_chunks", parsed)
             object.__setattr__(self, "_raw_body", b"")
             object.__setattr__(self, "_raw_ctx", None)

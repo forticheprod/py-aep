@@ -678,11 +678,6 @@ class PropertyGroup(PropertyBase):
         # (`_ldta`, `_chunk`, ...). Answering it without the child scan
         # keeps parent-chain probes like `hasattr(node, "_ldta")` O(1)
         # instead of deriving every sibling's display name.
-        # A child property is never named with a leading underscore, so a
-        # private name here is always a miss on an internal attribute
-        # (`_ldta`, `_chunk`, ...). Answering it without the child scan
-        # keeps parent-chain probes like `hasattr(node, "_ldta")` O(1)
-        # instead of deriving every sibling's display name.
         if name.startswith("_"):
             raise AttributeError(name)
         # Avoid infinite recursion during __init__ (before

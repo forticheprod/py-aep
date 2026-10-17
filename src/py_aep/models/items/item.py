@@ -23,6 +23,7 @@ from ...binary.utils import (
     find_by_type,
     index_by_identity,
 )
+from ...parsers.effect import _effect_instances, rehome_effect_definitions
 from ..descriptors import ChunkField
 from ..guide import Guide
 from ..validators import validate_name, validate_string
@@ -319,7 +320,8 @@ class Item:
             ValueError: If this is the root folder.
         """
         # Remove from parent folder's binary chunks
-        self._remove_from_parent_chunks()
+        removed = self._remove_from_parent_chunks()
+        rehome_effect_definitions(self._project, _effect_instances(removed))
 
         # Remove from model collections
         assert self._parent_folder is not None

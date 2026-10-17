@@ -11,7 +11,8 @@ pass over it to:
 * Set `min_value` / `max_value` on properties with known bounds.
 
 The single public entry point is `synthesize_layer_properties`, called
-once per layer at the end of `parse_layer`.
+once per layer when its property tree is built
+(`Layer._build_property_tree`).
 
 Note:
     Effect parameter synthesis remains a separate dynamic step inside
@@ -38,6 +39,7 @@ from ..models.properties.property_group import (
     _derive_layer_styles_enabled,
     _reorder_and_fill,
 )
+from ..parsers.effect import _bind_point_default
 from .property import (
     _PARAMETRIC_MESH_TOP_LEVEL_SPECS,
     _SKIP_FOR_CAMERA,
@@ -158,6 +160,7 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
     # while Position is relative to the containing composition.
     comp_w = layer.containing_comp.width
     comp_h = layer.containing_comp.height
+    source_backed = False
     if isinstance(layer, AVLayer):
         if (
             isinstance(
@@ -171,17 +174,15 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
             anchor_w = 0
             anchor_h = 0
         else:
-            # An audio-only source has no pixels: AE 2026 centres the anchor
-            # on a 1x1 box, [0.5, 0.5, 0].
-            anchor_w = layer.width or 1
-            anchor_h = layer.height or 1
+            # The centre of the source, at its current size: set by
+            # `follow_source_anchor` below.
+            anchor_w = anchor_h = 0
+            source_backed = True
     else:
         anchor_w = comp_w
         anchor_h = comp_h
 
-    position = [comp_w / 2.0, comp_h / 2.0, 0.0]
-    if isinstance(layer, (CameraLayer, LightLayer)):
-        position = layer._default_position()
+    position = layer._default_position()
 
     # Spatial defaults depend on layer dimensions. The X / Y / Z followers
     # default to the leader's components: separating a camera or light
@@ -255,13 +256,16 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
         ae_major=ae_major,
     )
 
-    # For null layers where opacity was already parsed from binary,
-    # override the value to 0 (matching ExtendScript behavior).
+    # A null's Opacity defaults to 0: left out, it reads 0, while a written
+    # 100 reads 100 (AE 2026, a file py writes too).
     if isinstance(layer, AVLayer) and layer.null_layer:
-        opacity = transform.property("ADBE Opacity")
-        if isinstance(opacity, Property) and opacity.value == 100.0:
+        opacity = cast("Property", transform["ADBE Opacity"])
+        opacity.default_value = 0.0
+        if not opacity._is_live():
             opacity._value = 0.0
-            opacity.default_value = 0.0
+
+    if source_backed:
+        follow_source_anchor(cast("Property", transform["ADBE Anchor Point"]))
 
     # --- Phase 3: context-dependent naming ----------------------------------
     apply_dimensionality_naming(layer)
@@ -279,17 +283,36 @@ def _set_transform_defaults(layer: Layer, ae_major: int) -> None:
             _apply_bounds(child)
 
 
+def follow_source_anchor(anchor: Property) -> None:
+    """Read a source-backed layer's default Anchor Point - and the anchor
+    itself when left out - as the centre of the source at its current size.
+
+    AE stores a footage, solid or precomp layer's anchor as a fraction of its
+    source (`Property._effect_scale`): measured on AE 2026, a left-out one
+    reads the new centre, unmodified, after `replaceSource`, a solid resize
+    or a precomp resize. An audio-only source has no pixels to scale by, so
+    the fraction reads as is: AE 2026 reports [0.5, 0.5, 0].
+    """
+    cdat = anchor._cdat
+    if not anchor._is_live() and cdat is not None:
+        cdat.values = [0.5, 0.5, 0.0]
+        anchor._value = None
+    _bind_point_default(anchor, [50.0, 50.0, 0.0])
+
+
 def _component(source: Callable[[], list[float]], dim: int) -> Callable[[], float]:
     """One component of the vector `source` returns, read on each call."""
     return lambda: source()[dim]
 
 
-def _follow_live_defaults(layer: CameraLayer | LightLayer) -> None:
+def _follow_live_defaults(layer: Layer) -> None:
     """Make the defaults that follow other state read it as it changes.
 
-    A camera or light's Position follows its comp's size, and a camera's its
-    Zoom too; a camera's Zoom and Focus Distance follow the comp's width and
-    pixel aspect. `Layer._write_out_moved_defaults` writes them once moved.
+    A layer's Position follows its comp's size, and a camera's its Zoom too;
+    a camera or light's Point of Interest follows the comp's centre; a
+    camera's Zoom and Focus Distance follow the comp's width and pixel
+    aspect. `Layer._write_out_moved_defaults` writes them once moved (AE
+    2026 keeps a Point of Interest where it was, modified, on a resize).
     """
     transform = layer.transform
     position = cast("Property", transform["ADBE Position"])
@@ -297,6 +320,9 @@ def _follow_live_defaults(layer: CameraLayer | LightLayer) -> None:
     for dim in range(3):
         follower = cast("Property", transform[f"ADBE Position_{dim}"])
         follower._default_value_source = _component(layer._default_position, dim)
+    if isinstance(layer, (CameraLayer, LightLayer)):
+        poi = cast("Property", transform["ADBE Anchor Point"])
+        poi._default_value_source = layer._comp_centre
     if isinstance(layer, CameraLayer):
         options = cast("PropertyGroup", layer["ADBE Camera Options Group"])
         for match_name in ("ADBE Camera Zoom", "ADBE Camera Focus Distance"):
@@ -395,7 +421,8 @@ def synthesize_layer_properties(layer: Layer) -> None:
     transform defaults, top-level group ordering, recursive child
     synthesis, and min/max bounds application.
 
-    Called once per layer at the end of `parse_layer`.
+    Called once per layer when its property tree is built
+    (`Layer._build_property_tree`).
 
     Args:
         layer: The layer whose property tree should be finalized.
@@ -421,5 +448,4 @@ def synthesize_layer_properties(layer: Layer) -> None:
     # After the pass: a camera's default Position reads its Zoom, which is
     # only synthesized (when AE left it out) once its group is registered.
     _set_transform_defaults(layer, ae_major)
-    if isinstance(layer, (CameraLayer, LightLayer)):
-        _follow_live_defaults(layer)
+    _follow_live_defaults(layer)
