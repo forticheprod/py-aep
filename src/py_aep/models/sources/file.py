@@ -168,8 +168,14 @@ def _opti_data(
         return build_exr_opti_data(info.compression, info.channel_names)
     if fmt.opti == "empty" and not sequence:
         return b""
+    # AE codes MPEG program and transport streams `MPEO` but keeps its MPEG
+    # importer's own code in the record (AE 2026).
+    importer = "MPEG" if fmt.source_format == "MPEO" else None
     return build_generic_opti_data(
-        fmt.source_format, sequence=sequence, video=info.width > 0
+        fmt.source_format,
+        sequence=sequence,
+        video=info.width > 0,
+        importer_format=importer,
     )
 
 
@@ -857,9 +863,9 @@ class FileSource(FootageSource):
             color_mode: The Photoshop colour mode the image reads as (see
                 `_media_profile_records`); 3 (RGB) by default.
             frames: The duration in frames (samples for audio-only media),
-                stored unreduced over the rate the way AE records an MXF,
-                and so is `timecode_start`; `None` stores `duration` as a
-                reduced fraction.
+                stored unreduced over the rate the way AE records an MXF or
+                a transport stream, and so is `timecode_start`; `None`
+                stores `duration` as a reduced fraction.
             field_order: 1 or 2 to separate fields upper or lower first.
             field_label: Tag the footage with its field label (see
                 [MediaInfo.field_label][py_aep.resolvers.media_probe.MediaInfo]).
@@ -1026,8 +1032,9 @@ class FileSource(FootageSource):
         drop = cast("DropChunk", find_by_type(chunks=mnfo.chunks, chunk_type="drop"))
         drop.value = drop_frame
         if frames is not None:
-            # The start timecode AE reads from an MXF: frames over the rate
-            # like the duration; audio-only media get AE's default 0 over 30.
+            # The start timecode AE reads from an MXF (0 for a transport
+            # stream): frames over the rate like the duration; audio-only
+            # media get AE's default 0 over 30.
             strt = cast(
                 "StrtChunk", find_by_type(chunks=mnfo.chunks, chunk_type="strt")
             )
