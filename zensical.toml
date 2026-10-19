@@ -9,6 +9,7 @@ extra_css = ["stylesheets/extra.css"]
 nav = [
     { "Home" = "index.md" },
     { "Quick Start" = "quickstart.md" },
+    { "Large Projects" = "large_projects.md" },
     { "Contributing" = "contributing.md" },
     { "ExtendScript Coverage" = "extendscript_coverage.md" },
     { "Differences from ExtendScript" = "differences.md" },

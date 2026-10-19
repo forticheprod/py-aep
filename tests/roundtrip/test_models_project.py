@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+from helpers import project_bytes
 
+import py_aep
 from py_aep import Project
 from py_aep import parse as parse_aep
+from py_aep.binary.utils import find_by_list_type
 from py_aep.color.envelope import parse_envelope
+from py_aep.color.icc import ColorProfileNotFoundError, icc_profile_id
 from py_aep.enums import (
     BitsPerChannel,
     ColorManagementSystem,
@@ -19,6 +24,9 @@ from py_aep.enums import (
     LutInterpolationMethod,
     TimeDisplayType,
 )
+
+if TYPE_CHECKING:
+    from py_aep.binary.chunk import Chunk
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "project"
 VIEW_SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "view"
@@ -701,6 +709,118 @@ class TestRoundtripWorkingSpaceProfileId:
         project.ocio_configuration_file = str(config)
         project.working_space = "ACEScg"
         assert self._cpid(project) == b"\xff" * 16
+
+
+def _profile_pool(project: Project) -> list[Chunk]:
+    return find_by_list_type(chunks=project._rifx.chunks, list_type="CPPl").chunks
+
+
+class TestRoundtripPre22WorkingSpace:
+    """Before AE 22 the working space is a `pprf` ICC in `LIST:CPPl`, named
+    by its profile id in `cpid`.
+
+    Measured on AE 15.1: it re-saves this pool as py_aep writes it, keeps a
+    profile nothing refers to anymore, sorts the pool by profile id, and
+    renders a new 15.1 project with an sRGB working space like its own
+    template.
+    """
+
+    # An AE 15 pool: sRGB IEC61966-2.1 (the working space), then SDTV NTSC.
+    DONOR = VERSIONS_DIR / "ae2018" / "complete.aep"
+    SRGB = "sRGB IEC61966-2.1"
+    SRGB_ID = bytes.fromhex("1d3fda2edb4a89ab60a23c5f7c7d81dd")
+    NTSC_ID = bytes.fromhex("2734184f30e0dfca20be1a95a0a65519")
+
+    @classmethod
+    def _icc_dir(cls, tmp_path: Path) -> Path:
+        # The ICCs exactly as AE stored them, so no installed profile is needed.
+        icc_dir = tmp_path / "icc"
+        icc_dir.mkdir()
+        for i, pprf in enumerate(_profile_pool(parse_aep(cls.DONOR).project)):
+            (icc_dir / f"{i}.icc").write_bytes(pprf.data)
+        return icc_dir
+
+    def test_new_15_project_settings_round_trip(self, tmp_path: Path) -> None:
+        project = py_aep.new("15.1x69").project
+        project.icc_profile_dirs = [self._icc_dir(tmp_path)]
+        project.bits_per_channel = BitsPerChannel.THIRTY_TWO
+        project.time_display_type = TimeDisplayType.FRAMES
+        project.gpu_accel_type = GpuAccelType.SOFTWARE
+        project.linearize_working_space = True
+        project.working_space = self.SRGB
+
+        out = tmp_path / "new15.aep"
+        project.save(out)
+        app2 = parse_aep(out)
+        project2 = app2.project
+
+        assert app2.version == "15.1x69"
+        assert project2.working_space == self.SRGB
+        assert project2.linearize_working_space is True
+        assert project2.bits_per_channel == BitsPerChannel.THIRTY_TWO
+        assert project2.time_display_type == TimeDisplayType.FRAMES
+        assert project2.gpu_accel_type == GpuAccelType.SOFTWARE
+        # AE 15.1's own template: the pool holds just the working space's
+        # ICC, and `lnrp` sits between `cpid` and `dwga`.
+        donor_icc = _profile_pool(parse_aep(self.DONOR).project)[0].data
+        assert [c.data for c in _profile_pool(project2)] == [donor_icc]
+        assert project2._cpid.data == self.SRGB_ID
+        types = [c.chunk_type for c in project2._rifx.chunks]
+        i = types.index("cpid")
+        assert types[i : i + 3] == ["cpid", "lnrp", "dwga"]
+
+    def test_new_profile_is_inserted_in_id_order(self, tmp_path: Path) -> None:
+        project = py_aep.new("15.1x69").project
+        project.icc_profile_dirs = [self._icc_dir(tmp_path)]
+        project.working_space = "SDTV NTSC"
+        project.working_space = self.SRGB
+
+        out = tmp_path / "ws.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+
+        assert project2.working_space == self.SRGB
+        assert project2._cpid.data == self.SRGB_ID
+        # The replaced SDTV NTSC stays, after the lower sRGB id.
+        pool_ids = [icc_profile_id(c.data) for c in _profile_pool(project2)]
+        assert pool_ids == [self.SRGB_ID, self.NTSC_ID]
+
+    def test_pooled_profile_is_reused(self, tmp_path: Path) -> None:
+        project = parse_aep(self.DONOR).project
+        project.icc_profile_dirs = [self._icc_dir(tmp_path)]
+        before = project_bytes(project)
+        project.working_space = project.working_space
+        assert project_bytes(project) == before
+
+        project.working_space = "SDTV NTSC"
+        out = tmp_path / "ws.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+
+        assert project2.working_space == "SDTV NTSC"
+        assert project2._cpid.data == self.NTSC_ID
+        assert len(_profile_pool(project2)) == 2
+
+    def test_none_keeps_the_pool(self, tmp_path: Path) -> None:
+        project = parse_aep(self.DONOR).project
+        pool = [c.data for c in _profile_pool(project)]
+        project.working_space = "None"
+
+        out = tmp_path / "ws.aep"
+        project.save(out)
+        project2 = parse_aep(out).project
+
+        assert project2.working_space == "None"
+        assert project2._cpid.data == b"\xff" * 16
+        assert [c.data for c in _profile_pool(project2)] == pool
+
+    def test_unknown_profile_leaves_project_unchanged(self, tmp_path: Path) -> None:
+        project = py_aep.new("15.1x69").project
+        project.icc_profile_dirs = [self._icc_dir(tmp_path)]
+        before = project_bytes(project)
+        with pytest.raises(ColorProfileNotFoundError):
+            project.working_space = "Not A Profile"
+        assert project_bytes(project) == before
 
 
 class TestRoundtripRevision:

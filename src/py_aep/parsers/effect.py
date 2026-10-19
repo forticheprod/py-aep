@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 from typing import TYPE_CHECKING, cast
@@ -16,6 +17,7 @@ from ..binary.utils import (
     filter_by_type,
     find_by_list_type,
     find_by_type,
+    index_by_identity,
 )
 from ..data.match_names import MATCH_NAME_TO_AUTO_NAME
 from ..data.spatial_flags import EFFECT_PARAM_SPATIAL_FLAGS
@@ -35,11 +37,13 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
     from typing import Any, Callable
 
     from ..binary.chunk import Chunk, ListChunk
     from ..models.items.composition import CompItem
     from ..models.layers.layer import Layer
+    from ..models.project import Project
 
 
 logger = logging.getLogger(__name__)
@@ -96,7 +100,7 @@ def _resolve_effect_value(
     """Resolve value and default_value for a synthesized effect property.
 
     Returns pre-rescale values - point defaults stay in percent of the
-    layer size; `_scale_point_to_pixels` converts them to pixels.
+    layer size; `_normalize_synthetic_point` stores them as fractions.
 
     Args:
         match_name: The property's match name.
@@ -169,10 +173,16 @@ def _apply_param_def_metadata(
     # source of an Essential Graphics slider controller's Smin/Smax.
     prop._slider_min = param_def.get("slider_min")
     prop._slider_max = param_def.get("slider_max")
-    prop.nb_options = param_def.get("nb_options")
+    # Popup-only: written when present, so other properties keep the class
+    # default (`None`) instead of an instance-dict key.
+    nb_options = param_def.get("nb_options")
+    if nb_options is not None:
+        prop.nb_options = nb_options
     # Direct write: the public setter has user-write semantics (validation
     # plus pdnm/pard chunk rewrites).
-    prop._property_parameters = param_def.get("property_parameters")
+    property_parameters = param_def.get("property_parameters")
+    if property_parameters is not None:
+        prop._property_parameters = property_parameters
     units = param_def.get("units_text")
     if units is not None:
         prop._units_text = units
@@ -186,41 +196,50 @@ def _apply_param_def_metadata(
         prop._expressions_disabled = True
 
 
-def _point_default_pixels(raw: Any, size: tuple[float, float]) -> list[float] | None:
-    """A point parameter's parT default, converted to pixel coordinates.
-
-    `raw` is the pard default, in percent of the LAYER size - the same
-    reference the instance `cdat` uses - so the conversion is
-    `raw / 100 * layer_size`, with a 3D point's Z sharing the height
-    divisor (`Property._effect_scale`).
-
-    Measured in AE 2026: an untouched Gradient Ramp `End of Ramp` (pard
-    default 50 %, 100 %) reports [100, 100] on a 200x100 layer in an
-    800x600 comp, and [128, 256] on a 256x256 layer in a 512x512 comp.
-    Only the layer reproduces both; normalizing against the composition
-    gives [400, 600] and [128, 256] - right only when layer and comp match,
-    which is why this went unnoticed.
-
-    Returns `None` when the value is not a point.
-    """
+def _point_fraction(raw: Any) -> list[float] | None:
+    """A point parameter's pard default (percent of the layer) as the
+    fraction its `cdat` stores, or `None` when it is not a point."""
     if not isinstance(raw, list) or len(raw) < 2:
         return None
-    scale = [size[0], size[1], size[1]]
-    return [v / 100.0 * factor for v, factor in zip(raw, scale)]
+    return [v / 100.0 for v in raw]
 
 
-def _scale_point_to_pixels(prop: Property, size: tuple[float, float]) -> None:
-    """Convert a synthesized point property's value and default in place."""
-    value = _point_default_pixels(prop._value, size)
-    if value is not None:
-        prop._value = value
-    default = _point_default_pixels(prop.default_value, size)
-    if default is not None:
-        prop.default_value = default
+def _point_pixels(prop: Property, fraction: list[float]) -> Any:
+    return prop._resolve_value(list(fraction))
+
+
+def _bind_point_default(prop: Property, raw: Any) -> None:
+    """Give a point parameter its pard default, read like its stored value.
+
+    The default is a percentage of the LAYER (the composition for an
+    adjustment layer, `Property._effect_scale`), so it follows the layer's
+    current size as the stored point does. Measured in AE 2026: an untouched
+    Gradient Ramp `End of Ramp` (pard default 50 %, 100 %) reports [100, 100]
+    on a 200x100 layer in an 800x600 comp, and [128, 256] on a 256x256 layer
+    in a 512x512 comp; a fresh Point Control on a 200x100 solid reports
+    [100, 50], then [200, 50] once the solid is 400 wide and [960, 540] once
+    it is an adjustment layer in a 1920x1080 comp - unmodified throughout.
+    """
+    fraction = _point_fraction(raw)
+    if fraction is not None:
+        prop._default_value_source = functools.partial(_point_pixels, prop, fraction)
+
+
+def _normalize_synthetic_point(prop: Property) -> None:
+    """Keep a synthesized point as the fraction AE stores, read through the
+    layer's current size, with the default `_bind_point_default` gives."""
+    raw = prop._value
+    fraction = _point_fraction(raw)
+    if fraction is None or prop._cdat is None:
+        return
+    prop._cdat.values = fraction
+    prop._value = None
+    _bind_point_default(prop, raw)
 
 
 def parse_effect_param_defs(
     sspc_child_chunks: list[Chunk],
+    code_page: int,
 ) -> dict[str, dict[str, Any]]:
     """Parse effect parameter definitions from parT chunk.
 
@@ -229,6 +248,8 @@ def parse_effect_param_defs(
 
     Args:
         sspc_child_chunks: The SSPC chunk's child chunks.
+        code_page: The project's system code page (`nnhd`), which older
+            projects store parameter names in.
 
     Returns:
         Dict mapping parameter match names to definition dicts.
@@ -241,14 +262,44 @@ def parse_effect_param_defs(
         # Skip first, it describes parent
         if index == 0:
             continue
-        param_defs[match_name] = _parse_effect_parameter_def(parameter_chunks)
+        param_def = _parse_effect_parameter_def(parameter_chunks, code_page)
+        if match_name in _UNBOUNDED_CHECKBOXES:
+            del param_def["min_value"], param_def["max_value"]
+        param_defs[match_name] = param_def
 
     return param_defs
 
 
-def _merge_param_def(
-    prop: Property, param_def: dict[str, Any], point_size: tuple[float, float]
-) -> None:
+# Checkboxes AE 2026 reports without min / max. Nothing in their pard sets
+# them apart: the other 2067 checkboxes of the effect samples, including
+# ones with the same flags, are bounded 0-1.
+_UNBOUNDED_CHECKBOXES = frozenset(
+    {"ADBE Paint On Transparent", "ADBE FreePin3 On Transparent"}
+)
+
+
+# Python codecs of the `nnhd` code pages that are not `cp<number>`.
+_CODE_PAGE_CODECS = {0x0100: "mac_roman"}
+
+
+def _decode_pard_name(name: str, code_page: int) -> str:
+    """A `pard` name in the project's code page.
+
+    The chunk decodes the name as UTF-8 (keeping other bytes as surrogates
+    for the round trip), but projects saved before AE 26 store it in the
+    system code page: "Set Red To Source 1's" holds 0x92 in a Windows
+    (1252) project. Names that are valid UTF-8 are returned as they are.
+    """
+    if not any("\udc80" <= ch <= "\udcff" for ch in name):
+        return name
+    codec = _CODE_PAGE_CODECS.get(code_page, f"cp{code_page}")
+    try:
+        return name.encode("utf-8", "surrogateescape").decode(codec)
+    except (LookupError, UnicodeDecodeError):
+        return name
+
+
+def _merge_param_def(prop: Property, param_def: dict[str, Any]) -> None:
     """Merge parameter definition values into a parsed property.
 
     Overrides auto-detected property attributes with the more precise
@@ -257,8 +308,6 @@ def _merge_param_def(
     Args:
         prop: The property to update in place.
         param_def: The parameter definition dict.
-        point_size: The layer size a point parameter's default is
-            relative to.
     """
     prop._auto_name = param_def["name"] or prop._auto_name
     prop._property_control_type = param_def["property_control_type"]
@@ -279,9 +328,7 @@ def _merge_param_def(
         PropertyControlType.TWO_D,
         PropertyControlType.THREE_D,
     ):
-        prop.default_value = _point_default_pixels(
-            param_def.get("default_value"), point_size
-        )
+        _bind_point_default(prop, param_def.get("default_value"))
     elif param_def["property_control_type"] != PropertyControlType.LAYER:
         prop.default_value = param_def.get("default_value")
     _apply_param_def_metadata(prop, param_def)
@@ -368,15 +415,6 @@ def _parse_effect_properties(
     """
     from .property import parse_properties
 
-    # Point parameters normalize against the LAYER. The layer is only
-    # reachable once the effect is attached, so callers that already know
-    # it pass its size; during the initial parse it is unknown and the
-    # composition stands in (what py_aep has always used).
-    point_size = (layer._pixel_size if layer is not None else None) or (
-        float(composition.width),
-        float(composition.height),
-    )
-
     # Skip index-0 internal parameters (not exposed in ExtendScript).
     property_runs = [
         (name, chunks)
@@ -404,11 +442,8 @@ def _parse_effect_properties(
         existing = parsed_by_mn.get(match_name)
         if existing is not None:
             if isinstance(existing, Property):
-                _merge_param_def(existing, param_def, point_size)
+                _merge_param_def(existing, param_def)
             ordered.append(existing)
-        elif match_name == "ADBE Force CPU GPU":
-            # Belongs inside ADBE Effect Built In Params, not here.
-            continue
         else:
             synth = _synthesize_effect_property(
                 match_name,
@@ -420,7 +455,7 @@ def _parse_effect_properties(
                 PropertyControlType.TWO_D,
                 PropertyControlType.THREE_D,
             ):
-                _scale_point_to_pixels(synth, point_size)
+                _normalize_synthetic_point(synth)
             ordered.append(synth)
 
     # Append tail children not in param_defs (e.g. ADBE Effect Built In
@@ -443,6 +478,87 @@ def _parse_effect_properties(
         )
 
     return ordered
+
+
+_ITEM_CONTAINERS = frozenset({"Fold", "Item", "Sfdr"})
+
+
+def _effect_instances(chunks: list[Chunk]) -> Iterator[tuple[str, ListChunk]]:
+    """Every effect instance under `chunks` (folder, item or layer lists) as
+    `(match name, sspc)`, in file order. Only the layers' Effects groups are
+    decoded."""
+    for chunk in chunks:
+        list_type = getattr(chunk, "list_type", None)
+        if list_type in _ITEM_CONTAINERS:
+            yield from _effect_instances(cast("ListChunk", chunk).chunks)
+        elif list_type == "Layr":
+            root = filter_by_list_type(
+                chunks=cast("ListChunk", chunk).chunks, list_type="tdgp"
+            )
+            parade = get_chunks_by_match_name(root[0]).get("ADBE Effect Parade")
+            effects = filter_by_list_type(chunks=parade or [], list_type="tdgp")
+            if not effects:
+                continue
+            for name, run in get_chunks_by_match_name(effects[0]).items():
+                for sspc in filter_by_list_type(chunks=run, list_type="sspc"):
+                    yield name, sspc
+
+
+def _held_definitions(sspc: ListChunk) -> ListChunk | None:
+    """The instance's `parT`, if it holds its effect's definitions."""
+    parts = filter_by_list_type(chunks=sspc.chunks, list_type="parT")
+    return parts[0] if parts and parts[0].chunks else None
+
+
+def _project_param_defs(
+    composition: CompItem, match_name: str
+) -> dict[str, dict[str, Any]]:
+    """The parameter definitions of effect `match_name` from the instance in
+    the project that holds them.
+
+    AE writes an effect's `parT` in its first instance in file order only and
+    leaves the others' empty (every effect used more than once in samples/,
+    AE 15 to 26); a project saved by an older version (AE 15 in samples/) has
+    no `LIST:EfdG` to hold them instead.
+    """
+    project = composition._project
+    for name, sspc in _effect_instances(project._rifx.chunks):
+        if name == match_name and _held_definitions(sspc) is not None:
+            return parse_effect_param_defs(sspc.chunks, project._nnhd._system_code_page)
+    return {}
+
+
+def rehome_effect_definitions(
+    project: Project, removed: Iterable[tuple[str, ListChunk]]
+) -> None:
+    """Hand the definitions held by `removed` effect instances to the first
+    remaining instance of each effect, where AE keeps them (see
+    `_project_param_defs`); AE 15 and AE 2026 write them there on their own
+    save. AE rewrites the instance-specific bytes of each `pard` (UI flags
+    such as disabled, last values) when it saves; a moved `parT` keeps the
+    removed instance's, which AE 15 opens with the same parameters.
+
+    Only a project without `LIST:EfdG` needs it: nothing else holds the
+    definitions there, so the other instances would reopen without them.
+    """
+    root_chunks = project._rifx.chunks
+    if filter_by_list_type(chunks=root_chunks, list_type="EfdG"):
+        return
+    held: dict[str, ListChunk] = {}
+    for name, sspc in removed:
+        part = _held_definitions(sspc)
+        if part is not None:
+            held.setdefault(name, part)
+    if not held:
+        return
+    for name, sspc in _effect_instances(root_chunks):
+        part = held.pop(name, None)
+        if part is not None:
+            parts = filter_by_list_type(chunks=sspc.chunks, list_type="parT")
+            if parts and not parts[0].chunks:
+                sspc.chunks[index_by_identity(sspc.chunks, parts[0])] = part
+        if not held:
+            return
 
 
 @_suppress_materialization()
@@ -490,19 +606,26 @@ def parse_effect(
     tdgp_chunk = find_by_list_type(chunks=sspc_child_chunks, list_type="tdgp")
 
     try:
-        param_defs = parse_effect_param_defs(sspc_child_chunks)
+        param_defs = parse_effect_param_defs(
+            sspc_child_chunks, composition._project._nnhd._system_code_page
+        )
     except ChunkNotFoundError:
         param_defs = {}
 
     # Layer-level sspc may have an empty parT when the same effect type
     # is used more than once (AE doesn't duplicate the data).  Fall back
-    # to previously cached or project-level EfdG definitions.
-    if not param_defs and group_match_name in effect_param_defs:
+    # to previously cached or project-level EfdG definitions, else to the
+    # instance that holds them, whichever layer was built first.
+    if not param_defs:
+        if group_match_name not in effect_param_defs:
+            effect_param_defs[group_match_name] = _project_param_defs(
+                composition, group_match_name
+            )
         param_defs = effect_param_defs[group_match_name]
 
     # Cache successful parT parsing so later instances of the same
     # effect can reuse the definitions.
-    if param_defs and group_match_name not in effect_param_defs:
+    if param_defs and not effect_param_defs.get(group_match_name):
         effect_param_defs[group_match_name] = param_defs
     # Resolve _name_utf8 from the effect tdgp's tdsn child
     tdsn = cast("TdsnChunk", find_by_type(chunks=tdgp_chunk.chunks, chunk_type="tdsn"))
@@ -695,7 +818,9 @@ def _extract_no_value(body: Any, result: dict[str, Any]) -> None:
     result["property_value_type"] = PropertyValueType.NO_VALUE
 
 
-def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]:
+def _parse_effect_parameter_def(
+    parameter_chunks: list[Chunk], code_page: int
+) -> dict[str, Any]:
     """Parse effect parameter definition from pard chunk, returning a dict of values."""
     pard_chunk = cast(
         "PardChunk", find_by_type(chunks=parameter_chunks, chunk_type="pard")
@@ -704,7 +829,7 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
     control_type = PropertyControlType(pard_chunk.property_control_type)
 
     result: dict[str, Any] = {
-        "name": pard_chunk.name,
+        "name": _decode_pard_name(pard_chunk.name, code_page),
         "property_control_type": control_type,
         # PF param flags bit 1 = CANNOT_TIME_VARY (the tdb4 byte is
         # unreliable for effect parameters).
@@ -733,7 +858,15 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
         pdnm_data = utf8_chunk.value
         if control_type == PropertyControlType.ENUM:
             result["property_parameters"] = pdnm_data.split("|")
-        elif pdnm_data:
+        elif (
+            pdnm_data
+            and control_type == PropertyControlType.BOOLEAN
+            and not result["name"].strip()
+        ):
+            # A checkbox's pdnm is the label beside its box (a button's, the
+            # button text): AE 2026 names the parameter by it only when the
+            # pard name is blank (2102 / 2102 such checkboxes, 279 / 279
+            # named ones keep the pard name, as do buttons).
             result["name"] = pdnm_data
     except ChunkNotFoundError:
         pass
@@ -743,6 +876,7 @@ def _parse_effect_parameter_def(parameter_chunks: list[Chunk]) -> dict[str, Any]
 
 def parse_effect_definitions(
     root_chunks: list[Chunk],
+    code_page: int,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Parse project-level effect definitions from LIST:EfdG.
 
@@ -752,6 +886,7 @@ def parse_effect_definitions(
 
     Args:
         root_chunks: The root chunks of the AEP file.
+        code_page: The project's system code page (`nnhd`).
 
     Returns:
         Dict mapping effect match names to their parameter definitions
@@ -772,7 +907,7 @@ def parse_effect_definitions(
         effect_match_name = cast("TdmnChunk", tdmn_chunk).value
 
         sspc_chunk = find_by_list_type(chunks=efdf_child_chunks, list_type="sspc")
-        param_defs = parse_effect_param_defs(sspc_chunk.chunks)
+        param_defs = parse_effect_param_defs(sspc_chunk.chunks, code_page)
         effect_defs[effect_match_name] = param_defs
 
     return effect_defs

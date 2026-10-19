@@ -112,23 +112,17 @@ class ParametricMeshLayer(AVLayer):
 
     def _update_options(self) -> None:
         """Update the parametric mesh options from the layer's current state."""
+        # Plain instance attributes, read from `__dict__`: `getattr` on a
+        # missing one would search the layer's properties for that name.
         options_cls = OPTION_TYPES.get(self._ldta.light_and_mesh_type)
-        old_options = getattr(self, "parametric_mesh_options", None)
-        if type(old_options) is not options_cls:
-            try:
-                del self.parametric_mesh_options
-            except AttributeError:
-                pass
+        if type(self.__dict__.get("parametric_mesh_options")) is not options_cls:
+            self.__dict__.pop("parametric_mesh_options", None)
             if options_cls is not None:
                 self.parametric_mesh_options = options_cls(self)
 
         bevel_cls = BEVEL_OPTION_TYPES.get(self._ldta.light_and_mesh_type)
-        old_bevel = getattr(self, "parametric_bevel_options", None)
-        if type(old_bevel) is not bevel_cls:
-            try:
-                del self.parametric_bevel_options
-            except AttributeError:
-                pass
+        if type(self.__dict__.get("parametric_bevel_options")) is not bevel_cls:
+            self.__dict__.pop("parametric_bevel_options", None)
             if bevel_cls is not None:
                 self.parametric_bevel_options = bevel_cls(self)
 

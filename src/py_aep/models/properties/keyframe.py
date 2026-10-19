@@ -598,10 +598,13 @@ class Keyframe:
         that carry no value, this is `None`.
         """
         if self._property is None:
-            return self._stored_value
-        if self._property._arbs is not None:
+            value = self._stored_value
+        elif self._property._arbs is not None:
             return self._property._keyframe_curves(self)
-        return cast("_ValueType", self._property._mask_inert_z(self._stored_value))
+        else:
+            value = self._property._mask_inert_z(self._stored_value)
+        # A list is handed out as a copy: the keyframe's own is its cache.
+        return cast("_ValueType", list(value) if isinstance(value, list) else value)
 
     @value.setter
     def value(
@@ -655,10 +658,12 @@ class Keyframe:
                 prop._unresolve_value(value),
             )
             self._write_kf_value(raw)
-            self._value = raw
+            # Copies: the caller's list (or another property's value list)
+            # must not become this keyframe's cache.
+            self._value = list(raw) if isinstance(raw, list) else raw
             prop._redistribute_roving_keyframes()
         else:
-            self._value = value
+            self._value = list(value) if isinstance(value, list) else value
 
     @property
     def _stored_value(self) -> _ValueType:

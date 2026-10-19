@@ -19,8 +19,9 @@ type, the comp renderer) and stay stale once saved.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from py_aep.ae_version import get_ae_version_major
 from py_aep.enums import LayerType, PropertyControlType, PropertyValueType
 from py_aep.models.properties.overrides import (
     _CAMERA_NO_EXPRESSION,
@@ -35,6 +36,7 @@ from py_aep.models.properties.overrides import (
     _LIGHT_PARALLEL_NO_EXPRESSION,
     _LIGHT_POINT_NO_EXPRESSION,
     _LIGHT_SPOT_NO_EXPRESSION,
+    _MATERIAL_COEFFICIENTS,
     _MODEL_LAYER_HIDDEN_MATERIALS,
     _PARAMETRIC_MESH_CHECKBOX_STREAMS,
     _PARAMETRIC_MESH_GROUP_TYPE,
@@ -44,6 +46,7 @@ from py_aep.models.properties.overrides import (
 if TYPE_CHECKING:
     from typing import Any
 
+    from py_aep.models.layers.av_layer import AVLayer
     from py_aep.models.properties.property import Property
 
 # PVT sets where can_set_expression is always True / False regardless
@@ -125,8 +128,8 @@ def resolve_can_set_expression(prop: Property) -> bool:
         return True
 
     if mn == "ADBE Time Remapping":
-        layer = prop._containing_layer
-        return bool(getattr(layer, "time_remap_enabled", False))
+        # Only AV layers have one.
+        return cast("AVLayer", prop._containing_layer).time_remap_enabled
 
     if not prop.can_vary_over_time:
         return False
@@ -184,6 +187,16 @@ def resolve_can_set_expression(prop: Property) -> bool:
         and parent.match_name == "ADBE Material Options Group"
     ):
         return False
+
+    # Until AE 23 a Classic 3D comp also shows these material options on a
+    # 2D layer: AE 15.1, 22.5 and 23.6 report them expressible on one, AE
+    # 24.6 and 26.0 do not. The file's version stands for the AE that saved it.
+    if (
+        (mn in _MATERIAL_COEFFICIENTS or mn == "ADBE Light Transmission")
+        and renderer == _CLASSIC_3D
+        and get_ae_version_major(layer) <= 23
+    ):
+        return True
 
     if mn in _CANSETEXPR_3D_ONLY:
         return three_d

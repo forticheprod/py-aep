@@ -17,7 +17,9 @@ from py_aep.binary.bin_utils import (
     write_pad,
 )
 from py_aep.binary.chunk import (
+    _CONTEXT_RESOLVERS,
     Chunk,
+    ContainerChunk,
     ListChunk,
     ReadContext,
     _resolve_cdat_context,
@@ -398,6 +400,18 @@ class TestRegistry:
 
 
 class TestContextResolvers:
+    def test_resolvers_only_target_leaf_chunks(self) -> None:
+        """`read_chunks` passes a resolver's arguments to leaf chunks only:
+        a nesting chunk (LIST, container) takes the reading context."""
+        for chunk_type in _CONTEXT_RESOLVERS:
+            assert not CHUNK_TYPES.get(chunk_type, Chunk)._nests, chunk_type
+
+    def test_nesting_flag_matches_the_container_classes(self) -> None:
+        for chunk_type, cls in CHUNK_TYPES.items():
+            assert cls._nests == issubclass(cls, (ListChunk, ContainerChunk)), (
+                chunk_type
+            )
+
     def test_cdat_context_otst(self) -> None:
         ctx = ReadContext(
             parent_list_type="tdbs",

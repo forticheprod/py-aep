@@ -169,7 +169,9 @@ def parse_project(
         ae_preferences_dir=ae_preferences_dir,
     )
 
-    project._effect_param_defs = parse_effect_definitions(root_chunks)
+    project._effect_param_defs = parse_effect_definitions(
+        root_chunks, nnhd_chunk._system_code_page
+    )
 
     root_folder = parse_folder(
         is_root=True,

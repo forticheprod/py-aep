@@ -8,8 +8,6 @@ from ..binary.layer_chunks import LdtaChunk
 from ..binary.scalar_chunks import Utf8Chunk
 from ..binary.utils import (
     ChunkNotFoundError,
-    filter_by_list_type,
-    filter_by_type,
     find_by_list_type,
     find_by_type,
 )
@@ -22,14 +20,9 @@ from ..models.layers.parametric_mesh_layer import ParametricMeshLayer
 from ..models.layers.shape_layer import ShapeLayer
 from ..models.layers.text_layer import TextLayer
 from ..models.layers.three_d_model_layer import ThreeDModelLayer
-from ..synthesis.core import synthesize_layer_properties
-from .property import parse_properties
-from .utils import (
-    get_match_name_runs,
-)
 
 if TYPE_CHECKING:
-    from ..binary.chunk import Chunk, ListChunk
+    from ..binary.chunk import ListChunk
     from ..models.items.composition import CompItem
     from ..models.layers.layer import Layer
 
@@ -42,28 +35,6 @@ _LAYER_CLASSES: dict[int, type[Layer]] = {
     LayerType.THREE_D_MODEL: ThreeDModelLayer,
     LayerType.PARAMETRIC_MESH: ParametricMeshLayer,
 }
-
-
-def _parse_ovg2_uuids(tdgp_chunks: list[Chunk]) -> list[str]:
-    """Extract Essential Properties override UUIDs from LIST:OvG2 chunks.
-
-    Args:
-        tdgp_chunks: The children of the layer's root `tdgp` group, where
-            `LIST:OvG2` is a direct child (beside the "ADBE Layer Overrides"
-            marker). NOT the layer LIST's own children - `OvG2` sits one
-            level deeper than that.
-
-    Returns:
-        A list of controller UUID strings from the OvG2/CPrp/Utf8 entries;
-        each matches an `EssentialGraphicsController.uuid` on the source comp.
-    """
-    uuids: list[str] = []
-    for ovg2_list in filter_by_list_type(chunks=tdgp_chunks, list_type="OvG2"):
-        for cprp in filter_by_list_type(chunks=ovg2_list.chunks, list_type="CPrp"):
-            utf8_chunks = filter_by_type(chunks=cprp.chunks, chunk_type="Utf8")
-            if utf8_chunks:
-                uuids.append(cast("Utf8Chunk", utf8_chunks[0]).value)
-    return uuids
 
 
 @_suppress_materialization()
@@ -109,32 +80,15 @@ def parse_layer(
         )
         layer_cls = AVLayer
 
-    # OvG2 (Essential Properties overrides) is a direct child of the layer's
-    # root tdgp, not of the layer LIST itself, so resolve the root tdgp first.
-    root_tdgp_chunk = find_by_list_type(chunks=child_chunks, list_type="tdgp")
-
     layer = layer_cls(
         _ldta=ldta,
         _cmta=cmta,
         _name_utf8=name_utf8,
         _layer_list=layer_chunk,
         containing_comp=composition,
-        properties=[],
-        essential_property_uuids=_parse_ovg2_uuids(root_tdgp_chunk.chunks),
     )
-
-    properties = parse_properties(
-        match_name_runs=get_match_name_runs(root_tdgp_chunk),
-        child_depth=1,
-        effect_param_defs=effect_param_defs,
-        composition=composition,
-        layer=layer,
-    )
-
-    layer._properties = properties
-    layer._tdgp = root_tdgp_chunk
-    for child in properties:
-        child._parent_property = layer
-
-    synthesize_layer_properties(layer)
+    layer._tdgp = find_by_list_type(chunks=child_chunks, list_type="tdgp")
+    # The property tree is built on first access (`Layer._tree_param_defs`).
+    del layer._properties
+    layer._tree_param_defs = effect_param_defs
     return layer

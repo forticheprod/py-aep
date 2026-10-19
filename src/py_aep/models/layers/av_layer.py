@@ -14,6 +14,8 @@ from py_aep.enums import (
 
 from ...ae_version import requires_version
 from ...binary.layer_chunks import LdtaChunk
+from ...binary.utils import find_by_list_type, find_by_type
+from ...parsers.utils import get_chunks_by_match_name
 from ...resolvers.essential_properties import resolve_essential_property_controllers
 from ...resolvers.motion_graphics import can_add_layer
 from ...resolvers.shape_bounds import shape_layer_rect
@@ -39,6 +41,7 @@ from ..validators import (
 from .layer import Layer
 
 if TYPE_CHECKING:
+    from ...binary.property_chunks import Tdb4Chunk
     from ...resolvers.transform import Mat4
     from ..essential_graphics import EssentialGraphicsController
     from ..items.composition import CompItem
@@ -166,8 +169,11 @@ class AVLayer(Layer):
         post_set="_on_environment_layer_set",
     )
     """`True` if this is an environment layer in a Ray-traced 3D
-    composition. Setting this to `True` automatically sets
-    [three_d_layer][] to `True`. Read / Write."""
+    composition. Read / Write.
+
+    Setting this to `True` turns [three_d_layer][] off, as After Effects
+    2026 does: contrary to the Scripting Guide, it does not make the layer
+    3D. A 2D layer stays as it is."""
 
     frame_blending_type = ChunkField.enum(
         FrameBlendingType,
@@ -206,11 +212,14 @@ class AVLayer(Layer):
     three_d_layer = ChunkField.bool(
         "_ldta",
         "three_d_layer",
+        # Built at the dimensionality the file has, so the toggle sees the
+        # dead 2-D Scale Z it normalizes.
+        pre_set="_load_property_tree",
         post_set="_on_three_d_layer_set",
     )
-    """`True` if this layer is a 3D layer. Setting this to `True`
-    automatically sets [environment_layer][] to `False`.
-    Read / Write."""
+    """`True` if this layer is a 3D layer. Read / Write.
+
+    Setting it leaves [environment_layer][] as it is (After Effects 2026)."""
 
     @property
     def is_3d(self) -> bool:
@@ -342,15 +351,15 @@ class AVLayer(Layer):
                 self._re_enable_matte(old_matte)
 
     def _on_environment_layer_set(self) -> None:
-        if self._ldta.environment_layer:
-            self._ldta.three_d_layer = True
+        if self._ldta.environment_layer and self._ldta.three_d_layer:
+            # Through the 3-D switch, which AE turns off here, with all a
+            # toggle does.
+            self.three_d_layer = False
 
     def _on_three_d_layer_set(self) -> None:
         # Circular: synthesis.core imports the layer classes it synthesizes for.
         from ...synthesis.core import apply_dimensionality_naming  # noqa: PLC0415
 
-        if self._ldta.three_d_layer:
-            self._ldta.environment_layer = False
         # AE renames "Rotation" <-> "Z Rotation" the moment the 3-D switch is
         # toggled, and normalizes a 2-D layer's dead Scale Z to 100 in the
         # chunk on either side of it - so the setter always writes through.
@@ -449,6 +458,10 @@ class AVLayer(Layer):
                     self._source = cast(AVItem, result)
                     return self._source
                 return None
+
+    @property
+    def _source_item(self) -> AVItem | None:
+        return self.source
 
     @property
     def essential_property_controllers(self) -> list[EssentialGraphicsController]:
@@ -560,7 +573,7 @@ class AVLayer(Layer):
             return False
 
         any_solo = any(
-            getattr(layer, "has_audio", False)
+            isinstance(layer, AVLayer) and layer.has_audio
             for layer in self.containing_comp.solo_layers
         )
         if any_solo and not self.solo:
@@ -850,13 +863,15 @@ class AVLayer(Layer):
     @property
     def time_remap_enabled(self) -> bool:
         """`True` if time remapping is enabled for this layer. Read / Write."""
-        try:
-            prop = self["ADBE Time Remapping"]
-        except KeyError:
+        # From the chunks, not the property: reading a layer's times
+        # (`in_point`, `out_point`) then leaves its property tree unbuilt.
+        assert self._tdgp is not None
+        chunks = get_chunks_by_match_name(self._tdgp).get("ADBE Time Remapping")
+        if not chunks:
             return False
-        if not isinstance(prop, Property):
-            return False
-        return bool(prop._animated)
+        tdbs = find_by_list_type(chunks=chunks, list_type="tdbs")
+        tdb4 = find_by_type(chunks=tdbs.chunks, chunk_type="tdb4")
+        return cast("Tdb4Chunk", tdb4).animated
 
     @time_remap_enabled.setter
     def time_remap_enabled(self, value: bool) -> None:
@@ -1071,33 +1086,23 @@ class AVLayer(Layer):
     def _refresh_former_null_defaults(self) -> None:
         """Re-derive the transform defaults a null layer had.
 
-        Synthesis gives a null the origin as its Anchor Point and forces its
-        Opacity to 0; with a real source both come from the source instead.
-        Only touches a property AE never wrote - once the user has set one,
-        the value is theirs and a source swap must not move it.
+        Synthesis gives a null the origin as its Anchor Point and 0 as its
+        default Opacity; with a real source the anchor is the source's centre
+        and the Opacity defaults to 100. Only a left-out Opacity moves - once
+        the user has set one, the value is theirs and a source swap must not
+        move it.
         """
+        # Circular: synthesis.core imports the layer classes it synthesizes for.
+        from ...synthesis.core import follow_source_anchor  # noqa: PLC0415
+
         transform = self.transform
         if transform is None:
             return
-        size = self._pixel_size
+        follow_source_anchor(cast("Property", transform["ADBE Anchor Point"]))
 
-        def synthesized(match_name: str) -> Property | None:
-            prop = transform.property(match_name)
-            if not isinstance(prop, Property) or prop.keyframes:
-                return None
-            if prop._tdbs is None or not prop._tdbs.synthetic:
-                return None
-            return prop
-
-        anchor = synthesized("ADBE Anchor Point")
-        if anchor is not None and size is not None:
-            default = [size[0] / 2.0, size[1] / 2.0, 0.0]
-            anchor.default_value = default
-            anchor._cache_value(default)
-
-        opacity = synthesized("ADBE Opacity")
-        if opacity is not None and opacity.value == 0.0:
-            opacity.default_value = 100.0
+        opacity = cast("Property", transform["ADBE Opacity"])
+        opacity.default_value = 100.0
+        if not opacity._is_live():
             opacity._cache_value(100.0)
 
     def replace_source(self, new_source: AVItem, fix_expressions: bool = False) -> None:

@@ -58,7 +58,10 @@ class LightLayer(Layer):
     # (2 * tan(fov/2) rounds to 0.72; AE uses the exact ratio).
     _zoom_dividend: float = 0.72
 
-    _LIVE_DEFAULTS = (("ADBE Transform Group", "ADBE Position"),)
+    _LIVE_DEFAULTS = (
+        *Layer._LIVE_DEFAULTS,
+        ("ADBE Transform Group", "ADBE Anchor Point"),
+    )
 
     @property
     def is_3d(self) -> bool:

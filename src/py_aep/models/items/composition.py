@@ -512,14 +512,14 @@ class CompItem(AVItem):
     Settings dialog box. Read / Write."""
 
     # Left-out camera and light properties follow the comp's size and pixel
-    # aspect. Loading the layers before a change builds them at the size the
-    # file has, so `save` writes the ones the change moves where they were,
-    # as AE does.
+    # aspect. Building them before a change builds them at the size the file
+    # has, so `save` writes the ones the change moves where they were, as AE
+    # does.
     width = ChunkField[int](
         "_cdta",
         "width",
         validate=validate_footage_dimension,
-        pre_set="_ensure_layers_loaded",
+        pre_set="_build_live_defaults",
     )
     """The width of the item in pixels. Read / Write."""
 
@@ -527,7 +527,7 @@ class CompItem(AVItem):
         "_cdta",
         "height",
         validate=validate_footage_dimension,
-        pre_set="_ensure_layers_loaded",
+        pre_set="_build_live_defaults",
     )
     """The height of the item in pixels. Read / Write."""
 
@@ -763,7 +763,7 @@ class CompItem(AVItem):
         "pixel_aspect",
         validate=validate_pixel_aspect,
         # See `width`.
-        pre_set="_ensure_layers_loaded",
+        pre_set="_build_live_defaults",
     )
     """The pixel aspect ratio of the item (1.0 is square). Read / Write."""
 
@@ -1320,6 +1320,14 @@ class CompItem(AVItem):
 
         self._layers_loaded = True
         self._invalidate_layer_cache()
+
+    def _build_live_defaults(self) -> None:
+        """Build the property trees of the layers whose left-out defaults
+        follow this comp (see `width`)."""
+        self._ensure_layers_loaded()
+        for layer in self._layers:
+            if layer._tree_param_defs is not None and layer._leaves_out_live_defaults():
+                layer._load_property_tree()
 
     def _ensure_comp_parsed(self) -> None:
         """Parse markers and Essential Graphics on first access."""
@@ -2489,7 +2497,7 @@ class CompItem(AVItem):
         # Source usage bookkeeping for the moved (and copied) layers.
         project._ensure_used_in_linked()
         for new_layer in new_comp._layers:
-            source = getattr(new_layer, "source", None)
+            source = new_layer._source_item
             if source is not None and hasattr(source, "_used_in"):
                 _unregister_source_usage(source, self)
                 source._used_in.add(new_comp)

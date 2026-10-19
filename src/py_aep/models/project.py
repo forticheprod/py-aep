@@ -5,6 +5,7 @@ import os
 import uuid
 import warnings
 import xml.etree.ElementTree as ET
+from io import BytesIO
 from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -782,7 +783,7 @@ class Project:
         return any(c.chunk_type == "lnrp" for c in self._root_chunks)
 
     @linearize_working_space.setter
-    @requires_version(16)
+    @requires_version(15)
     def linearize_working_space(self, value: bool) -> None:
         validate_bool(value)
         # `lnrp` sits immediately after `lnrb` (or after `cpid` when linear
@@ -830,6 +831,10 @@ class Project:
         [icc_profile_dirs][]) and embedded; `ColorProfileNotFoundError` is
         raised if it is not installed. Assigning `"None"` removes the working
         space.
+
+        In a project from before After Effects 22, the profile is added to the
+        project's list of ICC profiles; as in After Effects, a profile that is
+        no longer the working space stays in that list.
         """
         if self._ws_utf8 is not None:
             return envelope_profile_name(self._ws_utf8.value)
@@ -846,6 +851,9 @@ class Project:
     @working_space.setter
     def working_space(self, value: str) -> None:
         validate_string(value)
+        if not any(c.chunk_type == "pcms" for c in self._root_chunks):
+            self._set_cppl_working_space(value)
+            return
         if self.color_management_system == ColorManagementSystem.OCIO:
             envelope = self._ocio_envelope(value)
             profile_id = b"\xff" * 16
@@ -864,6 +872,32 @@ class Project:
         self._ws_utf8 = self._rewrite_color_profile("PwCs", envelope)
         # AE 2026 rewrites `cpid` to the new profile's id when a script sets
         # workingSpace; OCIO projects store all 0xFF.
+        self._cpid.data = profile_id
+
+    def _set_cppl_working_space(self, value: str) -> None:
+        """Set the working space of a project from before After Effects 22.
+
+        These projects keep each ICC profile they use as a `pprf` in
+        `LIST:CPPl`, and `cpid` holds the working space's id. Measured on AE
+        15.1: it saves the list sorted by ICC profile id and keeps profiles
+        nothing uses anymore, so a new profile is inserted in order and a
+        replaced one stays.
+        """
+        if value == "None":
+            self._cpid.data = b"\xff" * 16
+            return
+        icc = self._icc_lib().bytes_for(value)
+        profile_id = icc_profile_id(icc)
+        cppl = find_by_list_type(chunks=self._root_chunks, list_type="CPPl")
+        for i, pprf in enumerate(cppl.chunks):
+            pprf_id = icc_profile_id(pprf.data)
+            if pprf_id == profile_id:
+                break
+            if pprf_id > profile_id:
+                cppl.chunks.insert(i, Chunk(chunk_type="pprf", data=icc))
+                break
+        else:
+            cppl.chunks.append(Chunk(chunk_type="pprf", data=icc))
         self._cpid.data = profile_id
 
     @property
@@ -2101,24 +2135,31 @@ class Project:
         filled = self._fill_relative_path_counts(
             platform_path(os.path.abspath(path_obj), windows=self._windows)
         )
-        # Write to a sibling temp file then rename, so a serialization
-        # error can never leave a truncated .aep at the target path. The
-        # temp name is unique and created exclusively: a fixed one would
-        # overwrite, then move away, any file of the user's carrying it.
-        tmp_path = path_obj.with_name(f"{path_obj.name}.{uuid.uuid4().hex}.tmp")
+        # Serialize in memory: the writer seeks back to fill in each chunk's
+        # length, and on a network share every seek is a round trip (a 29 MB
+        # project took minutes to write there, under a second in one call).
+        buffer = BytesIO()
         try:
-            with tmp_path.open("xb") as f:
-                write_aep(f, self._rifx, self._xmp)
-        except BaseException:
-            if tmp_path.exists():  # missing_ok needs Python 3.8
-                tmp_path.unlink()
-            raise
+            write_aep(buffer, self._rifx, self._xmp)
         finally:
             # Back to pending, so a later save computes them for its own
             # location.
             for alas, text in filled:
                 alas.value = text
-        os.replace(tmp_path, path_obj)
+        # Write to a sibling temp file then rename, so a failed write can
+        # never leave a truncated .aep at the target path. The temp name is
+        # unique and created exclusively: a fixed one would overwrite, then
+        # move away, any file of the user's carrying it. A failed rename (a
+        # scanner still holding the temp file on Windows) removes it too.
+        tmp_path = path_obj.with_name(f"{path_obj.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with tmp_path.open("xb") as f:
+                f.write(buffer.getbuffer())
+            os.replace(tmp_path, path_obj)
+        except BaseException:
+            if tmp_path.exists():  # missing_ok needs Python 3.8
+                tmp_path.unlink()
+            raise
         self._file = str(path)
 
     def _fill_relative_path_counts(

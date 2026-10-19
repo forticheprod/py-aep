@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from helpers import (
@@ -11,10 +12,12 @@ from helpers import (
     get_first_layer,
     get_layer,
     parse_project_fresh,
+    project_bytes,
 )
 
 import py_aep
 from py_aep import parse as parse_aep
+from py_aep.binary.chunk import DeferredListChunk
 from py_aep.enums import (
     AutoOrientType,
     BlendingMode,
@@ -34,6 +37,11 @@ from py_aep.models.layers import (
     TextLayer,
 )
 from py_aep.models.layers.three_d_model_layer import ThreeDModelLayer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from py_aep.models.items.composition import CompItem
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
 BUGS_DIR = Path(__file__).parent.parent.parent / "samples" / "bugs"
@@ -263,39 +271,62 @@ class TestRoundtripAVLayerFlags:
         assert isinstance(layer2, AVLayer)
         assert layer2.three_d_layer is False
 
-    def test_environment_layer_sets_three_d_layer(self, tmp_path: Path) -> None:
+    def test_environment_layer_makes_a_3d_layer_2d(self, tmp_path: Path) -> None:
+        """AE 2026 turns the 3D switch off, as a toggle does (contrary to
+        the Scripting Guide, which says the layer becomes 3D)."""
         project = parse_project_fresh(SAMPLES_DIR / "avlayer_flags.aep")
         layer = get_layer(project, "threeDLayer_true")
         assert isinstance(layer, AVLayer)
         assert layer.environment_layer is False
 
         layer.environment_layer = True
-        assert layer.three_d_layer is True
+        assert layer.three_d_layer is False
+        assert layer.transform["ADBE Rotate Z"].name == "Rotation"
 
         out = tmp_path / "modified_env.aep"
         project.save(out)
         layer2 = get_layer(parse_aep(out).project, "threeDLayer_true")
         assert isinstance(layer2, AVLayer)
         assert layer2.environment_layer is True
-        assert layer2.three_d_layer is True
+        assert layer2.three_d_layer is False
 
-    def test_three_d_layer_clears_environment_layer(self, tmp_path: Path) -> None:
+    def test_environment_layer_leaves_a_2d_layer_alone(self, tmp_path: Path) -> None:
+        """AE 2026 keeps a 2D layer 2D and its dead Scale Z in the file."""
+        project = parse_project_fresh(SAMPLES_DIR / "light_source_default.aep")
+        layer = get_comp(project, "crystal").layers[1]
+        assert isinstance(layer, AVLayer) and not layer.three_d_layer
+        layer.transform["ADBE Scale"].value = [50.0, 60.0, 40.0]
+
+        layer.environment_layer = True
+        assert layer.three_d_layer is False
+
+        out = tmp_path / "env_2d.aep"
+        project.save(out)
+        scale = (
+            get_comp(parse_aep(out).project, "crystal")
+            .layers[1]
+            .transform["ADBE Scale"]
+        )
+        assert scale.value == [50.0, 60.0, 100.0]
+        assert scale._read_cdat_raw()[2] == pytest.approx(0.4)
+
+    def test_three_d_layer_keeps_environment_layer(self, tmp_path: Path) -> None:
+        """AE 2026: both switches on after `environmentLayer` then
+        `threeDLayer`."""
         project = parse_project_fresh(SAMPLES_DIR / "avlayer_flags.aep")
         layer = get_layer(project, "threeDLayer_true")
         assert isinstance(layer, AVLayer)
 
         layer.environment_layer = True
-        assert layer.environment_layer is True
-
         layer.three_d_layer = True
-        assert layer.environment_layer is False
+        assert layer.environment_layer is True
 
         out = tmp_path / "modified_3d_env.aep"
         project.save(out)
         layer2 = get_layer(parse_aep(out).project, "threeDLayer_true")
         assert isinstance(layer2, AVLayer)
         assert layer2.three_d_layer is True
-        assert layer2.environment_layer is False
+        assert layer2.environment_layer is True
 
 
 class TestRoundtripAutoOrient:
@@ -1796,3 +1827,286 @@ class TestTextSourceRectRefusals:
         layer.text["ADBE Text Animators"].add_property("ADBE Text Animator")
         with pytest.raises(NotImplementedError, match="animators"):
             layer.source_rect_at_time(0.0, False)
+
+
+class TestPointOfInterestDefault:
+    """A camera or light's Point of Interest defaults to the comp centre: on
+    a resize AE 2026 keeps it where it was and reports it modified."""
+
+    @pytest.mark.parametrize("build_first", [True, False])
+    def test_follows_the_comp_centre(self, build_first: bool) -> None:
+        comp = get_comp(
+            parse_project_fresh(VERSIONS_DIR / "ae2024" / "complete.aep"),
+            "Main_Comp",
+        )
+        light = next(la for la in comp.layers if la.name == "Light_Point")
+        if build_first:
+            _ = light.properties
+        comp.width += 64
+        poi = light.transform["ADBE Anchor Point"]
+        assert poi.value == [960.0, 540.0, 0.0]
+        assert poi.default_value == [992.0, 540.0, 0.0]
+        assert poi.is_modified is True
+
+
+class TestNullOpacity:
+    """A null's Opacity defaults to 0: left out, it reads 0, while a written
+    value reads back as written (AE 2026 reads 100 from py's file)."""
+
+    @pytest.mark.parametrize("written", [100.0, 50.0])
+    def test_written_opacity_reads_back(self, written: float, tmp_path: Path) -> None:
+        project = parse_project_fresh(SAMPLES_DIR / "auto_orient.aep")
+        layer = project.compositions[0].layers[1]
+        assert layer.null_layer
+        opacity = layer.transform["ADBE Opacity"]
+        assert (opacity.value, opacity.is_modified) == (0.0, False)
+        opacity.value = written
+        out = tmp_path / "opacity.aep"
+        project.save(out)
+        reopened = parse_project_fresh(out).compositions[0].layers[1]
+        opacity = reopened.transform["ADBE Opacity"]
+        assert (opacity.value, opacity.default_value, opacity.is_modified) == (
+            written,
+            0.0,
+            True,
+        )
+
+
+class TestAnchorFollowsSource:
+    """A footage, solid or precomp layer stores its Anchor Point as a
+    fraction of its source, read against the source's current size: left
+    out, it reads the centre, unmodified (AE 2026)."""
+
+    @pytest.mark.parametrize(
+        ("change", "centre", "stored"),
+        [
+            ("replace_source", [200.0, 100.0, 0.0], [60.0, 80.0, 0.0]),
+            ("solid_resize", [200.0, 50.0, 0.0], [60.0, 40.0, 0.0]),
+            ("precomp_resize", [200.0, 50.0, 0.0], [60.0, 40.0, 0.0]),
+        ],
+    )
+    def test_anchor_follows_its_source(
+        self, change: str, centre: list[float], stored: list[float], tmp_path: Path
+    ) -> None:
+        project = parse_project_fresh(
+            SAMPLES_DIR.parent / "composition" / "duplicate.aep"
+        )
+        comp = get_comp(project, "AltSrc")
+        precomp = project.root_folder.add_comp("pc", 200, 100, 1.0, 10.0, 24.0)
+        layers = [
+            comp.add(precomp)
+            if change == "precomp_resize"
+            else comp.add_solid([1.0, 0.0, 0.0], f"S{i}", 200, 100, 1.0)
+            for i in range(2)
+        ]
+        layers[1].transform["ADBE Anchor Point"].value = [30.0, 40.0, 0.0]
+        if change == "replace_source":
+            big = comp.add_solid([0.0, 0.0, 1.0], "Big", 400, 200, 1.0).source
+            for layer in layers:
+                layer.replace_source(big)
+        elif change == "solid_resize":
+            for layer in layers:
+                solid = layer.source
+                solid.replace_with_solid(solid.main_source.color, solid.name, 400, 100)
+        else:
+            precomp.width = 400
+
+        def anchors(layers: list[Layer]) -> list[tuple[list[float], bool]]:
+            props = [layer.transform["ADBE Anchor Point"] for layer in layers]
+            return [(list(p.value), p.is_modified) for p in props]
+
+        expected = [(centre, False), (stored, True)]
+        assert anchors(layers) == expected
+        out = tmp_path / "changed.aep"
+        project.save(out)
+        by_id = {
+            la.id: la for la in get_comp(parse_project_fresh(out), "AltSrc").layers
+        }
+        assert anchors([by_id[layer.id] for layer in layers]) == expected
+
+
+class TestLazyPropertyTree:
+    """A layer's properties are decoded and built on first access, so a
+    reader of layer attributes alone never pays for them."""
+
+    SAMPLE = VERSIONS_DIR / "ae2026" / "complete.aep"
+
+    @staticmethod
+    def _layers(project: py_aep.Project) -> list[Layer]:
+        return [layer for comp in project.compositions for layer in comp.layers]
+
+    def test_layer_attributes_leave_the_tree_unbuilt(self) -> None:
+
+        layers = self._layers(parse_project_fresh(self.SAMPLE))
+        assert layers
+        for layer in layers:
+            _ = (layer.name, layer.in_point, layer.out_point, layer.enabled)
+            _ = layer.label
+            if isinstance(layer, AVLayer):
+                # (A missing attribute would search the children by name.)
+                _ = layer.source
+            assert layer._tree_param_defs is not None, layer.name
+            # Times may decode the root tdgp (Time Remapping), not its groups.
+            root = layer._tdgp
+            assert isinstance(root, DeferredListChunk)
+            groups = [
+                c
+                for c in (root.chunks if root.is_parsed else [])
+                if getattr(c, "list_type", "") == "tdgp"
+            ]
+            assert all(
+                isinstance(g, DeferredListChunk) and not g.is_parsed for g in groups
+            )
+
+    def test_first_access_builds_the_tree(self) -> None:
+        layer = self._layers(parse_project_fresh(self.SAMPLE))[0]
+        assert layer.transform is not None
+        assert layer._tree_param_defs is None
+        assert [p.parent_property for p in layer.properties] == [layer] * len(
+            layer.properties
+        )
+
+    def test_unbuilt_layers_save_unchanged(self) -> None:
+        project = parse_project_fresh(self.SAMPLE)
+        for layer in self._layers(project):
+            _ = (layer.in_point, layer.out_point)
+        assert project_bytes(project) == self.SAMPLE.read_bytes()
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda comp, layer: setattr(comp, "width", comp.width + 64),
+            lambda comp, layer: setattr(comp, "height", comp.height + 64),
+            lambda comp, layer: setattr(comp, "pixel_aspect", 2.0),
+            lambda comp, layer: setattr(layer, "three_d_layer", True),
+            lambda comp, layer: setattr(layer, "stretch", 200.0),
+        ],
+        ids=["width", "height", "pixel_aspect", "three_d_layer", "stretch"],
+    )
+    def test_change_before_first_access_matches_a_built_tree(
+        self, mutate: Callable[[CompItem, Layer], object], tmp_path: Path
+    ) -> None:
+        """State a built tree depends on, changed before the tree is built,
+        saves what the change on a built tree saves."""
+        sample = Path(__file__).parent.parent.parent / (
+            "samples/models/property/2_gaussian.aep"
+        )
+        saved = []
+        for build_first in (True, False):
+            project = parse_project_fresh(sample)
+            comp = project.compositions[0]
+            layer = comp.layers[0]
+            if build_first:
+                for each in comp.layers:
+                    _ = each.properties
+            mutate(comp, layer)
+            # `save`, which writes out the moved left-out defaults.
+            out = tmp_path / f"built_{build_first}.aep"
+            project.save(out)
+            saved.append(out.read_bytes())
+        assert saved[0] == saved[1]
+
+    @pytest.mark.parametrize("holder_first", [True, False])
+    def test_effect_definitions_do_not_depend_on_build_order(
+        self, holder_first: bool
+    ) -> None:
+        """AE writes an effect's parameter definitions in one of its
+        instances only (this project has no `EfdG`): a layer built before
+        that one still finds them."""
+        comps = parse_project_fresh(
+            BUGS_DIR / "29.97_fps_time_scale_3.125.aep"
+        ).compositions
+        holder, other = comps[0].layers[0], comps[1].layers[0]
+        for layer in (holder, other) if holder_first else (other, holder):
+            _ = layer.properties
+        effect = other["ADBE Effect Parade"]["ADBE Geometry2"]
+        # As AE 15.1 reports: GPU Rendering is an effect parameter in AE 15,
+        # not a Compositing Options one.
+        assert effect.num_properties == 14
+        assert effect.properties[12].match_name == "ADBE Force CPU GPU"
+        assert effect["ADBE Effect Built In Params"].num_properties == 2
+
+    @pytest.mark.parametrize("removed", ["layer", "effect", "comp"])
+    def test_effect_definitions_outlive_their_holder(
+        self, removed: str, tmp_path: Path
+    ) -> None:
+        """Removing the instance that holds an effect's definitions hands
+        them to the next one, as AE 15's own save does: the file has no
+        `EfdG` to hold them instead."""
+        project = parse_project_fresh(BUGS_DIR / "29.97_fps_time_scale_3.125.aep")
+        holder_comp, other_comp = project.compositions[:2]
+        holder = holder_comp.layers[0]
+        if removed == "layer":
+            holder.remove()
+        elif removed == "effect":
+            holder["ADBE Effect Parade"]["ADBE Geometry2"].remove()
+        else:
+            holder_comp.remove()
+        other_id = other_comp.id
+        effect = other_comp.layers[0]["ADBE Effect Parade"]["ADBE Geometry2"]
+        assert effect.num_properties == 14
+        out = tmp_path / "removed.aep"
+        project.save(out)
+        reopened = next(
+            c for c in parse_project_fresh(out).compositions if c.id == other_id
+        )
+        effect = reopened.layers[0]["ADBE Effect Parade"]["ADBE Geometry2"]
+        assert effect.num_properties == 14
+
+    def test_failed_build_raises_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A build that fails leaves the layer unbuilt, not half-built."""
+        layer = self._layers(parse_project_fresh(self.SAMPLE))[0]
+
+        def fail(**kwargs: object) -> None:
+            raise RuntimeError("corrupt layer")
+
+        monkeypatch.setattr("py_aep.models.layers.layer.parse_properties", fail)
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="corrupt layer"):
+                _ = layer.properties
+        monkeypatch.undo()
+        assert layer.transform is not None
+
+    def test_comp_resize_writes_a_moved_left_out_position(self, tmp_path: Path) -> None:
+        """AE 2026 keeps a left-out Position where it was when its comp is
+        resized and writes it (a solid, a text, a shape and a null layer)."""
+        project = parse_project_fresh(SAMPLES_DIR / "enabled_false.aep")
+        comp = get_comp(project, "TestComp")
+        assert comp.layers[0].transform["ADBE Position"]._tdsb.synthetic
+        comp.width = 164
+        out = tmp_path / "resized.aep"
+        project.save(out)
+        position = (
+            get_comp(parse_project_fresh(out), "TestComp")
+            .layers[0]
+            .transform["ADBE Position"]
+        )
+        assert position._tdsb.synthetic is False
+        assert position.value == [50.0, 50.0, 0.0]
+        assert position.is_modified is True
+
+    def test_time_remap_enabled_leaves_the_tree_unbuilt(self) -> None:
+        project = parse_project_fresh(self.SAMPLE)
+        layers = [la for la in self._layers(project) if isinstance(la, AVLayer)]
+        flags = [la.time_remap_enabled for la in layers]
+        assert all(la._tree_param_defs is not None for la in layers)
+        # The same answer as the property it is read from.
+        assert flags == [
+            bool(la["ADBE Time Remapping"]._animated)
+            if "ADBE Time Remapping" in [p.match_name for p in la.properties]
+            else False
+            for la in layers
+        ]
+        assert any(flags)
+
+    def test_essential_property_uuids_leave_the_tree_unbuilt(self) -> None:
+        project = parse_project_fresh(
+            Path(__file__).parent.parent.parent
+            / "samples"
+            / "models"
+            / "essential_graphics"
+            / "multiple_controllers.aep"
+        )
+        main = get_comp(project, "main")
+        assert [len(la.essential_property_uuids) for la in main.layers].count(3) == 1
+        assert all(la._tree_param_defs is not None for la in main.layers)

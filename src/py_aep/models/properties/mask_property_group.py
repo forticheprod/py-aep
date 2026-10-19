@@ -284,7 +284,9 @@ class MaskPropertyGroup(PropertyGroup):
         pixel_aspect = source.pixel_aspect if source is not None else 1.0
         tdmn, oms = build_default_mask_shape(
             comp._cdta.internal_timebase,
-            aspect=width * pixel_aspect / height,
+            # An audio-only layer has a 0x0 mask space (its default path is
+            # four points at the origin) and no aspect to stamp.
+            aspect=width * pixel_aspect / height if height else 1.0,
             roto_bezier=roto_bezier,
         )
 
@@ -328,7 +330,9 @@ class MaskPropertyGroup(PropertyGroup):
             None,
         )
         if existing is not None:
-            existing.__dict__.update(mask_path.__dict__)
+            # Replace, not merge: a key the parsed property leaves to its
+            # class default must not keep the placeholder's value.
+            existing.__dict__ = mask_path.__dict__
             cast("Property", existing)._link_keyframes()
         else:
             self._properties.insert(0, mask_path)
