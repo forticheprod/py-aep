@@ -7,6 +7,7 @@ import warnings
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, NamedTuple, cast
 
+from ...binary.bin_utils import to_dividend_divisor
 from ...binary.footage_chunks import (
     OptiChunk,
     PsdOptiChunk,
@@ -50,6 +51,7 @@ from ...color.ocio import ocio_input_envelope, resolve_ocio_config
 from ...data.file_formats import (
     AI_COMP_EXTENSIONS,
     FORMAT_3D_MODEL_SCENE,
+    FORMAT_MXF,
     PSD_COMP_EXTENSIONS,
     FileFormat,
     get_file_format,
@@ -78,10 +80,16 @@ from ...resolvers.source_layers import (
     resolve_psd_layer,
 )
 from ..validators import validate_bool, validate_file_exists
-from .footage import _UNASSIGNED_PROFILE, FootageSource, _store_frames_over_rate
+from .footage import (
+    _UNASSIGNED_PROFILE,
+    FootageSource,
+    _frames_over_rate,
+    _store_frames_over_rate,
+)
 
 if TYPE_CHECKING:
     from ...binary.chunk import Chunk, ListChunk
+    from ...binary.misc_chunks import DropChunk, StrtChunk
     from ...binary.scalar_chunks import U1Chunk
     from ...resolvers.media_probe import MediaInfo
     from ...resolvers.psd_layers import PsdLayer
@@ -160,7 +168,9 @@ def _opti_data(
         return build_exr_opti_data(info.compression, info.channel_names)
     if fmt.opti == "empty" and not sequence:
         return b""
-    return build_generic_opti_data(fmt.source_format, sequence=sequence)
+    return build_generic_opti_data(
+        fmt.source_format, sequence=sequence, video=info.width > 0
+    )
 
 
 def _ai_layer_count(path: Path, data: bytes | None = None) -> int:
@@ -307,7 +317,7 @@ _LINEAR_GRAY_PROFILE_NAME = "Linear Grayscale Profile"
 #: (`empd` + e.g. "Rec. 709") from data py_aep cannot read yet. The record
 #: still counts as managed - AE fills the name in when it opens the project.
 _UNRECORDED_PROFILE_FORMATS = frozenset({"ZPEG"})
-_VIDEO_CONTAINER_FORMATS = frozenset({"MOoV", "XCEX"})
+_VIDEO_CONTAINER_FORMATS = frozenset({"MOoV", "XCEX", FORMAT_MXF})
 
 #: Formats AE imports with Interpret As Linear Light off rather than the
 #: "on for 32-bpc files" default: the ones it decodes through its media
@@ -315,7 +325,7 @@ _VIDEO_CONTAINER_FORMATS = frozenset({"MOoV", "XCEX"})
 #: default. The setting is inert below 32 bpc either way. HEIC (`AIDE`) is
 #: one of them: off in every AE 2026 HEIC import (Windows and macOS).
 _LINEAR_LIGHT_OFF_FORMATS = frozenset(
-    {"ZPEG", "STIL", "IMIO", "SWF ", "MPEO", "WMED", "MOoV", "XCEX", "AIDE"}
+    {"ZPEG", "STIL", "IMIO", "SWF ", "MPEO", "WMED", "MOoV", "XCEX", "AIDE", FORMAT_MXF}
 )
 
 
@@ -769,6 +779,13 @@ class FileSource(FootageSource):
         data_size: int = 0,
         reserved_c8: bytes | None = None,
         color_mode: int = 3,
+        frames: int | None = None,
+        field_order: int = 0,
+        field_label: bool = False,
+        audio_channels: int = 0,
+        timecode_start: int = 0,
+        drop_frame: bool = True,
+        pixel_aspect_terms: tuple[int, int] = (0, 0),
         windows: bool,
     ) -> FileSource:
         """Create a new file footage source with backing chunks.
@@ -839,6 +856,21 @@ class FileSource(FootageSource):
                 merged-PSD sources pass AE's observed per-context value.
             color_mode: The Photoshop colour mode the image reads as (see
                 `_media_profile_records`); 3 (RGB) by default.
+            frames: The duration in frames (samples for audio-only media),
+                stored unreduced over the rate the way AE records an MXF,
+                and so is `timecode_start`; `None` stores `duration` as a
+                reduced fraction.
+            field_order: 1 or 2 to separate fields upper or lower first.
+            field_label: Tag the footage with its field label (see
+                [MediaInfo.field_label][py_aep.resolvers.media_probe.MediaInfo]).
+            audio_channels: The audio channels AE records (see
+                [MediaInfo.audio_channels][py_aep.resolvers.media_probe.MediaInfo]).
+            timecode_start: The start timecode in frames (with `frames`).
+            drop_frame: The drop-frame flag stored with the start timecode
+                (1 for every import but an MXF picture's own, AE 2026).
+            pixel_aspect_terms: The `(dividend, divisor)` to store instead
+                of `pixel_aspect`'s reduced fraction (AE writes 768/702 for
+                an MXF's D1/DV PAL aspect); `(0, 0)` stores the fraction.
 
         Raises:
             ValueError: If `width` or `height` is outside 0-32767 px.
@@ -883,8 +915,24 @@ class FileSource(FootageSource):
             sspc.layer_index = layer_index
         sspc.native_frame_rate = frame_rate
         sspc.duration = duration
-        sspc.pixel_aspect = pixel_aspect
+        if pixel_aspect_terms[1]:
+            sspc.pixel_aspect_dividend, sspc.pixel_aspect_divisor = pixel_aspect_terms
+        else:
+            sspc.pixel_aspect = pixel_aspect
         sspc.audio_sample_rate = audio_sample_rate
+        if field_order:
+            sspc.field_separation_type = field_order
+        if field_label:
+            sspc.field_tag = b"FIEL"
+        if audio_channels:
+            sspc.audio_format, sspc.audio_sample_bytes = 3, 4
+            sspc.audio_channels = min(audio_channels, 2)
+        sspc.drop_frame = drop_frame
+        if frames is not None:
+            rate = frame_rate if width > 0 else audio_sample_rate
+            _store_frames_over_rate(sspc, frames, rate)
+            if width > 0:
+                sspc._time_base = to_dividend_divisor(rate)[0]
         # AE stamps the source's last-modified time and re-reads the media
         # whenever it does not match, taking the dimensions from the format
         # plugin instead of the ones cached here. For an OpenEXR frame whose
@@ -974,6 +1022,21 @@ class FileSource(FootageSource):
         linl = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
         if source_format in _LINEAR_LIGHT_OFF_FORMATS and width > 0 and not is_sequence:
             linl.value = int(LinearLightMode.OFF)
+        mnfo = find_by_list_type(chunks=pin.chunks, list_type="mnfo")
+        drop = cast("DropChunk", find_by_type(chunks=mnfo.chunks, chunk_type="drop"))
+        drop.value = drop_frame
+        if frames is not None:
+            # The start timecode AE reads from an MXF: frames over the rate
+            # like the duration; audio-only media get AE's default 0 over 30.
+            strt = cast(
+                "StrtChunk", find_by_type(chunks=mnfo.chunks, chunk_type="strt")
+            )
+            if width > 0:
+                strt.dividend, strt.divisor = _frames_over_rate(
+                    timecode_start, frame_rate
+                )
+            else:
+                strt.divisor = 30
 
         return cls(_pin=pin, _sspc=sspc, _opti=opti, _linl=linl, _clrs=clrs)
 
@@ -1080,6 +1143,13 @@ class FileSource(FootageSource):
             data_size=data_size,
             reserved_c8=reserved_c8,
             color_mode=info.color_mode,
+            frames=info.frames,
+            field_order=info.field_order,
+            field_label=info.field_label,
+            audio_channels=info.audio_channels,
+            timecode_start=info.timecode_start,
+            drop_frame=info.timecode_drop_frame,
+            pixel_aspect_terms=info.pixel_aspect_terms,
             windows=windows,
         )
 

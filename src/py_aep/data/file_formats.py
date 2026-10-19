@@ -55,6 +55,10 @@ class FileFormat(NamedTuple):
 #: `sspc.source_format_type` of a 3D model scene (`.fbx`).
 FORMAT_3D_MODEL_SCENE = "LDOM"
 
+#: `sspc.source_format_type` of an MXF file (AE 2026 import of every
+#: operational pattern and codec probed).
+FORMAT_MXF = "MXFF"
+
 #: BMP/GIF have no dedicated importer; AE tags them with the platform's
 #: generic still importer: AE 2026 macOS writes IMIO, Windows STIL, for
 #: stills and sequences alike (imio_*.aep vs media_replacement.aep
@@ -133,6 +137,9 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     ".csv": FileFormat("\x00vsc", False, "generic", sequence=False, media_flag=True),
     ".json": FileFormat("nosj", False, "generic", sequence=False, media_flag=True),
     ".wmv": FileFormat("WMED", False, "generic", sequence=False, media_flag=True),
+    # MXF (OP1a and OP-Atom; MPEG-2, H.264, DV, DNxHD/DNxHR, ProRes, JPEG 2000,
+    # PCM): generic opti, codec bytes re-derived by AE.
+    ".mxf": FileFormat(FORMAT_MXF, False, "generic", sequence=False, media_flag=True),
     # Radiance HDR - format-specific 30-byte opti.
     ".hdr": FileFormat("RHDR", False, "hdr"),
     # Canon CRW, developed by Camera Raw - format-specific 30-byte opti.
@@ -203,6 +210,7 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".m4v": frozenset({_FOOTAGE}),
     ".mp4": frozenset({_FOOTAGE}),
     ".wmv": frozenset({_FOOTAGE}),
+    ".mxf": frozenset({_FOOTAGE}),
     # Audio - footage only (m4a may also carry an AE project).
     ".aiff": frozenset({_FOOTAGE}),
     ".aif": frozenset({_FOOTAGE}),
