@@ -2676,7 +2676,7 @@ project versions; no sample contains it.
 | 0xC9 | 1 | u1 | Layer handling. Photoshop composition layers: 0 Ignore Layer Styles, 1 Merge Layer Styles into Footage, 2 Editable Layer Styles (also every style-less file); Photoshop footage imported with "Merged Layers" chosen in the import dialog 3 (a scripted import of the whole file stores 2); a chosen Photoshop layer 1 (0 when its styles are ignored, inferred). Illustrator/PDF composition layers 0; a chosen Illustrator layer 2. Ordinary raster, vector, movie and audio footage (whole-document AI/EPS/PDF included) 2. Solids and placeholders 0. |
 | 0xCA | 2 | bytes | 0 in every sample. |
 | 0xCC | 8 | u8 | Cached data size in bytes (samples up to 14,729,427,240): a single file's size on disk; for a numbered sequence the first frame's size times the frame count; for merged Photoshop footage and TIFF stills the decoded image instead, width x height x channels x bytes per channel (the channel count of the [`opti`](#opti) record: colour channels, plus one for alpha except a flattened Photoshop file's alpha channel); for one Photoshop layer its content box's pixels the same way. AE recomputes it when it re-reads the media, so 0 is accepted. |
-| 0xD4 | 1 | u1 | 1 in most samples, 0 on many movies; equal to [`drop`](#drop) in all but one sample. Unknown. |
+| 0xD4 | 1 | u1 | 1 in most samples, 0 on many movies; equal to [`drop`](#drop) in all but one sample. For an MXF, the drop-frame timecode flag (1 for a drop-frame start timecode and for audio-only media, else 0; AE 2026). |
 | 0xD5 | 1 | u1 | 0 except on one movie. Unknown. |
 | 0xD6 | 4 | u4 | Time dividend: 0 in most samples; on some movies in 92.14 projects the media's start timecode as a time (86400/24 = 01:00:00:00, 10800000/2997, 14532/25), matching [`strt`](#strt). |
 | 0xDA | 4 | u4 | Time divisor: 0, or the media's time scale (24, 25, 30, 2997). |
@@ -2789,6 +2789,7 @@ file; AE does not use it to find the file.
 | `MPEG` | AAC audio (`.aac`); `.mp4` in older files |
 | `MPEO` | MPEG-1/2 (`.mpg`, `.mpeg`) |
 | `WMED` | Windows Media (`.wmv`) |
+| `MXFF` | MXF (`.mxf`, OP1a and OP-Atom, every codec and audio-only alike; AE 2026) |
 | `SWF ` | Flash |
 | `WAVE` | WAV |
 | `AIFC` | AIFF |
@@ -2817,7 +2818,7 @@ Every non-empty record starts with the same 10-byte header:
 
 | Kind | Version | Size | Record |
 |---|---|---|---|
-| `MOoV` `WAVE` `ZPEG` `STIL` `IMIO` `AIDE` `AIFC` `XCEX` `MPEG` `MPEO` `MP3A` `WMED` `SWF ` `nosj` `sjgm`, data files | 5 | 58 (66) | [Generic media record](#generic-media-record) |
+| `MOoV` `WAVE` `ZPEG` `STIL` `IMIO` `AIDE` `AIFC` `XCEX` `MPEG` `MPEO` `MP3A` `WMED` `MXFF` `SWF ` `nosj` `sjgm`, data files | 5 | 58 (66) | [Generic media record](#generic-media-record) |
 | `png!` | 1 | 322 | [PNG record](#png-record-png) |
 | `oEXR` | 1 | 9750 | [OpenEXR record](#openexr-record-oexr) |
 | `8BPS`, `TIF ` | 0x0108 / 0x0109 | 600 / 602 | [Photoshop and TIFF record](#photoshop-and-tiff-record-8bps-tif) |
@@ -2855,9 +2856,9 @@ for a `.txt`).
 |---|---|---|---|
 | 0x00 | 10 | | Header: kind, version 5, length 58. |
 | 0x0A | 20 | bytes | 0 in every sample. |
-| 0x1E | 4 | fourcc | A container or file-type code stored byte-reversed: `VooM` (QuickTime), `EVAW`, `GEPJ`, `fFIG`, ` PMB`, ` 4PM`, `CIEH`, `FFIA`, `GEPM`, `DEMW`, ` FWS`, `bvh` + NUL (data files). 0 on BMP/GIF image sequences. |
+| 0x1E | 4 | fourcc | A container or file-type code stored byte-reversed: `VooM` (QuickTime), `EVAW`, `GEPJ`, `fFIG`, ` PMB`, ` 4PM`, `CIEH`, `FFIA`, `GEPM`, `DEMW`, `FFXM` (MXF), ` FWS`, `bvh` + NUL (data files). 0 on BMP/GIF image sequences. |
 | 0x22 | 4 | bytes | FF FF FF FF (0 when 0x1E is 0). |
-| 0x26 | 4 | fourcc | Codec: `avc1`, `AVC1`, `apch`, `apcn`, `ap4h`, `jpeg`, `png `, `MPG4`, `MPG1`, `RAW `, `SWF `, `UNKN`; 0 for audio and data. |
+| 0x26 | 4 | fourcc | Codec: `avc1`, `AVC1`, `apch`, `apcn`, `ap4h`, `jpeg`, `png `, `MPG4`, `MPG1`, `RAW `, `SWF `, `UNKN`; in an MXF `AVdn` / `AVdh` (DNxHD / DNxHR), `MPEG`, `xd5c` (XDCAM HD422), `avl0` (H.264), `apco` ... `ap4h` (ProRes), `dsvn` / `dsvp` (DV 525 / 625); 0 for audio and data. |
 | 0x2A | 4 | u4 LE | 1 when the source has video, 0 otherwise (and on BMP/GIF image sequences). |
 | 0x2E | 4 | u4 LE | 1 in every sample. |
 | 0x32 | 8 | bytes | 0 in every sample. |
@@ -3370,7 +3371,11 @@ The media's start timecode, as a time.
 
 Stills, sequences, audio and solids store 0/30, placeholders 0/1. A movie
 stores 0 over its own time scale, or its embedded start timecode (86592/24 =
-01:00:08:00, 2767565/768 = 3603.6 s).
+01:00:08:00, 2767565/768 = 3603.6 s). An MXF stores its start timecode in
+frames times the frame rate's denominator over the rate's numerator: 900000/25
+for 10:00:00:00 at 25 fps, 10800000/2997 for 01:00:00:00 at 29.97 (AE 2026,
+checked on 27 start values at 23.976, 25, 29.97 and 59.94 fps); an audio-only
+MXF stores 0/30.
 
 ### `drop`
 
@@ -3378,7 +3383,7 @@ stores 0 over its own time scale, or its embedded start timecode (86592/24 =
 
 | Offset | Length | Type | Description |
 |---|---|---|---|
-| 0x00 | 1 | u1 | 1 on stills, sequences, audio, solids, placeholders and most movies in newer files; 0 on many movies. Equal to `sspc` byte 0xD4 in all but one sample. The name suggests a drop-frame timecode flag; the samples do not confirm it (a 23.976 fps movie stores 0 in some files, 30 fps stills store 1). |
+| 0x00 | 1 | u1 | 1 on stills, sequences, audio, solids, placeholders and most movies in newer files; 0 on many movies. Equal to `sspc` byte 0xD4 in all but one sample. For an MXF it is the file's drop-frame timecode flag (1 for a 29.97 drop-frame start timecode, 0 for non-drop and for every integer rate), and 1 for an audio-only MXF (AE 2026). |
 
 ### `ftgi`
 

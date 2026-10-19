@@ -1181,12 +1181,14 @@ class HdrmChunk(Chunk):
 @register("strt")
 @define
 class StrtChunk(Chunk):
-    """Media start info (8 bytes)."""
+    """Media start timecode (8 bytes, little-endian): `start` frames x the
+    frame rate's denominator over `base`, the rate's numerator (an MXF
+    starting at 01:00:00:00 stores 10800000 over 2997 at 29.97 fps, 900000
+    over 25 at 25 fps; AE 2026 imports). Media without a timecode keep 0."""
 
     chunk_type: str = "strt"
-    _reserved_00: bytes = bytes_field(4, repr=False)
-    fps_byte: int = u1_field(default=1)
-    _reserved_05: bytes = bytes_field(3, repr=False)
+    dividend: int = u4_field(endian="<")
+    divisor: int = u4_field(default=1, endian="<")
 
 
 @register("drop")

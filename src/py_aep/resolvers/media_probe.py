@@ -70,6 +70,20 @@ class MediaInfo(NamedTuple):
     channel_names: tuple[str, ...] = ()
     """OpenEXR only: every channel, those of a named part of a multi-part
     file prefixed with the part's name (`"Z.A"`)."""
+    audio_channels: int = 0
+    """MXF only: the sound channels over every audio track (0 without
+    audio). AE records at most two of them (`SspcChunk` audio bytes)."""
+    field_order: int = 0
+    """MXF only: 0 for progressive footage, 1 for upper field first, 2 for
+    lower field first, as AE sets the footage field separation."""
+    timecode_start: int = 0
+    """MXF only: the start timecode, in frames (0 without a timecode)."""
+    timecode_drop_frame: bool = False
+    """MXF only: whether the start timecode counts drop-frame."""
+    pixel_aspect_terms: tuple[int, int] = (0, 0)
+    """MXF only: the dividend and divisor AE stores for `pixel_aspect` when
+    they are not its reduced fraction (768/702 for D1/DV PAL); `(0, 0)`
+    otherwise."""
 
 
 #: AE's depth for grayscale pixels by bits per sample (AE 2026 imports of
@@ -2432,8 +2446,433 @@ def _probe_heif(fp: IO[bytes]) -> MediaInfo:
     )
 
 
+# ---------------------------------------------------------------------------
+# MXF - header metadata (SMPTE ST 377-1 KLV local sets; video, audio or both)
+# ---------------------------------------------------------------------------
+
+# Partition pack keys share this prefix; byte 14 is the partition kind
+# (header 02, body 03, footer 04) and byte 15 its status.
+_MXF_PARTITION_PREFIX = bytes.fromhex("060e2b34020501010d01020101")
+_MXF_PRIMER_KEY = bytes.fromhex("060e2b34020501010d01020101050100")
+# Header-metadata local sets; byte 14 is the set type.
+_MXF_LOCAL_SET_PREFIX = bytes.fromhex("060e2b34025301010d01010101")
+_MXF_FILL_SUFFIX = bytes.fromhex("0301021001000000")
+_MXF_RUN_IN_MAX = 65536
+
+_MXF_SEQUENCE = 0x0F
+_MXF_SOURCE_CLIP = 0x11
+_MXF_TIMECODE = 0x14
+_MXF_MATERIAL_PACKAGE = 0x36
+_MXF_SOURCE_PACKAGE = 0x37
+_MXF_MULTIPLE_DESCRIPTOR = 0x44
+_MXF_PICTURE_DESCRIPTORS = frozenset({0x27, 0x28, 0x29, 0x51})
+_MXF_RGBA_DESCRIPTOR = 0x29
+_MXF_SOUND_DESCRIPTORS = frozenset({0x42, 0x47, 0x48})
+
+# Local tags (ST 377-1 Annex B and the essence mapping documents).
+_MXF_INSTANCE_UID = 0x3C0A
+_MXF_PACKAGE_UID = 0x4401
+_MXF_PACKAGE_TRACKS = 0x4403
+_MXF_PACKAGE_DESCRIPTOR = 0x4701
+_MXF_TRACK_ID = 0x4801
+_MXF_TRACK_SEQUENCE = 0x4803
+_MXF_EDIT_RATE = 0x4B01
+_MXF_DATA_DEFINITION = 0x0201
+_MXF_DURATION = 0x0202
+_MXF_COMPONENTS = 0x1001
+_MXF_SOURCE_PACKAGE_ID = 0x1101
+_MXF_SOURCE_TRACK_ID = 0x1102
+_MXF_START_TIMECODE = 0x1501
+_MXF_DROP_FRAME = 0x1503
+_MXF_SUB_DESCRIPTORS = 0x3F01
+_MXF_LINKED_TRACK_ID = 0x3006
+_MXF_SAMPLE_RATE = 0x3001
+_MXF_ESSENCE_CONTAINER = 0x3004
+_MXF_FRAME_LAYOUT = 0x320C
+_MXF_STORED_WIDTH = 0x3203
+_MXF_STORED_HEIGHT = 0x3202
+_MXF_SAMPLED_HEIGHT = 0x3204
+_MXF_DISPLAY_HEIGHT = 0x3208
+_MXF_DISPLAY_WIDTH = 0x3209
+_MXF_ASPECT_RATIO = 0x320E
+_MXF_FIELD_DOMINANCE = 0x3212
+_MXF_PICTURE_CODING = 0x3201
+_MXF_COMPONENT_DEPTH = 0x3301
+_MXF_ALPHA_SAMPLE_DEPTH = 0x3309
+_MXF_PIXEL_LAYOUT = 0x3401
+_MXF_AUDIO_SAMPLING_RATE = 0x3D03
+_MXF_CHANNEL_COUNT = 0x3D07
+
+# Picture essence coding labels After Effects decodes, by the item designator
+# (UL bytes 8-15; the version byte 7 varies between writers). AE 2026 refuses
+# the whole file, audio included, for any other coding (an FFV1 MXF opens as
+# "unsupported format").
+_MXF_PICTURE_CODINGS = (
+    bytes.fromhex("0401020201"),  # MPEG-2, MPEG-4, AVC, HEVC families
+    bytes.fromhex("0401020202"),  # DV
+    bytes.fromhex("040102020301"),  # JPEG 2000
+    bytes.fromhex("040102020306"),  # ProRes
+    bytes.fromhex("0401020271"),  # VC-3 (DNxHD / DNxHR)
+    bytes.fromhex("0e04020102040100"),  # Avid DNxHD
+    bytes.fromhex("0e15000500013000"),  # HEVC long GOP 4:2:2
+)
+_MXF_DV_CODING = bytes.fromhex("0401020202")
+_MXF_VC3_CONTAINER = bytes.fromhex("0d01030102110100")
+
+# DV pixel aspect presets by the coding label's last two designator bytes
+# (AE 2026: the SD families use the D1/DV NTSC and PAL presets, 16:9 or not;
+# DVCPRO HD 1080i60 is 3/2 and the other HD ones 4/3). SD DV always
+# separates fields lower first.
+_MXF_DV_NTSC = {(1, 1), (2, 1), (2, 3)}
+_MXF_DV_PAL = {(1, 2), (2, 2), (2, 4)}
+_MXF_DV_HD = {(2, 5): (3, 2), (2, 6): (4, 3), (2, 7): (4, 3), (2, 8): (4, 3)}
+_DV_NTSC_ASPECT = ((10, 11), (40, 33))
+_DV_PAL_ASPECT = ((128, 117), (512, 351))
+
+# The D1 frame sizes whose pixel aspect AE snaps to a preset when the
+# computed one is within 5 % of it (AE 2026: 720x576 4:3 -> 768/702, 16:9
+# -> 1024/702, 3:2 -> 40/33, 2:1 and 1:1 kept; 720x486 4:3 -> 10/11, 16:9
+# -> 40/33; 720x480 and 704x576 keep the computed aspect). 720x608 and
+# 720x512 import as 576 and 486 lines (the VBI lines are dropped). The PAL
+# presets are stored unreduced, as AE writes them.
+_MXF_D1_HEIGHTS = {608: 576, 512: 486, 576: 576, 486: 486}
+_MXF_D1_ASPECTS = ((10, 11), (40, 33), (768, 702), (1024, 702))
+
+
+def _mxf_ber(data: bytes, pos: int) -> tuple[int, int]:
+    """A BER length at `pos`: `(length, position after it)`."""
+    first = data[pos]
+    if first < 0x80:
+        return first, pos + 1
+    count = first & 0x7F
+    return int.from_bytes(data[pos + 1 : pos + 1 + count], "big"), pos + 1 + count
+
+
+def _mxf_batch(value: bytes) -> list[bytes]:
+    """The items of a batch property (u32 count, u32 item size, items)."""
+    if len(value) < 8:
+        return []
+    count, size = struct.unpack(">II", value[:8])
+    return [value[8 + i * size : 8 + (i + 1) * size] for i in range(count)]
+
+
+def _mxf_rational(value: bytes | None) -> Fraction | None:
+    if value is None or len(value) < 8:
+        return None
+    num, den = struct.unpack(">II", value[:8])
+    return Fraction(num, den) if num > 0 and den > 0 else None
+
+
+def _mxf_u(value: bytes | None) -> int | None:
+    return int.from_bytes(value, "big") if value else None
+
+
+class _MxfSet(NamedTuple):
+    kind: int
+    props: dict[int, bytes]
+
+
+def _mxf_header_sets(fp: IO[bytes]) -> tuple[bytes, dict[bytes, _MxfSet]]:
+    """The header partition's operational pattern and metadata sets by
+    instance UID (dynamic tags, above 0x7FFF, are left out)."""
+    head = fp.read(_MXF_RUN_IN_MAX + 16)
+    pos = head.find(_MXF_PARTITION_PREFIX)
+    if pos < 0 or head[pos + 13] != 0x02:
+        raise ValueError("Not a valid MXF file (no header partition pack)")
+    fp.seek(pos)
+    data = fp.read(16 + 9)
+    length, vpos = _mxf_ber(data, 16)
+    fp.seek(pos + vpos)
+    pack = fp.read(length)
+    # major, minor, KAG size, this/previous/footer partition, header and
+    # index byte counts, index SID, body offset, body SID, operational pattern.
+    operational_pattern = pack[64:80]
+    # The header metadata runs from the partition pack to the first index
+    # table segment, essence element or next partition pack: walk the KLV
+    # packets by their lengths, reading only the local sets.
+    sets: dict[bytes, _MxfSet] = {}
+    pos += vpos + length
+    while True:
+        fp.seek(pos)
+        data = fp.read(16 + 9)
+        if len(data) < 17:
+            break
+        key = data[:16]
+        length, vpos = _mxf_ber(data, 16)
+        if key[:13] == _MXF_LOCAL_SET_PREFIX:
+            fp.seek(pos + vpos)
+            body = fp.read(length)
+            props: dict[int, bytes] = {}
+            p = 0
+            while p + 4 <= len(body):
+                tag, size = struct.unpack(">HH", body[p : p + 4])
+                if tag < 0x8000:
+                    props[tag] = body[p + 4 : p + 4 + size]
+                p += 4 + size
+            sets[props.get(_MXF_INSTANCE_UID, key + pos.to_bytes(4, "big"))] = _MxfSet(
+                key[14], props
+            )
+        elif key[:13] == _MXF_PARTITION_PREFIX and key[13] != 0x05:
+            break  # the next partition pack (0x05 is the primer pack)
+        elif key[:8] != _MXF_PRIMER_KEY[:8] and key[8:16] != _MXF_FILL_SUFFIX:
+            break  # an index table segment or the first essence element
+        pos += vpos + length
+    return operational_pattern, sets
+
+
+def _mxf_track_kind(
+    sets: dict[bytes, _MxfSet], track: _MxfSet
+) -> tuple[int, int, _MxfSet | None]:
+    """`(group, kind, sequence)` of a track from its sequence's data
+    definition: group 2 is essence (kind 1 picture, 2 sound, 3 data), group 1
+    a timecode track."""
+    sequence = sets.get(track.props.get(_MXF_TRACK_SEQUENCE, b""))
+    if sequence is None:
+        return 0, 0, None
+    definition = sequence.props.get(_MXF_DATA_DEFINITION, b"")
+    if len(definition) < 16 or definition[8:11] != b"\x01\x03\x02":
+        return 0, 0, sequence
+    return definition[11], definition[12], sequence
+
+
+def _mxf_first_component(
+    sets: dict[bytes, _MxfSet], sequence: _MxfSet, kind: int
+) -> _MxfSet | None:
+    for ref in _mxf_batch(sequence.props.get(_MXF_COMPONENTS, b"")):
+        component = sets.get(ref[:16])
+        if component is not None and component.kind == kind:
+            return component
+    return None
+
+
+def _mxf_descriptor(
+    sets: dict[bytes, _MxfSet], clip: _MxfSet | None, kinds: frozenset[int]
+) -> _MxfSet | None:
+    """The essence descriptor of the file package track a source clip points
+    at (a multiple descriptor's sub-descriptor linked to that track), or the
+    first descriptor of a kind in `kinds` when the clip cannot be followed."""
+    package_uid = (
+        clip.props.get(_MXF_SOURCE_PACKAGE_ID, b"") if clip is not None else b""
+    )
+    track_id = (
+        _mxf_u(clip.props.get(_MXF_SOURCE_TRACK_ID)) if clip is not None else None
+    )
+    candidates: list[_MxfSet] = []
+    for package in sets.values():
+        if package.kind != _MXF_SOURCE_PACKAGE:
+            continue
+        descriptor = sets.get(package.props.get(_MXF_PACKAGE_DESCRIPTOR, b""))
+        if descriptor is None:
+            continue
+        subs = [descriptor]
+        if descriptor.kind == _MXF_MULTIPLE_DESCRIPTOR:
+            subs = [
+                sub
+                for ref in _mxf_batch(descriptor.props.get(_MXF_SUB_DESCRIPTORS, b""))
+                for sub in (sets.get(ref[:16]),)
+                if sub is not None
+            ]
+        matches = [sub for sub in subs if sub.kind in kinds]
+        if package.props.get(_MXF_PACKAGE_UID) == package_uid:
+            linked = [
+                sub
+                for sub in matches
+                if _mxf_u(sub.props.get(_MXF_LINKED_TRACK_ID)) == track_id
+            ]
+            if linked or matches:
+                return (linked or matches)[0]
+        candidates.extend(matches)
+    return candidates[0] if candidates else None
+
+
+def _mxf_picture_aspect(
+    descriptor: _MxfSet, width: int, height: int, interlaced: bool
+) -> tuple[tuple[int, int], int]:
+    """`((dividend, divisor), field order)` of a picture descriptor as AE
+    2026 imports it (see `_MXF_D1_ASPECTS` and the DV presets)."""
+    coding = descriptor.props.get(_MXF_PICTURE_CODING, b"")
+    dar = _mxf_rational(descriptor.props.get(_MXF_ASPECT_RATIO))
+    wide = dar == Fraction(16, 9)
+    field_order = 0
+    if interlaced:
+        dominance = _mxf_u(descriptor.props.get(_MXF_FIELD_DOMINANCE))
+        field_order = 1 if dominance in (None, 1) else 2
+    if coding[8:13] == _MXF_DV_CODING:
+        family = (coding[13], coding[14])
+        if family in _MXF_DV_NTSC:
+            return _DV_NTSC_ASPECT[wide], 2 if interlaced else 0
+        if family in _MXF_DV_PAL:
+            return _DV_PAL_ASPECT[wide], 2 if interlaced else 0
+        if family in _MXF_DV_HD:
+            return _MXF_DV_HD[family], field_order
+    if dar is None or width <= 0 or height <= 0:
+        return (1, 1), field_order
+    aspect = dar * height / width
+    if aspect.numerator > 10000 or aspect.denominator > 10000:
+        aspect = Fraction(int(float(aspect) * 10000), 10000)
+    if width == 720 and height in (576, 486):
+        for preset in _MXF_D1_ASPECTS:
+            if abs(preset[0] / preset[1] / float(aspect) - 1.0) < 0.05:
+                return preset, field_order
+    return (aspect.numerator, aspect.denominator), field_order
+
+
+def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
+    """Probe an MXF file the way After Effects 2026 imports it.
+
+    The material package's picture track gives the duration (its first
+    source clip, in frames) and its file-package descriptor the size, frame
+    rate (the descriptor's sample rate), field layout, pixel aspect, bit
+    depth and alpha; its sound tracks the audio. A file without a picture
+    track is audio-only (0x0 pixels). Measured on AE 2026 against OP1a and
+    OP-Atom files of every codec it decodes (see `_MXF_PICTURE_CODINGS`).
+
+    Raises:
+        ValueError: If the file is not an MXF, carries no picture or sound
+            essence, or codes its pictures in a way After Effects cannot
+            decode (AE refuses such a file outright).
+    """
+    operational_pattern, sets = _mxf_header_sets(fp)
+    packages = [s for s in sets.values() if s.kind == _MXF_MATERIAL_PACKAGE]
+    if not packages:
+        packages = [s for s in sets.values() if s.kind == _MXF_SOURCE_PACKAGE]
+    picture: tuple[_MxfSet, _MxfSet] | None = None
+    sound: list[tuple[_MxfSet, _MxfSet]] = []
+    timecode: _MxfSet | None = None
+    for package in packages:
+        for ref in _mxf_batch(package.props.get(_MXF_PACKAGE_TRACKS, b"")):
+            track = sets.get(ref[:16])
+            if track is None:
+                continue
+            group, kind, sequence = _mxf_track_kind(sets, track)
+            if sequence is None:
+                continue
+            if group == 2 and kind == 1 and picture is None:
+                picture = (track, sequence)
+            elif group == 2 and kind == 2:
+                sound.append((track, sequence))
+            elif group == 1 and timecode is None:
+                timecode = _mxf_first_component(sets, sequence, _MXF_TIMECODE)
+        if picture is not None or sound:
+            break
+    if picture is None and not sound:
+        raise ValueError("MXF file has no picture or sound track")
+
+    has_audio = bool(sound)
+    audio_sample_rate = 0.0
+    audio_channels = 0
+    for _track, sequence in sound:
+        clip = _mxf_first_component(sets, sequence, _MXF_SOURCE_CLIP)
+        descriptor = _mxf_descriptor(sets, clip, _MXF_SOUND_DESCRIPTORS)
+        if descriptor is None:
+            continue
+        rate = _mxf_rational(descriptor.props.get(_MXF_AUDIO_SAMPLING_RATE))
+        if rate is not None and not audio_sample_rate:
+            audio_sample_rate = float(round(rate))
+        audio_channels += _mxf_u(descriptor.props.get(_MXF_CHANNEL_COUNT)) or 0
+
+    if picture is None:
+        # Audio-only: the duration is the sound clip's length in its track's
+        # edit units (samples at the sample rate for a PCM OP-Atom file).
+        track, sequence = sound[0]
+        clip = _mxf_first_component(sets, sequence, _MXF_SOURCE_CLIP) or sequence
+        edit_rate = _mxf_rational(track.props.get(_MXF_EDIT_RATE)) or Fraction(1)
+        units = _mxf_u(clip.props.get(_MXF_DURATION)) or 0
+        return MediaInfo(
+            duration=float(units / edit_rate),
+            has_audio=True,
+            audio_sample_rate=audio_sample_rate,
+            audio_channels=audio_channels,
+        )
+
+    track, sequence = picture
+    clip = _mxf_first_component(sets, sequence, _MXF_SOURCE_CLIP)
+    descriptor = _mxf_descriptor(sets, clip, _MXF_PICTURE_DESCRIPTORS)
+    if descriptor is None:
+        raise ValueError("MXF file has no picture descriptor")
+    coding = descriptor.props.get(_MXF_PICTURE_CODING, b"")
+    if not any(coding[8:16].startswith(c) for c in _MXF_PICTURE_CODINGS):
+        raise ValueError(
+            "After Effects cannot decode the MXF picture coding "
+            f"{coding.hex() or 'unknown'}"
+        )
+    container = descriptor.props.get(_MXF_ESSENCE_CONTAINER, b"")
+    if operational_pattern[12] == 0x10 and container[8:16] == _MXF_VC3_CONTAINER:
+        # AE refuses an OP-Atom DNxHD/DNxHR file whose container label says
+        # frame-wrapped (what ffmpeg writes around its clip-wrapped essence);
+        # the same file relabelled clip-wrapped imports (AE 2026).
+        raise ValueError(
+            "After Effects cannot open an OP-Atom VC-3 MXF labelled frame-wrapped"
+        )
+
+    layout = _mxf_u(descriptor.props.get(_MXF_FRAME_LAYOUT))
+    interlaced = layout == 1
+    stored_w = _mxf_u(descriptor.props.get(_MXF_STORED_WIDTH)) or 0
+    stored_h = _mxf_u(descriptor.props.get(_MXF_STORED_HEIGHT)) or 0
+    display_w = _mxf_u(descriptor.props.get(_MXF_DISPLAY_WIDTH))
+    display_h = _mxf_u(descriptor.props.get(_MXF_DISPLAY_HEIGHT))
+    if display_w is not None and display_h is not None:
+        width, height = display_w, display_h
+        # A field-coded descriptor states the field height; AE doubles a
+        # display height that is clearly a field's.
+        if interlaced and stored_h and height / stored_h < 1.5:
+            height *= 2
+    else:
+        width = stored_w
+        height = stored_h * (2 if interlaced else 1)
+        if height == 1088:
+            height = 1080
+    if layout is None and height and width / height >= 2.45:
+        interlaced = True
+        height *= 2
+    sampled_h = _mxf_u(descriptor.props.get(_MXF_SAMPLED_HEIGHT))
+    visible = display_h if display_h is not None else sampled_h
+    if visible and stored_h and visible < stored_h:
+        height = visible * (2 if interlaced else 1)
+    if width == 720:
+        height = _MXF_D1_HEIGHTS.get(height, height)
+
+    aspect, field_order = _mxf_picture_aspect(descriptor, width, height, interlaced)
+    rate = _mxf_rational(descriptor.props.get(_MXF_SAMPLE_RATE)) or _mxf_rational(
+        track.props.get(_MXF_EDIT_RATE)
+    )
+    if rate is None:
+        raise ValueError("MXF picture descriptor has no sample rate")
+    frames = _mxf_u((clip or sequence).props.get(_MXF_DURATION)) or 0
+    bits = _mxf_u(descriptor.props.get(_MXF_COMPONENT_DEPTH)) or 8
+    if descriptor.kind == _MXF_RGBA_DESCRIPTOR:
+        layout_codes = descriptor.props.get(_MXF_PIXEL_LAYOUT, b"")
+        has_alpha = b"A" in layout_codes[::2]
+    else:
+        has_alpha = bool(_mxf_u(descriptor.props.get(_MXF_ALPHA_SAMPLE_DEPTH)))
+    timecode_start = 0
+    drop_frame = False
+    if timecode is not None:
+        timecode_start = _mxf_u(timecode.props.get(_MXF_START_TIMECODE)) or 0
+        drop_frame = bool(_mxf_u(timecode.props.get(_MXF_DROP_FRAME)))
+    frame_rate = round(float(rate), 3)
+    return MediaInfo(
+        width=width,
+        height=height,
+        duration=frames / frame_rate if frame_rate else 0.0,
+        frame_rate=frame_rate,
+        has_alpha=has_alpha,
+        has_audio=has_audio,
+        audio_sample_rate=audio_sample_rate,
+        pixel_aspect=aspect[0] / aspect[1],
+        bit_depth=bits,
+        depth=_color_depth(has_alpha, 8 if bits <= 8 else 16),
+        audio_channels=audio_channels,
+        field_order=field_order,
+        timecode_start=timecode_start,
+        timecode_drop_frame=drop_frame,
+        pixel_aspect_terms=aspect,
+    )
+
+
 _PARSERS: dict[str, Callable[[IO[bytes]], MediaInfo]] = {
     ".png": _probe_png,
+    ".mxf": _probe_mxf,
     ".mov": _probe_mov,
     ".m4v": _probe_mov,
     ".mp4": _probe_mp4,

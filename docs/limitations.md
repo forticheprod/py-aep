@@ -365,6 +365,18 @@ from a static file rather than through AE's live media engine:
 - **Footage is limited to 32767 px a side** (`ValueError`): After Effects
   reads the stored size as a signed 16-bit value, so a wider image opens with
   a negative width.
+- **MXF import reads the header partition's metadata only.** Size, frame
+  rate, duration, fields, pixel aspect, alpha, audio and start timecode come
+  from the material package and its descriptors as After Effects 2026 reads
+  them (OP1a and OP-Atom; MPEG-2, H.264, DV, DNxHD/DNxHR, ProRes, JPEG 2000,
+  PCM). A file whose header partition is open with the final durations only
+  in the footer is read as its header states. Like AE, py-aep refuses a
+  picture coding AE does not decode (FFV1 and anything outside the families
+  above) and an OP-Atom DNxHD/DNxHR file labelled frame-wrapped around
+  clip-wrapped essence (what ffmpeg writes); uncompressed, HEVC and MPEG-4
+  essence, DNx alpha and RGBA descriptors are untested. The codec code AE
+  keeps in the `opti` record is left blank, as for the other movie formats:
+  AE fills it in when it opens the project.
 - **Input color profiles follow After Effects' per-format choices** (measured
   on AE 2026): an RGB TIFF/PSD, Illustrator/PDF page or Camera Raw file
   records its ICC profile (sRGB when untagged, ProPhoto RGB for Camera Raw);

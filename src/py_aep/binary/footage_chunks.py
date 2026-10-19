@@ -374,17 +374,20 @@ class SspcChunk(Chunk):
 # ---------------------------------------------------------------------------
 
 
-def build_generic_opti_data(source_format: str, *, sequence: bool = False) -> bytes:
+def build_generic_opti_data(
+    source_format: str, *, sequence: bool = False, video: bool = True
+) -> bytes:
     """Build the 58-byte generic `opti` asset-info body for a file source.
 
     AE accepts an empty `opti` for single still images (it re-reads the
     located file), but requires this header to recognize non-TIFF/PSD
     image sequences and audio/video. The layout is the format 4-char code,
     a version word, the chunk length, then a 16-byte importer block: the
-    reversed code, an ``0xFFFFFFFF`` marker, and codec bytes AE re-derives
-    on open. AE zeroes the block for a BMP/GIF sequence through its generic
-    still importer (``IMIO`` on macOS, ``STIL`` on Windows; imio_sequence.aep
-    and media_replacement.aep are byte-exact).
+    reversed code, an ``0xFFFFFFFF`` marker, codec bytes AE re-derives on
+    open, and a word AE sets on media with picture (zero on audio-only
+    WAV, MP3 and MXF files; AE 2026). AE zeroes the block for a BMP/GIF
+    sequence through its generic still importer (``IMIO`` on macOS, ``STIL``
+    on Windows; imio_sequence.aep and media_replacement.aep are byte-exact).
 
     Note: TIFF sequences use `build_tiff_opti_data` instead (AE 2026
     measured); PSD sequences use an empty opti via `PsdOptiChunk`.
@@ -392,12 +395,14 @@ def build_generic_opti_data(source_format: str, *, sequence: bool = False) -> by
     Args:
         source_format: 4-char `sspc` source-format code.
         sequence: `True` for an image sequence.
+        video: `False` for audio-only media.
     """
     code = source_format.encode("ascii")[:4].ljust(4, b" ")
     if sequence and source_format in ("IMIO", "STIL"):
         block = b"\x00" * 16
     else:
-        block = code[::-1] + b"\xff\xff\xff\xff" + b"\x00" * 4 + b"\x01\x00\x00\x00"
+        picture = b"\x01\x00\x00\x00" if video else b"\x00" * 4
+        block = code[::-1] + b"\xff\xff\xff\xff" + b"\x00" * 4 + picture
     return (
         code
         + b"\x00\x05"
