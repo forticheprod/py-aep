@@ -375,7 +375,11 @@ class SspcChunk(Chunk):
 
 
 def build_generic_opti_data(
-    source_format: str, *, sequence: bool = False, video: bool = True
+    source_format: str,
+    *,
+    sequence: bool = False,
+    video: bool = True,
+    importer_format: str | None = None,
 ) -> bytes:
     """Build the 58-byte generic `opti` asset-info body for a file source.
 
@@ -383,11 +387,12 @@ def build_generic_opti_data(
     located file), but requires this header to recognize non-TIFF/PSD
     image sequences and audio/video. The layout is the format 4-char code,
     a version word, the chunk length, then a 16-byte importer block: the
-    reversed code, an ``0xFFFFFFFF`` marker, codec bytes AE re-derives on
-    open, and a word AE sets on media with picture (zero on audio-only
-    WAV, MP3 and MXF files; AE 2026). AE zeroes the block for a BMP/GIF
-    sequence through its generic still importer (``IMIO`` on macOS, ``STIL``
-    on Windows; imio_sequence.aep and media_replacement.aep are byte-exact).
+    importer's code reversed, an ``0xFFFFFFFF`` marker, codec bytes AE
+    re-derives on open, and a word AE sets on media with picture (zero on
+    audio-only WAV, MP3 and MXF files; AE 2026). AE zeroes the block for a
+    BMP/GIF sequence through its generic still importer (``IMIO`` on macOS,
+    ``STIL`` on Windows; imio_sequence.aep and media_replacement.aep are
+    byte-exact).
 
     Note: TIFF sequences use `build_tiff_opti_data` instead (AE 2026
     measured); PSD sequences use an empty opti via `PsdOptiChunk`.
@@ -396,13 +401,18 @@ def build_generic_opti_data(
         source_format: 4-char `sspc` source-format code.
         sequence: `True` for an image sequence.
         video: `False` for audio-only media.
+        importer_format: The importer's own 4-char code when it differs
+            from `source_format` (AE reverses `MPEG` into the record of a
+            transport or program stream it codes `MPEO`); `None` reverses
+            `source_format`.
     """
     code = source_format.encode("ascii")[:4].ljust(4, b" ")
     if sequence and source_format in ("IMIO", "STIL"):
         block = b"\x00" * 16
     else:
         picture = b"\x01\x00\x00\x00" if video else b"\x00" * 4
-        block = code[::-1] + b"\xff\xff\xff\xff" + b"\x00" * 4 + picture
+        importer = (importer_format or source_format).encode("ascii")[:4].ljust(4, b" ")
+        block = importer[::-1] + b"\xff\xff\xff\xff" + b"\x00" * 4 + picture
     return (
         code
         + b"\x00\x05"

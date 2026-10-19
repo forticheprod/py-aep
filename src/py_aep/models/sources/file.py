@@ -163,8 +163,14 @@ def _opti_data(
         return build_exr_opti_data(info.compression, info.channel_names)
     if fmt.opti == "empty" and not sequence:
         return b""
+    # AE codes MPEG program and transport streams `MPEO` but keeps its MPEG
+    # importer's own code in the record (AE 2026).
+    importer = "MPEG" if fmt.source_format == "MPEO" else None
     return build_generic_opti_data(
-        fmt.source_format, sequence=sequence, video=info.width > 0
+        fmt.source_format,
+        sequence=sequence,
+        video=info.width > 0,
+        importer_format=importer,
     )
 
 
@@ -776,6 +782,7 @@ class FileSource(FootageSource):
         color_mode: int = 3,
         frames: int | None = None,
         field_order: int = 0,
+        field_label: bool = False,
         audio_channels: int = 0,
         timecode_start: int = 0,
         drop_frame: bool = False,
@@ -851,12 +858,17 @@ class FileSource(FootageSource):
             color_mode: The Photoshop colour mode the image reads as (see
                 `_media_profile_records`); 3 (RGB) by default.
             frames: The duration in frames (samples for audio-only media),
-                stored unreduced over the rate the way AE records an MXF;
-                `None` stores `duration` as a reduced fraction.
+                stored unreduced over the rate the way AE records an MXF or
+                a transport stream, together with the field label, audio
+                block, drop-frame byte and start timecode those imports
+                carry; `None` stores `duration` as a reduced fraction.
             field_order: 1 or 2 to separate fields upper or lower first.
-            audio_channels: The audio channels AE records (MXF only).
-            timecode_start: The start timecode in frames (MXF only).
-            drop_frame: Whether that timecode counts drop-frame.
+            field_label: Tag the footage with its field label (see
+                [MediaInfo.field_label][py_aep.resolvers.media_probe.MediaInfo];
+                with `frames`).
+            audio_channels: The audio channels AE records (with `frames`).
+            timecode_start: The start timecode in frames (with `frames`).
+            drop_frame: The drop-frame flag stored with that timecode.
             pixel_aspect_terms: The `(dividend, divisor)` to store instead
                 of `pixel_aspect`'s reduced fraction (AE writes 768/702 for
                 an MXF's D1/DV PAL aspect); `(0, 0)` stores the fraction.
@@ -916,12 +928,13 @@ class FileSource(FootageSource):
             _store_frames_over_rate(sspc, frames, rate)
             if width > 0:
                 sspc._time_base = to_dividend_divisor(rate)[0]
-        if source_format == FORMAT_MXF:
-            # Beyond the generic movie fields, AE's MXF import records the
-            # QuickTime-style field tag on video, an audio block (format 3,
-            # 4 bytes, mono or stereo) and the drop-frame byte, set for a
-            # drop-frame timecode and for audio-only media (AE 2026).
-            if width > 0:
+        if frames is not None:
+            # Beyond the generic movie fields, AE's MXF and transport-stream
+            # imports record the QuickTime-style field tag, an audio block
+            # (format 3, 4 bytes, mono or stereo) and the drop-frame byte,
+            # set for a drop-frame timecode, for audio-only media and for
+            # every transport stream (AE 2026).
+            if field_label:
                 sspc._reserved_4a = b"FIEL\x00"
             if audio_channels:
                 sspc._reserved_58 = (
@@ -1020,10 +1033,11 @@ class FileSource(FootageSource):
         linl = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
         if source_format in _LINEAR_LIGHT_OFF_FORMATS and width > 0 and not is_sequence:
             linl.value = int(LinearLightMode.OFF)
-        if source_format == FORMAT_MXF:
-            # The start timecode AE reads from an MXF: frames over the rate
-            # like the duration, with its drop-frame flag; audio-only media
-            # get AE's default (0 over 30, drop-frame).
+        if frames is not None:
+            # The start timecode AE reads from an MXF (0 for a transport
+            # stream): frames over the rate like the duration, with its
+            # drop-frame flag; audio-only media get AE's default (0 over 30,
+            # drop-frame).
             mnfo = find_by_list_type(chunks=pin.chunks, list_type="mnfo")
             strt = cast(
                 "StrtChunk", find_by_type(chunks=mnfo.chunks, chunk_type="strt")
@@ -1126,8 +1140,8 @@ class FileSource(FootageSource):
         reserved_c8 = {"psd": b"\x00\x03", "text": b"\x00\x02"}.get(fmt.opti)
         data_size = _still_data_size(fmt, info, path)
         frames = None
-        if fmt.source_format == FORMAT_MXF:
-            # AE stores an MXF's duration as frames over the frame rate, or
+        if fmt.frames_over_rate:
+            # AE stores these durations as frames over the frame rate, or
             # samples over the sample rate without video.
             rate = info.frame_rate if info.width else info.audio_sample_rate
             frames = round(info.duration * rate)
@@ -1152,6 +1166,7 @@ class FileSource(FootageSource):
             color_mode=info.color_mode,
             frames=frames,
             field_order=info.field_order,
+            field_label=info.field_label,
             audio_channels=info.audio_channels,
             timecode_start=info.timecode_start,
             drop_frame=info.timecode_drop_frame,

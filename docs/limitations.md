@@ -377,6 +377,20 @@ from a static file rather than through AE's live media engine:
   essence, DNx alpha and RGBA descriptors are untested. The codec code AE
   keeps in the `opti` record is left blank, as for the other movie formats:
   AE fills it in when it opens the project.
+- **MPEG transport streams (`.ts`, `.m2t`, `.m2ts`, `.mts`) are read from
+  their first program's video stream** (MPEG-1/2 or H.264) the way After
+  Effects 2026 imports them: the frame size from the sequence header or
+  SPS (cropping applied), the rate from the frame-rate code or VUI timing
+  (else the presentation timestamps), the frames counted from the first I
+  picture, the pixel aspect from the aspect code or VUI (with the D1 presets
+  AE applies), fields from the coding or AE's size rules for progressive
+  H.264 (720x480 at 29.97 and 720x576 at 25 fps lower, 1440x1080 at 25 or
+  29.97 fps upper). Audio is recorded as AE does, stereo at 48 kHz whatever
+  the stream carries. Like AE, py-aep refuses HEVC video; MPEG-4 part 2
+  video (which AE imports) is not supported, and an audio-only stream is
+  measured by its AAC, MPEG layer II or AC-3 frames (AE counts two AC-3
+  frames fewer). Field pictures, variable frame rates, multi-program
+  streams and 10-bit video are untested.
 - **Input color profiles follow After Effects' per-format choices** (measured
   on AE 2026): an RGB TIFF/PSD, Illustrator/PDF page or Camera Raw file
   records its ICC profile (sRGB when untagged, ProPhoto RGB for Camera Raw);

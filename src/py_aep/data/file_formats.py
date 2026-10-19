@@ -51,6 +51,12 @@ class FileFormat(NamedTuple):
     (`SspcChunk.media_format`, and `media_file` for a single file): JPEG,
     BMP/GIF, HEIC, movies, audio and data files."""
 
+    frames_over_rate: bool = False
+    """`True` for the formats whose duration AE 2026 stores as frames over
+    the frame rate (samples over the sample rate without video), with the
+    field label, audio block, drop-frame byte and start timecode its Media
+    Core imports record: MXF and MPEG transport streams."""
+
 
 #: `sspc.source_format_type` of a 3D model scene (`.fbx`).
 FORMAT_3D_MODEL_SCENE = "LDOM"
@@ -139,7 +145,29 @@ _FILE_FORMATS: dict[str, FileFormat] = {
     ".wmv": FileFormat("WMED", False, "generic", sequence=False, media_flag=True),
     # MXF (OP1a and OP-Atom; MPEG-2, H.264, DV, DNxHD/DNxHR, ProRes, JPEG 2000,
     # PCM): generic opti, codec bytes re-derived by AE.
-    ".mxf": FileFormat(FORMAT_MXF, False, "generic", sequence=False, media_flag=True),
+    ".mxf": FileFormat(
+        FORMAT_MXF,
+        False,
+        "generic",
+        sequence=False,
+        media_flag=True,
+        frames_over_rate=True,
+    ),
+    # MPEG transport streams: AE 2026 codes them by extension, `.ts`/`.m2t`
+    # like a program stream and the AVCHD/Blu-ray names like its AAC audio
+    # (same content, 188 and 192-byte packets alike).
+    ".ts": FileFormat(
+        "MPEO", False, "generic", sequence=False, media_flag=True, frames_over_rate=True
+    ),
+    ".m2t": FileFormat(
+        "MPEO", False, "generic", sequence=False, media_flag=True, frames_over_rate=True
+    ),
+    ".m2ts": FileFormat(
+        "MPEG", False, "generic", sequence=False, media_flag=True, frames_over_rate=True
+    ),
+    ".mts": FileFormat(
+        "MPEG", False, "generic", sequence=False, media_flag=True, frames_over_rate=True
+    ),
     # Radiance HDR - format-specific 30-byte opti.
     ".hdr": FileFormat("RHDR", False, "hdr"),
     # Canon CRW, developed by Camera Raw - format-specific 30-byte opti.
@@ -211,6 +239,10 @@ _IMPORT_AS_TYPES: dict[str, frozenset[ImportAsType]] = {
     ".mp4": frozenset({_FOOTAGE}),
     ".wmv": frozenset({_FOOTAGE}),
     ".mxf": frozenset({_FOOTAGE}),
+    ".ts": frozenset({_FOOTAGE}),
+    ".m2t": frozenset({_FOOTAGE}),
+    ".m2ts": frozenset({_FOOTAGE}),
+    ".mts": frozenset({_FOOTAGE}),
     # Audio - footage only (m4a may also carry an AE project).
     ".aiff": frozenset({_FOOTAGE}),
     ".aif": frozenset({_FOOTAGE}),

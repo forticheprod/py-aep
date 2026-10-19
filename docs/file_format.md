@@ -2786,8 +2786,8 @@ file; AE does not use it to find the file.
 | `TEXT` | Illustrator, EPS and PDF |
 | `MOoV` | QuickTime `.mov`, `.m4v`, `.m4a` (older AE versions also used it for `.mp4`) |
 | `XCEX` | MP4 (AE 2026) |
-| `MPEG` | AAC audio (`.aac`); `.mp4` in older files |
-| `MPEO` | MPEG-1/2 (`.mpg`, `.mpeg`) |
+| `MPEG` | AAC audio (`.aac`) and MPEG transport streams named `.m2ts` / `.mts` (AE 2026); `.mp4` in older files |
+| `MPEO` | MPEG-1/2 program streams (`.mpg`, `.mpeg`) and transport streams named `.ts` / `.m2t` (AE 2026 codes a transport stream by its extension, whatever its content) |
 | `WMED` | Windows Media (`.wmv`) |
 | `MXFF` | MXF (`.mxf`, OP1a and OP-Atom, every codec and audio-only alike; AE 2026) |
 | `SWF ` | Flash |
@@ -2856,9 +2856,9 @@ for a `.txt`).
 |---|---|---|---|
 | 0x00 | 10 | | Header: kind, version 5, length 58. |
 | 0x0A | 20 | bytes | 0 in every sample. |
-| 0x1E | 4 | fourcc | A container or file-type code stored byte-reversed: `VooM` (QuickTime), `EVAW`, `GEPJ`, `fFIG`, ` PMB`, ` 4PM`, `CIEH`, `FFIA`, `GEPM`, `DEMW`, `FFXM` (MXF), ` FWS`, `bvh` + NUL (data files). 0 on BMP/GIF image sequences. |
+| 0x1E | 4 | fourcc | A container or file-type code stored byte-reversed: `VooM` (QuickTime), `EVAW`, `GEPJ`, `fFIG`, ` PMB`, ` 4PM`, `CIEH`, `FFIA`, `GEPM` (MPEG program and transport streams, whether the record's own code is `MPEG` or `MPEO`), `DEMW`, `FFXM` (MXF), ` FWS`, `bvh` + NUL (data files). 0 on BMP/GIF image sequences. |
 | 0x22 | 4 | bytes | FF FF FF FF (0 when 0x1E is 0). |
-| 0x26 | 4 | fourcc | Codec: `avc1`, `AVC1`, `apch`, `apcn`, `ap4h`, `jpeg`, `png `, `MPG4`, `MPG1`, `RAW `, `SWF `, `UNKN`; in an MXF `AVdn` / `AVdh` (DNxHD / DNxHR), `MPEG`, `xd5c` (XDCAM HD422), `avl0` (H.264), `apco` ... `ap4h` (ProRes), `dsvn` / `dsvp` (DV 525 / 625); 0 for audio and data. |
+| 0x26 | 4 | fourcc | Codec: `avc1`, `AVC1`, `apch`, `apcn`, `ap4h`, `jpeg`, `png `, `MPG4`, `MPG1`, `RAW `, `SWF `, `UNKN`; in an MXF `AVdn` / `AVdh` (DNxHD / DNxHR), `MPEG`, `xd5c` (XDCAM HD422), `avl0` (H.264), `apco` ... `ap4h` (ProRes), `dsvn` / `dsvp` (DV 525 / 625); in a transport stream `H264` (H.264) or `MPEG` (MPEG-1/2 video); 0 for audio and data. |
 | 0x2A | 4 | u4 LE | 1 when the source has video, 0 otherwise (and on BMP/GIF image sequences). |
 | 0x2E | 4 | u4 LE | 1 in every sample. |
 | 0x32 | 8 | bytes | 0 in every sample. |
