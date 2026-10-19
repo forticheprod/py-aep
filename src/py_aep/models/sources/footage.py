@@ -83,17 +83,21 @@ def _retime_sequence(sspc: SspcChunk, rate: float) -> None:
     _store_frames_over_rate(sspc, frames, round(rate, 3))
 
 
-def _store_frames_over_rate(sspc: SspcChunk, frames: int, rate: float) -> None:
-    """Store a sequence's duration as AE does: `frames` over `rate`, the
-    fraction unreduced (3/30, not 1/10, in every AE-authored sequence)."""
+def _frames_over_rate(frames: int, rate: float) -> tuple[int, int]:
+    """`frames` over `rate` as AE stores a sequence's duration and a Media
+    Core import's duration and start timecode: `(dividend, divisor)`, the
+    fraction unreduced (3/30, not 1/10, in every AE-authored sequence)
+    unless its dividend overflows the u4 field (a huge frame count at a
+    fractional rate), when it is reduced instead."""
     rate_num, rate_den = to_dividend_divisor(rate)
     if frames * rate_den <= 0xFFFFFFFF:
-        sspc.duration_dividend = frames * rate_den
-        sspc.duration_divisor = rate_num
-    else:
-        # Too many frames for the unreduced form in the u4 dividend (a huge
-        # frame range at a fractional rate): store it reduced.
-        sspc.duration = frames / rate
+        return frames * rate_den, rate_num
+    return to_dividend_divisor(frames / rate)
+
+
+def _store_frames_over_rate(sspc: SspcChunk, frames: int, rate: float) -> None:
+    """Store a sequence's duration as `_frames_over_rate` gives it."""
+    sspc.duration_dividend, sspc.duration_divisor = _frames_over_rate(frames, rate)
 
 
 class FootageSource:
