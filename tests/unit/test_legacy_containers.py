@@ -25,7 +25,7 @@ from py_aep.binary.chunk import (
 from py_aep.binary.item_chunks import HeadChunk, NhedChunk
 from py_aep.binary.misc_chunks import DwgaChunk
 from py_aep.binary.property_chunks import TDSN_SENTINEL, TdsnChunk
-from py_aep.binary.scalar_chunks import Utf8Chunk
+from py_aep.binary.scalar_chunks import ExprChunk, Utf8Chunk
 from py_aep.binary.utils import recursive_find
 from py_aep.enums import BitsPerChannel, GpuAccelType
 from py_aep.parsers.project import _nnhd_from_nhed
@@ -260,3 +260,20 @@ def test_an_older_project_cannot_be_relabelled() -> None:
     with pytest.raises(ValueError, match="older format"):
         app.version = "16.0x1"
     assert app.version == "15.0x1"
+
+
+def test_a_legacy_expression_reads_as_its_string() -> None:
+    # AE CC 12.0 keeps a property's expression in an `expr` chunk, NUL-terminated,
+    # where newer versions write a `Utf8` chunk.
+    text = 'thisComp.layer("Main Controller").effect("Circles 01")("Color")'
+    data = _chunk("expr", text.encode("UTF-8") + b"\x00")
+    (expr,) = _read(data)
+    assert isinstance(expr, ExprChunk)
+    assert expr.value == text
+    assert _write([expr]) == data
+
+
+def test_a_changed_legacy_expression_is_written_with_its_nul() -> None:
+    (expr,) = _read(_chunk("expr", b"value\x00"))
+    expr.value = "time * 2"
+    assert _write([expr]) == _chunk("expr", b"time * 2\x00")

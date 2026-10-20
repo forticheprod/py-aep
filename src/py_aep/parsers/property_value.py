@@ -84,7 +84,11 @@ def parse_property(
     if "tdli" in optional:
         property_value_type = PropertyValueType.MASK_INDEX
 
+    # CC 12.0 and earlier keep the expression in an expr chunk, NUL-terminated
+    # (see ExprChunk), where newer versions write a Utf8 one.
     expression_utf8 = cast("Utf8Chunk | None", optional.get("Utf8"))
+    if expression_utf8 is None:
+        expression_utf8 = cast("Utf8Chunk | None", optional.get("expr"))
     tdum = cast("TdumChunk | None", optional.get("tdum"))
     tduM = cast("TdumChunk | None", optional.get("tduM"))
 
