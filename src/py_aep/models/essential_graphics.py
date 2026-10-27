@@ -36,7 +36,8 @@ class EssentialGraphicsController:
 
     Each controller maps to a `LIST:CCtl` chunk inside `LIST:CIF3`.
     The controller name is stored in a `LIST:CpS2` localized string
-    chunk and can be renamed via the `name` attribute.
+    chunk (in projects saved by AE 15.0 and earlier, in the `LIST:CapS`
+    caption alone) and can be renamed via the `name` attribute.
     """
 
     name = ChunkField[str](
