@@ -26,6 +26,7 @@ import struct
 import warnings
 from typing import TYPE_CHECKING, NamedTuple, cast
 
+from ..data.psd_light_trig import LIGHT_TRIG
 from ..models.properties.gradient import (
     Gradient,
     GradientAlphaStop,
@@ -35,7 +36,7 @@ from .media_probe import iter_image_resources
 
 if TYPE_CHECKING:
     import os
-    from typing import Any, Callable, Iterator, Union
+    from typing import Any, Callable, Iterator, Sequence, Union
 
     from .psd_layers import PsdGroup, PsdLayer, PsdStyleBlocks
 
@@ -224,7 +225,8 @@ _GLOW_TECHNIQUE = {"SfBL": 1.0, "PrBL": 2.0}
 _INNER_GLOW_SOURCE = {"SrcE": 1.0, "SrcC": 2.0}
 # Bevel style/technique/direction: InrB(2)/Embs(3), PrBL(2) and Out(2) are
 # fixture-pinned; the rest follow AE's dropdown order.
-_BEVEL_STYLE = {"OtrB": 1.0, "InrB": 2.0, "Embs": 3.0, "PlEb": 4.0}
+# Stroke Emboss is the fifth entry of AE's Style popup (psd_styles_corpus.aep).
+_BEVEL_STYLE = {"OtrB": 1.0, "InrB": 2.0, "Embs": 3.0, "PlEb": 4.0, "strokeEmboss": 5.0}
 _BEVEL_TECHNIQUE = {"SfBL": 1.0, "PrBL": 2.0, "Slmt": 3.0}
 _BEVEL_DIRECTION = {"In  ": 1.0, "Out ": 2.0}
 _GRADIENT_TYPE = {"Lnr ": 1.0, "Rdl ": 2.0, "Angl": 3.0, "Rflc": 4.0, "Dmnd": 5.0}
@@ -654,114 +656,230 @@ def _enabled_instances(
 # ---------------------------------------------------------------------------
 #
 # Merging styles into the footage rasterizes them, and After Effects sizes the
-# result to a box it derives from the style parameters alone - opacity, noise,
-# contour shape and the lighting angles do not move it. Measured on AE 2026 by
-# importing byte-patched copies of psd_layer_styles.psd (one style at a time,
-# ~450 parameter combinations) as COMP_CROPPED_LAYERS:
+# result to a box it derives from the style parameters alone: the layer's box
+# grown by a fixed pad per style, never trimmed to the pixels drawn (a 1 %
+# opacity glow pads as much as a 100 % one; only a 0 % one, or a bevel with
+# both opacities at 0 %, pads nothing). Measured on AE 2026 with byte-patched
+# copies of psd_layer_styles.psd (one style at a time, ~930 variants of a
+# 24x25 layer), the layer-style documents of samples/assets/psd_styles
+# (tests/read_only/test_psd_styles_corpus.py) and ~250 byte-patched variants
+# of bevel files:
 #
 # - A blurred style (drop shadow, outer glow) spreads `round(size * spread%)`
-#   px first, then blurs the rest of its size. Its reach is the blur's
-#   (Softer: the radius, at least 2; Precise: the radius + 2.5; either: a
-#   fixed 4.5 / 6.5 once the spread takes the whole size) plus the spread +
-#   2 px. A drop shadow moves by its distance along the light angle, each
-#   axis rounded half away from zero.
-# - A stroke reaches its size + 2 px outside, half its size (rounded up) + 2
-#   centered, nothing inside.
-# - A bevel reaches its size (outer bevel) or half of it (emboss, pillow
-#   emboss); Smooth adds 1.5 px (2 px at least), Chisel 4 px, and softening
-#   `max(softening, 2) - 0.5`. With no softening, a Chisel bevel - or a
-#   zero-size one - sits 1 px up and left. An inner bevel stays inside.
-# - A reach of `e` px covers `ceil(e)` px left and above and `floor(e)` px
-#   right and below, one px less left and above when the style's contour is
-#   not anti-aliased.
+#   px first, then blurs the rest. The spread pads its px + 2 all round; the
+#   blur pads `max(2, radius)` px right and below and one less left and above
+#   (Softer; a radius of 1 counts as 2) or `radius + 2` all round (Precise); a
+#   radius of 0 pads 4 px more all round. A drop shadow moves by its distance
+#   along the light angle, each axis rounded half away from zero, with the
+#   sine and cosine Photoshop uses for whole-degree angles (`LIGHT_TRIG`).
+# - A stroke (1 px at least) pads its size + 2 outside, half its size
+#   (rounded up) + 2 centered, nothing inside.
+# - A bevel pads 1 px all round, then its height - the size for an outer
+#   bevel, half of it for an emboss or pillow emboss: Smooth pads
+#   `max(2, ceil(height))` right and below and one less left and above
+#   (nothing for a height of 0), Chisel pads `ceil(height) + 2` all round;
+#   softening pads `max(2, ceil(soften))` right and below and one less left
+#   and above. An anti-aliased gloss contour pads 1 px more left and above,
+#   and so does an anti-aliased contour while the contour is on. An inner
+#   bevel stays inside. Stroke Emboss takes the kind of the largest enabled
+#   stroke (centered strokes count half their size, outside and centered
+#   strokes beat inside ones): outside -> outer bevel, centered -> emboss,
+#   inside -> none.
 # - The box is the union of the layer's own bounds and every enabled style
-#   instance's box. The effects-scale percentage has no effect.
+#   instance's box. Noise, contour shapes, the lighting angles and the
+#   effects-scale percentage have no effect.
+
+
+def _light_trig(angle: float) -> tuple[float, float]:
+    """`(cos, sin)` of a light angle in degrees as Photoshop computes it.
+
+    A whole-degree angle comes from `LIGHT_TRIG` (0 to 45 degrees) by octant
+    symmetry, any other angle from `math.cos`/`math.sin`.
+    """
+    if angle != int(angle):
+        radians = math.radians(angle)
+        return math.cos(radians), math.sin(radians)
+    degrees = int(angle) % 360
+    if degrees < 46:
+        cos, sin = LIGHT_TRIG[degrees]
+        return cos, sin
+    if degrees < 90:
+        cos, sin = LIGHT_TRIG[90 - degrees]
+        return sin, cos
+    if degrees < 135:
+        cos, sin = LIGHT_TRIG[degrees - 90]
+        return -sin, cos
+    if degrees < 180:
+        cos, sin = LIGHT_TRIG[180 - degrees]
+        return -cos, sin
+    if degrees < 225:
+        cos, sin = LIGHT_TRIG[degrees - 180]
+        return -cos, -sin
+    if degrees < 270:
+        cos, sin = LIGHT_TRIG[270 - degrees]
+        return -sin, -cos
+    if degrees < 315:
+        cos, sin = LIGHT_TRIG[degrees - 270]
+        return sin, -cos
+    cos, sin = LIGHT_TRIG[360 - degrees]
+    return cos, -sin
 
 
 def _round_away(value: float) -> int:
-    # The epsilon lands exact halves (a 30 degree light: sin * 11 = 5.4999...
-    # in doubles) where AE does.
-    return int(math.copysign(math.floor(abs(value) + 0.5 + 1e-9), value))
+    return int(math.copysign(math.floor(abs(value) + 0.5), value))
 
 
-def _blur_reach(size: float, spread: float, precise: bool) -> float:
-    spread_px = math.floor(size * spread / 100 + 0.5)
-    radius = size - spread_px
-    if precise:
-        reach = radius + 2.5 if radius > 0 else 6.5
-    else:
-        reach = max(radius, 2) if radius > 0 else 4.5
-    return reach + (spread_px + 2 if spread_px > 0 else 0)
+def _blur_pads(px: float) -> tuple[int, int]:
+    """The pad of a blur-like reach (a blur radius, a bevel height or its
+    softening): `max(2, ceil(px))` right and below, one px less left and
+    above, nothing for 0."""
+    if px <= 0:
+        return 0, 0
+    trail = max(2, math.ceil(px))
+    return trail - 1, trail
 
 
-def _pads(reach: float, anti_aliased: bool, shift: float = 0.0) -> tuple[int, int]:
-    """The px a style covers before (left, above) and after (right, below)."""
-    lead = math.ceil(reach - shift) - (0 if anti_aliased else 1)
-    return lead, math.floor(reach + shift)
+def _opaque(percent: float) -> bool:
+    """Whether an opacity rounds to a non-zero byte: a fully transparent
+    style pads nothing, a 1 % one pads fully."""
+    return int(percent * 255 / 100 + 0.5) > 0
 
 
-def _bevel_pads(instance: dict[str, Any], name: str) -> tuple[int, int] | None:
-    style = instance.get("bvlS", "InrB")
-    if style == "InrB":
+def _shadow_glow_pads(
+    instance: dict[str, Any], precise: bool
+) -> tuple[int, int] | None:
+    if not _opaque(float(instance.get("Opct", 100))):
         return None
-    size = float(instance.get("blur", 0))
-    if style == "OtrB":
-        height = size
-    elif style in ("Embs", "PlEb"):
-        height = float(math.ceil(size / 2))
+    size = int(instance.get("blur", 0))
+    spread = int(instance.get("Ckmt", 0))
+    spread_px = int(spread / 100 * size + 0.5)
+    radius = size - spread_px
+    lead = trail = spread_px + 2 if spread_px > 0 else 0
+    if precise:
+        lead += radius + 2
+        trail += radius + 2
     else:
-        raise NotImplementedError(
-            f"layer {name!r}: the merged bounds of a {style!r} bevel are not "
-            "known; import without merging its layer styles"
-        )
-    smooth = instance.get("bvlT", "SfBL") == "SfBL"
-    if smooth:
-        reach = max(height, 2) + 1.5 if size > 0 else 2.0
+        blur_lead, blur_trail = _blur_pads(radius)
+        lead += blur_lead
+        trail += blur_trail
+    if instance.get("AntA", False):
+        lead += 1
+    if radius <= 0:
+        lead += 4
+        trail += 4
+    return lead, trail
+
+
+def _stroke_size(instance: dict[str, Any]) -> float:
+    """A stroke's size within Photoshop's 1..250 px range (a stroke pads at
+    any opacity)."""
+    return min(max(float(instance.get("Sz  ", 0)), 1.0), 250.0)
+
+
+def _stroke_pads(instance: dict[str, Any]) -> tuple[int, int] | None:
+    position = instance.get("Styl", "OutF")
+    if position == "InsF":
+        return None
+    size = math.ceil(_stroke_size(instance))
+    if position == "CtrF":
+        size = math.ceil(size / 2)
+    return size + 2, size + 2
+
+
+def _stroke_emboss_style(strokes: Sequence[dict[str, Any]]) -> str | None:
+    """The bevel style a Stroke Emboss behaves as, from the enabled strokes.
+
+    The largest outside or centered stroke decides, sizes compared as
+    stored (a centered one counts half its size); only inside strokes make
+    an inner bevel; no stroke at all, no bevel.
+    """
+    best_reach = 0.0
+    best: str | None = None
+    for stroke in strokes:
+        if not stroke.get("enab", False):
+            continue
+        position = stroke.get("Styl", "OutF")
+        if position == "InsF":
+            best = best or "InrB"
+            continue
+        reach = _stroke_size(stroke) / (2 if position == "CtrF" else 1)
+        if best in (None, "InrB") or reach > best_reach:
+            best_reach = reach
+            best = "Embs" if position == "CtrF" else "OtrB"
+    return best
+
+
+def _bevel_pads(
+    instance: dict[str, Any], strokes: Sequence[dict[str, Any]]
+) -> tuple[int, int] | None:
+    # A bevel needs one of its two opacities to pad.
+    if not (
+        _opaque(float(instance.get("hglO", 75)))
+        or _opaque(float(instance.get("sdwO", 75)))
+    ):
+        return None
+    style = instance.get("bvlS", "InrB")
+    if style == "strokeEmboss":
+        style = _stroke_emboss_style(strokes)
+    if style in (None, "InrB"):
+        return None
+    height = float(instance.get("blur", 0))
+    if style in ("Embs", "PlEb"):
+        height /= 2
+    lead = trail = 1
+    if instance.get("bvlT", "SfBL") == "SfBL":
+        smooth_lead, smooth_trail = _blur_pads(height)
+        lead += smooth_lead
+        trail += smooth_trail
     else:
-        reach = height + 4
-    softening = float(instance.get("Sftn", 0))
-    if softening > 0:
-        reach += max(softening, 2) - 0.5
-    shift = -1.0 if softening == 0 and (not smooth or size == 0) else 0.0
-    anti_aliased = bool(instance.get("useShape", False)) and bool(
-        instance.get("AntA", False)
-    )
-    return _pads(reach, anti_aliased, shift)
+        lead += math.ceil(height) + 2
+        trail += math.ceil(height) + 2
+    soft_lead, soft_trail = _blur_pads(float(instance.get("Sftn", 0)))
+    lead += soft_lead
+    trail += soft_trail
+    if instance.get("antialiasGloss", False):
+        lead += 1
+    if instance.get("useShape", False) and instance.get("AntA", False):
+        lead += 1
+    return lead, trail
 
 
 def _instance_box(
-    key: str, instance: dict[str, Any], bounds: _Box, global_angle: float, name: str
+    key: str,
+    instance: dict[str, Any],
+    bounds: _Box,
+    global_angle: float,
+    strokes: Sequence[dict[str, Any]] = (),
 ) -> _Box | None:
+    """The box one enabled style instance grows the layer to, or `None`.
+
+    `strokes` are the layer's enabled stroke instances, which decide what a
+    Stroke Emboss bevel behaves as.
+    """
     left, top, right, bottom = bounds
     dx = dy = 0
+    pads: tuple[int, int] | None
     if key in ("DrSh", "OrGl"):
-        precise = key == "OrGl" and instance.get("GlwT") == "PrBL"
-        reach = _blur_reach(
-            float(instance.get("blur", 0)), float(instance.get("Ckmt", 0)), precise
+        pads = _shadow_glow_pads(
+            instance, key == "OrGl" and instance.get("GlwT") == "PrBL"
         )
-        lead, trail = _pads(reach, bool(instance.get("AntA", False)))
         if key == "DrSh":
-            angle = math.radians(
+            cos, sin = _light_trig(
                 global_angle if instance.get("uglg") else float(instance.get("lagl", 0))
             )
             distance = float(instance.get("Dstn", 0))
-            dx = _round_away(-math.cos(angle) * distance)
-            dy = _round_away(math.sin(angle) * distance)
+            dx = _round_away(-cos * distance)
+            dy = _round_away(sin * distance)
     elif key == "FrFX":
-        size = float(instance.get("Sz  ", 0))
-        position = instance.get("Styl", "OutF")
-        if position == "InsF":
-            return None
-        reach = size if position == "OutF" else float(math.ceil(size / 2))
-        lead = trail = int(reach) + 2
+        pads = _stroke_pads(instance)
     elif key == "ebbl":
-        pads = _bevel_pads(instance, name)
-        if pads is None:
-            return None
-        lead, trail = pads
+        pads = _bevel_pads(instance, strokes)
     else:
         # Shadows, glows, satin and overlays inside the layer stay inside it.
         return None
+    if pads is None:
+        return None
+    lead, trail = pads
     return (left + dx - lead, top + dy - lead, right + dx + trail, bottom + dy + trail)
 
 
@@ -779,8 +897,7 @@ def merged_styles_bounds(node: PsdLayer, global_angle: float) -> _Box:
         layer has no enabled style.
 
     Raises:
-        NotImplementedError: If the layer has a Stroke Emboss bevel, whose
-            merged bounds are not known, or its styles cannot be decoded.
+        NotImplementedError: If the layer's styles cannot be decoded.
     """
     bounds = node.bounds
     blocks = node.style_blocks
@@ -793,9 +910,11 @@ def merged_styles_bounds(node: PsdLayer, global_angle: float) -> _Box:
             f"layer {node.name!r}: its layer-styles descriptor cannot be "
             "decoded, so the merged bounds are not known"
         ) from exc
+    enabled = list(_enabled_instances(descriptor))
+    strokes = [instance for key, instance in enabled if key == "FrFX"]
     left, top, right, bottom = bounds
-    for key, instance in _enabled_instances(descriptor):
-        box = _instance_box(key, instance, bounds, global_angle, node.name)
+    for key, instance in enabled:
+        box = _instance_box(key, instance, bounds, global_angle, strokes)
         if box is not None:
             left, top = min(left, box[0]), min(top, box[1])
             right, bottom = max(right, box[2]), max(bottom, box[3])

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 
+from py_aep.data.psd_light_trig import LIGHT_TRIG
 from py_aep.models.properties.gradient import Gradient
 from py_aep.resolvers.psd_layers import read_psd_layers
 from py_aep.resolvers.psd_styles import (
     _instance_box,
+    _light_trig,
     has_enabled_styles,
     merged_styles_bounds,
     parse_layer_styles,
@@ -252,7 +255,15 @@ _DS = {
     "AntA": True,
 }
 _OG = {"enab": True, "Ckmt": 0.0, "GlwT": "SfBL", "AntA": True}
-_BV = {"enab": True, "Sftn": 0.0, "useShape": True, "AntA": True}
+# The sample bevel: contour on and anti-aliased, gloss contour anti-aliased.
+_BV = {
+    "enab": True,
+    "Sftn": 0.0,
+    "useShape": True,
+    "AntA": True,
+    "antialiasGloss": True,
+}
+_STROKE = {"enab": True, "Styl": "OutF", "Sz  ": 6.0}
 
 
 class TestMergedStylesBounds:
@@ -302,7 +313,7 @@ class TestMergedStylesBounds:
     )
     def test_style_pads_match_ae(self, key: str, instance: dict, pads: tuple) -> None:
         left, top, right, bottom = pads
-        box = _instance_box(key, instance, (0, 0, 24, 25), 120.0, "Layer 1")
+        box = _instance_box(key, instance, (0, 0, 24, 25), 120.0)
         assert box == (-left, -top, 24 + right, 25 + bottom)
 
     @pytest.mark.parametrize(
@@ -317,17 +328,134 @@ class TestMergedStylesBounds:
     def test_styles_inside_the_layer_do_not_grow_it(
         self, key: str, instance: dict
     ) -> None:
-        assert _instance_box(key, instance, (0, 0, 24, 25), 120.0, "Layer 1") is None
+        assert _instance_box(key, instance, (0, 0, 24, 25), 120.0) is None
 
     def test_global_light_moves_the_shadow(self) -> None:
         instance = {**_DS, "blur": 10.0, "Dstn": 11.0, "uglg": True, "lagl": 0.0}
-        box = _instance_box("DrSh", instance, (0, 0, 24, 25), 90.0, "Layer 1")
+        box = _instance_box("DrSh", instance, (0, 0, 24, 25), 90.0)
         assert box == (-12, -1, 36, 48)  # straight down, as the 90 degree global light
 
-    def test_stroke_emboss_is_refused(self) -> None:
+    @pytest.mark.parametrize(
+        ("strokes", "pads"),
+        [
+            # An outside stroke makes it an outer bevel (the stroke's own pad is
+            # unioned separately), a centered one an emboss of half the height.
+            ([_STROKE], (11, 11, 10, 10)),
+            ([{**_STROKE, "Styl": "CtrF"}], (7, 7, 6, 6)),
+            # The largest stroke decides; a centered one counts half its size.
+            ([_STROKE, {**_STROKE, "Styl": "CtrF", "Sz  ": 12.0}], (11, 11, 10, 10)),
+            (
+                [{**_STROKE, "Sz  ": 3.0}, {**_STROKE, "Styl": "CtrF", "Sz  ": 12.0}],
+                (7, 7, 6, 6),
+            ),
+            # A 0 px stroke still counts as a 1 px one.
+            ([{**_STROKE, "Sz  ": 0.0}], (11, 11, 10, 10)),
+            # Outside strokes beat inside ones.
+            ([{**_STROKE, "Styl": "InsF", "Sz  ": 20.0}, _STROKE], (11, 11, 10, 10)),
+            # Fractional sizes (Scale Effects) compare as stored: 238.77 / 2
+            # beats 119.3, where whole-px sizes (120 vs 119.5) would not.
+            (
+                [
+                    {**_STROKE, "Sz  ": 119.3},
+                    {**_STROKE, "Styl": "CtrF", "Sz  ": 238.77},
+                ],
+                (7, 7, 6, 6),
+            ),
+        ],
+    )
+    def test_stroke_emboss_follows_the_largest_stroke(
+        self, strokes: list, pads: tuple
+    ) -> None:
+        # Stroke Emboss, smooth, size 9 (samples/assets/psd_styles
+        # se_out_s6_b10_SfBL_f0 and se_ctr_s12_b3_PrBL_f0 in
+        # psd_styles_corpus.aep pin the rule).
         instance = {**_BV, "bvlS": "strokeEmboss", "bvlT": "SfBL", "blur": 9.0}
-        with pytest.raises(NotImplementedError, match="strokeEmboss"):
-            _instance_box("ebbl", instance, (0, 0, 24, 25), 120.0, "Layer 1")
+        left, top, right, bottom = pads
+        box = _instance_box("ebbl", instance, (0, 0, 24, 25), 120.0, strokes)
+        assert box == (-left, -top, 24 + right, 25 + bottom)
+
+    @pytest.mark.parametrize(
+        "strokes",
+        [
+            [],
+            [{**_STROKE, "enab": False}],
+            [{**_STROKE, "Styl": "InsF"}],
+        ],
+    )
+    def test_stroke_emboss_without_a_stroke_outside_stays_inside(
+        self, strokes: list
+    ) -> None:
+        instance = {**_BV, "bvlS": "strokeEmboss", "bvlT": "SfBL", "blur": 9.0}
+        assert _instance_box("ebbl", instance, (0, 0, 24, 25), 120.0, strokes) is None
+
+    def test_zero_size_stroke_pads_like_one_px(self) -> None:
+        box = _instance_box("FrFX", {**_STROKE, "Sz  ": 0.0}, (0, 0, 24, 25), 120.0)
+        assert box == (-3, -3, 27, 28)
+
+    @pytest.mark.parametrize(
+        ("key", "instance"),
+        [
+            ("DrSh", {**_DS, "blur": 10.0, "Opct": 0.0}),
+            ("OrGl", {**_OG, "blur": 10.0, "Opct": 0.0}),
+            (
+                "ebbl",
+                {
+                    **_BV,
+                    "bvlS": "OtrB",
+                    "bvlT": "SfBL",
+                    "blur": 9.0,
+                    "hglO": 0.0,
+                    "sdwO": 0.0,
+                },
+            ),
+        ],
+    )
+    def test_a_transparent_style_pads_nothing(self, key: str, instance: dict) -> None:
+        assert _instance_box(key, instance, (0, 0, 24, 25), 120.0) is None
+
+    @pytest.mark.parametrize(
+        ("key", "instance", "pads"),
+        [
+            ("DrSh", {**_DS, "blur": 10.0, "Opct": 1.0}, (12, 12, 12, 12)),
+            (
+                "ebbl",
+                {**_BV, "bvlS": "OtrB", "bvlT": "SfBL", "blur": 9.0, "hglO": 0.0},
+                (11, 11, 10, 10),
+            ),
+            ("FrFX", {**_STROKE, "Opct": 0.0}, (8, 8, 8, 8)),
+        ],
+    )
+    def test_a_faint_style_pads_fully(
+        self, key: str, instance: dict, pads: tuple
+    ) -> None:
+        # Only a fully transparent style drops out; a stroke never does.
+        left, top, right, bottom = pads
+        box = _instance_box(key, instance, (0, 0, 24, 25), 120.0)
+        assert box == (-left, -top, 24 + right, 25 + bottom)
+
+    def test_gloss_anti_alias_pads_one_px(self) -> None:
+        instance = {
+            **_BV,
+            "bvlS": "OtrB",
+            "bvlT": "SfBL",
+            "blur": 0.0,
+            "antialiasGloss": False,
+        }
+        assert _instance_box("ebbl", instance, (0, 0, 24, 25), 120.0) == (
+            -2,
+            -2,
+            25,
+            26,
+        )
+
+    def test_whole_degree_light_angles_use_the_photoshop_table(self) -> None:
+        assert _light_trig(30.0) == (0.866025403784439, 0.5)
+        assert _light_trig(49.0) == (LIGHT_TRIG[41][1], LIGHT_TRIG[41][0])
+        assert _light_trig(-90.0) == (0.0, -1.0)
+        assert _light_trig(30.5) == (
+            math.cos(math.radians(30.5)),
+            math.sin(math.radians(30.5)),
+        )
 
     def test_sample_document_matches_ae(self) -> None:
         # Every style of the sample at once: AE's merged box (-45, -45, 69, 70)

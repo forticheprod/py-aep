@@ -6,3 +6,4 @@
 *.wav filter=lfs diff=lfs merge=lfs -text
 samples/**/*.json filter=lfs diff=lfs merge=lfs -text
 samples/assets/* filter=lfs diff=lfs merge=lfs -text
+samples/assets/psd_styles/*.psd filter=lfs diff=lfs merge=lfs -text
