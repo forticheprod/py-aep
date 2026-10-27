@@ -637,6 +637,14 @@ Use After Effects to create test samples:
 - Naming: `samples/models/<type>/<attribute>_<value>.aep`
 - Run the JSX export script to generate the matching `.json` file
 
+#### 8. Document the Binary Layout
+
+[docs/file_format.md](docs/file_format.md) is the specification of the `.aep`
+format. Add what you decoded to the chunk's section (a new row in its offset
+table, or a new section and a row in the chunk index for a new chunk), with
+the evidence the rest of the page states: which samples show it, what After
+Effects does with it.
+
 ### Adding Boolean Flags (1-bit Attributes)
 
 Boolean flags are stored as individual bits within a byte:
@@ -793,6 +801,8 @@ Documentation is auto-deployed to GitHub Pages when changes are pushed to `main`
 ### Writing Documentation
 
 API docs are auto-generated from docstrings using mkdocstrings. Reference the [After Effects Scripting Guide](https://ae-scripting.docsforadobe.dev/) in docstrings.
+
+The `.aep` format itself is specified by hand in [docs/file_format.md](docs/file_format.md): every chunk, its layout, the file versions that write it, and a chunk index. Keep it current: a change that adds or decodes a chunk, a field or a version-dependent layout documents it there in the same pull request, stating the evidence (sample files, measurements on After Effects) rather than guesses.
 
 Use [scoped cross-references](https://mkdocstrings.github.io/python/usage/configuration/docstrings/#scoped_crossrefs) to link to other classes:
 
