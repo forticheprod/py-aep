@@ -168,14 +168,8 @@ def _opti_data(
         return build_exr_opti_data(info.compression, info.channel_names)
     if fmt.opti == "empty" and not sequence:
         return b""
-    # AE codes MPEG program and transport streams `MPEO` but keeps its MPEG
-    # importer's own code in the record (AE 2026).
-    importer = "MPEG" if fmt.source_format == "MPEO" else None
     return build_generic_opti_data(
-        fmt.source_format,
-        sequence=sequence,
-        video=info.width > 0,
-        importer_format=importer,
+        fmt.source_format, sequence=sequence, video=info.width > 0
     )
 
 

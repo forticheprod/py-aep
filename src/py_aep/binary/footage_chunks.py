@@ -108,8 +108,8 @@ class SspcChunk(Chunk):
     # -- Field separation (bytes 74-87) ------------------------------------
     field_tag: bytes = bytes_field(4)
     """Bytes 0x4A-0x4D: the QuickTime `FIEL` tag on media whose importer
-    declares its field handling (every MXF picture; AE 2026), zero
-    otherwise."""
+    declares its field handling (every MXF picture, interlaced or
+    field-ordered transport streams; AE 2026), zero otherwise."""
 
     _reserved_4e: bytes = bytes_field(1, repr=False)
     from_file: bool = bool_field()
@@ -128,7 +128,7 @@ class SspcChunk(Chunk):
     audio_format: int = u2_field()
     """Bytes 0x60-0x65: the audio block AE's Media Core imports record for
     media with sound: format 3, 4 bytes per sample and the channel count,
-    at most 2 (MXF, AE 2026); zero otherwise."""
+    at most 2 (MXF and transport streams, AE 2026); zero otherwise."""
 
     audio_sample_bytes: int = u2_field()
     audio_channels: int = u2_field()
@@ -389,11 +389,7 @@ class SspcChunk(Chunk):
 
 
 def build_generic_opti_data(
-    source_format: str,
-    *,
-    sequence: bool = False,
-    video: bool = True,
-    importer_format: str | None = None,
+    source_format: str, *, sequence: bool = False, video: bool = True
 ) -> bytes:
     """Build the 58-byte generic `opti` asset-info body for a file source.
 
@@ -401,12 +397,14 @@ def build_generic_opti_data(
     located file), but requires this header to recognize non-TIFF/PSD
     image sequences and audio/video. The layout is the format 4-char code,
     a version word, the chunk length, then a 16-byte importer block: the
-    importer's code reversed, an ``0xFFFFFFFF`` marker, codec bytes AE
-    re-derives on open, and a word AE sets on media with picture (zero on
-    audio-only WAV, MP3 and MXF files; AE 2026). AE zeroes the block for a
-    BMP/GIF sequence through its generic still importer (``IMIO`` on macOS,
-    ``STIL`` on Windows; imio_sequence.aep and media_replacement.aep are
-    byte-exact).
+    importer's code reversed (the format code, except that an `MPEO`
+    record carries `MPEG`: AE codes MPEG program and transport streams
+    `MPEO` but keeps its MPEG importer's own code there; AE 2026), an
+    ``0xFFFFFFFF`` marker, codec bytes AE re-derives on open, and a word AE
+    sets on media with picture (zero on audio-only WAV, MP3 and MXF files;
+    AE 2026). AE zeroes the block for a BMP/GIF sequence through its
+    generic still importer (``IMIO`` on macOS, ``STIL`` on Windows;
+    imio_sequence.aep and media_replacement.aep are byte-exact).
 
     Note: TIFF sequences use `build_tiff_opti_data` instead (AE 2026
     measured); PSD sequences use an empty opti via `PsdOptiChunk`.
@@ -415,17 +413,13 @@ def build_generic_opti_data(
         source_format: 4-char `sspc` source-format code.
         sequence: `True` for an image sequence.
         video: `False` for audio-only media.
-        importer_format: The importer's own 4-char code when it differs
-            from `source_format` (AE reverses `MPEG` into the record of a
-            transport or program stream it codes `MPEO`); `None` reverses
-            `source_format`.
     """
     code = source_format.encode("ascii")[:4].ljust(4, b" ")
     if sequence and source_format in ("IMIO", "STIL"):
         block = b"\x00" * 16
     else:
         picture = b"\x01\x00\x00\x00" if video else b"\x00" * 4
-        importer = (importer_format or source_format).encode("ascii")[:4].ljust(4, b" ")
+        importer = b"MPEG" if code == b"MPEO" else code
         block = importer[::-1] + b"\xff\xff\xff\xff" + b"\x00" * 4 + picture
     return (
         code

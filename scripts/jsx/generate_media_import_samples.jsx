@@ -3,9 +3,11 @@
  *
  * Builds the Media Core footage-import fixtures: for each entry of SAMPLES,
  * every samples/assets file matching its glob imported as footage (one item
- * per file, named after the file; AE refuses the FFV1 MXF) into
- * samples/models/import/<stem>.aep, plus its ExtendScript JSON export.
- * Tests compare py_aep's import of the same assets against these items.
+ * per file, named after the file; AE refuses the FFV1 MXF, the HEVC stream
+ * without parameter sets and the two cut / rate-divided program streams) into
+ * samples/models/import/<stem>.aep, plus its
+ * ExtendScript JSON export. Tests compare py_aep's import of the same
+ * assets against these items.
  *
  * Usage (headless, AE 2026):
  *   Stop-Process -Name AfterFX* -Force; Start-Sleep 3
@@ -19,7 +21,9 @@ var AEP_EXPORT_AS_LIBRARY = true;
     "use strict";
 
     var SAMPLES = [
-        { glob: "mxf_*.mxf", stem: "mxf_import" }
+        { glob: "mxf_*.mxf", stem: "mxf_import" },
+        { glob: "ts_*", stem: "mpegts_import" },
+        { glob: "mpg_*.mpg", stem: "mpegps_import" }
     ];
 
     var scriptFile = new File($.fileName);

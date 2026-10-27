@@ -6,27 +6,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from attrs import fields
-from helpers import parse_project_fresh
+from helpers import SAMPLES_DIR, assert_media_import_matches_ae, parse_project_fresh
 
 from py_aep import ImportAsType
 from py_aep import parse as parse_aep
-from py_aep.binary.chunk import Chunk, ListChunk
-from py_aep.binary.utils import find_by_list_type, find_by_type
 from py_aep.models.import_options import ImportOptions
 from py_aep.models.items.footage import FootageItem
 
-ASSETS = Path(__file__).parent.parent.parent / "samples" / "assets"
-BASE = (
-    Path(__file__).parent.parent.parent / "samples" / "models" / "folder" / "folder.aep"
-)
-FIXTURE = (
-    Path(__file__).parent.parent.parent
-    / "samples"
-    / "models"
-    / "import"
-    / "mpegts_import.aep"
-)
+ASSETS = SAMPLES_DIR / "assets"
+BASE = SAMPLES_DIR / "models" / "folder" / "folder.aep"
+FIXTURE = SAMPLES_DIR / "models" / "import" / "mpegts_import.aep"
 
 IMPORTED = [
     "ts_h264_320x180p25_ac3.ts",
@@ -40,21 +29,43 @@ IMPORTED = [
     "ts_h264_320x180p25_cut.ts",
     "ts_mpeg2_320x180p25_cut.ts",
     "ts_aac_only.ts",
+    "ts_audio_ac3_2s_aac3s.ts",
+    "ts_audio_mp2_2s_aac3s.ts",
+    "ts_audio_aac_44k.ts",
+    "ts_audio_mp2_mono.ts",
+    "ts_audio_lpcm.m2ts",
+    "ts_mpeg2_320x180p2997_rateext_div4.ts",
+    "ts_mpeg2_704x576_4x3.ts",
+    "ts_mpeg2_320x180p25_ac3mono.ts",
+    "ts_mpeg2_320x180p25_mp2stereo.ts",
+    "ts_mpeg2_320x180p25_mp2mono.ts",
+    "ts_hevc_320x180p25.ts",
+    "ts_hevc_320x180p2997.ts",
+    "ts_hevc_320x180p23976.ts",
+    "ts_hevc_320x180p25_sar40x33.ts",
+    "ts_hevc_720x576p25_4x3.ts",
+    "ts_hevc_720x480p2997_16x9.ts",
+    "ts_hevc_1440x1080p25_16x9.ts",
+    "ts_hevc_322x182p25.ts",
+    "ts_hevc_320x180p25_10bit.ts",
+    "ts_hevc_720x576i50_tff.ts",
+    "ts_hevc_720x576i25_tff.ts",
+    "ts_hevc_320x180p25_aac.ts",
+    "ts_hevc_320x180p25_cut.ts",
+    "ts_hevc_320x180p25_trail_first.ts",
+    "ts_hevc_320x180p25_vuifps50.ts",
+    "ts_hevc_320x180p25_novuitiming.ts",
+    "ts_hevc_720x576i25_tff_novuitiming.ts",
+    "ts_hevc_320x180p25_cut_bla_radl.ts",
+    "ts_hevc_320x180p25_slices2.ts",
+    "ts_hevc_320x180p12345.ts",
+    "ts_hevc_320x180p25_12bit.ts",
+    "ts_hevc_320x180p25_444_10bit.ts",
+    "ts_hevc_322x182p25_gray.ts",
+    "ts_hevc_322x182p25_gray10.ts",
+    "ts_hevc_320x180p25_aac44k.ts",
+    "ts_hevc_320x180p25.m2ts",
 ]
-
-# The source's modification stamp depends on the checkout; the codec bytes
-# of the generic opti (offsets 38-41) are the importer's, which AE re-derives
-# from the file on open (zero in py_aep, as for every other movie format).
-_SKIPPED_SSPC_FIELDS = {"chunk_type", "data", "synthetic", "_source_stamp"}
-
-
-def _pin_list(item: FootageItem, list_type: str) -> ListChunk:
-    pin = find_by_list_type(chunks=item._item_list.chunks, list_type="Pin ")
-    return find_by_list_type(chunks=pin.chunks, list_type=list_type)
-
-
-def _leaf(container: ListChunk, chunk_type: str) -> Chunk:
-    return find_by_type(chunks=container.chunks, chunk_type=chunk_type)
 
 
 @pytest.fixture(scope="module")
@@ -72,50 +83,18 @@ def test_import_matches_ae_fixture(
     assert item.name == name
     out = tmp_path / "ts.aep"
     project.save(out)
-    item = parse_project_fresh(out).footages[-1]  # type: ignore[index]
-    ae = truth[name]
-
-    mine, theirs = item.main_source._sspc, ae.main_source._sspc
-    for f in fields(type(mine)):
-        if f.name in _SKIPPED_SSPC_FIELDS:
-            continue
-        assert getattr(mine, f.name) == getattr(theirs, f.name), f.name
-
-    opti, ae_opti = item.main_source._opti.data, ae.main_source._opti.data
-    assert len(opti) == len(ae_opti) == 58
-    assert opti[:38] == ae_opti[:38]
-    assert opti[42:] == ae_opti[42:]
-
-    # The start timecode (none) and its drop-frame flag.
-    mnfo, ae_mnfo = _pin_list(item, "mnfo"), _pin_list(ae, "mnfo")
-    assert _leaf(mnfo, "strt").tobytes() == _leaf(ae_mnfo, "strt").tobytes()
-    assert _leaf(mnfo, "drop").tobytes() == _leaf(ae_mnfo, "drop").tobytes()
-
-    assert item.width == ae.width and item.height == ae.height
-    assert item.duration == pytest.approx(ae.duration)
-    assert item.frame_rate == pytest.approx(ae.frame_rate)
-    assert item.pixel_aspect == pytest.approx(ae.pixel_aspect)
-    assert item.has_audio == ae.has_audio
-    assert (
-        item.main_source.field_separation_type == ae.main_source.field_separation_type
-    )
+    assert_media_import_matches_ae(parse_project_fresh(out).footages[-1], truth[name])
 
 
-def test_hevc_raises_and_leaves_project_unchanged() -> None:
-    project = parse_aep(BASE).project
-    count = len(project.items)
-    with pytest.raises(ValueError, match="HEVC"):
-        project.import_file(ImportOptions(ASSETS / "ts_hevc_320x180p25.ts"))
-    assert len(project.items) == count
-
-
-def test_can_import_as_footage_only() -> None:
-    for name in ("ts_h264_320x180p25_ac3.ts", "ts_h264_320x180p25_ac3.m2ts"):
-        opts = ImportOptions(ASSETS / name)
-        assert opts.can_import_as(ImportAsType.FOOTAGE)
-        assert not opts.can_import_as(ImportAsType.COMP)
-        assert not opts.can_import_as(ImportAsType.COMP_CROPPED_LAYERS)
-        assert not opts.can_import_as(ImportAsType.PROJECT)
+@pytest.mark.parametrize(
+    "name", ["ts_h264_320x180p25_ac3.ts", "ts_h264_320x180p25_ac3.m2ts"]
+)
+def test_can_import_as_footage_only(name: str) -> None:
+    opts = ImportOptions(ASSETS / name)
+    assert opts.can_import_as(ImportAsType.FOOTAGE)
+    assert not opts.can_import_as(ImportAsType.COMP)
+    assert not opts.can_import_as(ImportAsType.COMP_CROPPED_LAYERS)
+    assert not opts.can_import_as(ImportAsType.PROJECT)
 
 
 def test_sequence_import_refused() -> None:
