@@ -178,17 +178,24 @@ def get_footage(project: Project, name: str) -> FootageItem:
 
 def assert_media_import_matches_ae(item: FootageItem, ae: FootageItem) -> None:
     """Compare a footage import parsed back from disk with AE's own import
-    of the same media file (MXF): every `sspc` field but the source stamp
-    (it depends on the checkout), the generic `opti` but its codec bytes
-    (offsets 38-41, the importer's, which AE re-derives from the file on
-    open and py_aep leaves zero as for every other movie format), the
-    `mnfo` start timecode and drop-frame chunks, and the item's reported
-    attributes."""
+    of the same media file (MXF, transport or program stream): every `sspc`
+    field but the source stamp (it depends on the checkout) and source flag
+    bit 22, the generic `opti` but its codec bytes (offsets 38-41, the
+    importer's, which AE re-derives from the file on open and py_aep leaves
+    zero as for every other movie format), the `mnfo` start timecode and
+    drop-frame chunks, and the item's reported attributes."""
     mine, theirs = item.main_source._sspc, ae.main_source._sspc
     for f in fields(type(mine)):
         if f.name in ("chunk_type", "data", "synthetic", "_source_stamp"):
             continue
-        assert getattr(mine, f.name) == getattr(theirs, f.name), f.name
+        value, expected = getattr(mine, f.name), getattr(theirs, f.name)
+        if f.name == "_reserved_71":
+            # Byte 0x72 bit 0x40 comes and goes between AE runs on the same
+            # file (3 of ~130 batch-imported MPEG items; never when the same
+            # files are imported again, cleared by a resave): import-time
+            # state, not the media.
+            value, expected = (bytes([v[0], v[1] & 0xBF]) for v in (value, expected))
+        assert value == expected, f.name
     opti, ae_opti = item.main_source._opti.data, ae.main_source._opti.data
     assert len(opti) == len(ae_opti) == 58
     assert opti[:38] == ae_opti[:38]
