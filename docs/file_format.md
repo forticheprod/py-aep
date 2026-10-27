@@ -139,11 +139,27 @@ BOM. An empty body is an empty string.
 Most strings are `Utf8` chunks placed right after the chunk they belong to:
 an item's name after its [`idta`](#idta), a layer's name after its
 [`ldta`](#ldta), a property stream's expression in its
-[`LIST:tdbs`](#listtdbs), and the JSON payloads that follow the colour
-management flags ([`pcms`](#pcms), [`PwCs`](#pwcs), [`pdvc`](#pdvc),
-[`mcsp`](#mcsp), [`Mcsp`](#mcsp_1), [`ocsp`](#ocsp), [`hdrm`](#hdrm)). Two
-strings are not `Utf8` chunks: [`wsnm`](#wsnm) is UTF-16LE and
-[`cmta`](#cmta) is a NUL-terminated UTF-8 chunk.
+[`LIST:tdbs`](#listtdbs) (an [`expr`](#expr) in files older than version
+92.0), and the JSON payloads that follow the colour management flags
+([`pcms`](#pcms), [`PwCs`](#pwcs), [`pdvc`](#pdvc), [`mcsp`](#mcsp),
+[`Mcsp`](#mcsp_1), [`ocsp`](#ocsp), [`hdrm`](#hdrm)). Two strings are not
+`Utf8` chunks: [`wsnm`](#wsnm) is UTF-16LE and [`cmta`](#cmta) is a
+NUL-terminated UTF-8 chunk.
+
+### `expr`
+
+A property stream's expression as files older than version 92.0 store it
+(projects saved by AE CC 12.0): the UTF-8 text followed by a NUL byte, in
+the slot where newer files write a [`Utf8`](#utf8).
+
+**Parent:** [`LIST:tdbs`](#listtdbs) · **Size:** variable · **py_aep:** `ExprChunk`
+
+After Effects picks the chunk kind from the file version (measured on AE
+2026 with the [`head`](#head) stamp patched): a file of version 91 reads an
+`expr` and silently drops a `Utf8` in that slot, a file of version 92 or
+later reads a `Utf8` and refuses an `expr` ("missing data in file"). A
+writer must choose the kind by the file version it stamps. AE 2026 saves
+the expressions of such a file back as `Utf8` chunks, at its own version.
 
 ### Little-endian data
 
@@ -3748,7 +3764,7 @@ a static value or keyframes.
 | [`tdsn`](#tdsn) | 1, required | Display name (one [`Utf8`](#utf8)): `-_0_/-` for the default name; empty on an effect's hidden `-0000` parameter; some effect parameters store their parameter name. |
 | [`tdb4`](#tdb4) | 1, required | Stream metadata. |
 | [`cdat`](#cdat) or [`LIST:list`](#listlist) | 1, required | The static value, or the keyframes (header [`lhd3`](#lhd3) + items [`ldat`](#ldat)). |
-| [`Utf8`](#utf8) | 0-1 | The expression, when the stream has one. |
+| [`Utf8`](#utf8) | 0-1 | The expression, when the stream has one (an [`expr`](#expr) in files older than version 92.0). |
 | [`tdli`](#tdli) | 0-1 | Mask reference of a path parameter (effects only). |
 | [`tdum`](#tdum) + [`tduM`](#tdum) | 0-1 pair | Minimum and maximum; only on the stream kinds listed under [`tdum`](#tdum). |
 | [`tdpi`](#tdpi) + [`tdps`](#tdps) | 0-1 pair | Layer reference (effect layer parameters, `ADBE Paint Clone Layer`). |
@@ -3790,7 +3806,8 @@ twice: 0x78 holds 0x01000000 exactly when the `Utf8` is present (in all 47
 expression streams of the samples, and nowhere else), and bit 0 of 0x77 is
 set when the expression is disabled (`expressionEnabled = false`). AE
 refuses a file whose `tdb4` claims an expression that has no `Utf8`
-("missing data in file").
+("missing data in file"). Files older than version 92.0 hold the text in
+an [`expr`](#expr) chunk in the same slot, NUL-terminated.
 
 #### Static and animated streams
 
@@ -6448,6 +6465,7 @@ Every chunk documented on this page, alphabetically.
 | [`epid`](#epid) | [Footage](#footage) |
 | [`ewin`](#ewin) | [Items, folders and compositions](#items-folders-and-compositions) |
 | [`ewot`](#ewot) | [Items, folders and compositions](#items-folders-and-compositions) |
+| [`expr`](#expr) | [File structure](#file-structure) |
 | [`fcid`](#fcid) | [Project settings and colour management](#project-settings-and-colour-management) |
 | [`fdta`](#fdta) | [Items, folders and compositions](#items-folders-and-compositions) |
 | [`fiac`](#fiac) | [Items, folders and compositions](#items-folders-and-compositions) |
