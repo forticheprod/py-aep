@@ -17,9 +17,11 @@ def test_op1a_dnxhr_stereo() -> None:
     assert (info.width, info.height) == (320, 180)
     assert info.frame_rate == 25.0
     assert info.duration == pytest.approx(8 / 25)
+    assert info.frames == 8
     assert info.pixel_aspect == 1.0
     assert info.pixel_aspect_terms == (1, 1)
     assert info.field_order == 0
+    assert info.field_label
     assert info.depth == 24
     assert not info.has_alpha
     assert info.has_audio

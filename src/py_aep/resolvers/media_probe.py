@@ -70,28 +70,34 @@ class MediaInfo(NamedTuple):
     channel_names: tuple[str, ...] = ()
     """OpenEXR only: every channel, those of a named part of a multi-part
     file prefixed with the part's name (`"Z.A"`)."""
+    frames: int | None = None
+    """MXF and MPEG streams only: the duration in frames (samples for
+    audio-only media), the exact count AE stores over the rate; `None` for
+    the formats whose duration is stored as a reduced fraction."""
     audio_channels: int = 0
-    """MXF and MPEG transport streams only: the sound channels AE records
-    (`SspcChunk` audio bytes, at most two; 0 without audio)."""
+    """MXF and MPEG streams only: the sound channels AE records
+    (`SspcChunk.audio_channels`, at most two; 0 without audio)."""
     field_order: int = 0
-    """MXF and MPEG transport streams only: 0 for progressive footage, 1 for
-    upper field first, 2 for lower field first, as AE sets the footage field
+    """MXF and MPEG streams only: 0 for progressive footage, 1 for upper
+    field first, 2 for lower field first, as AE sets the footage field
     separation."""
     field_label: bool = False
-    """MXF and MPEG transport streams only: whether AE tags the footage with
-    its field label (`SspcChunk` bytes 0x4A): every MXF picture, interlaced
-    transport-stream pictures and those it gives a field order, and
-    progressive MPEG-2 pictures in a stream without audio."""
+    """MXF and MPEG streams only: whether AE tags the footage with its field
+    label (`SspcChunk.field_tag`): every MXF picture, pictures AE gives a
+    field order, and the progressive MPEG-2 pictures of
+    `_mpeg2_field_label`."""
     timecode_start: int = 0
-    """MXF and MPEG transport streams only: the start timecode, in frames (0
-    without a timecode)."""
-    timecode_drop_frame: bool = False
-    """MXF and MPEG transport streams only: the drop-frame flag AE stores
-    with the start timecode (set for every transport stream, AE 2026)."""
+    """MXF and MPEG streams only: the start timecode, in frames (0 without a
+    timecode; an MPEG-1 system stream's first GOP time code)."""
+    timecode_drop_frame: bool = True
+    """The drop-frame flag AE stores with the start timecode: an MXF
+    picture's or MPEG-1 system stream's own, 1 for everything else (AE
+    2026)."""
     pixel_aspect_terms: tuple[int, int] = (0, 0)
-    """MXF and MPEG transport streams only: the dividend and divisor AE
-    stores for `pixel_aspect` when they are not its reduced fraction
-    (768/702 for D1/DV PAL); `(0, 0)` otherwise."""
+    """MXF and MPEG streams only: the dividend and divisor AE stores for
+    `pixel_aspect`, unreduced where AE writes them so (768/702 for D1/DV
+    PAL, 10909/10000 for an MPEG-1 system stream's 12/11); `(0, 0)` for
+    every other format."""
 
 
 #: AE's depth for grayscale pixels by bits per sample (AE 2026 imports of
@@ -185,13 +191,14 @@ def probe_media(file: Path, data: bytes | None = None) -> MediaInfo:
         )
     # The parsers trust the header layout; a truncated or corrupt file would
     # otherwise surface as a raw struct.error / IndexError from deep inside
-    # one of them.
+    # one of them, and a corrupt size field as an OverflowError from a read
+    # or seek beyond what Python can index.
     try:
         if data is not None:
             return parser(io.BytesIO(data))
         with file.open("rb") as fp:
             return parser(cast("IO[bytes]", _BoundedReader(fp)))
-    except (struct.error, IndexError) as exc:
+    except (struct.error, IndexError, OverflowError) as exc:
         raise ValueError(
             f"{file.name}: truncated or malformed {suffix} file ({exc})"
         ) from exc
@@ -1916,33 +1923,30 @@ def _probe_swf(fp: IO[bytes]) -> MediaInfo:
 
 
 # ---------------------------------------------------------------------------
-# MPEG-1/2 program stream - sequence header + picture-start-code count
+# MPEG-1 system / MPEG-2 program stream - pack headers, PES, then the MPEG-2
+# decoder shared with the transport-stream probe (AE 2026 import)
 # ---------------------------------------------------------------------------
 
-_MPEG_FR = {
-    1: 24000 / 1001,
+#: MPEG-2 `frame_rate_code` -> the 3-decimal rate AE stores. A
+#: `frame_rate_extension` scales this rounded rate, not the exact one: AE
+#: 2026 stores 7.492 (29.97 / 4) for an extension denominator of 3.
+_MPEG2_RATES = {
+    1: 23.976,
     2: 24.0,
     3: 25.0,
-    4: 30000 / 1001,
+    4: 29.97,
     5: 30.0,
     6: 50.0,
-    7: 60000 / 1001,
+    7: 59.94,
     8: 60.0,
 }
-
-
-#: AE's pixel aspect for the D1/DV frame sizes, keyed by
-#: `(width, height, aspect_ratio_information)`. AE applies its own named
-#: presets here instead of the arithmetic the sequence header implies:
-#: 720x480 flagged 16:9 imports as D1/DV NTSC Widescreen (40/33 = 1.2121),
-#: not the (16/9)/(720/480) = 1.1852 the frame size alone would give. Every
-#: other frame size measured square. Values verified against AE 2026.
-_MPEG_D1_PIXEL_ASPECT = {
-    (720, 480, 2): 10 / 11,
-    (720, 480, 3): 40 / 33,
-    (720, 576, 2): 128 / 117,
-    (720, 576, 3): 512 / 351,
-}
+#: The pixel aspects an MPEG-1 system stream keeps as a fraction: square
+#: pixels, the D1/DV presets and the HDV 4/3. AE stores any other one rounded
+#: to 4 decimals over 10000 (704x576 4:3 -> 10909/10000, where a transport
+#: stream stores 12/11; AE 2026).
+_MPEG1_ASPECTS = frozenset(
+    {(1, 1), (10, 11), (40, 33), (768, 702), (1024, 702), (4, 3)}
+)
 
 
 def _pes_payload_start(data: bytes, pos: int, end: int) -> int:
@@ -1964,17 +1968,32 @@ def _pes_payload_start(data: bytes, pos: int, end: int) -> int:
     return min(p, end)
 
 
-def _mpeg_video_es(data: bytes) -> tuple[bytes, bool]:
-    """Return `(video elementary stream, has_audio)` from a program stream.
+class _ProgramStream(NamedTuple):
+    video: bytes
+    """The video elementary stream."""
+    audio: bytes
+    """The first audio PES payload (an MPEG audio or AC-3 frame starts it)."""
+    audio_kind: str
+    """`"mpa"`, `"ac3"`, `"private"` for another private stream 1 payload,
+    `""` without audio."""
+    mpeg1: bool
+    """An MPEG-1 system stream rather than an MPEG-2 program stream: AE 2026
+    imports the two through different rules (see `_probe_mpeg`)."""
 
-    The elementary stream has to be reassembled before its picture start codes
-    can be counted: a start code routinely straddles a PES packet boundary, so
+
+def _program_stream(data: bytes) -> _ProgramStream:
+    """Demultiplex a program stream.
+
+    The video elementary stream has to be reassembled before its start codes
+    can be read: a start code routinely straddles a PES packet boundary, so
     scanning the muxed file both misses real pictures and matches the zero
     padding that precedes a pack or PES header. Counting the raw file was off
     by one in both directions on the measured fixtures.
     """
     out = bytearray()
-    has_audio = False
+    audio = b""
+    audio_kind = ""
+    mpeg1 = False
     pos, n = 0, len(data)
     while pos + 4 <= n:
         if data[pos : pos + 3] != b"\x00\x00\x01":
@@ -1989,6 +2008,7 @@ def _mpeg_video_es(data: bytes) -> tuple[bytes, bool]:
                     break
                 pos += 14 + (data[pos + 13] & 0x07)
             else:  # MPEG-1: a flat 12 bytes
+                mpeg1 = True
                 pos += 12
             continue
         if stream_id == 0xB9:  # program end
@@ -1997,37 +2017,94 @@ def _mpeg_video_es(data: bytes) -> tuple[bytes, bool]:
             break
         length = int.from_bytes(data[pos + 4 : pos + 6], "big")
         end = min(pos + 6 + length, n) if length else n
-        if 0xC0 <= stream_id <= 0xDF or stream_id == 0xBD:
-            has_audio = True
+        payload = _pes_payload_start(data, pos, end)
+        if 0xC0 <= stream_id <= 0xDF:  # MPEG audio
+            if not audio_kind:
+                audio, audio_kind = data[payload:end], "mpa"
+        elif stream_id == 0xBD:  # private stream 1: AC-3 behind a 4-byte header
+            if not audio_kind:
+                if payload < end and 0x80 <= data[payload] <= 0x87:
+                    audio, audio_kind = data[payload + 4 : end], "ac3"
+                else:
+                    audio_kind = "private"
         elif 0xE0 <= stream_id <= 0xEF:
-            out += data[_pes_payload_start(data, pos, end) : end]
+            out += data[payload:end]
         pos = end
-    return bytes(out), has_audio
+    return _ProgramStream(bytes(out), audio, audio_kind, mpeg1)
 
 
 def _probe_mpeg(fp: IO[bytes]) -> MediaInfo:
-    # Program streams carry no global duration and the SCR timeline stops short
-    # of the final frames, so the frames have to be counted. This reads the
-    # whole file, which is acceptable for the sizes py_aep handles.
-    video, has_audio = _mpeg_video_es(fp.read())
-    seq = video.find(b"\x00\x00\x01\xb3")
-    if seq < 0:
-        raise ValueError("Not a valid MPEG file (no sequence header)")
-    val = struct.unpack_from(">I", video, seq + 4)[0]
-    width = (val >> 20) & 0xFFF
-    height = (val >> 8) & 0xFFF
-    fps = _MPEG_FR.get(val & 0xF, 0.0)
+    """Probe an MPEG-1 system stream or MPEG-2 program stream the way After
+    Effects 2026 imports it.
+
+    Neither carries a duration, so every picture is counted (the whole file
+    is read). The sequence header gives the size, rate and aspect through
+    the MPEG-2 decoder shared with the transport-stream probe
+    (`_mpeg2_sequence`); unlike a transport stream, a program stream keeps an
+    open GOP's leading B pictures, and AE refuses one that does not open with
+    a sequence header. An MPEG-1 system stream goes through a different AE
+    path: fields follow the size rules of `_default_field_order`, a
+    non-preset pixel aspect is rounded to 4 decimals, the first GOP time code
+    becomes the start timecode, and a frame-rate extension denominator is
+    refused.
+
+    Raises:
+        ValueError: If the file has no video, does not start with a sequence
+            header, states no frame rate, or (MPEG-1 system streams) divides
+            its rate through a frame-rate extension - all refused by AE.
+    """
+    stream = _program_stream(fp.read())
+    video = stream.video
+    first = video.find(b"\x00\x00\x01")
+    if first < 0 or video[first + 3] != 0xB3:
+        raise ValueError(
+            "After Effects cannot open an MPEG program stream that does not "
+            "start with a sequence header"
+        )
+    sequence = _mpeg2_sequence(video)
+    fps = round(sequence.fps, 3)
+    if not fps:
+        raise ValueError("The MPEG video stream states no frame rate")
+    if stream.mpeg1 and sequence.rate_divisor > 1:
+        raise ValueError(
+            "After Effects cannot open an MPEG-1 system stream whose frame "
+            "rate extension divides the rate"
+        )
+    width, height = sequence.width, sequence.height
     frames = video.count(b"\x00\x00\x01\x00")
-    duration = frames / fps if fps else 0.0
-    pixel_aspect = _MPEG_D1_PIXEL_ASPECT.get((width, height, (val >> 4) & 0xF), 1.0)
+    has_audio = bool(stream.audio_kind)
+    sample_rate, channels = (
+        _audio_format(stream.audio_kind, stream.audio) if has_audio else (0.0, 0)
+    )
+    timecode_start, drop_frame = 0, True
+    if stream.mpeg1:
+        terms = _mpeg1_pixel_aspect(sequence.aspect_code, width, height)
+        if sequence.interlaced:
+            field_order = 1
+        else:
+            field_order = _default_field_order(width, height, fps)
+        labelled = field_order != 0
+        timecode_start, drop_frame = _mpeg2_gop_timecode(video, fps)
+    else:
+        terms = _mpeg2_pixel_aspect(sequence.aspect_code, width, height)
+        field_order = 1 if sequence.interlaced else 0
+        labelled = _mpeg2_field_label(sequence.interlaced, stream.audio_kind, channels)
     return MediaInfo(
         width=width,
         height=height,
-        duration=duration,
+        duration=frames / fps,
+        frames=frames,
         frame_rate=fps,
         has_audio=has_audio,
-        pixel_aspect=pixel_aspect,
+        audio_sample_rate=sample_rate,
+        pixel_aspect=terms[0] / terms[1],
         depth=_color_depth(False, 8),
+        audio_channels=channels,
+        field_order=field_order,
+        field_label=labelled,
+        timecode_start=timecode_start,
+        timecode_drop_frame=drop_frame,
+        pixel_aspect_terms=terms,
     )
 
 
@@ -2544,7 +2621,7 @@ _DV_PAL_ASPECT = ((128, 117), (512, 351))
 # 720x512 import as 576 and 486 lines (the VBI lines are dropped). The PAL
 # presets are stored unreduced, as AE writes them.
 _MXF_D1_HEIGHTS = {608: 576, 512: 486, 576: 576, 486: 486}
-_MXF_D1_ASPECTS = ((10, 11), (40, 33), (768, 702), (1024, 702))
+_D1_ASPECTS = ((10, 11), (40, 33), (768, 702), (1024, 702))
 
 
 def _mxf_ber(data: bytes, pos: int) -> tuple[int, int]:
@@ -2561,6 +2638,8 @@ def _mxf_batch(value: bytes) -> list[bytes]:
     if len(value) < 8:
         return []
     count, size = struct.unpack(">II", value[:8])
+    # A corrupt count would otherwise build billions of empty items.
+    count = min(count, (len(value) - 8) // size) if size else 0
     return [value[8 + i * size : 8 + (i + 1) * size] for i in range(count)]
 
 
@@ -2695,10 +2774,10 @@ def _mxf_descriptor(
 
 def _d1_pixel_aspect(aspect: Fraction, width: int, height: int) -> tuple[int, int]:
     """`(dividend, divisor)` AE stores for `aspect` at `width` x `height`: the
-    D1 preset within 5 % of it at the D1 frame sizes (see `_MXF_D1_ASPECTS`),
+    D1 preset within 5 % of it at the D1 frame sizes (see `_D1_ASPECTS`),
     else the reduced fraction."""
     if width == 720 and height in (576, 486):
-        for preset in _MXF_D1_ASPECTS:
+        for preset in _D1_ASPECTS:
             if abs(preset[0] / preset[1] / float(aspect) - 1.0) < 0.05:
                 return preset
     return aspect.numerator, aspect.denominator
@@ -2708,7 +2787,7 @@ def _mxf_picture_aspect(
     descriptor: _MxfSet, width: int, height: int, interlaced: bool
 ) -> tuple[tuple[int, int], int]:
     """`((dividend, divisor), field order)` of a picture descriptor as AE
-    2026 imports it (see `_MXF_D1_ASPECTS` and the DV presets)."""
+    2026 imports it (see `_D1_ASPECTS` and the DV presets)."""
     coding = descriptor.props.get(_MXF_PICTURE_CODING, b"")
     dar = _mxf_rational(descriptor.props.get(_MXF_ASPECT_RATIO))
     wide = dar == Fraction(16, 9)
@@ -2776,25 +2855,33 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
     has_audio = bool(sound)
     audio_sample_rate = 0.0
     audio_channels = 0
+    descriptors: list[_MxfSet] = []
     for _track, sequence in sound:
         clip = _mxf_first_component(sets, sequence, _MXF_SOURCE_CLIP)
         descriptor = _mxf_descriptor(sets, clip, _MXF_SOUND_DESCRIPTORS)
-        if descriptor is None:
-            continue
+        # Tracks whose clip cannot be followed (an OP-Atom file's external
+        # packages) all fall back to the same descriptor: count it once.
+        if descriptor is not None and descriptor not in descriptors:
+            descriptors.append(descriptor)
+    for descriptor in descriptors:
         rate = _mxf_rational(descriptor.props.get(_MXF_AUDIO_SAMPLING_RATE))
         if rate is not None and not audio_sample_rate:
             audio_sample_rate = float(round(rate))
         audio_channels += _mxf_u(descriptor.props.get(_MXF_CHANNEL_COUNT)) or 0
 
     if picture is None:
+        if not audio_sample_rate:
+            raise ValueError("MXF sound track has no sample rate")
         # Audio-only: the duration is the sound clip's length in its track's
         # edit units (samples at the sample rate for a PCM OP-Atom file).
         track, sequence = sound[0]
         clip = _mxf_first_component(sets, sequence, _MXF_SOURCE_CLIP) or sequence
         edit_rate = _mxf_rational(track.props.get(_MXF_EDIT_RATE)) or Fraction(1)
         units = _mxf_u(clip.props.get(_MXF_DURATION)) or 0
+        duration = units / edit_rate
         return MediaInfo(
-            duration=float(units / edit_rate),
+            duration=float(duration),
+            frames=round(duration * audio_sample_rate),
             has_audio=True,
             audio_sample_rate=audio_sample_rate,
             audio_channels=audio_channels,
@@ -2865,11 +2952,14 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
     if timecode is not None:
         timecode_start = _mxf_u(timecode.props.get(_MXF_START_TIMECODE)) or 0
         drop_frame = bool(_mxf_u(timecode.props.get(_MXF_DROP_FRAME)))
-    frame_rate = round(float(rate), 3)
+    frame_rate = round(float(rate), 3)  # AE stores the 3-decimal rate
+    if not frame_rate:
+        raise ValueError("MXF picture descriptor has no sample rate")
     return MediaInfo(
         width=width,
         height=height,
-        duration=frames / frame_rate if frame_rate else 0.0,
+        duration=frames / frame_rate,
+        frames=frames,
         frame_rate=frame_rate,
         has_alpha=has_alpha,
         has_audio=has_audio,
@@ -2891,33 +2981,39 @@ def _probe_mxf(fp: IO[bytes]) -> MediaInfo:
 # MPEG-1/2 or H.264 elementary stream (AE 2026 import)
 # ---------------------------------------------------------------------------
 
-#: PMT stream types: MPEG-1/2 video, H.264, HEVC (which AE refuses), MPEG-4
-#: part 2 (which AE imports but py_aep cannot size).
-_TS_MPEG_VIDEO = frozenset({0x01, 0x02})
+#: PMT stream types AE imports as video: MPEG-1/2, H.264, H.265 and MPEG-4
+#: part 2 (which py_aep cannot size).
 _TS_AVC_VIDEO = 0x1B
 _TS_HEVC_VIDEO = 0x24
 _TS_MPEG4_VIDEO = 0x10
-#: PMT stream types AE imports as audio: MPEG-1 layers (0x03, 0x04), ADTS and
-#: LATM AAC (0x0F, 0x11), Blu-ray LPCM (0x80), AC-3 and its relatives
-#: (0x81-0x87). Private PES data (0x06) counts when an AC-3, E-AC-3 or DTS
-#: descriptor tags it.
-_TS_AUDIO_TYPES = frozenset(
-    {0x03, 0x04, 0x0F, 0x11, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87}
+_TS_VIDEO_TYPES = frozenset(
+    {0x01, 0x02, _TS_AVC_VIDEO, _TS_HEVC_VIDEO, _TS_MPEG4_VIDEO}
 )
-_TS_AUDIO_DESCRIPTORS = frozenset({0x6A, 0x7A, 0x7B})
-#: MPEG-2 `frame_rate_code` -> the 3-decimal rate AE stores.
-_TS_MPEG_RATES = {
-    1: 23.976,
-    2: 24.0,
-    3: 25.0,
-    4: 29.97,
-    5: 30.0,
-    6: 50.0,
-    7: 59.94,
-    8: 60.0,
+#: PMT stream types AE imports as audio and their coding: MPEG-1 layers
+#: (0x03, 0x04), ADTS and LATM AAC (0x0F, 0x11), Blu-ray LPCM (0x80), AC-3
+#: and its relatives (0x81-0x87). Private PES data (0x06) is coded by its
+#: AC-3, E-AC-3 or DTS descriptor, or sniffed (`_ts_sniff_audio`).
+_TS_AUDIO_KINDS = {
+    0x03: "mpa",
+    0x04: "mpa",
+    0x0F: "aac",
+    0x11: "aac",
+    0x80: "lpcm",
+    0x81: "ac3",
+    0x82: "dts",
+    0x83: "truehd",
+    0x84: "eac3",
+    0x85: "dts",
+    0x86: "dts",
+    0x87: "eac3",
 }
+_TS_DESCRIPTOR_KINDS = {0x6A: "ac3", 0x7A: "eac3", 0x7B: "dts"}
 #: MPEG-2 `aspect_ratio_information` -> display aspect (1 is square pixels).
 _MPEG_DISPLAY_ASPECT = {2: Fraction(4, 3), 3: Fraction(16, 9), 4: Fraction(221, 100)}
+#: Blu-ray LPCM channel assignment -> channels (mono and 3-channel layouts
+#: occupy an even number of sample slots).
+_LPCM_CHANNELS = {1: 1, 3: 2, 4: 3, 5: 4, 6: 4, 7: 5, 8: 6, 9: 6, 10: 7, 11: 8}
+_LPCM_RATES = {1: 48000.0, 4: 96000.0, 5: 192000.0}
 #: H.264 VUI `aspect_ratio_idc` -> sample aspect (Table E-1; 255 = explicit).
 _H264_SAR = {
     1: (1, 1),
@@ -2937,8 +3033,8 @@ _H264_SAR = {
     15: (3, 2),
     16: (2, 1),
 }
-#: MPEG-1 layer II bit rates (kbit/s) by header index.
-_MP2_BITRATES = (0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384)
+#: MPEG-1 layer II bit rates (kbit/s) by header index (0: free, 15: bad).
+_MP2_BITRATES = (0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0)
 #: AC-3 bit rates (kbit/s) by `frmsizecod >> 1`.
 _AC3_BITRATES = (
     32,
@@ -2966,6 +3062,9 @@ _AC3_BITRATES = (
 class _TsStream(NamedTuple):
     pid: int
     stream_type: int
+    kind: str
+    """An audio stream's coding (`_TS_AUDIO_KINDS`), `""` for video and for a
+    private stream whose first frame has not been sniffed yet."""
 
 
 class _TsProgram(NamedTuple):
@@ -3008,11 +3107,25 @@ def _ts_section(payload: bytes) -> bytes:
     return payload[start + 3 : start + 3 + length - 4]
 
 
-def _ts_program(data: bytes, size: int, offset: int) -> _TsProgram:
+def _ts_packets(
+    fp: IO[bytes], size: int, offset: int
+) -> Iterator[tuple[int, bool, bytes]]:
+    """`(pid, payload unit start, payload)` of every packet from the start
+    of the file, read in blocks so a multi-gigabyte stream is never held
+    whole."""
+    fp.seek(0)
+    while True:
+        block = fp.read(size * 4096)
+        if len(block) < size:
+            return
+        for pos in range(0, len(block) - size + 1, size):
+            yield _ts_payload(block[pos : pos + size], offset)
+
+
+def _ts_program(fp: IO[bytes], size: int, offset: int) -> _TsProgram:
     """The first program's video stream and audio streams (PAT, then PMT)."""
     pmt_pid = None
-    for pos in range(0, len(data) - size + 1, size):
-        pid, start, payload = _ts_payload(data[pos : pos + size], offset)
+    for pid, start, payload in _ts_packets(fp, size, offset):
         if pid == 0 and start and payload:
             section = _ts_section(payload)
             for i in range(5, len(section) - 3, 4):
@@ -3022,8 +3135,7 @@ def _ts_program(data: bytes, size: int, offset: int) -> _TsProgram:
             break
     if pmt_pid is None:
         raise ValueError("Not an MPEG transport stream (no program association table)")
-    for pos in range(0, len(data) - size + 1, size):
-        pid, start, payload = _ts_payload(data[pos : pos + size], offset)
+    for pid, start, payload in _ts_packets(fp, size, offset):
         if pid != pmt_pid or not start or not payload:
             continue
         section = _ts_section(payload)
@@ -3039,57 +3151,47 @@ def _ts_program(data: bytes, size: int, offset: int) -> _TsProgram:
             while j + 2 <= i + 5 + info_len:
                 tags.add(section[j])
                 j += 2 + section[j + 1]
-            stream = _TsStream(es_pid, stream_type)
-            if stream_type in _TS_AUDIO_TYPES or (
-                stream_type == 0x06 and tags & _TS_AUDIO_DESCRIPTORS
-            ):
-                audio.append(stream)
-            elif video is None and (
-                stream_type in _TS_MPEG_VIDEO
-                or stream_type in (_TS_AVC_VIDEO, _TS_HEVC_VIDEO, _TS_MPEG4_VIDEO)
-            ):
-                video = stream
+            kind = _TS_AUDIO_KINDS.get(stream_type)
+            if kind is None and stream_type == 0x06:
+                kind = next(
+                    (
+                        _TS_DESCRIPTOR_KINDS[t]
+                        for t in tags
+                        if t in _TS_DESCRIPTOR_KINDS
+                    ),
+                    "",
+                )
+            if kind is not None:
+                audio.append(_TsStream(es_pid, stream_type, kind))
+            elif video is None and stream_type in _TS_VIDEO_TYPES:
+                video = _TsStream(es_pid, stream_type, "")
             i += 5 + info_len
         return _TsProgram(video, tuple(audio))
     raise ValueError("Not an MPEG transport stream (no program map table)")
 
 
-def _ts_elementary_stream(data: bytes, size: int, offset: int, pid: int) -> bytes:
-    """The PES payloads of `pid` concatenated into its elementary stream."""
+def _ts_elementary_stream(
+    fp: IO[bytes], size: int, offset: int, pid: int
+) -> tuple[bytes, list[int]]:
+    """The PES payloads of `pid` concatenated into its elementary stream,
+    and the presentation timestamps (90 kHz) of its PES packets in order."""
     out = bytearray()
-    for pos in range(0, len(data) - size + 1, size):
-        packet_pid, start, payload = _ts_payload(data[pos : pos + size], offset)
+    stamps = []
+    for packet_pid, start, payload in _ts_packets(fp, size, offset):
         if packet_pid != pid or not payload:
             continue
         if start and payload[:3] == b"\x00\x00\x01":
+            if len(payload) >= 14 and payload[7] & 0x80:
+                stamps.append(
+                    (payload[9] >> 1 & 0x7) << 30
+                    | payload[10] << 22
+                    | (payload[11] >> 1) << 15
+                    | payload[12] << 7
+                    | payload[13] >> 1
+                )
             payload = payload[_pes_payload_start(payload, 0, len(payload)) :]
         out += payload
-    return bytes(out)
-
-
-def _ts_pes_timestamps(data: bytes, size: int, offset: int, pid: int) -> list[int]:
-    """The presentation timestamps (90 kHz) of `pid`'s PES packets, in order."""
-    stamps = []
-    for pos in range(0, len(data) - size + 1, size):
-        packet_pid, start, payload = _ts_payload(data[pos : pos + size], offset)
-        if packet_pid != pid or not start or len(payload) < 14:
-            continue
-        if payload[:3] == b"\x00\x00\x01" and payload[7] & 0x80:
-            stamps.append(
-                (payload[9] >> 1 & 0x7) << 30
-                | payload[10] << 22
-                | (payload[11] >> 1) << 15
-                | payload[12] << 7
-                | payload[13] >> 1
-            )
-    return stamps
-
-
-def _snap_frame_rate(fps: float) -> float:
-    """The frame rate AE stores: the 3-decimal rate (23.976, 29.97, 59.94),
-    which is also where its standard-rate table lands every exact NTSC
-    rate (AE 2026 transport-stream imports)."""
-    return round(fps, 3)
+    return bytes(out), stamps
 
 
 def _nal_units(es: bytes) -> Iterator[tuple[int, int]]:
@@ -3108,7 +3210,7 @@ def _nal_units(es: bytes) -> Iterator[tuple[int, int]]:
 class _H264Sps(NamedTuple):
     width: int
     height: int
-    frame_mbs_only: bool
+    interlaced: bool
     bit_depth: int
     sar: tuple[int, int] | None
     fps: float | None
@@ -3119,8 +3221,8 @@ def _h264_scaling_list(bits: str, pos: int, size: int) -> int:
     last = next_scale = 8
     for _ in range(size):
         if next_scale:
-            delta, pos = _exp_golomb(bits, pos)
-            delta = -(delta + 1) // 2 if delta % 2 == 0 else (delta + 1) // 2
+            code, pos = _exp_golomb(bits, pos)
+            delta = (code + 1) // 2 if code % 2 else -(code // 2)  # se(v)
             next_scale = (last + delta + 256) % 256
         last = next_scale or last
     return pos
@@ -3188,38 +3290,52 @@ def _h264_sps(rbsp: bytes) -> _H264Sps:
     sar = None
     fps = None
     if bits[pos] == "1":  # vui_parameters_present_flag
+        sar, pos = _vui_aspect_and_signal(bits, pos + 1)
+        units, scale = _vui_timing(bits, pos)
+        if units and scale:
+            fps = scale / (2 * units)
+    return _H264Sps(width, height, not frame_mbs_only, bit_depth, sar, fps)
+
+
+def _vui_aspect_and_signal(bits: str, pos: int) -> tuple[tuple[int, int] | None, int]:
+    """The sample aspect of the VUI fields H.264 and H.265 share (aspect
+    ratio, overscan, video signal type, chroma location), and the position
+    after them."""
+    sar = None
+    if bits[pos] == "1":  # aspect_ratio_info_present_flag
+        idc = int(bits[pos + 1 : pos + 9], 2)
+        pos += 9
+        if idc == 255:
+            sar = (int(bits[pos : pos + 16], 2), int(bits[pos + 16 : pos + 32], 2))
+            pos += 32
+        else:
+            sar = _H264_SAR.get(idc)
+    else:
         pos += 1
-        if bits[pos] == "1":  # aspect_ratio_info_present_flag
-            idc = int(bits[pos + 1 : pos + 9], 2)
-            pos += 9
-            if idc == 255:
-                sar = (int(bits[pos : pos + 16], 2), int(bits[pos + 16 : pos + 32], 2))
-                pos += 32
-            else:
-                sar = _H264_SAR.get(idc)
-        else:
-            pos += 1
-        if bits[pos] == "1":  # overscan_info_present_flag
-            pos += 1
+    if bits[pos] == "1":  # overscan_info_present_flag
         pos += 1
-        if bits[pos] == "1":  # video_signal_type_present_flag
-            pos += 5
-            if bits[pos] == "1":  # colour_description_present_flag
-                pos += 24
-            pos += 1
-        else:
-            pos += 1
-        if bits[pos] == "1":  # chroma_loc_info_present_flag
-            _, pos = _exp_golomb(bits, pos + 1)
-            _, pos = _exp_golomb(bits, pos)
-        else:
-            pos += 1
-        if bits[pos] == "1" and pos + 65 <= len(bits):  # timing_info_present_flag
-            units = int(bits[pos + 1 : pos + 33], 2)
-            scale = int(bits[pos + 33 : pos + 65], 2)
-            if units and scale:
-                fps = scale / (2 * units)
-    return _H264Sps(width, height, frame_mbs_only, bit_depth, sar, fps)
+    pos += 1
+    if bits[pos] == "1":  # video_signal_type_present_flag
+        pos += 5
+        if bits[pos] == "1":  # colour_description_present_flag
+            pos += 24
+        pos += 1
+    else:
+        pos += 1
+    if bits[pos] == "1":  # chroma_loc_info_present_flag
+        _, pos = _exp_golomb(bits, pos + 1)
+        _, pos = _exp_golomb(bits, pos)
+    else:
+        pos += 1
+    return sar, pos
+
+
+def _vui_timing(bits: str, pos: int) -> tuple[int, int]:
+    """`(num_units_in_tick, time_scale)` of the VUI timing info at `pos`, or
+    zeros when absent."""
+    if bits[pos] == "1" and pos + 65 <= len(bits):  # timing_info_present_flag
+        return int(bits[pos + 1 : pos + 33], 2), int(bits[pos + 33 : pos + 65], 2)
+    return 0, 0
 
 
 def _h264_frames(es: bytes) -> tuple[_H264Sps | None, int]:
@@ -3250,12 +3366,209 @@ def _h264_frames(es: bytes) -> tuple[_H264Sps | None, int]:
     return sps, frames
 
 
+class _HevcSps(NamedTuple):
+    width: int
+    height: int
+    chroma_format: int
+    bit_depth: int
+    fps: float | None
+
+
+def _hevc_profile_tier_level(bits: str, pos: int, sub_layers: int) -> int:
+    """Skip `profile_tier_level(1, sub_layers)`: the position after it."""
+    pos += 96  # the general profile (88 bits) and level
+    present = []
+    for _ in range(sub_layers):
+        present.append((bits[pos] == "1", bits[pos + 1] == "1"))
+        pos += 2
+    if sub_layers:
+        pos += 2 * (8 - sub_layers)  # reserved_zero_2bits
+    for profile, level in present:
+        pos += 88 * profile + 8 * level
+    return pos
+
+
+def _hevc_scaling_lists(bits: str, pos: int) -> int:
+    """Skip `scaling_list_data()`: the position after it."""
+    for size_id in range(4):
+        for _ in range(0, 6, 3 if size_id == 3 else 1):
+            if bits[pos] == "1":  # scaling_list_pred_mode_flag
+                pos += 1
+                coefs = min(64, 1 << (4 + (size_id << 1)))
+                if size_id > 1:
+                    _, pos = _exp_golomb(bits, pos)  # scaling_list_dc_coef_minus8
+                for _ in range(coefs):
+                    _, pos = _exp_golomb(bits, pos)  # scaling_list_delta_coef
+            else:
+                _, pos = _exp_golomb(bits, pos + 1)  # scaling_list_pred_matrix_id_delta
+    return pos
+
+
+def _hevc_short_term_ref_sets(bits: str, pos: int, count: int) -> int:
+    """Skip the sequence parameter set's `st_ref_pic_set()` entries: the
+    position after them. A set predicted from the previous one takes a flag
+    per delta POC of that set, so every set's delta POCs are derived
+    (negatives first, as the flags are indexed)."""
+    sets: list[list[int]] = []
+    for idx in range(count):
+        inter = idx > 0 and bits[pos] == "1"  # inter_ref_pic_set_prediction_flag
+        if idx:
+            pos += 1
+        if inter:
+            ref = sets[-1]
+            sign = bits[pos] == "1"  # delta_rps_sign
+            delta_rps, pos = _exp_golomb(bits, pos + 1)  # abs_delta_rps_minus1
+            delta_rps = (delta_rps + 1) * (-1 if sign else 1)
+            used = []
+            for _ in range(len(ref) + 1):
+                use_delta = bits[pos] == "1"  # used_by_curr_pic_flag
+                pos += 1
+                if not use_delta:
+                    use_delta = bits[pos] == "1"  # use_delta_flag
+                    pos += 1
+                used.append(use_delta)
+            negatives = [d for d in ref if d < 0]
+            positives = [d for d in ref if d > 0]
+            candidates = (
+                [
+                    (positives[j] + delta_rps, len(negatives) + j)
+                    for j in range(len(positives) - 1, -1, -1)
+                ]
+                + [(delta_rps, len(ref))]
+                + [(negatives[j] + delta_rps, j) for j in range(len(negatives))]
+            )
+            s0 = [d for d, j in candidates if d < 0 and used[j]]
+            s1 = [d for d, j in reversed(candidates) if d > 0 and used[j]]
+            sets.append(s0 + s1)
+            continue
+        negatives_count, pos = _exp_golomb(bits, pos)
+        positives_count, pos = _exp_golomb(bits, pos)
+        deltas = []
+        for step, n in ((-1, negatives_count), (1, positives_count)):
+            poc = 0
+            for _ in range(n):
+                minus1, pos = _exp_golomb(bits, pos)  # delta_poc_s0/s1_minus1
+                pos += 1  # used_by_curr_pic_s0/s1_flag
+                poc += step * (minus1 + 1)
+                deltas.append(poc)
+        sets.append(deltas)
+    return pos
+
+
+def _hevc_sps(rbsp: bytes) -> _HevcSps:
+    """Decode an H.265 sequence parameter set (NAL header excluded): the
+    frame size inside the conformance window, field coding, bit depth, VUI
+    sample aspect and timing."""
+    bits = "".join(f"{byte:08b}" for byte in rbsp)
+    sub_layers = int(bits[4:7], 2)  # sps_max_sub_layers_minus1
+    pos = _hevc_profile_tier_level(bits, 8, sub_layers)
+    _, pos = _exp_golomb(bits, pos)  # sps_seq_parameter_set_id
+    chroma_format, pos = _exp_golomb(bits, pos)
+    if chroma_format == 3:
+        pos += 1  # separate_colour_plane_flag
+    width, pos = _exp_golomb(bits, pos)
+    height, pos = _exp_golomb(bits, pos)
+    if bits[pos] == "1":  # conformance_window_flag
+        pos += 1
+        window = []
+        for _ in range(4):
+            value, pos = _exp_golomb(bits, pos)
+            window.append(value)
+        # AE scales a monochrome stream's window like 4:2:0's (twice the
+        # offsets both ways), so its frame comes out smaller than coded.
+        width -= (2 if chroma_format in (0, 1, 2) else 1) * (window[0] + window[1])
+        height -= (2 if chroma_format in (0, 1) else 1) * (window[2] + window[3])
+    else:
+        pos += 1
+    luma_minus8, pos = _exp_golomb(bits, pos)
+    _, pos = _exp_golomb(bits, pos)  # bit_depth_chroma_minus8
+    poc_bits, pos = _exp_golomb(bits, pos)  # log2_max_pic_order_cnt_lsb_minus4
+    ordering_info = bits[pos] == "1"  # sps_sub_layer_ordering_info_present_flag
+    pos += 1
+    for _ in range(3 * (sub_layers + 1 if ordering_info else 1)):
+        _, pos = _exp_golomb(bits, pos)
+    for _ in range(6):  # coding and transform block sizes, hierarchy depths
+        _, pos = _exp_golomb(bits, pos)
+    if bits[pos] == "1":  # scaling_list_enabled_flag
+        pos += 1
+        if bits[pos] == "1":  # sps_scaling_list_data_present_flag
+            pos = _hevc_scaling_lists(bits, pos + 1)
+        else:
+            pos += 1
+    else:
+        pos += 1
+    pos += 2  # amp_enabled_flag, sample_adaptive_offset_enabled_flag
+    if bits[pos] == "1":  # pcm_enabled_flag
+        pos += 9  # the flag and the two PCM sample bit depths
+        _, pos = _exp_golomb(bits, pos)
+        _, pos = _exp_golomb(bits, pos)
+        pos += 1  # pcm_loop_filter_disabled_flag
+    else:
+        pos += 1
+    sets, pos = _exp_golomb(bits, pos)  # num_short_term_ref_pic_sets
+    pos = _hevc_short_term_ref_sets(bits, pos, sets)
+    if bits[pos] == "1":  # long_term_ref_pics_present_flag
+        count, pos = _exp_golomb(bits, pos + 1)  # num_long_term_ref_pics_sps
+        pos += count * (poc_bits + 5)  # lt_ref_pic_poc_lsb_sps + used flag
+    else:
+        pos += 1
+    pos += 2  # sps_temporal_mvp_enabled_flag, strong_intra_smoothing_enabled_flag
+    fps = None
+    field_coded = False
+    if bits[pos] == "1":  # vui_parameters_present_flag
+        # The sample aspect is skipped: AE ignores it in an H.265 stream.
+        _, pos = _vui_aspect_and_signal(bits, pos + 1)
+        pos += 1  # neutral_chroma_indication_flag
+        field_coded = bits[pos] == "1"  # field_seq_flag
+        pos += 2  # with frame_field_info_present_flag
+        if bits[pos] == "1":  # default_display_window_flag
+            pos += 1
+            for _ in range(4):
+                _, pos = _exp_golomb(bits, pos)
+        else:
+            pos += 1
+        units, scale = _vui_timing(bits, pos)
+        if units and scale:
+            # The tick of a field-coded stream is a field: AE reads such a
+            # stream at half its VUI rate, every field picture one frame
+            # (a rate taken from the timestamps instead is not halved).
+            fps = scale / units / (2 if field_coded else 1)
+    return _HevcSps(width, height, chroma_format, 8 + luma_minus8, fps)
+
+
+_HEVC_SPS = 33
+
+
+def _hevc_frames(es: bytes) -> tuple[_HevcSps | None, int]:
+    """`(first SPS, frames)` of an H.265 elementary stream, the frames being
+    the pictures from the first IRAP picture on (AE 2026 drops the pictures
+    before it and keeps the RASL pictures of an opening CRA)."""
+    sps = None
+    frames = 0
+    seen_irap = False
+    for start, end in _nal_units(es):
+        if end - start < 3:
+            continue
+        nal_type = es[start] >> 1 & 0x3F
+        if nal_type == _HEVC_SPS and sps is None:
+            sps = _hevc_sps(es[start + 2 : end].replace(b"\x00\x00\x03", b"\x00\x00"))
+        elif nal_type < 32 and es[start + 2] & 0x80:  # first_slice_segment_in_pic_flag
+            if 16 <= nal_type <= 23:
+                seen_irap = True
+            if seen_irap:
+                frames += 1
+    return sps, frames
+
+
 class _Mpeg2Sequence(NamedTuple):
     width: int
     height: int
     aspect_code: int
     fps: float
+    """The rate before AE's 3-decimal rounding."""
     interlaced: bool
+    rate_divisor: int
+    """`frame_rate_extension_d` + 1 (1 without an extension)."""
 
 
 def _mpeg2_sequence(es: bytes) -> _Mpeg2Sequence:
@@ -3269,18 +3582,20 @@ def _mpeg2_sequence(es: bytes) -> _Mpeg2Sequence:
     val = struct.unpack_from(">I", es, seq + 4)[0]
     width = (val >> 20) & 0xFFF
     height = (val >> 8) & 0xFFF
-    fps = _TS_MPEG_RATES.get(val & 0xF, 0.0)
+    fps = _MPEG2_RATES.get(val & 0xF, 0.0)
+    rate_divisor = 1
     progressive = True
     first_picture = es.find(b"\x00\x00\x01\x00", seq)
     end = len(es) if first_picture < 0 else first_picture
     pos = es.find(b"\x00\x00\x01\xb5", seq, end)
     while pos >= 0 and pos + 10 <= len(es):
-        ext = es[pos + 4 :]
+        ext = es[pos + 4 : pos + 12]
         if ext[0] >> 4 == 1:  # sequence_extension
             progressive = bool(ext[1] & 0x08)
             width += ((ext[1] & 0x01) << 1 | ext[2] >> 7) << 12
             height += ((ext[2] >> 5) & 0x3) << 12
-            fps *= (((ext[5] >> 5) & 0x3) + 1) / ((ext[5] & 0x1F) + 1)
+            rate_divisor = (ext[5] & 0x1F) + 1
+            fps *= (((ext[5] >> 5) & 0x3) + 1) / rate_divisor
         elif ext[0] >> 4 == 2:  # sequence_display_extension
             at = 4 if ext[0] & 0x01 else 1
             display_w = ext[at] << 6 | ext[at + 1] >> 2
@@ -3295,7 +3610,9 @@ def _mpeg2_sequence(es: bytes) -> _Mpeg2Sequence:
         coding = es.find(b"\x00\x00\x01\xb5", first_picture)
         if coding >= 0 and coding + 9 <= len(es) and es[coding + 4] >> 4 == 8:
             interlaced = not es[coding + 8] & 0x80  # progressive_frame
-    return _Mpeg2Sequence(width, height, (val >> 4) & 0xF, fps, interlaced)
+    return _Mpeg2Sequence(
+        width, height, (val >> 4) & 0xF, fps, interlaced, rate_divisor
+    )
 
 
 def _mpeg2_frames(es: bytes) -> int:
@@ -3326,10 +3643,10 @@ def _mpeg2_frames(es: bytes) -> int:
 
 
 def _mpeg2_pixel_aspect(code: int, width: int, height: int) -> tuple[int, int]:
-    """AE's pixel aspect for an MPEG-1/2 `aspect_ratio_information`: the
-    display aspect over the frame's, reduced, with the D1/DV presets at the
-    D1 frame sizes (720x480 4:3 -> 10/11, 16:9 -> 40/33; 720x576 -> 768/702,
-    1024/702; AE 2026)."""
+    """AE's pixel aspect for an MPEG-1/2 `aspect_ratio_information` in a
+    transport or MPEG-2 program stream: the display aspect over the frame's,
+    reduced, with the D1/DV presets at the D1 frame sizes (720x480 4:3 ->
+    10/11, 16:9 -> 40/33; 720x576 -> 768/702, 1024/702; AE 2026)."""
     dar = _MPEG_DISPLAY_ASPECT.get(code)
     if dar is None or width <= 0 or height <= 0:
         return 1, 1
@@ -3338,36 +3655,125 @@ def _mpeg2_pixel_aspect(code: int, width: int, height: int) -> tuple[int, int]:
     return _d1_pixel_aspect(dar * height / width, width, height)
 
 
-def _h264_field_order(sps: _H264Sps, fps: float) -> tuple[int, bool]:
-    """`(field order, labelled)` AE gives H.264 footage: interlaced coding is
-    upper field first at 1080 lines and lower first below; progressive coding
-    follows AE's default interpretation rules by frame size and rate
-    (720x480 at 29.97 and 720x576 at 25 fps lower, 1440x1080 at 25 or 29.97
-    fps upper) and is otherwise unlabelled (AE 2026)."""
-    if not sps.frame_mbs_only:
-        return (1 if sps.height == 1080 else 2), True
-    size = (sps.width, sps.height)
+def _mpeg1_pixel_aspect(code: int, width: int, height: int) -> tuple[int, int]:
+    """AE's pixel aspect for an MPEG-1 system stream: the presets and square
+    pixels of `_mpeg2_pixel_aspect` as fractions, any other aspect rounded
+    to 4 decimals over 10000 (AE 2026: 704x576 4:3 -> 10909/10000, 720x576
+    2.21:1 -> 17680/10000, 1440x1080 16:9 -> 4/3)."""
+    terms = _mpeg2_pixel_aspect(code, width, height)
+    if terms in _MPEG1_ASPECTS:
+        return terms
+    return round(_MPEG_DISPLAY_ASPECT[code] * height / width * 10000), 10000
+
+
+def _mpeg2_gop_timecode(es: bytes, fps: float) -> tuple[int, bool]:
+    """`(start frames, drop frame)` from the first GOP header's time code, as
+    AE's MPEG-1 system stream import stores them: the time code counted at
+    the integer rate (drop-frame skipping two frames every minute but the
+    tenth), or AE's default 0 and drop-frame when the time code is zero
+    (AE 2026; transport and MPEG-2 program streams ignore the time code)."""
+    gop = es.find(b"\x00\x00\x01\xb8")
+    if gop < 0 or gop + 8 > len(es):
+        return 0, True
+    g = es[gop + 4 : gop + 8]
+    drop = bool(g[0] & 0x80)
+    minutes = ((g[0] >> 2) & 0x1F) * 60 + ((g[0] & 0x3) << 4 | g[1] >> 4)
+    seconds = (g[1] & 0x7) << 3 | g[2] >> 5
+    pictures = (g[2] & 0x1F) << 1 | g[3] >> 7
+    frames = (minutes * 60 + seconds) * round(fps) + pictures
+    if drop:
+        frames -= 2 * (minutes - minutes // 10)
+    return (frames, drop) if frames else (0, True)
+
+
+def _mpeg2_field_label(interlaced: bool, audio_kind: str, channels: int) -> bool:
+    """Whether AE tags MPEG-2 pictures of a transport or MPEG-2 program
+    stream with the field label: interlaced ones always, progressive ones
+    without audio or with stereo MPEG audio, but not with mono MPEG audio or
+    AC-3 (AE 2026; the reason for the audio dependence is not known)."""
+    return (
+        interlaced or not audio_kind or (audio_kind in ("mpa", "aac") and channels == 2)
+    )
+
+
+def _default_field_order(width: int, height: int, fps: float) -> int:
+    """The field order AE's default interpretation rules give progressive
+    footage by frame size and rate: 720x480 at 29.97 and 720x576 at 25 fps
+    lower field first, 1440x1080 at 25 or 29.97 fps upper, else none (AE
+    2026: H.264 transport streams and MPEG-1 system streams)."""
+    size = (width, height)
     if (size, fps) in (((720, 480), 29.97), ((720, 576), 25.0)):
-        return 2, True
+        return 2
     if size == (1440, 1080) and fps in (25.0, 29.97):
-        return 1, True
-    return 0, False
+        return 1
+    return 0
 
 
-def _ts_audio_frames(es: bytes, stream_type: int) -> tuple[int, int]:
-    """`(frames, samples per frame)` of an ADTS AAC, MPEG-1 layer II or AC-3
-    elementary stream (the audio AE imports from a stream without video)."""
+def _h264_field_order(sps: _H264Sps, fps: float) -> int:
+    """The field order AE gives H.264 footage: interlaced coding is upper
+    field first at 1080 lines and lower first below; progressive coding
+    follows `_default_field_order` (AE 2026)."""
+    if sps.interlaced:
+        return 1 if sps.height == 1080 else 2
+    return _default_field_order(sps.width, sps.height, fps)
+
+
+def _pts_frame_rate(stamps: list[int]) -> float:
+    """The frame rate AE takes from the presentation timestamps of a stream
+    whose VUI states no timing: the median PES-to-PES step."""
+    stamps.sort()
+    deltas = sorted(b - a for a, b in zip(stamps, stamps[1:]) if b > a)
+    if not deltas:
+        raise ValueError("The H.264/H.265 stream states no frame rate")
+    return 90000 / deltas[len(deltas) // 2]
+
+
+def _audio_format(kind: str, data: bytes) -> tuple[float, int]:
+    """`(sample rate, channels)` from the first frame header in `data` of an
+    MPEG audio (`"mpa"`), ADTS AAC (`"aac"`), AC-3 (`"ac3"`) or Blu-ray LPCM
+    (`"lpcm"`) stream, as AE records them: the stream's own rate and up to
+    two channels (LPCM always two); `(48000, 2)` without a readable header
+    (AE 2026)."""
+    n = len(data)
+    if kind == "aac":
+        for pos in range(n - 6):
+            if _is_adts_header(data, pos, n):
+                sr_i = (data[pos + 2] >> 2) & 0xF
+                config = (data[pos + 2] & 0x1) << 2 | data[pos + 3] >> 6
+                return float(_AAC_SR[sr_i]), 1 if config == 1 else 2
+    elif kind == "mpa":
+        for pos in range(n - 3):
+            header = struct.unpack_from(">I", data, pos)[0]
+            version = (header >> 19) & 0x3
+            sr_i = (header >> 10) & 0x3
+            if header >> 21 == 0x7FF and version != 1 and sr_i != 3:
+                return float(_MP3_SR[version][sr_i]), 1 if (
+                    header >> 6
+                ) & 0x3 == 3 else 2
+    elif kind == "ac3":
+        pos = data.find(b"\x0b\x77")
+        if pos >= 0 and pos + 7 <= n and data[pos + 4] >> 6 < 3:
+            rate = (48000.0, 44100.0, 32000.0)[data[pos + 4] >> 6]
+            return rate, 1 if data[pos + 6] >> 5 == 1 else 2
+    elif kind == "lpcm" and n >= 4:
+        return _LPCM_RATES.get(data[2] & 0xF, 48000.0), 2
+    return 48000.0, 2
+
+
+def _ts_audio_samples(es: bytes, kind: str) -> tuple[int, float, int]:
+    """`(samples, sample rate, channels)` of an ADTS AAC, MPEG-1 layer II,
+    AC-3 or Blu-ray LPCM elementary stream: the audio AE records for a
+    transport stream without video, frame by frame."""
     n = len(es)
-    pos = frames = 0
-    if stream_type in (0x0F, 0x11):
+    pos = samples = 0
+    if kind == "aac":
         while pos + 7 <= n:
             if _is_adts_header(es, pos, n):
-                frames += 1
+                samples += 1024
                 pos += _adts_frame_len(es, pos)
             else:
                 pos += 1
-        return frames, 1024
-    if stream_type in (0x03, 0x04):
+    elif kind == "mpa":
         while pos + 4 <= n:
             header = struct.unpack_from(">I", es, pos)[0]
             size = 0
@@ -3377,12 +3783,21 @@ def _ts_audio_frames(es: bytes, stream_type: int) -> tuple[int, int]:
                 if kbps and sr:
                     size = 144000 * kbps // sr + ((header >> 9) & 0x1)
             if size:
-                frames += 1
+                samples += 1152
                 pos += size
             else:
                 pos += 1
-        return frames, 1152
-    if stream_type == 0x81 or stream_type == 0x06:
+    elif kind == "lpcm":
+        # Blu-ray LPCM: each PES payload is a 4-byte header (payload size,
+        # channel assignment, rate, depth) and the samples, mono and
+        # 3-channel layouts padded to an even slot count.
+        while pos + 4 <= n:
+            size = es[pos] << 8 | es[pos + 1]
+            channels = _LPCM_CHANNELS.get(es[pos + 2] >> 4, 2)
+            slots = channels + channels % 2
+            samples += size // (slots * (2, 2, 3, 3)[es[pos + 3] >> 6])
+            pos += 4 + size
+    elif kind == "ac3":
         while pos + 5 <= n:
             size = 0
             if es[pos : pos + 2] == b"\x0b\x77":
@@ -3394,80 +3809,161 @@ def _ts_audio_frames(es: bytes, stream_type: int) -> tuple[int, int]:
                     ]
                     size = 2 * words
             if size:
-                frames += 1
+                samples += 1536
                 pos += size
             else:
                 pos += 1
-        return frames, 1536
-    raise ValueError(
-        f"audio-only transport stream with stream type {stream_type:#04x} is not supported"
-    )
+    else:
+        raise ValueError(
+            f"audio-only transport stream with {kind} audio is not supported"
+        )
+    sample_rate, channels = _audio_format(kind, es)
+    return samples, sample_rate, channels
+
+
+def _ts_sniff_audio(data: bytes) -> str:
+    """The coding of a private stream from its first frame: AE measures an
+    AC-3, AAC, MPEG audio or Blu-ray LPCM payload even without the PMT
+    descriptor that should announce it (AE 2026); `""` for anything else."""
+    n = len(data)
+    if data[:2] == b"\x0b\x77":
+        return "ac3"
+    if any(_is_adts_header(data, pos, n) for pos in range(min(n - 6, 16))):
+        return "aac"
+    for pos in range(min(n - 3, 16)):
+        header = struct.unpack_from(">I", data, pos)[0]
+        if header >> 21 == 0x7FF and (header >> 19) & 0x3 != 1 and (header >> 17) & 0x3:
+            return "mpa"
+    if n >= 4 and data[2] >> 4 in _LPCM_CHANNELS and data[2] & 0xF in _LPCM_RATES:
+        return "lpcm"
+    return ""
+
+
+def _ts_audio_streams(
+    fp: IO[bytes], size: int, offset: int, candidates: tuple[_TsStream, ...]
+) -> list[_TsStream]:
+    """The program's audio streams in PMT order, a private stream without an
+    audio descriptor sniffed from its first frame. A private LPCM stream
+    counts only beside another audio stream: alone, AE refuses the file."""
+    streams = []
+    for stream in candidates:
+        kind = stream.kind or _ts_sniff_audio(
+            _ts_first_pes(fp, size, offset, stream.pid)
+        )
+        if kind:
+            streams.append(stream._replace(kind=kind))
+    if all(s.stream_type == 0x06 and s.kind == "lpcm" for s in streams):
+        return []
+    return streams
+
+
+def _ts_audio_pick(audio: list[_TsStream]) -> _TsStream:
+    """The audio stream AE measures and records when a program carries
+    several: the first MPEG audio one, else the first other one (AE 2026)."""
+    for stream in audio:
+        if stream.kind in ("mpa", "aac"):
+            return stream
+    return audio[0]
+
+
+def _ts_first_pes(fp: IO[bytes], size: int, offset: int, pid: int) -> bytes:
+    """The start of `pid`'s first PES payload: enough for a frame header."""
+    out = bytearray()
+    started = False
+    for packet_pid, start, payload in _ts_packets(fp, size, offset):
+        if packet_pid != pid or not payload:
+            continue
+        if start:
+            if started:
+                break
+            started = True
+            payload = payload[_pes_payload_start(payload, 0, len(payload)) :]
+        if started:
+            out += payload
+            if len(out) >= 64:
+                break
+    return bytes(out)
 
 
 def _probe_mpegts(fp: IO[bytes]) -> MediaInfo:
     # Like a program stream, a transport stream carries no duration: AE
-    # counts the pictures, so the whole file is read.
-    data = fp.read()
-    size, offset = _ts_packet_layout(data)
-    program = _ts_program(data, size, offset)
-    has_audio = bool(program.audio)
-    audio_channels = 2 if has_audio else 0  # AE records two, mono and 5.1 alike
-    audio_sample_rate = 48000.0 if has_audio else 0.0
+    # counts the pictures, so the whole file is walked (in blocks).
+    size, offset = _ts_packet_layout(fp.read(192 * 4))
+    program = _ts_program(fp, size, offset)
+    streams = _ts_audio_streams(fp, size, offset, program.audio)
+    has_audio = bool(streams)
     if program.video is None:
         if not has_audio:
             raise ValueError("The transport stream carries no video or audio")
-        es = _ts_elementary_stream(data, size, offset, program.audio[0].pid)
-        frames, per_frame = _ts_audio_frames(es, program.audio[0].stream_type)
+        audio = _ts_audio_pick(streams)
+        es, _ = _ts_elementary_stream(fp, size, offset, audio.pid)
+        samples, audio_sample_rate, audio_channels = _ts_audio_samples(es, audio.kind)
         return MediaInfo(
-            duration=frames * per_frame / audio_sample_rate,
+            duration=samples / audio_sample_rate,
+            frames=samples,
             has_audio=True,
             audio_sample_rate=audio_sample_rate,
             audio_channels=audio_channels,
-            timecode_drop_frame=True,
         )
-    if program.video.stream_type == _TS_HEVC_VIDEO:
-        raise ValueError(
-            "After Effects cannot import HEVC video from a transport stream"
+    audio_kind = ""
+    audio_sample_rate = 0.0
+    audio_channels = 0
+    if has_audio:
+        audio = _ts_audio_pick(streams)
+        audio_kind = audio.kind
+        audio_sample_rate, audio_channels = _audio_format(
+            audio_kind, _ts_first_pes(fp, size, offset, audio.pid)
         )
+        if audio_kind == "ac3":
+            audio_channels = 2  # next to video AE records AC-3 as stereo, mono too
     if program.video.stream_type == _TS_MPEG4_VIDEO:
         raise ValueError("MPEG-4 part 2 video in a transport stream is not supported")
-    es = _ts_elementary_stream(data, size, offset, program.video.pid)
+    es, stamps = _ts_elementary_stream(fp, size, offset, program.video.pid)
     bits = 8
-    if program.video.stream_type == _TS_AVC_VIDEO:
-        sps, frames = _h264_frames(es)
+    if program.video.stream_type in (_TS_AVC_VIDEO, _TS_HEVC_VIDEO):
+        sps: _H264Sps | _HevcSps | None
+        if program.video.stream_type == _TS_AVC_VIDEO:
+            sps, frames = _h264_frames(es)
+        else:
+            sps, frames = _hevc_frames(es)
         if sps is None:
-            raise ValueError("Not a valid H.264 stream (no sequence parameter set)")
+            raise ValueError(
+                "Not a valid H.264/H.265 stream (no sequence parameter set)"
+            )
         width, height = sps.width, sps.height
         bits = sps.bit_depth
-        fps = sps.fps
-        if fps is None:
-            # Without VUI timing AE takes the rate from the presentation
-            # timestamps.
-            stamps = sorted(_ts_pes_timestamps(data, size, offset, program.video.pid))
-            deltas = sorted(b - a for a, b in zip(stamps, stamps[1:]) if b > a)
-            if not deltas:
-                raise ValueError("The H.264 stream states no frame rate")
-            fps = 90000 / deltas[len(deltas) // 2]
-        fps = _snap_frame_rate(fps)
-        aspect = Fraction(*sps.sar) if sps.sar and sps.sar[1] else Fraction(1)
+        fps = sps.fps if sps.fps is not None else _pts_frame_rate(stamps)
+        if isinstance(sps, _HevcSps):
+            # AE gives every H.265 stream square pixels and never separates
+            # its fields by the coding: the size rules apply to the rate.
+            # Only 10-bit 4:2:0 and 4:2:2 import at 16 bpc; 4:4:4, monochrome
+            # and 12-bit streams import at 8.
+            if bits != 10 or sps.chroma_format not in (1, 2):
+                bits = 8
+            fps = round(fps, 3)  # AE stores the 3-decimal rate (23.976, 29.97)
+            aspect = Fraction(1)
+            field_order = _default_field_order(width, height, fps)
+        else:
+            fps = round(fps, 3)
+            aspect = Fraction(*sps.sar) if sps.sar and sps.sar[1] else Fraction(1)
+            field_order = _h264_field_order(sps, fps)
         terms = _d1_pixel_aspect(aspect, width, height)
-        field_order, labelled = _h264_field_order(sps, fps)
+        labelled = field_order != 0
     else:
         sequence = _mpeg2_sequence(es)
         width, height = sequence.width, sequence.height
-        fps = _snap_frame_rate(sequence.fps)
+        fps = round(sequence.fps, 3)
+        if not fps:
+            raise ValueError("The MPEG video stream states no frame rate")
         frames = _mpeg2_frames(es)
         terms = _mpeg2_pixel_aspect(sequence.aspect_code, width, height)
         field_order = 1 if sequence.interlaced else 0
-        # AE labels interlaced pictures, and progressive MPEG-2 ones only in
-        # a stream without audio (AE 2026).
-        labelled = sequence.interlaced or (
-            program.video.stream_type == 0x02 and not has_audio
-        )
+        labelled = _mpeg2_field_label(sequence.interlaced, audio_kind, audio_channels)
     return MediaInfo(
         width=width,
         height=height,
         duration=frames / fps if fps else 0.0,
+        frames=frames,
         frame_rate=fps,
         has_audio=has_audio,
         audio_sample_rate=audio_sample_rate,
@@ -3477,7 +3973,6 @@ def _probe_mpegts(fp: IO[bytes]) -> MediaInfo:
         audio_channels=audio_channels,
         field_order=field_order,
         field_label=labelled,
-        timecode_drop_frame=True,
         pixel_aspect_terms=terms,
     )
 

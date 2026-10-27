@@ -80,7 +80,12 @@ from ...resolvers.source_layers import (
     resolve_psd_layer,
 )
 from ..validators import validate_bool, validate_file_exists
-from .footage import _UNASSIGNED_PROFILE, FootageSource, _store_frames_over_rate
+from .footage import (
+    _UNASSIGNED_PROFILE,
+    FootageSource,
+    _frames_over_rate,
+    _store_frames_over_rate,
+)
 
 if TYPE_CHECKING:
     from ...binary.chunk import Chunk, ListChunk
@@ -163,14 +168,8 @@ def _opti_data(
         return build_exr_opti_data(info.compression, info.channel_names)
     if fmt.opti == "empty" and not sequence:
         return b""
-    # AE codes MPEG program and transport streams `MPEO` but keeps its MPEG
-    # importer's own code in the record (AE 2026).
-    importer = "MPEG" if fmt.source_format == "MPEO" else None
     return build_generic_opti_data(
-        fmt.source_format,
-        sequence=sequence,
-        video=info.width > 0,
-        importer_format=importer,
+        fmt.source_format, sequence=sequence, video=info.width > 0
     )
 
 
@@ -785,7 +784,7 @@ class FileSource(FootageSource):
         field_label: bool = False,
         audio_channels: int = 0,
         timecode_start: int = 0,
-        drop_frame: bool = False,
+        drop_frame: bool = True,
         pixel_aspect_terms: tuple[int, int] = (0, 0),
         windows: bool,
     ) -> FileSource:
@@ -859,16 +858,16 @@ class FileSource(FootageSource):
                 `_media_profile_records`); 3 (RGB) by default.
             frames: The duration in frames (samples for audio-only media),
                 stored unreduced over the rate the way AE records an MXF or
-                a transport stream, together with the field label, audio
-                block, drop-frame byte and start timecode those imports
-                carry; `None` stores `duration` as a reduced fraction.
+                a transport stream, and so is `timecode_start`; `None`
+                stores `duration` as a reduced fraction.
             field_order: 1 or 2 to separate fields upper or lower first.
             field_label: Tag the footage with its field label (see
-                [MediaInfo.field_label][py_aep.resolvers.media_probe.MediaInfo];
-                with `frames`).
-            audio_channels: The audio channels AE records (with `frames`).
+                [MediaInfo.field_label][py_aep.resolvers.media_probe.MediaInfo]).
+            audio_channels: The audio channels AE records (see
+                [MediaInfo.audio_channels][py_aep.resolvers.media_probe.MediaInfo]).
             timecode_start: The start timecode in frames (with `frames`).
-            drop_frame: The drop-frame flag stored with that timecode.
+            drop_frame: The drop-frame flag stored with the start timecode
+                (1 for every import but an MXF picture's own, AE 2026).
             pixel_aspect_terms: The `(dividend, divisor)` to store instead
                 of `pixel_aspect`'s reduced fraction (AE writes 768/702 for
                 an MXF's D1/DV PAL aspect); `(0, 0)` stores the fraction.
@@ -923,27 +922,17 @@ class FileSource(FootageSource):
         sspc.audio_sample_rate = audio_sample_rate
         if field_order:
             sspc.field_separation_type = field_order
+        if field_label:
+            sspc.field_tag = b"FIEL"
+        if audio_channels:
+            sspc.audio_format, sspc.audio_sample_bytes = 3, 4
+            sspc.audio_channels = min(audio_channels, 2)
+        sspc.drop_frame = drop_frame
         if frames is not None:
             rate = frame_rate if width > 0 else audio_sample_rate
             _store_frames_over_rate(sspc, frames, rate)
             if width > 0:
                 sspc._time_base = to_dividend_divisor(rate)[0]
-        if frames is not None:
-            # Beyond the generic movie fields, AE's MXF and transport-stream
-            # imports record the QuickTime-style field tag, an audio block
-            # (format 3, 4 bytes, mono or stereo) and the drop-frame byte,
-            # set for a drop-frame timecode, for audio-only media and for
-            # every transport stream (AE 2026).
-            if field_label:
-                sspc._reserved_4a = b"FIEL\x00"
-            if audio_channels:
-                sspc._reserved_58 = (
-                    b"\x00" * 8
-                    + b"\x00\x03\x00\x04\x00"
-                    + bytes([min(audio_channels, 2)])
-                    + b"\x00" * 3
-                )
-            sspc._reserved_d4 = bytes([int(drop_frame or width == 0)]) + b"\x00" * 9
         # AE stamps the source's last-modified time and re-reads the media
         # whenever it does not match, taking the dimensions from the format
         # plugin instead of the ones cached here. For an OpenEXR frame whose
@@ -1033,23 +1022,20 @@ class FileSource(FootageSource):
         linl = cast("U1Chunk", find_by_type(chunks=clrs.chunks, chunk_type="linl"))
         if source_format in _LINEAR_LIGHT_OFF_FORMATS and width > 0 and not is_sequence:
             linl.value = int(LinearLightMode.OFF)
+        mnfo = find_by_list_type(chunks=pin.chunks, list_type="mnfo")
+        drop = cast("DropChunk", find_by_type(chunks=mnfo.chunks, chunk_type="drop"))
+        drop.value = drop_frame
         if frames is not None:
             # The start timecode AE reads from an MXF (0 for a transport
-            # stream): frames over the rate like the duration, with its
-            # drop-frame flag; audio-only media get AE's default (0 over 30,
-            # drop-frame).
-            mnfo = find_by_list_type(chunks=pin.chunks, list_type="mnfo")
+            # stream): frames over the rate like the duration; audio-only
+            # media get AE's default 0 over 30.
             strt = cast(
                 "StrtChunk", find_by_type(chunks=mnfo.chunks, chunk_type="strt")
             )
-            drop = cast(
-                "DropChunk", find_by_type(chunks=mnfo.chunks, chunk_type="drop")
-            )
             if width > 0:
-                rate_num, rate_den = to_dividend_divisor(frame_rate)
-                strt.dividend = timecode_start * rate_den
-                strt.divisor = rate_num
-                drop.value = drop_frame
+                strt.dividend, strt.divisor = _frames_over_rate(
+                    timecode_start, frame_rate
+                )
             else:
                 strt.divisor = 30
 
@@ -1139,12 +1125,6 @@ class FileSource(FootageSource):
         # not the 0x0000 of an Illustrator composition's layers.
         reserved_c8 = {"psd": b"\x00\x03", "text": b"\x00\x02"}.get(fmt.opti)
         data_size = _still_data_size(fmt, info, path)
-        frames = None
-        if fmt.frames_over_rate:
-            # AE stores these durations as frames over the frame rate, or
-            # samples over the sample rate without video.
-            rate = info.frame_rate if info.width else info.audio_sample_rate
-            frames = round(info.duration * rate)
         return cls._new(
             path,
             source_format=fmt.source_format,
@@ -1164,7 +1144,7 @@ class FileSource(FootageSource):
             data_size=data_size,
             reserved_c8=reserved_c8,
             color_mode=info.color_mode,
-            frames=frames,
+            frames=info.frames,
             field_order=info.field_order,
             field_label=info.field_label,
             audio_channels=info.audio_channels,

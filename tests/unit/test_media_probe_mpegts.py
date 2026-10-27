@@ -17,6 +17,7 @@ def test_h264_with_ac3_audio() -> None:
     assert (info.width, info.height) == (320, 180)
     assert info.frame_rate == 25.0
     assert info.duration == pytest.approx(5 / 25)
+    assert info.frames == 5
     assert info.pixel_aspect_terms == (1, 1)
     assert info.field_order == 0
     assert not info.field_label
@@ -96,9 +97,132 @@ def test_audio_only() -> None:
     assert info.depth == 0
 
 
-def test_hevc_raises() -> None:
-    with pytest.raises(ValueError, match="HEVC"):
-        probe_media(ASSETS / "ts_hevc_320x180p25.ts")
+def test_hevc_size_rate_and_square_pixels() -> None:
+    info = probe_media(ASSETS / "ts_hevc_320x180p25.ts")
+    assert (info.width, info.height) == (320, 180)
+    assert info.frame_rate == 25.0
+    assert info.frames == 5
+    assert info.duration == pytest.approx(5 / 25)
+    assert info.pixel_aspect_terms == (1, 1)
+    assert (info.field_order, info.field_label) == (0, False)
+    assert info.depth == 24
+    assert not info.has_audio
+    assert probe_media(ASSETS / "ts_hevc_320x180p2997.ts").frame_rate == 29.97
+    assert probe_media(ASSETS / "ts_hevc_320x180p23976.ts").frame_rate == 23.976
+
+
+def test_hevc_vui_aspect_is_ignored() -> None:
+    # AE gives every H.265 stream square pixels: a 40:33 VUI aspect, a 4:3
+    # D1 PAL frame and a 16:9 HDV frame all store 1/1.
+    for name in (
+        "ts_hevc_320x180p25_sar40x33.ts",
+        "ts_hevc_720x576p25_4x3.ts",
+        "ts_hevc_1440x1080p25_16x9.ts",
+    ):
+        assert probe_media(ASSETS / name).pixel_aspect_terms == (1, 1), name
+
+
+def test_hevc_progressive_size_rules() -> None:
+    info = probe_media(ASSETS / "ts_hevc_720x576p25_4x3.ts")
+    assert (info.field_order, info.field_label) == (2, True)
+    info = probe_media(ASSETS / "ts_hevc_720x480p2997_16x9.ts")
+    assert (info.width, info.height, info.frame_rate) == (720, 480, 29.97)
+    assert (info.field_order, info.field_label) == (2, True)
+    info = probe_media(ASSETS / "ts_hevc_1440x1080p25_16x9.ts")
+    assert (info.field_order, info.field_label) == (1, True)
+
+
+def test_hevc_conformance_window_and_bit_depth() -> None:
+    info = probe_media(ASSETS / "ts_hevc_322x182p25.ts")
+    assert (info.width, info.height) == (322, 182)
+    info = probe_media(ASSETS / "ts_hevc_320x180p25_10bit.ts")
+    assert info.bit_depth == 10
+    assert info.depth == 48
+
+
+def test_hevc_field_coded_streams_read_as_frames_at_half_the_rate() -> None:
+    # Field pictures at 50 per second: AE reads the 12 pictures as 12 frames
+    # at 25 fps and applies its 720x576 at 25 fps lower-field rule.
+    info = probe_media(ASSETS / "ts_hevc_720x576i50_tff.ts")
+    assert info.frame_rate == 25.0
+    assert info.frames == 12
+    assert info.duration == pytest.approx(12 / 25)
+    assert (info.field_order, info.field_label) == (2, True)
+    # The same coding fed 25 pictures per second: 12.5 fps, no fields.
+    info = probe_media(ASSETS / "ts_hevc_720x576i25_tff.ts")
+    assert info.frame_rate == 12.5
+    assert info.duration == pytest.approx(6 / 12.5)
+    assert (info.field_order, info.field_label) == (0, False)
+
+
+def test_hevc_frames_count_from_the_first_irap_picture() -> None:
+    # A stream opening on a CRA keeps its RASL picture: 9 of 9.
+    assert probe_media(ASSETS / "ts_hevc_320x180p25_cut.ts").frames == 9
+    # Four trailing pictures before the first CRA are dropped: 17 of 21.
+    assert probe_media(ASSETS / "ts_hevc_320x180p25_trail_first.ts").frames == 17
+
+
+def test_hevc_with_aac_audio() -> None:
+    info = probe_media(ASSETS / "ts_hevc_320x180p25_aac.ts")
+    assert info.has_audio
+    assert (info.audio_sample_rate, info.audio_channels) == (48000.0, 2)
+    info = probe_media(ASSETS / "ts_hevc_320x180p25_aac44k.ts")
+    assert (info.audio_sample_rate, info.audio_channels) == (44100.0, 2)
+
+
+def test_hevc_vui_timing_wins_over_the_timestamps() -> None:
+    # VUI timing says 50 while the timestamps step at 25 per second.
+    info = probe_media(ASSETS / "ts_hevc_320x180p25_vuifps50.ts")
+    assert (info.frame_rate, info.frames) == (50.0, 10)
+    # Without VUI timing the timestamps give the rate...
+    info = probe_media(ASSETS / "ts_hevc_320x180p25_novuitiming.ts")
+    assert (info.frame_rate, info.frames) == (25.0, 10)
+    # ...and a field-coded stream's timestamp rate is not halved, so the
+    # 720x576 at 25 fps lower-field rule applies.
+    info = probe_media(ASSETS / "ts_hevc_720x576i25_tff_novuitiming.ts")
+    assert (info.frame_rate, info.frames) == (25.0, 6)
+    assert (info.field_order, info.field_label) == (2, True)
+
+
+def test_hevc_non_standard_rate_is_kept() -> None:
+    assert probe_media(ASSETS / "ts_hevc_320x180p12345.ts").frame_rate == 12.345
+
+
+def test_hevc_leading_pictures_and_slices_count_once() -> None:
+    # A BLA picture and its RADL leading picture count like a CRA and RASL.
+    assert probe_media(ASSETS / "ts_hevc_320x180p25_cut_bla_radl.ts").frames == 9
+    # Two slice segments per picture: still 5 pictures.
+    assert probe_media(ASSETS / "ts_hevc_320x180p25_slices2.ts").frames == 5
+
+
+def test_hevc_without_parameter_sets_is_refused() -> None:
+    with pytest.raises(ValueError, match="sequence parameter set"):
+        probe_media(ASSETS / "ts_hevc_320x180p25_nosps.ts")
+
+
+def test_hevc_192_byte_packets() -> None:
+    assert probe_media(ASSETS / "ts_hevc_320x180p25.m2ts").duration == pytest.approx(
+        0.2
+    )
+
+
+def test_hevc_monochrome_window_is_scaled_like_420() -> None:
+    # 322x182 coded as 336x192 with a 14 x 10 conformance window: AE takes
+    # twice the offsets off a monochrome frame, as it would for 4:2:0.
+    info = probe_media(ASSETS / "ts_hevc_322x182p25_gray.ts")
+    assert (info.width, info.height) == (308, 172)
+    assert probe_media(ASSETS / "ts_hevc_322x182p25_gray10.ts").width == 308
+
+
+def test_hevc_depth_is_16_bpc_for_10_bit_420_and_422_only() -> None:
+    assert probe_media(ASSETS / "ts_hevc_320x180p25_10bit.ts").depth == 48
+    for name in (
+        "ts_hevc_320x180p25_12bit.ts",
+        "ts_hevc_320x180p25_444_10bit.ts",
+        "ts_hevc_322x182p25_gray10.ts",
+    ):
+        info = probe_media(ASSETS / name)
+        assert (info.bit_depth, info.depth) == (8, 24), name
 
 
 def test_not_a_transport_stream_raises(tmp_path: Path) -> None:

@@ -2676,7 +2676,7 @@ project versions; no sample contains it.
 | 0xC9 | 1 | u1 | Layer handling. Photoshop composition layers: 0 Ignore Layer Styles, 1 Merge Layer Styles into Footage, 2 Editable Layer Styles (also every style-less file); Photoshop footage imported with "Merged Layers" chosen in the import dialog 3 (a scripted import of the whole file stores 2); a chosen Photoshop layer 1 (0 when its styles are ignored, inferred). Illustrator/PDF composition layers 0; a chosen Illustrator layer 2. Ordinary raster, vector, movie and audio footage (whole-document AI/EPS/PDF included) 2. Solids and placeholders 0. |
 | 0xCA | 2 | bytes | 0 in every sample. |
 | 0xCC | 8 | u8 | Cached data size in bytes (samples up to 14,729,427,240): a single file's size on disk; for a numbered sequence the first frame's size times the frame count; for merged Photoshop footage and TIFF stills the decoded image instead, width x height x channels x bytes per channel (the channel count of the [`opti`](#opti) record: colour channels, plus one for alpha except a flattened Photoshop file's alpha channel); for one Photoshop layer its content box's pixels the same way. AE recomputes it when it re-reads the media, so 0 is accepted. |
-| 0xD4 | 1 | u1 | 1 in most samples, 0 on many movies; equal to [`drop`](#drop) in all but one sample. For an MXF, the drop-frame timecode flag (1 for a drop-frame start timecode and for audio-only media, else 0; AE 2026). |
+| 0xD4 | 1 | u1 | 1 in most samples, 0 on many movies; equal to [`drop`](#drop) in all but one sample. For an MXF, the drop-frame timecode flag (1 for a drop-frame start timecode and for audio-only media, else 0; AE 2026). An MPEG-1 system stream whose first GOP time code is set stores that time code's drop-frame flag; the MPEG-2 program and transport streams store 1 (AE 2026). |
 | 0xD5 | 1 | u1 | 0 except on one movie. Unknown. |
 | 0xD6 | 4 | u4 | Time dividend: 0 in most samples; on some movies in 92.14 projects the media's start timecode as a time (86400/24 = 01:00:00:00, 10800000/2997, 14532/25), matching [`strt`](#strt). |
 | 0xDA | 4 | u4 | Time divisor: 0, or the media's time scale (24, 25, 30, 2997). |
@@ -2689,6 +2689,7 @@ Source flags at 0x70 (a big-endian u4; byte 0x73 holds bits 0-7):
 | 11 | 0x00000800 | Byte 0x72 bit 3. AE 2026 sets it on image sequences imported by script and on footage replaced by script (together with 0xC7 = 0 and 0xC9 = 0, see below); an import through the Import dialog leaves it clear. Also common on sequences in 92.14 projects. Rendering is the same either way (AE 2026). Meaning unknown. |
 | 19 | 0x00080000 | Byte 0x71 bit 3. Seen on Photoshop footage in 9 sample files. Unknown. |
 | 21 | 0x00200000 | Byte 0x71 bit 5. Seen only in 92.14 files, on movie, audio and JPEG footage. Unknown. |
+| 22 | 0x00400000 | Byte 0x72 bit 6. Import-time state, not a property of the media: AE 2026 left it set on 3 of some 130 MPEG transport and program streams imported by script in one batch and saved at once (720x576 MPEG-2 files, twice the batch's last item), never on the same files imported again in a batch of five, and a plain resave clears it. Scripting reports the same attributes either way. |
 | 27 | 0x08000000 | Byte 0x70 bit 3. Media format: set by AE 2025 and later imports on JPEG, BMP/GIF, HEIC, movie, audio and data footage, single files and sequences alike. |
 
 All other bits are 0 in every sample.
@@ -2858,7 +2859,7 @@ for a `.txt`).
 | 0x0A | 20 | bytes | 0 in every sample. |
 | 0x1E | 4 | fourcc | A container or file-type code stored byte-reversed: `VooM` (QuickTime), `EVAW`, `GEPJ`, `fFIG`, ` PMB`, ` 4PM`, `CIEH`, `FFIA`, `GEPM` (MPEG program and transport streams, whether the record's own code is `MPEG` or `MPEO`), `DEMW`, `FFXM` (MXF), ` FWS`, `bvh` + NUL (data files). 0 on BMP/GIF image sequences. |
 | 0x22 | 4 | bytes | FF FF FF FF (0 when 0x1E is 0). |
-| 0x26 | 4 | fourcc | Codec: `avc1`, `AVC1`, `apch`, `apcn`, `ap4h`, `jpeg`, `png `, `MPG4`, `MPG1`, `RAW `, `SWF `, `UNKN`; in an MXF `AVdn` / `AVdh` (DNxHD / DNxHR), `MPEG`, `xd5c` (XDCAM HD422), `avl0` (H.264), `apco` ... `ap4h` (ProRes), `dsvn` / `dsvp` (DV 525 / 625); in a transport stream `H264` (H.264) or `MPEG` (MPEG-1/2 video); 0 for audio and data. |
+| 0x26 | 4 | fourcc | Codec: `avc1`, `AVC1`, `apch`, `apcn`, `ap4h`, `jpeg`, `png `, `MPG4`, `MPG1`, `RAW `, `SWF `, `UNKN`; in an MXF `AVdn` / `AVdh` (DNxHD / DNxHR), `MPEG`, `xd5c` (XDCAM HD422), `avl0` (H.264), `apco` ... `ap4h` (ProRes), `dsvn` / `dsvp` (DV 525 / 625); in a transport stream `H264`, `HEVC` or `MPEG` (MPEG-1/2 video); in a program stream `MPG1` for an MPEG-1 system stream (whatever its video coding) and `MPEG` for an MPEG-2 program stream; 0 for audio and data. |
 | 0x2A | 4 | u4 LE | 1 when the source has video, 0 otherwise (and on BMP/GIF image sequences). |
 | 0x2E | 4 | u4 LE | 1 in every sample. |
 | 0x32 | 8 | bytes | 0 in every sample. |
@@ -3375,7 +3376,9 @@ stores 0 over its own time scale, or its embedded start timecode (86592/24 =
 frames times the frame rate's denominator over the rate's numerator: 900000/25
 for 10:00:00:00 at 25 fps, 10800000/2997 for 01:00:00:00 at 29.97 (AE 2026,
 checked on 27 start values at 23.976, 25, 29.97 and 59.94 fps); an audio-only
-MXF stores 0/30.
+MXF stores 0/30. An MPEG-1 system stream stores its first GOP header's time
+code the same way (10/25 for 00:00:00:10 at 25 fps); the MPEG-2 program and
+transport streams store 0 (AE 2026).
 
 ### `drop`
 
@@ -3383,7 +3386,7 @@ MXF stores 0/30.
 
 | Offset | Length | Type | Description |
 |---|---|---|---|
-| 0x00 | 1 | u1 | 1 on stills, sequences, audio, solids, placeholders and most movies in newer files; 0 on many movies. Equal to `sspc` byte 0xD4 in all but one sample. For an MXF it is the file's drop-frame timecode flag (1 for a 29.97 drop-frame start timecode, 0 for non-drop and for every integer rate), and 1 for an audio-only MXF (AE 2026). |
+| 0x00 | 1 | u1 | 1 on stills, sequences, audio, solids, placeholders and most movies in newer files; 0 on many movies. Equal to `sspc` byte 0xD4 in all but one sample. For an MXF it is the file's drop-frame timecode flag (1 for a 29.97 drop-frame start timecode, 0 for non-drop and for every integer rate), and 1 for an audio-only MXF (AE 2026). An MPEG-1 system stream whose first GOP time code is set stores that time code's drop-frame flag; the MPEG-2 program and transport streams store 1 (AE 2026). |
 
 ### `ftgi`
 
