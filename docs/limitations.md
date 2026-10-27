@@ -377,6 +377,35 @@ from a static file rather than through AE's live media engine:
   essence, DNx alpha and RGBA descriptors are untested. The codec code AE
   keeps in the `opti` record is left blank, as for the other movie formats:
   AE fills it in when it opens the project.
+- **MPEG transport streams (`.ts`, `.m2t`, `.m2ts`, `.mts`) are read from
+  their first program's video stream** (MPEG-1/2 or H.264) the way After
+  Effects 2026 imports them: the frame size from the sequence header or
+  SPS (cropping applied), the rate from the frame-rate code or VUI timing
+  (else the presentation timestamps), the frames counted from the first I
+  picture, the pixel aspect from the aspect code or VUI (with the D1 presets
+  AE applies), fields from the coding or AE's size rules for progressive
+  H.264 (720x480 at 29.97 and 720x576 at 25 fps lower, 1440x1080 at 25 or
+  29.97 fps upper). Audio follows the stream AE picks (the first MPEG
+  layer II or AAC stream, else the first other one): its sample rate and
+  channel count come from its frame headers, except that AC-3 next to video
+  is recorded as stereo whatever it carries, as AE does. HEVC video follows
+  AE's own reading (measured on 75 streams): square pixels whatever the VUI
+  aspect says; the rate from the VUI timing, else the timestamps; the
+  frames counted from the first IRAP picture, leading pictures included; a
+  field-coded stream read as frames at half its VUI rate (a timestamp rate
+  is not halved), the size rules above then applying; a monochrome frame
+  shrunk by twice its conformance window, as a 4:2:0 frame is; 16 bits per
+  channel only for 10-bit 4:2:0 and 4:2:2, 8 for 4:4:4, monochrome and
+  12-bit streams. A stream without parameter sets is refused, as AE
+  refuses it. MPEG-4 part 2 video (which AE imports) is not supported. An
+  audio-only stream
+  is measured by its AAC, MPEG layer II, AC-3 or Blu-ray LPCM frames; AE
+  counts a few AC-3 frames fewer, reports a 44.1 kHz AAC stream a few
+  hundred samples short and an LPCM stream next to another audio stream
+  240 samples short, which py-aep does not reproduce. Like AE, py-aep
+  refuses a stream whose only audio is LPCM in a private stream. Field
+  pictures, variable frame rates, multi-program streams and 10-bit video
+  are untested.
 - **Input color profiles follow After Effects' per-format choices** (measured
   on AE 2026): an RGB TIFF/PSD, Illustrator/PDF page or Camera Raw file
   records its ICC profile (sRGB when untagged, ProPhoto RGB for Camera Raw);
