@@ -3782,10 +3782,11 @@ class Property(PropertyBase):
                 infl = (lo, ni, no)
                 infl_next = ri
                 o_speed, i_speed = o_ease.speed, i_ease.speed
-            left_out.append(KeyframeEase(o_speed, infl[0]))
-            new_in.append(KeyframeEase(slope, infl[1]))
-            new_out.append(KeyframeEase(slope, infl[2]))
-            right_in.append(KeyframeEase(i_speed, infl_next))
+            # Detached: a stored influence above 100 carries through.
+            left_out.append(KeyframeEase._detached(o_speed, infl[0]))
+            new_in.append(KeyframeEase._detached(slope, infl[1]))
+            new_out.append(KeyframeEase._detached(slope, infl[2]))
+            right_in.append(KeyframeEase._detached(i_speed, infl_next))
 
         # Raw writes: the public setters also switch a side to BEZIER, and a
         # LINEAR segment's keys stay LINEAR with the slope stored.
