@@ -14,6 +14,8 @@ from helpers import (
 
 from py_aep import AdvancedRendererOptions
 from py_aep import parse as parse_aep
+from py_aep.binary.chunk import ListChunk
+from py_aep.binary.utils import filter_by_list_type
 from py_aep.enums import GuideOrientationType, ShadowMapResolution
 from py_aep.models.items.composition import CompItem
 from py_aep.models.properties.property import Property
@@ -1346,6 +1348,43 @@ class TestRoundtripEssentialGraphics:
         comp.motion_graphics_template_name = "Created Template"
         assert comp.motion_graphics_template_name == "Created Template"
         assert comp.motion_graphics_template_controller_count == 0
+
+    def test_caps_only_names_before_cps2(self, tmp_path: Path) -> None:
+        """Projects saved by AE 15.0 and earlier hold the template and
+        controller names in `LIST:CapS` only (no `LIST:CpS2`): they parse
+        from there and renames write back there."""
+        project = parse_aep(EG_SAMPLES_DIR / "multiple_controllers.aep").project
+        for comp in project.compositions:
+            for cif in comp._cif_containers():
+                for lst in (cif, *filter_by_list_type(cif.chunks, "CCtl")):
+                    lst.chunks = [
+                        c
+                        for c in lst.chunks
+                        if not (isinstance(c, ListChunk) and c.list_type == "CpS2")
+                    ]
+        caps_only = tmp_path / "caps_only.aep"
+        project.save(caps_only)
+
+        project = parse_aep(caps_only).project
+        comp = get_comp(project, "primary")
+        assert comp.motion_graphics_template_name == "Untitled"
+        assert comp.motion_graphics_template_controller_names == [
+            "Brightness",
+            "Layer Opacity",
+            "Background Color",
+        ]
+
+        comp.motion_graphics_template_name = "Caption Template"
+        comp.motion_graphics_controllers[1].name = "Renamed Opacity"
+        out = tmp_path / "modified.aep"
+        project.save(out)
+        comp2 = get_comp(parse_aep(out).project, "primary")
+        assert comp2.motion_graphics_template_name == "Caption Template"
+        assert comp2.motion_graphics_template_controller_names == [
+            "Brightness",
+            "Renamed Opacity",
+            "Background Color",
+        ]
 
 
 class TestRoundtripFrameRateRetiming:

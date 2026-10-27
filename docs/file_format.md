@@ -2147,6 +2147,12 @@ A new composition's template name is `Untitled` / `en_US`; one sample carries
 two pairs, `Unbenannt` / `de_DE` then `Unbenannt` / `en_US`. In a
 [`LIST:CCtl`](#listcctl) it holds the controller name.
 
+Absent from projects saved before file format 92.7 (AE 13.8-15.0), whose
+containers and controllers carry a [`LIST:CapS`](#listcaps) alone: AE reads the
+name from that caption and, on resave, writes a `LIST:CpS2` holding the same
+text (measured on AE 2026, which refuses a file of format 92.7 or later with
+no `LIST:CpS2`).
+
 ### `CsCt`
 
 **Parent:** [`LIST:CpS2`](#listcps2), [`LIST:CapS`](#listcaps) · **Size:** 4 bytes · **py_aep:** `CsctChunk`
