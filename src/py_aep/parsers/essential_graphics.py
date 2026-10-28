@@ -44,16 +44,31 @@ def _parse_source_property_path(raw: str) -> list[SourcePropertyRef]:
     return path
 
 
+def _name_utf8(chunks: list[Chunk]) -> Utf8Chunk:
+    """The name `Utf8` of a CIF container or controller: the first text of
+    its `LIST:CpS2`, or of its `LIST:CapS` caption when the project predates
+    `CpS2` (file format 92.7, AE 15.1; AE 13.8-15.0 wrote `CapS` alone).
+    AE 2026 reads the name from `CapS` in such files and resaves both lists
+    with that text.
+    """
+    for list_type in ("CpS2", "CapS"):
+        try:
+            names = find_by_list_type(chunks=chunks, list_type=list_type)
+        except ChunkNotFoundError:
+            continue
+        return cast(
+            "Utf8Chunk", filter_by_type(chunks=names.chunks, chunk_type="Utf8")[0]
+        )
+    raise ChunkNotFoundError("Missing LIST/CpS2 and LIST/CapS chunks")
+
+
 def _parse_controller(cctl_chunk: ListChunk) -> EssentialGraphicsController:
     """Parse a single LIST:CCtl chunk into a controller.
 
     Args:
         cctl_chunk: A LIST:CCtl chunk.
     """
-    cps2 = find_by_list_type(chunks=cctl_chunk.chunks, list_type="CpS2")
-    name_utf8 = cast(
-        "Utf8Chunk", filter_by_type(chunks=cps2.chunks, chunk_type="Utf8")[0]
-    )
+    name_utf8 = _name_utf8(cctl_chunk.chunks)
 
     ctyp = cast("U4Chunk", find_by_type(chunks=cctl_chunk.chunks, chunk_type="CTyp"))
 
@@ -129,15 +144,7 @@ def parse_essential_graphics(
 
     cif_chunks = cif.chunks
 
-    # Template name from the first LIST:CpS2
-    cps2 = find_by_list_type(chunks=cif_chunks, list_type="CpS2")
-    template_name_utf8 = cast(
-        "Utf8Chunk",
-        filter_by_type(
-            chunks=cps2.chunks,
-            chunk_type="Utf8",
-        )[0],
-    )
+    template_name_utf8 = _name_utf8(cif_chunks)
 
     cctl_chunks = filter_by_list_type(chunks=cif_chunks, list_type="CCtl")
     controllers = [_parse_controller(cctl) for cctl in cctl_chunks]
