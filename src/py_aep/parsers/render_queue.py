@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, cast
 
 from ..binary.chunk import ContainerChunk, ListChunk
-from ..binary.ldat_chunks import LdatChunk, Lhd3Chunk
+from ..binary.ldat_chunks import LdatChunk, LdatItemType, Lhd3Chunk
 from ..binary.mutations import LRDR_CHILD_ORDER, build_rq_settings_list
 from ..binary.render_chunks import ROUT_ITEMS_PER_RQ_ITEM, ArsiChunk, RoutChunk
 from ..binary.scalar_chunks import Utf8Chunk
@@ -152,13 +153,25 @@ def parse_render_queue(root_chunks: list[Chunk], project: Project) -> RenderQueu
     )
 
     if settings_lhd3.count > 0:
-        render_queue._items = parse_render_queue_items(
-            litm_chunk=litm_chunk,
-            render_settings=settings_ldat.items,
-            rout_items=rout_chunk.items,
-            project=project,
-            render_queue=render_queue,
-        )
+        if settings_lhd3.item_type == LdatItemType.lrdr:
+            render_queue._items = parse_render_queue_items(
+                litm_chunk=litm_chunk,
+                render_settings=settings_ldat.items,
+                rout_items=rout_chunk.items,
+                project=project,
+                render_queue=render_queue,
+            )
+        else:
+            # A settings layout py_aep has no decoder for: an item size
+            # other than the 2246 bytes every AE 15 to 26 project writes (a
+            # project saved by AE 13.5, issue #260). The items stay raw
+            # bytes for the round-trip and the queue reads empty, rather
+            # than failing the whole parse.
+            warnings.warn(
+                f"Render queue settings of {settings_lhd3.item_size} bytes per"
+                " item are not decoded; the render queue reads as empty",
+                stacklevel=2,
+            )
     return render_queue
 
 
