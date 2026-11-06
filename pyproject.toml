@@ -47,10 +47,12 @@ dev = [
     "types-PyYAML>=5.1",
 ]
 docs = [
-    "zensical>=0.0.29; python_version >= '3.10'",
-    "mkdocstrings[python]>=0.24.0; python_version >= '3.10'",
-    "pymdown-extensions>=10.0; python_version >= '3.10'",
-    "ruff>=0.1; python_version >= '3.10'",
+    "zensical>=0.0.29; python_version >= '3.11'",
+    # 1.0.7 is the first release that loads with pymdown-extensions >= 12.2,
+    # and it needs Python 3.11.
+    "mkdocstrings[python]>=1.0.7; python_version >= '3.11'",
+    "pymdown-extensions>=10.0; python_version >= '3.11'",
+    "ruff>=0.1; python_version >= '3.11'",
 ]
 
 [project.urls]
