@@ -8,6 +8,8 @@
 
 After Effects files (.aep) are mostly binary files, encoded in RIFX format. This package uses [struct](https://docs.python.org/3/library/struct.html) to parse .aep files and return an Application object containing a project, items, layers, effects and properties. The API is very close to the [ExtendScript API](https://ae-scripting.docsforadobe.dev/), with a few nice additions like iterators.
 
+Sibling project of [py-premiere](https://github.com/Pouf/py-premiere), [py-maya-scene](https://github.com/Pouf/py-maya-scene) and [py-houdini](https://github.com/Pouf/py-houdini).
+
 
 ## Features
 ### Supported
