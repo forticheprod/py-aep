@@ -98,6 +98,7 @@ class CameraLayer(Layer):
         )
         ldta.out_point = duration
         ldta.three_d_layer = True
+        ldta.poi_auto_orient = True
         return cast(
             "CameraLayer",
             super()._new(

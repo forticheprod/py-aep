@@ -2086,6 +2086,9 @@ class CompItem(AVItem):
     ) -> CameraLayer:
         """Create a new camera layer at the top of the layer stack.
 
+        Like After Effects' `addCamera()`, the camera is two-node, so it
+        orients towards its point of interest.
+
         Args:
             name: Layer name. Auto-generated if `None`.
             center_point: The `[x, y]` center point. Defaults to
@@ -2142,6 +2145,9 @@ class CompItem(AVItem):
         center_point: list[float] | None = None,
     ) -> LightLayer:
         """Create a new light layer at the top of the layer stack.
+
+        Like After Effects' `addLight()`, the light is a spot light aimed
+        at its point of interest.
 
         Args:
             name: Layer name. Auto-generated if `None`.

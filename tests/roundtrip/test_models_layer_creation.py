@@ -9,7 +9,7 @@ import pytest
 
 from py_aep import new
 from py_aep import parse as parse_aep
-from py_aep.enums import LineOrientation
+from py_aep.enums import AutoOrientType, LightType, LineOrientation
 from py_aep.models.layers.av_layer import AVLayer
 from py_aep.models.layers.camera_layer import CameraLayer
 from py_aep.models.layers.light_layer import LightLayer
@@ -252,6 +252,26 @@ class TestAddCamera:
         assert isinstance(lyr2, CameraLayer)
         assert lyr2.name == "TestCam"
 
+    def test_two_node_like_ae(self, tmp_path: Path) -> None:
+        # camera_rigs.aep holds two AE-made cameras: cam2 as addCamera left
+        # it (two-node) and cam1 switched to NO_AUTO_ORIENT (one-node).
+        ae = parse_aep(SAMPLES_DIR / "layer" / "camera_rigs.aep").project
+        two_node = next(c for c in ae.compositions if c.name == "CAM_TWO").layer("cam2")
+        one_node = next(c for c in ae.compositions if c.name == "CAM_ONE").layer("cam1")
+
+        app = parse_aep(EMPTY_COMP_AEP)
+        app.project.compositions[0].add_camera("Cam", [50, 50])
+        app.project.save(tmp_path / "out.aep")
+        cam = parse_aep(tmp_path / "out.aep").project.compositions[0].layers[0]
+
+        assert (
+            cam.auto_orient
+            == two_node.auto_orient
+            == AutoOrientType.CAMERA_OR_POINT_OF_INTEREST
+        )
+        assert cam._ldta._layer_flags_1 == two_node._ldta._layer_flags_1 == 0x44
+        assert one_node._ldta._layer_flags_1 == 0x04
+
 
 # ---------------------------------------------------------------------------
 # add_light
@@ -305,6 +325,26 @@ class TestAddLight:
         assert lyr2.id == light_id
         assert isinstance(lyr2, LightLayer)
         assert lyr2.name == "TestLight"
+
+    def test_two_node_like_ae(self, tmp_path: Path) -> None:
+        # lightType.aep's lights come from AE's addLight on a 100x100 comp.
+        ae = parse_aep(SAMPLES_DIR / "layer" / "lightType.aep").project
+        ae_light = next(c for c in ae.compositions if c.name == "lightType_SPOT").layer(
+            "TestLight"
+        )
+
+        app = parse_aep(EMPTY_COMP_AEP)
+        app.project.compositions[0].add_light("L", [50, 50])
+        app.project.save(tmp_path / "out.aep")
+        light = parse_aep(tmp_path / "out.aep").project.compositions[0].layers[0]
+
+        assert (
+            light.auto_orient
+            == ae_light.auto_orient
+            == AutoOrientType.CAMERA_OR_POINT_OF_INTEREST
+        )
+        assert light._ldta._layer_flags_1 == ae_light._ldta._layer_flags_1 == 0x44
+        assert light.light_type == ae_light.light_type == LightType.SPOT
 
 
 # ---------------------------------------------------------------------------
