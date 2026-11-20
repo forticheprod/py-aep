@@ -167,6 +167,29 @@ chunks in the binary, and a few layer-style and light properties carry
 synthesized bounds. A paint stroke's Diameter reports the 200 slider maximum
 the file stores, where ExtendScript reports 2500. Values are unaffected.
 
+### PropertyGroup.addProperty on the Effect Parade
+
+py_aep ships the effects that come with After Effects, as After Effects 2026
+writes them when `addProperty` adds one with its default values, also in a
+project that already uses the effect. A third-party effect, and Roto Brush &
+Refine Edge, can only be added to a project that already uses it, by cloning
+the definition the project stores. An effect newer than the project's After
+Effects version cannot be added, such as Unmult, first listed by After Effects
+2026, or the OCIO transforms, first listed by AE 2023 and 2024. Only AE 2018
+and AE 2022 to 2026 were measured, so Noise and Median, first listed by AE
+2022, are refused in an AE 2019 to 2021 project even if that release lists
+them.
+
+In a project for an older release, an added effect starts from the AE 2026
+defaults, and a few parameters start elsewhere in that release's own
+`addProperty`. Leaving aside color alphas, which After Effects fills
+differently on every capture, and last-digit rounding, four effects differ on
+AE 2022 and ten on AE 2018. Gaussian Blur's Blurriness starts at 25 where both
+start at 0, Directional Blur's Direction and Blur Length at 90 and 10 where
+both start at 0, and the blurs' Repeat Edge Pixels is on where AE 2018 starts
+with it off. The project opens in that release all the same, and the values
+can be set like any other.
+
 ## Templates
 
 Render settings and output module templates are not stored in the `.aep`

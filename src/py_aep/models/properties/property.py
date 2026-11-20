@@ -33,6 +33,7 @@ from py_aep.resolvers.interpolation import (
 )
 
 from ...ae_version import get_head
+from ...binary.bin_utils import to_f4
 from ...binary.chunk import LEGACY_NAME_FORMAT, Chunk, ContainerChunk, ListChunk
 from ...binary.composition_chunks import layer_timebase
 from ...binary.ldat_chunks import (
@@ -71,6 +72,8 @@ from ...binary.utils import (
     find_by_type,
     index_by_identity,
 )
+from ...data.effect_param_tdb4 import EFFECT_PARAM_TDB4
+from ...data.hold_only_streams import HOLD_ONLY_STREAMS
 from ...data.match_names import VF_AXIS_PREFIX
 from ...data.units import UNITS_TEXT_MAP
 from ...resolvers.motion_graphics import can_add_property
@@ -277,6 +280,12 @@ def _validate_value(prop: Property, value: Any) -> None:
         # lacks ("Value 2 out of range 0 to 1").
         ids = _mask_ids(prop)
         count = len(ids) if ids is not None else None
+        _validate_number(min=0, max=count, integer=True)(value)
+        return
+    if prop.property_value_type == PropertyValueType.LAYER_INDEX:
+        # A layer of the composition, 1-based, or 0 for none.
+        comp = prop._owning_comp()
+        count = len(comp.layers) if comp is not None else None
         _validate_number(min=0, max=count, integer=True)(value)
         return
     if value is None:
@@ -1143,11 +1152,13 @@ class Property(PropertyBase):
         self._set_subtree_synthetic(False)
 
         self._ensure_time_base()
+        if self._is_in_effect():
+            self._stamp_normalized_arc_metric()
         self._complete_static_value_chunks()
         self._reposition_canonically()
         self._ensure_bound_chunks()
         self._materialize_static_orientation()
-        self._ensure_mask_index_chunks()
+        self._ensure_reference_chunks()
 
     def _set_subtree_synthetic(self, value: bool) -> None:
         """Flip the synthetic flag on `tdmn` and the whole `tdbs` subtree.
@@ -1165,15 +1176,24 @@ class Property(PropertyBase):
                 for nested in chunk.chunks:
                     nested.synthetic = value
 
-    def _ensure_mask_index_chunks(self) -> None:
-        """Append the `tdli` index chunk AE requires for a materialized
-        MASK_INDEX effect param (e.g. a Path Text path selector).
+    def _ensure_reference_chunks(self) -> None:
+        """Append the reference chunks AE requires for a materialized
+        MASK_INDEX or LAYER_INDEX effect param, such as a Path Text path
+        selector or Set Matte's Take Matte From Layer.
 
         AE stores a mask-index param's value in a `tdli` (S4Chunk) after the
         cdat (the cdat itself stays all-zeros, see
         `_complete_static_value_chunks`), and rejects a materialized tdbs
-        lacking it with "missing data in file".
+        lacking it with "missing data in file". AE 2026 stores a layer
+        param's layer id in a `tdpi`, followed by a `tdps` holding 0.
         """
+        if self.property_value_type == PropertyValueType.LAYER_INDEX:
+            if self._tdpi is None:
+                # No layer yet. A value write that follows stores its id.
+                self._tdpi = S4Chunk(chunk_type="tdpi", value=0)
+                self._tdbs.chunks.append(self._tdpi)
+                self._tdbs.chunks.append(S4Chunk(chunk_type="tdps", value=0))
+            return
         if self.property_value_type != PropertyValueType.MASK_INDEX:
             return
         if self._tdli_chunk() is not None:
@@ -1245,7 +1265,8 @@ class Property(PropertyBase):
         stamps the layer's display aspect (source width * pixel aspect /
         height) as the X multiplier and fits to `NORMALIZED_ARC_ACCURACY`
         when the point is first keyed, and keeps both once its keys are
-        removed. A never-keyed point holds 1.0 / 1e-4. AE evaluates the
+        removed. An effect point is stamped as soon as AE stores it, keyed
+        or not, and an unstored one holds 1.0 / 1e-4. AE evaluates the
         stored values (AE 2026: 15.0 on a 3000x200 solid, 3.556 on a 640x360
         one with 2:1 pixels; a point keyed with 1.0 plays up to 3 px off).
         """
@@ -1297,6 +1318,10 @@ class Property(PropertyBase):
             # them on bounded menu/dropdown leaves (Line Cap, Fill Rule, Grad
             # Type, ...) which report can_vary_over_time=False. Match that.
             if self._can_vary_over_time is False:
+                return
+            # It omits them on the hold-only menus and checkboxes too, which
+            # carry the integer type flag.
+            if self.match_name in HOLD_ONLY_STREAMS and self._tdb4.integer:
                 return
             multi_dim_vector = (
                 not self._color
@@ -1389,10 +1414,14 @@ class Property(PropertyBase):
         """
         if self._parallel_kind() is not None or self._tdb4 is None:
             return
-        if self.property_value_type == PropertyValueType.MASK_INDEX:
-            # MASK_INDEX cdat is 5 zero doubles (like OneD); the index value
-            # lives in a separate `tdli` chunk (see _ensure_mask_index_chunks),
-            # NOT in the cdat, which stays all-zeros.
+        if self.property_value_type in (
+            PropertyValueType.MASK_INDEX,
+            PropertyValueType.LAYER_INDEX,
+        ):
+            # A MASK_INDEX or LAYER_INDEX cdat is 5 zero doubles, like a
+            # OneD one. The mask id lives in a `tdli` chunk and the layer id
+            # in a `tdpi`, both appended by _ensure_reference_chunks, NOT in
+            # the cdat.
             if self._cdat is None:
                 cdat = CdatChunk(values=[0.0] * 5)
                 self._tdbs.chunks.insert(
@@ -1444,6 +1473,10 @@ class Property(PropertyBase):
             self._tdb4._type_flags = 0x08
             self._tdb4._property_category = 0x09
             self._tdb4._spatial_marker = True
+        elif self.match_name in HOLD_ONLY_STREAMS:
+            # Hold-only streams take AE's fields for their control.
+            for field, flags in HOLD_ONLY_STREAMS[self.match_name].items():
+                setattr(self._tdb4, field, flags)
         elif (
             self._color
             and not self._is_in_effect()
@@ -1653,11 +1686,13 @@ class Property(PropertyBase):
         # 3. Reverse effect point (pixel coordinates -> 0-1 fraction)
         if isinstance(value, list) and len(value) >= 2:
             value = self._apply_effect_scale(value, invert=True)
-        # 2. Reverse color (RGBA 0-1 -> ARGB 0-255)
+        # 2. Reverse color (RGBA 0-1 -> ARGB 0-255). AE stores each component
+        #    as its float32 value times 255, as every non-whole colour
+        #    component of the AE 2025 and 2026 samples shows.
         if self._color:
             if isinstance(value, list) and len(value) == 4:
                 r, g, b, a = value
-                value = [a * 255.0, r * 255.0, g * 255.0, b * 255.0]
+                value = [to_f4(c) * 255.0 for c in (a, r, g, b)]
         # 1. Reverse percent (0-100 -> 0-1 fraction)
         if self.match_name in _PERCENT_MATCH_NAMES:
             if isinstance(value, (int, float)):
@@ -1866,11 +1901,13 @@ class Property(PropertyBase):
 
     def _stored_static_value(self) -> _ValueType:
         """[value][Property.value] before a 2-D layer's Z is reported as 0."""
-        if self._tdpi is not None and self._composition is not None:
-            layer_id = self._tdpi.value
-            if layer_id == 0:
-                return 0
-            return self._composition._layer_id_to_index.get(layer_id, -1) + 1
+        if self._tdpi is not None:
+            comp = self._owning_comp()
+            if comp is not None:
+                layer_id = self._tdpi.value
+                if layer_id == 0:
+                    return 0
+                return comp._layer_id_to_index.get(layer_id, -1) + 1
         if self._property_value_type == PropertyValueType.MASK_INDEX:
             return self._mask_index()
         separated = self._separated_value()
@@ -1991,6 +2028,14 @@ class Property(PropertyBase):
             index = int(value) if isinstance(value, (int, float)) else 0
             tdli = cast("S4Chunk", self._tdli_chunk())
             tdli.value = ids[index - 1] if index and ids is not None else index
+            return
+        if self.property_value_type == PropertyValueType.LAYER_INDEX:
+            # The layer's id lives in the `tdpi` chunk _ensure_materialized
+            # appended, not in the cdat.
+            index = int(cast("float", value))
+            comp = self._owning_comp()
+            assert self._tdpi is not None and comp is not None
+            self._tdpi.value = comp.layers[index - 1].id if index else 0
             return
         self._write_cdat(value)
         self._cache_written(value)
@@ -2247,7 +2292,7 @@ class Property(PropertyBase):
                 entry = parade._installed_effect_def(effect.match_name)
             except ValueError:
                 entry = None
-            if entry is not None:
+            if entry is not None and entry[2] is not None:
                 try:
                     parts.append(
                         find_by_list_type(chunks=entry[2].chunks, list_type="parT")
@@ -3328,8 +3373,9 @@ class Property(PropertyBase):
 
         `KeyframeInterpolationType.HOLD` is valid for every property that
         can vary over time. `LINEAR` and `BEZIER` are additionally invalid
-        for hold-only properties: markers, text documents, and
-        checkbox/dropdown effect parameters. When the property cannot vary
+        for hold-only properties: markers, text documents,
+        checkbox/dropdown effect parameters, and layer streams such as a
+        light's Falloff or a camera's Iris Shape. When the property cannot vary
         over time (e.g. a Layer Control parameter), every type is invalid.
         (Truth table probed against AE 2026; integer effect sliders DO
         accept all three types.)
@@ -3352,6 +3398,8 @@ class Property(PropertyBase):
             PropertyValueType.MARKER,
             PropertyValueType.TEXT_DOCUMENT,
         ):
+            return False
+        if self.match_name in HOLD_ONLY_STREAMS:
             return False
         # Only the pard-derived control type is authoritative for the
         # checkbox/dropdown test: the tdb4 flag fallback in
@@ -3437,6 +3485,16 @@ class Property(PropertyBase):
             t._reserved_48 &= 0xFF000000
             t._reserved_4c = t._reserved_4d = t._pad_4e = 0
             return
+        if self._is_in_effect() and self._property_control_type in EFFECT_PARAM_TDB4:
+            # An effect param keeps its control type's fields when keyed. AE
+            # 2026 only clears the static bit and the keyframe record, for
+            # one param of each control type.
+            t.static = False
+            t.animated = True
+            self._ensure_time_base()
+            self._stamp_normalized_arc_metric()
+            tdb4_clear_keyframe_record(t)
+            return
         # AE keeps a variable-font axis's value-hint flag, cvot flags
         # and time base unchanged across the static<->animated
         # transition (verified against the variable_font_axis_animated
@@ -3460,6 +3518,9 @@ class Property(PropertyBase):
         tdb4_clear_keyframe_record(t)
         if preserved is not None:
             t._value_hint_flag, t._cvot_flags, t._time_base = preserved
+        # A hold-only stream keeps its fields when keyed, as in AE 2026.
+        for field, flags in HOLD_ONLY_STREAMS.get(self.match_name, {}).items():
+            setattr(t, field, flags)
 
     def _ensure_animated(self) -> tuple[Lhd3Chunk, LdatChunk]:
         """Return the keyframe `(lhd3, ldat)`, creating them if static.
@@ -3605,7 +3666,14 @@ class Property(PropertyBase):
 
         item_type = self._keyframe_item_type()
         kf_data = build_kf_data(item_type, self.dimensions)
-        ldat_item = build_ldat_item(kf_data, spatial=self._has_motion_path)
+        ldat_item = build_ldat_item(
+            kf_data, spatial=self._has_motion_path, color=bool(self._color)
+        )
+        if not self.is_interpolation_type_valid(KeyframeInterpolationType.LINEAR):
+            # A checkbox or a menu only holds, and AE 2026 keys it HOLD.
+            hold = KeyframeInterpolationType.HOLD.to_binary()
+            ldat_item.in_interpolation_type = hold
+            ldat_item.out_interpolation_type = hold
 
         kf = Keyframe(
             _ldat_item=ldat_item,

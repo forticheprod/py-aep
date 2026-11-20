@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import gc
 import weakref
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 
@@ -19,9 +20,21 @@ from helpers import (
 from py_aep import Project
 from py_aep import new as py_aep_new
 from py_aep import parse as parse_aep
+from py_aep.binary.bin_utils import to_f4
+from py_aep.binary.chunk import Chunk, ListChunk, write_chunk
+from py_aep.binary.ldat_chunks import KfPosition
+from py_aep.binary.mutations import (
+    clone_chunk_tree,
+    collect_layer_ref_tdpi_ids,
+    remap_layer_ref_tdpi,
+    rewrite_owner_tdpi,
+)
+from py_aep.binary.utils import find_by_list_type
+from py_aep.data.builtin_effects import BUILTIN_EFFECTS
 from py_aep.enums import (
     KeyframeInterpolationType,
     Label,
+    LightType,
     MaskFeatherFalloff,
     MaskMode,
     MaskMotionBlur,
@@ -40,6 +53,7 @@ from py_aep.models import (
     Shape,
 )
 from py_aep.models.layers import ShapeLayer, TextLayer
+from py_aep.models.properties.property_group import _baked_effect_def
 from py_aep.resolvers.interpolation import NORMALIZED_ARC_ACCURACY
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "property"
@@ -47,9 +61,18 @@ BUGS_DIR = Path(__file__).parent.parent.parent / "samples" / "bugs"
 LAYER_SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
 LAYER_SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
 VERSIONS_DIR = Path(__file__).parent.parent.parent / "samples" / "versions"
+COMPOSITION_SAMPLES_DIR = (
+    Path(__file__).parent.parent.parent / "samples" / "models" / "composition"
+)
 PROPERTY_SAMPLES_DIR = (
     Path(__file__).parent.parent.parent / "samples" / "models" / "property"
 )
+
+
+def _chunk_bytes(chunk: Chunk) -> bytes:
+    buffer = BytesIO()
+    write_chunk(buffer, chunk)
+    return buffer.getvalue()
 
 
 def _find_property(layer: Layer, match_name: str) -> Property | None:
@@ -1922,8 +1945,8 @@ class TestAddEffect:
 
 class TestBakedBuiltinEffects:
     """`add_property` of a built-in effect the project has never used,
-    cloned from `data/builtin_effects.py` instead of the project's EfdG
-    (issue #215)."""
+    cloned from the baked templates in `data/effects/` instead of the
+    project's EfdG (issue #215)."""
 
     def test_add_to_project_with_no_effect_definitions(self, tmp_path: Path) -> None:
         app = py_aep_new()
@@ -1934,7 +1957,8 @@ class TestBakedBuiltinEffects:
 
         assert parade.can_add_property("ADBE Geometry2") is True
         assert parade.can_add_property("Transform") is True  # display name
-        assert parade.can_add_property("ADBE Gaussian Blur 2") is False
+        assert parade.can_add_property("ADBE Gaussian Blur 2") is True
+        assert parade.can_add_property("CC Ball Action") is False  # third party
 
         effect = parade.add_property("ADBE Geometry2")
         assert isinstance(effect, PropertyGroup)
@@ -1947,7 +1971,7 @@ class TestBakedBuiltinEffects:
         assert effect["Rotation"].value == 0.0
 
         # A second instance gets AE's numbered name.
-        assert parade.add_property("Transform").name == "Transform 2"
+        assert parade.add_property("ADBE Geometry2").name == "Transform 2"
 
         effect["Position"].set_values_at_times([0.0, 1.0], [[0.0, 0.0], [10.0, 5.0]])
         effect["Anchor Point"].value = [0.0, 0.0]
@@ -1960,18 +1984,152 @@ class TestBakedBuiltinEffects:
         assert len(written["Position"].keyframes) == 2
         assert written["Anchor Point"].value == [0.0, 0.0]
 
-    def test_project_definition_wins_over_baked(self) -> None:
-        """A project that already defines the effect keeps using its own
-        template, so an existing file's instances stay self-consistent."""
-        from py_aep.models.properties.property_group import _baked_effect_def
+    def test_builtin_ignores_project_definition(self) -> None:
+        """A built-in the project already uses still starts from the baked
+        template, since the project's definition mirrors its first instance,
+        edits included. After Effects 2026 adds Block Dissolve with a Block
+        Width of 1, away from its `pard` default of 0."""
+        app = parse_aep(SAMPLES_DIR / "effect_param_writes.aep")
+        comp = get_comp(app.project, "types")
+        layer = comp.add_solid([0.5, 0.5, 0.5], "fx", 100, 100)
+        assert layer.effects._installed_effect_def("ADBE Block Dissolve") == (
+            "ADBE Block Dissolve",
+            "Block Dissolve",
+            None,
+        )
+        effect = layer.effects.add_property("ADBE Block Dissolve")
+        assert effect["Block Width"].value == 1.0
+        assert effect["Block Height"].value == 1.0
 
-        app = parse_aep(SAMPLES_DIR / "effects.aep")
-        layer = get_layer(app.project, "effect_2dPoint")
-        parade = layer["ADBE Effect Parade"]
-        resolved = parade._installed_effect_def("ADBE Lens Flare")
-        assert resolved is not None
-        assert _baked_effect_def("ADBE Lens Flare") is None
-        assert resolved[2] is not None
+    def test_builtin_layer_param_names_own_layer_in_used_project(
+        self, tmp_path: Path
+    ) -> None:
+        """`duplicate.aep` already uses Set Matte in DupSrc. After Effects
+        2026 still points a new Set Matte's Take Matte From Layer at the
+        layer the effect is on."""
+        app = parse_aep(COMPOSITION_SAMPLES_DIR / "duplicate.aep")
+        get_comp(app.project, "DupSrc").layer("B").effects.add_property(
+            "ADBE Set Matte3"
+        )
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        written = get_comp(parse_aep(out).project, "DupSrc").layer("B")
+        effect = written.effects.properties[-1]
+        assert effect["Take Matte From Layer"].value == written.index + 1
+
+    def test_every_builtin_matches_after_effects(self, tmp_path: Path) -> None:
+        """Each added effect is byte-identical, once saved, to the instance
+        After Effects 2026 writes for `addProperty`, with the template's
+        layer id replaced by this layer's. Resetting the values to their
+        `pard` defaults would change nine of them, such as Block Dissolve
+        and Iris Wipe."""
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        for match_name in BUILTIN_EFFECTS:
+            layer = comp.add_solid([0.5, 0.5, 0.5], match_name, 1920, 1080)
+            layer.effects.add_property(match_name)
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        layers = parse_aep(out).project.compositions[0].layers
+        assert len(layers) == len(BUILTIN_EFFECTS)
+        for layer in layers:
+            written = layer.effects
+            assert len(written.properties) == 1
+            effect = written.properties[0]
+            assert effect.match_name == layer.name
+            sspc = effect._backing_list_chunk(written._tdgp)
+            template = _baked_effect_def(effect.match_name)
+            owner = rewrite_owner_tdpi(template, layer.id)
+            remap_layer_ref_tdpi(template, {owner: layer.id})
+            assert _chunk_bytes(sspc) == _chunk_bytes(template), effect.match_name
+
+    def test_layer_param_defaults_to_own_layer(self, tmp_path: Path) -> None:
+        """After Effects 2026 points a fresh Set Matte's Take Matte From
+        Layer at the layer the effect is on."""
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        comp.add_null()
+        layer = comp.add_solid([0.5, 0.5, 0.5], "fx", 1920, 1080)
+        comp.add_null()
+        layer.effects.add_property("ADBE Set Matte3")
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        written = get_comp(parse_aep(out).project, "c").layer("fx")
+        effect = written.effects.properties[0]
+        # A layer parameter holds ExtendScript's 1-based layer index.
+        assert effect["Take Matte From Layer"].value == written.index + 1
+
+    def test_display_name_resolves_like_after_effects(self) -> None:
+        """A display name two effects share adds the one After Effects 2026
+        picks, the first in its effect list, obsolete or not. AE numbers
+        the instances of both effects together."""
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        parade = comp.add_null().effects
+        added = [
+            parade.add_property(name)
+            for name in ("ADBE Geometry2", "Transform", "Transform")
+        ]
+        assert [(e.match_name, e.name) for e in added] == [
+            ("ADBE Geometry2", "Transform"),
+            ("ADBE Geometry", "Transform 2"),
+            ("ADBE Geometry", "Transform 3"),
+        ]
+        added = [
+            parade.add_property(name)
+            for name in ("ADBE Easy Levels2", "Levels", "ADBE Easy Levels2")
+        ]
+        assert [(e.match_name, e.name) for e in added] == [
+            ("ADBE Easy Levels2", "Levels"),
+            ("ADBE Easy Levels", "Levels 2"),
+            ("ADBE Easy Levels2", "Levels 3"),
+        ]
+        assert parade.add_property("Noise").match_name == "ADBE Noise2"
+
+    @pytest.mark.parametrize(("comp_width", "expected"), [(801, 801), (100, 256)])
+    def test_vr_output_frame_width_follows_comp(
+        self, tmp_path: Path, comp_width: int, expected: int
+    ) -> None:
+        """After Effects 2026 starts VR Converter's and VR Sphere To Plane's
+        Output Frame Width at the composition width, whatever the layer's,
+        clamped to 256 - 16384. A bound written for an integer parameter is
+        its slider range, 256 and 16384 here, as AE writes it."""
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("c", comp_width, 500, 1.0, 10.0, 24.0)
+        layer = comp.add_solid([0.5, 0.5, 0.5], "s", 640, 360)
+        layer.effects.add_property("Mettle SkyBox Converter")
+        layer.effects.add_property("Mettle SkyBox Viewer")
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        effects = get_comp(parse_aep(out).project, "c").layers[0].effects.properties
+        converter = effects[0]["Mettle SkyBox Converter-0004"]
+        viewer = effects[1]["Mettle SkyBox Viewer-0003"]
+        assert converter.value == expected
+        assert viewer.value == expected
+        assert viewer._tdum.values == [256.0]
+        assert viewer._tduM.values == [16384.0]
+
+    @pytest.mark.parametrize(
+        ("version", "allowed"), [("25.6x101", False), ("26.0x67", True)]
+    )
+    def test_effect_newer_than_project_is_rejected(
+        self, version: str, allowed: bool
+    ) -> None:
+        """Unmult is first listed by After Effects 2026. AE 2018 and 2022 to
+        2025 do not have it."""
+        app = py_aep_new(version)
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        parade = comp.add_null().effects
+        assert parade.can_add_property("ADBE Unmult") is allowed
+        if allowed:
+            assert parade.add_property("Unmult").match_name == "ADBE Unmult"
+        else:
+            with pytest.raises(ValueError, match="Unmult"):
+                parade.add_property("Unmult")
 
 
 class TestSynthesizedEffectParamWrites:
@@ -2091,10 +2249,171 @@ class TestSynthesizedEffectParamWrites:
         )
         assert written._tdb4._spatial_static_flags == 0x07
 
+    def test_written_param_matches_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each param a baked template stores, left out and written back,
+        comes out as After Effects stored it, name and tdb4 included."""
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        cases = []
+        for match_name in BUILTIN_EFFECTS:
+            sspc = _baked_effect_def(match_name)
+            tdgp = find_by_list_type(sspc.chunks, "tdgp")
+            source = None
+            for index, chunk in enumerate(tdgp.chunks[:-1]):
+                body = tdgp.chunks[index + 1]
+                if chunk.chunk_type != "tdmn" or chunk.value.endswith("-0000"):
+                    continue
+                if not isinstance(body, ListChunk) or body.list_type != "tdbs":
+                    continue
+                if source is None:
+                    layer = comp.add_solid([0.5, 0.5, 0.5], match_name, 1920, 1080)
+                    source = layer.effects.add_property(match_name)
+                stored = source[chunk.value]
+                # Groups, buttons and arbitrary data take no value, and AE
+                # stores them all.
+                if stored.property_value_type in (
+                    PropertyValueType.NO_VALUE,
+                    PropertyValueType.CUSTOM_VALUE,
+                ):
+                    continue
+                variant = clone_chunk_tree(sspc)
+                del find_by_list_type(variant.chunks, "tdgp").chunks[index : index + 2]
+                layer = comp.add_solid([0.5, 0.5, 0.5], str(len(cases)), 1920, 1080)
+                monkeypatch.setattr(
+                    "py_aep.models.properties.property_group._baked_effect_def",
+                    lambda _, variant=variant: variant,
+                )
+                effect = layer.effects.add_property(match_name)
+                monkeypatch.undo()
+                if stored.property_value_type == PropertyValueType.LAYER_INDEX:
+                    # AE points a fresh layer param at its own layer.
+                    effect[chunk.value].value = layer.index + 1
+                else:
+                    effect[chunk.value].value = stored.value
+                cases.append((match_name, chunk.value))
+        assert len(cases) > 100
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        written = get_comp(parse_aep(out).project, "c")
+        for number, (match_name, param) in enumerate(cases):
+            theirs = written.layer(match_name).effects.properties[0][param]
+            layer = written.layer(str(number))
+            ours = layer.effects.properties[0][param]
+            # A layer param names its own layer on both sides.
+            assert [
+                _chunk_bytes(c) for c in ours._tdbs.chunks if c.chunk_type != "tdpi"
+            ] == [
+                _chunk_bytes(c) for c in theirs._tdbs.chunks if c.chunk_type != "tdpi"
+            ], param
+            if ours._tdpi is not None:
+                assert ours._tdpi.value == layer.id, param
+
+    def test_written_params_match_after_effects(self, tmp_path: Path) -> None:
+        """A left-out param py sets or keys is stored byte for byte as After
+        Effects stores it, keys included. `effect_param_writes.aep` holds AE
+        2026 setting, and on a twin layer keying, one left-out param of each
+        control type, plus Set Matte pointed at another layer."""
+        cases = [
+            ("int", "Mettle SkyBox Viewer", "-0003", 1000, 2000),
+            ("scalar", "ADBE Block Dissolve", "-0002", 20, 40),
+            ("angle", "ADBE Angle Control", "-0001", 45, 90),
+            ("checkbox", "ADBE Checkbox Control", "-0001", 1, 0),
+            (
+                "color",
+                "ADBE Color Control",
+                "-0001",
+                [0.2, 0.4, 0.6, 1],
+                [0.8, 0.6, 0.4, 1],
+            ),
+            ("point", "ADBE Point Control", "-0001", [10, 20], [30, 40]),
+            ("popup", "ADBE Gaussian Blur 2", "-0002", 2, 3),
+            ("slider", "ADBE Slider Control", "-0001", 12.5, 50),
+            ("point3d", "ADBE Point3D Control", "-0001", [10, 20, 30], [40, 50, 60]),
+        ]
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("types", 1920, 1080, 1.0, 10.0, 24.0)
+        target = comp.add_solid([0.5, 0.5, 0.5], "target", 640, 360)
+        for name, effect, suffix, first, second in cases:
+            still = comp.add_solid([0.5, 0.5, 0.5], name, 640, 360)
+            still.effects.add_property(effect)[effect + suffix].value = first
+            keyed = comp.add_solid([0.5, 0.5, 0.5], name + " keyed", 640, 360)
+            prop = keyed.effects.add_property(effect)[effect + suffix]
+            prop.set_value_at_time(0.0, first)
+            prop.set_value_at_time(1.0, second)
+        matte = comp.add_solid([0.5, 0.5, 0.5], "layer", 640, 360)
+        matte.effects.add_property("ADBE Set Matte3")["Take Matte From Layer"].value = (
+            target.index + 1
+        )
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        theirs = get_comp(
+            parse_aep(SAMPLES_DIR / "effect_param_writes.aep").project, "types"
+        )
+        ours = get_comp(parse_aep(out).project, "types")
+        params = {name: effect + suffix for name, effect, suffix, _, _ in cases}
+        params["layer"] = "ADBE Set Matte3-0001"
+        for name, param in params.items():
+            for layer_name in (name, name + " keyed"):
+                if layer_name == "layer keyed":
+                    continue
+                prop_a = theirs.layer(layer_name).effects.properties[0][param]
+                prop_b = ours.layer(layer_name).effects.properties[0][param]
+                for keyframe in prop_a.keyframes:
+                    data = keyframe._ldat_item.kf_data
+                    if isinstance(data, KfPosition):
+                        # AE caches the length of the segment it measured
+                        # while the second key still held the first's value,
+                        # a zero length with float residue (7e-16). py stores 0.
+                        data._unknown_header = 0.0
+                # The layer ids in tdpi differ, compared as layers below.
+                assert [
+                    _chunk_bytes(c)
+                    for c in prop_b._tdbs.chunks
+                    if c.chunk_type != "tdpi"
+                ] == [
+                    _chunk_bytes(c)
+                    for c in prop_a._tdbs.chunks
+                    if c.chunk_type != "tdpi"
+                ], layer_name
+        assert ours.layer("layer").effects.properties[0][params["layer"]].value == (
+            theirs.layer("layer").effects.properties[0][params["layer"]].value
+        )
+
+    def test_layer_param_write_names_the_layer(self, tmp_path: Path) -> None:
+        """`duplicate.aep`'s Set Matte takes its matte from layer B. Pointed
+        at Inner, it reads Inner back, the layer's id being what AE reads."""
+        app = parse_aep(COMPOSITION_SAMPLES_DIR / "duplicate.aep")
+        comp = get_comp(app.project, "DupSrc")
+        prop = comp.layer("A").effects.properties[0]["Take Matte From Layer"]
+        inner = comp.layer("Inner").index + 1
+        with pytest.raises(ValueError):
+            prop.value = len(comp.layers) + 1
+        prop.value = inner
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        written = get_comp(parse_aep(out).project, "DupSrc").layer("A")
+        assert written.effects.properties[0]["Take Matte From Layer"].value == inner
+
 
 class TestAddInstalledEffect:
     """Tests for add_property() of effects already defined in the
     project's EfdG (cloned from the stored definition)."""
+
+    @staticmethod
+    def _add_from_definition(layer: AVLayer, match_name: str) -> PropertyGroup:
+        """Clone the project's EfdG definition of `match_name`, the path an
+        effect outside the baked table takes."""
+        project = layer.containing_comp._project
+        match, display, sspc = next(
+            entry for entry in project._effect_definitions() if entry[0] == match_name
+        )
+        assert layer.effects is not None
+        return layer.effects._add_installed_effect(match, display, sspc)
 
     def test_can_add_installed_effect(self) -> None:
         """The Effect Parade accepts effects present in the project's
@@ -2107,8 +2426,9 @@ class TestAddInstalledEffect:
         assert fx.can_add_property("ADBE Lens Flare") is True
         assert fx.can_add_property("Lens Flare") is True  # display name
         assert fx.can_add_property("CC Sphere") is True
-        # Absent from this project, and pure nonsense: both rejected.
-        assert fx.can_add_property("ADBE Gaussian Blur 2") is False
+        # A third-party effect absent from this project, and pure nonsense:
+        # both rejected.
+        assert fx.can_add_property("CC Ball Action") is False
         assert fx.can_add_property("Some Custom Effect") is False
         # Expression controls are unaffected.
         assert fx.can_add_property("ADBE Slider Control") is True
@@ -2130,8 +2450,7 @@ class TestAddInstalledEffect:
 
         comp = source.containing_comp
         target = comp.add_solid([0.5, 0.5, 0.5], "target")
-        clone = target["ADBE Effect Parade"].add_property("ADBE Lens Flare")
-        assert isinstance(clone, PropertyGroup)
+        clone = self._add_from_definition(target, "ADBE Lens Flare")
         point = clone["Flare Center"]
         assert point.default_value is not None
         assert point.value == point.default_value
@@ -2151,8 +2470,7 @@ class TestAddInstalledEffect:
         assert target_base != source_comp._cdta.internal_timebase
         layer = target.add_solid([0.5, 0.5, 0.5], "s")
 
-        effect = layer["ADBE Effect Parade"].add_property("ADBE Gaussian Blur 2")
-        assert isinstance(effect, PropertyGroup)
+        effect = self._add_from_definition(layer, "ADBE Gaussian Blur 2")
         stamped = [
             child
             for child in effect.properties
@@ -2181,34 +2499,31 @@ class TestAddInstalledEffect:
     def test_add_installed_effect_appends_default_instance(self) -> None:
         """Adding clones the EfdG definition and appends it."""
         app = parse_aep(SAMPLES_DIR / "effects.aep")
-        layer = get_layer(app.project, "effect_2dPoint")
+        layer = get_layer(app.project, "effect_3dPoint")
         fx = layer.effects
         assert fx is not None
         before = len(fx.properties)
-        added = fx.add_property("ADBE Lens Flare")
+        added = fx.add_property("CC Sphere")
         assert isinstance(added, PropertyGroup)
         assert added.is_effect
-        assert added.match_name == "ADBE Lens Flare"
+        assert added.match_name == "CC Sphere"
         assert added.property_type == PropertyType.NAMED_GROUP
         assert len(fx.properties) == before + 1
         assert fx.properties[-1] is added
         # Second instance of an existing effect is numbered.
-        assert added.name == "Lens Flare 2"
+        assert added.name == "CC Sphere 2"
 
     def test_add_installed_effect_roundtrip(self, tmp_path: Path) -> None:
         """A cloned effect survives save + reparse intact."""
         app = parse_aep(SAMPLES_DIR / "effects.aep")
-        layer = get_layer(app.project, "effect_2dPoint")
+        layer = get_layer(app.project, "effect_3dPoint")
         assert layer.effects is not None
-        layer.effects.add_property("ADBE Lens Flare")
+        layer.effects.add_property("CC Sphere")
         out = tmp_path / "out.aep"
         app.project.save(out)
-        layer2 = get_layer(parse_aep(out).project, "effect_2dPoint")
+        layer2 = get_layer(parse_aep(out).project, "effect_3dPoint")
         assert layer2.effects is not None
-        assert [e.match_name for e in layer2.effects] == [
-            "ADBE Lens Flare",
-            "ADBE Lens Flare",
-        ]
+        assert [e.match_name for e in layer2.effects] == ["CC Sphere", "CC Sphere"]
 
     @staticmethod
     def _parade_layout(layer: AVLayer) -> list[str]:
@@ -2268,7 +2583,7 @@ class TestAddInstalledEffect:
         app = parse_aep(SAMPLES_DIR / "2_gaussian_20_30.aep")
         layer = app.project.compositions[0].layers[0]
         assert layer.effects is not None
-        added = layer.effects.add_property("ADBE Gaussian Blur 2")
+        added = self._add_from_definition(layer, "ADBE Gaussian Blur 2")
         blur = next(
             p for p in added.properties if p.match_name == "ADBE Gaussian Blur 2-0001"
         )
@@ -2285,7 +2600,7 @@ class TestAddInstalledEffect:
         app = parse_aep(SAMPLES_DIR / "2_gaussian_animated.aep")
         layer = app.project.compositions[0].layers[0]
         assert layer.effects is not None
-        added = layer.effects.add_property("ADBE Gaussian Blur 2")
+        added = self._add_from_definition(layer, "ADBE Gaussian Blur 2")
         blur = next(
             p for p in added.properties if p.match_name == "ADBE Gaussian Blur 2-0001"
         )
@@ -2305,7 +2620,7 @@ class TestAddInstalledEffect:
         layer = app.project.compositions[0].layers[0]
         assert layer.effects is not None
         existing = [e for e in layer.effects if e.match_name == "ADBE Gaussian Blur 2"]
-        added = layer.effects.add_property("ADBE Gaussian Blur 2")
+        added = self._add_from_definition(layer, "ADBE Gaussian Blur 2")
         blur = next(
             p for p in added.properties if p.match_name == "ADBE Gaussian Blur 2-0001"
         )
@@ -2328,7 +2643,7 @@ class TestAddInstalledEffect:
         app = parse_aep(SAMPLES_DIR / "2_gaussian_20_30.aep")
         layer = app.project.compositions[0].layers[0]
         assert layer.effects is not None
-        layer.effects.add_property("ADBE Gaussian Blur 2")
+        self._add_from_definition(layer, "ADBE Gaussian Blur 2")
         out = tmp_path / "out.aep"
         app.project.save(out)
         layer2 = parse_aep(out).project.compositions[0].layers[0]
@@ -2341,8 +2656,23 @@ class TestAddInstalledEffect:
         )
         assert blur.value == 25.0
 
+    def test_clone_into_another_comp_clears_foreign_layer_ref(
+        self, tmp_path: Path
+    ) -> None:
+        """`duplicate.aep`'s Set Matte takes its matte from layer B of
+        DupSrc. A clone on a TestComp layer must not keep B's id, since After
+        Effects refuses a file whose effect names a layer the composition
+        does not contain."""
+        app = parse_aep(COMPOSITION_SAMPLES_DIR / "duplicate.aep")
+        layer = get_layer(app.project, "TestComp")
+        self._add_from_definition(layer, "ADBE Set Matte3")
+        out = tmp_path / "out.aep"
+        app.project.save(out)
 
-class TestAddTextSelector:
+        written = get_layer(parse_aep(out).project, "TestComp").effects
+        sspc = written.properties[-1]._backing_list_chunk(written._tdgp)
+        assert collect_layer_ref_tdpi_ids(sspc) == set()
+
     """Tests for PropertyGroup.add_property() (text animator selectors)."""
 
     AEP = SAMPLES_DIR / "text_animator.aep"
@@ -3336,6 +3666,75 @@ class TestIsInterpolationTypeValid:
             prop.is_interpolation_type_valid("hold")  # type: ignore[arg-type]
 
 
+class TestHoldOnlyStreams:
+    """`hold_only_streams.aep` holds After Effects 2026 setting and keying a
+    light's Falloff, a camera's Iris Shape and its Depth of Field. These
+    streams vary over time but take HOLD keys only."""
+
+    AEP = SAMPLES_DIR / "hold_only_streams.aep"
+    STREAMS = (
+        ("light", "ADBE Light Options Group", "ADBE Light Falloff Type", 2, 3),
+        ("camera", "ADBE Camera Options Group", "ADBE Iris Shape", 3, 5),
+        ("camera", "ADBE Camera Options Group", "ADBE Camera Depth of Field", 1, 0),
+    )
+    ALL = TestIsInterpolationTypeValid.ALL
+
+    def test_vary_with_hold_keys_only(self) -> None:
+        """Stored by AE or synthesized, a Layer Styles menu included."""
+        comp = parse_aep(self.AEP).project.compositions[0]
+        props = []
+        for _, group, name, _, _ in self.STREAMS:
+            for mode in ("static", "keyed"):
+                props.append(comp.layer(f"{mode} {name}")[group][name])
+        layer = comp.add_solid([0.5, 0.5, 0.5], "s", 100, 100)
+        props.append(
+            next(
+                p
+                for p in layer._leaf_properties()
+                if p.match_name == "dropShadow/mode2"
+            )
+        )
+        for prop in props:
+            assert prop.can_vary_over_time, prop.match_name
+            valid = tuple(prop.is_interpolation_type_valid(t) for t in self.ALL)
+            assert valid == (False, False, True), prop.match_name
+            for key in prop.keyframes:
+                assert key.in_interpolation_type == KeyframeInterpolationType.HOLD
+
+    def test_written_like_after_effects(self, tmp_path: Path) -> None:
+        """Each stream py sets or keys is stored byte for byte as After
+        Effects stores it, HOLD keys included."""
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        for kind, group, name, first, second in self.STREAMS:
+            for mode in ("static", "keyed"):
+                label = f"{mode} {name}"
+                if kind == "light":
+                    layer = comp.add_light(label, [960, 540])
+                    layer.light_type = LightType.POINT
+                else:
+                    layer = comp.add_camera(label, [960, 540])
+                prop = layer[group][name]
+                if mode == "static":
+                    prop.value = first
+                else:
+                    prop.set_value_at_time(0.0, first)
+                    prop.set_value_at_time(1.0, second)
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        theirs = parse_aep(self.AEP).project.compositions[0]
+        ours = parse_aep(out).project.compositions[0]
+        for _, group, name, _, _ in self.STREAMS:
+            for mode in ("static", "keyed"):
+                label = f"{mode} {name}"
+                expected = theirs.layer(label)[group][name]._tdbs
+                written = ours.layer(label)[group][name]._tdbs
+                assert [_chunk_bytes(c) for c in written.chunks] == [
+                    _chunk_bytes(c) for c in expected.chunks
+                ], label
+
+
 class TestKeyframeInterpolationTypeGuard:
     """The in/out interpolation setters are gated on
     `is_interpolation_type_valid`, so a hold-only property cannot be given
@@ -3623,6 +4022,29 @@ class TestDeanimateMatchesAe:
         assert len(fill2._cdat.values) == 12
         assert pos2.value == [30.0, 40.0]
         assert fill2.value == [0.0, 0.0, 1.0, 1.0]
+
+    def test_shape_color_stored_as_float32(self, tmp_path: Path) -> None:
+        """A shape Fill Color component is stored as its float32 value
+        times 255, as After Effects stores every non-whole colour
+        component, alpha first."""
+        project = parse_project_fresh(LAYER_SAMPLES_DIR / "shape_source_rect.aep")
+        layer = get_comp(project, "SHAPE_RECTS").layer("animated_rect")
+        group = layer["ADBE Root Vectors Group"]["ADBE Vector Group"]
+        fill = group["ADBE Vectors Group"]["ADBE Vector Graphic - Fill"][
+            "ADBE Vector Fill Color"
+        ]
+        fill.value = [0.1, 0.2, 0.3, 1.0]
+        out = tmp_path / "out.aep"
+        project.save(out)
+
+        layer2 = get_comp(parse_aep(out).project, "SHAPE_RECTS").layer("animated_rect")
+        group2 = layer2["ADBE Root Vectors Group"]["ADBE Vector Group"]
+        fill = group2["ADBE Vectors Group"]["ADBE Vector Graphic - Fill"][
+            "ADBE Vector Fill Color"
+        ]
+        assert fill._read_cdat_raw()[:4] == [
+            to_f4(c) * 255.0 for c in (1.0, 0.1, 0.2, 0.3)
+        ]
 
 
 class TestEffectParamDefaults:

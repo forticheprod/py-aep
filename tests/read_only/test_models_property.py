@@ -2246,8 +2246,9 @@ class TestCanAddProperty:
         assert effect_parade.can_add_property("") is False
 
     def test_effect_parade_accepts_expression_controls(self) -> None:
-        """Effect Parade accepts the controls py_aep can create, by
-        match name or display name; unknown effects are rejected."""
+        """Effect Parade accepts the controls py_aep can create and the
+        built-in effects, by match name or display name. Unknown effects
+        are rejected."""
         project = parse_project(PROPERTY_SAMPLES_DIR / "effects.aep")
         comp = project.compositions[0]
         layer = comp.layers[0]
@@ -2257,7 +2258,8 @@ class TestCanAddProperty:
         assert effect_parade.can_add_property("ADBE Slider Control") is True
         assert effect_parade.can_add_property("Slider Control") is True
         assert effect_parade.can_add_property("ADBE Dropdown Control") is True
-        assert effect_parade.can_add_property("ADBE Gaussian Blur 2") is False
+        assert effect_parade.can_add_property("ADBE Gaussian Blur 2") is True
+        assert effect_parade.can_add_property("CC Ball Action") is False
         assert effect_parade.can_add_property("Some Custom Effect") is False
 
     def test_mask_parade_accepts_mask_atom(self) -> None:

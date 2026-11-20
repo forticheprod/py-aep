@@ -1,146 +1,391 @@
-"""Baked `LIST:sspc` templates for built-in effects.
+"""Index of the baked `LIST:sspc` templates for built-in effects.
 
 Captured from After Effects 2026 `addProperty()` output with every parameter
-at its default; regenerate with `scripts/dev/gen_builtin_effects.py` (see its
-docstring). Each entry is a complete applied-effect `sspc` - `fnam` display
-name, `parT` parameter definitions and the instance `tdgp` - the same shape
-`LIST:EfdG` stores, so `PropertyGroup._add_installed_effect` clones it through
-exactly the path an already-present effect takes.
+at its default. `scripts/dev/gen_builtin_effects.py` regenerates them. Each
+template is `effects/<match name>.sspc`, with `/` written as `_`. It holds a
+complete applied-effect `sspc`, with its `fnam` display name, its `parT`
+parameter definitions and the instance `tdgp`, the shape `LIST:EfdG` stores.
+`PropertyGroup._add_installed_effect` adds it the way it clones a project's
+own definition, keeping its values.
 
-After Effects rewrites `parT` from the installed plugin when it opens a
-project (an AE 2018 file's Gaussian Blur carried a `ADBE Force CPU GPU`
-parameter that AE 2022 dropped on re-save), so a template captured from one
-release still loads in another.
+The bytes After Effects writes differently on every capture are zeroed. The
+template's own layer id is 1, and no `pard` keeps its value string, phase,
+reserved bytes or trailing union. After Effects rewrites `parT` from the
+installed plugin when it opens a project, so a template captured from one
+release still loads in another. An AE 2018 file's Gaussian Blur carried a
+`ADBE Force CPU GPU` parameter that AE 2022 dropped on re-save.
 """
 
 from __future__ import annotations
 
-#: Effect match name -> (display name, serialized `LIST:sspc` as hex).
-BUILTIN_EFFECTS: dict[str, tuple[str, str]] = {
-    "ADBE Geometry2": (
-        "Transform",
-        (
-            "4c4953540000106a73737063666e616d0000001255746638000000095472616e73666f"
-            "726d004c49535400000ba8706172547061726e000000040000000e74646d6e00000028"
-            "414442452047656f6d65747279322d3030303000000000000000000000000000000000"
-            "0000000000706172640000009400000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000020000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "00ffffffff0000000000000000000000000000000074646d6e00000028414442452047"
-            "656f6d65747279322d3030303100000000000000000000000000000000000000000070"
-            "6172640000009400000000000000000000000000000006416e63686f7220506f696e74"
-            "0000000000000000000000000000000000000000000000000000000000008000000080"
-            "0000000000003200000032000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "00000000000000000000000000000074646d6e00000028414442452047656f6d657472"
-            "79322d3030303200000000000000000000000000000000000000000070617264000000"
-            "9400000000000000000000000000000006506f736974696f6e00000000000000000000"
-            "0000000000000000000000000000000000000000000000008000000080000000000000"
-            "3200000032000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "00000000000000000074646d6e00000028414442452047656f6d65747279322d303031"
-            "3100000000000000000000000000000000000000000070617264000000940000000000"
-            "0000000000000000000004000000000000000000000000000000000000000000000000"
-            "0000000000000000000000400000000000000001010000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "00000070646e6d00000016557466380000000d556e69666f726d205363616c65007464"
-            "6d6e00000028414442452047656f6d65747279322d3030303300000000000000000000"
-            "0000000000000000000000706172640000009400000000000000000000000000000002"
-            "5363616c65204865696768740000000000000000000000000000000000000000000000"
-            "2000000000006400000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000008ad0000075300000ff38000000c80000006400000001000074646d6e00000028"
-            "414442452047656f6d65747279322d3030303400000000000000000000000000000000"
-            "00000000007061726400000094000000000000002000000000000000025363616c6520"
-            "5769647468000000000000000000000000000000000000000000000000200000000000"
-            "6400000000000000000000000000000000000000000000000000000000000000000000"
-            "00000000000000000000000000000000000000000000000000000000000000008ad000"
-            "0075300000ff38000000c80000006400000001000074646d6e00000028414442452047"
-            "656f6d65747279322d3030303500000000000000000000000000000000000000000070"
-            "6172640000009400000000000000000000000000000002536b65770000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000ffba000000460000ff"
-            "ba000000460000000000000001000074646d6e00000028414442452047656f6d657472"
-            "79322d3030303600000000000000000000000000000000000000000070617264000000"
-            "9400000000000000000000000000000003536b65772041786973000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "00000000000000000074646d6e00000028414442452047656f6d65747279322d303030"
-            "3700000000000000000000000000000000000000000070617264000000940000000000"
-            "0000000000000000000003526f746174696f6e00000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "00000074646d6e00000028414442452047656f6d65747279322d303030380000000000"
-            "0000000000000000000000000000000070617264000000940000000000000000000000"
-            "00000000024f7061636974790000000000000000000000000000000000000000000000"
-            "0000000000000000000000640000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "000000000000000000000000006400000000000000640000006400000001000074646d"
-            "6e00000028414442452047656f6d65747279322d303030390000000000000000000000"
-            "0000000000000000000070617264000000940000000000000000000000000000000400"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000001010000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "000000000000000000000000000000000000000000000000000070646e6d0000002a55"
-            "7466380000002155736520436f6d706f736974696f6ee2809973205368757474657220"
-            "416e676c650074646d6e00000028414442452047656f6d65747279322d303031300000"
-            "0000000000000000000000000000000000000070617264000000940000000000000000"
-            "00000000000000025368757474657220416e676c650000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000168000000000000016800000000000000020000"
-            "74646d6e00000028414442452047656f6d65747279322d303031320000000000000000"
-            "0000000000000000000000000070617264000000940000000000000000000000000000"
-            "000753616d706c696e6700000000000000000000000000000000000000000000000000"
-            "0000400000000000000001000200010000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "000000000000000000000000000000000000000000000000000000000070646e6d0000"
-            "0018557466380000001042696c696e6561727c4269637562696374646d6e0000002841"
-            "44424520456666656374204275696c7420496e20506172616d73000000000000000000"
-            "0000000070617264000000940000000000000000000000000000000900000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "00000000000000000000000000000000000000004c4953540000047c74646770746473"
-            "6200000004000000017464736e00000014557466380000000b5472616e73666f726d20"
-            "320074646d6e00000028414442452047656f6d65747279322d30303030000000000000"
-            "0000000000000000000000000000004c495354000000ec746462737464736200000004"
-            "000000037464736e000000085574663800000000746462340000007cdb990001000100"
-            "0000010000000078003f1a36e2eb1c432d3ff00000000000003ff00000000000003ff0"
-            "0000000000003ff0000000000000000000040400000000000000000000008000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000006364617400000028000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000074647069000000040000"
-            "000e74647073000000040000000074646d6e00000028414442452047656f6d65747279"
-            "322d303030330000000000000000000000000000000000000000004c495354000000fa"
-            "746462737464736200000004000000017464736e0000000e5574663800000005536361"
-            "6c6500746462340000007cdb99000100010000ffffffff000078003f1a36e2eb1c432d"
-            "3ff00000000000003ff00000000000003ff00000000000003ff0000000000000000000"
-            "0406000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000006364617400"
-            "0000284059000000000000000000000000000000000000000000000000000000000000"
-            "00000000000000007464756d00000008c0690000000000007464754d00000008406900"
-            "000000000074646d6e00000028414442452047656f6d65747279322d30303034000000"
-            "0000000000000000000000000000000000004c495354000000f6746462737464736200"
-            "000004000000017464736e0000000a55746638000000012000746462340000007cdb99"
-            "000100010000ffffffff000078003f1a36e2eb1c432d3ff00000000000003ff0000000"
-            "0000003ff00000000000003ff000000000000000000004060000000000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000000000000000"
-            "0000000000000000000000000000000000636461740000002840590000000000000000"
-            "0000000000000000000000000000000000000000000000000000000000007464756d00"
-            "000008c0690000000000007464754d00000008406900000000000074646d6e00000028"
-            "4144424520456666656374204275696c7420496e20506172616d730000000000000000"
-            "00000000004c49535400000064746467707464736200000004000000017464736e0000"
-            "001c5574663800000013436f6d706f736974696e67204f7074696f6e730074646d6e00"
-            "000028414442452047726f757020456e64000000000000000000000000000000000000"
-            "000000000000000074646d6e00000028414442452047726f757020456e640000000000"
-            "0000000000000000000000000000000000000000007067756900000010000000000000"
-            "00000000000000000000"
-        ),
-    ),
+from pathlib import Path
+
+EFFECTS_DIR = Path(__file__).with_name("effects")
+
+#: Effect match name -> display name, in the order After Effects lists its
+#: effects. A display name two effects share, such as "Transform" for
+#: `ADBE Geometry` and `ADBE Geometry2`, resolves to the first, as in After
+#: Effects.
+BUILTIN_EFFECTS: dict[str, str] = {
+    "ADBE 3D Tracker": "3D Camera Tracker",
+    "ADBE 3D Glasses2": "3D Glasses",
+    "ADBE 3D Glasses": "3D Glasses (Obsolete)",
+    "VISINF Grain Implant": "Add Grain",
+    "ADBE Alpha Levels2": "Alpha Levels",
+    "ADBE Alpha Levels3": "Alpha Levels",
+    "ADBE Apply Color LUT2": "Apply Color LUT",
+    "ADBE Apply Color LUT": "Apply Color LUT",
+    "ADBE Arithmetic": "Arithmetic",
+    "ADBE AudSpect": "Audio Spectrum",
+    "ADBE AudWave": "Audio Waveform",
+    "ADBE Aud BT": "Bass & Treble",
+    "ADBE Aud Compressor": "Compressor",
+    "ADBE Aud Delay": "Delay",
+    "ADBE Aud Distortion": "Distortion",
+    "ADBE Aud_Flange": "Flange & Chorus",
+    "ADBE Aud Gate": "Gate",
+    "ADBE Aud HiLo": "High-Low Pass",
+    "ADBE Aud Stereo Mixer": "Stereo Mixer",
+    "ADBE Aud Modulator": "Modulator",
+    "ADBE Param EQ": "Parametric EQ",
+    "ADBE Aud Reverb": "Reverb",
+    "ADBE Aud Reverse": "Backwards",
+    "ADBE Aud Tone": "Tone",
+    "ADBE AutoColor": "Auto Color",
+    "ADBE AutoContrast": "Auto Contrast",
+    "ADBE AutoLevels": "Auto Levels",
+    "ADBE AUX CHANNEL EXTRACT": "3D Channel Extract",
+    "ADBE Brightness & Contrast": "Brightness & Contrast",
+    "ADBE Basic 3D": "Basic 3D",
+    "ADBE Basic Text2": "Basic Text",
+    "ADBE Laser": "Beam",
+    "ADBE Bevel Alpha": "Bevel Alpha",
+    "ADBE Bevel Edges": "Bevel Edges",
+    "ADBE BEZMESH": "Bezier Warp",
+    "ADBE Bilateral": "Bilateral Blur",
+    "ADBE Blend": "Blend",
+    "ADBE Block Dissolve": "Block Dissolve",
+    "ADBE Box Blur2": "Fast Box Blur",
+    "ADBE Box Blur": "Box Blur",
+    "ADBE Broadcast Colors": "Broadcast Colors",
+    "ADBE Brush Strokes": "Brush Strokes",
+    "ADBE Bulge": "Bulge",
+    "ADBE Calculations": "Calculations",
+    "ADBE WRPMESH": "Warp",
+    "APC CardDanceCam": "Card Dance",
+    "APC CardWipeCam": "Card Wipe",
+    "ADBE Cartoonify": "Cartoon",
+    "APC Caustics": "Caustics",
+    "ADBE Cell Pattern": "Cell Pattern",
+    "ADBE Change To Color": "Change to Color",
+    "ADBE Change Color": "Change Color",
+    "ADBE Channel Combiner": "Channel Combiner",
+    "ADBE Channel Blur": "Channel Blur",
+    "ADBE CHANNEL MIXER": "Channel Mixer",
+    "ADBE Checkerboard": "Checkerboard",
+    "ADBE Cineon Converter": "Cineon Converter",
+    "ADBE Cineon Converter2": "Cineon Converter",
+    "ADBE Circle": "Circle",
+    "ADBE Color Link": "Color Link",
+    "ADBE Color Balance": "Color Balance",
+    "ADBE Color Balance 2": "Color Balance",
+    "ADBE Color Difference Key": "Color Difference Key",
+    "ADBE Color Emboss": "Color Emboss",
+    "ADBE Color Balance (HLS)": "Color Balance (HLS)",
+    "ADBE Color Key": "Color Key",
+    "ADBE Color Range": "Color Range",
+    "APC Colorama": "Colorama",
+    "ADBE 4ColorGradient": "4-Color Gradient",
+    "ADBE Compound Arithmetic": "Compound Arithmetic",
+    "ADBE Compound Blur": "Compound Blur",
+    "ADBE Corner Pin": "Corner Pin",
+    "ADBE CurvesCustom": "Curves",
+    "ADBE CameraShakeDeblur": "Camera-Shake Deblur",
+    "ADBE Deflicker": "Color Stabilizer",
+    "ADBE DEPTH FIELD": "Depth of Field",
+    "ADBE DEPTH MATTE": "Depth Matte",
+    "ADBE Difference Matte2": "Difference Matte",
+    "ADBE Difference": "Time Difference",
+    "ADBE Motion Blur": "Directional Blur",
+    "ADBE Displacement Map": "Displacement Map",
+    "ADBE Drop Shadow": "Drop Shadow",
+    "ADBE Dust & Scratches": "Dust & Scratches",
+    "ADBE Echo": "Echo",
+    "ADBE ELLIPSE": "Ellipse",
+    "ADBE Emboss": "Emboss",
+    "ADBE Equalize": "Equalize",
+    "ADBE Compander": "HDR Compander",
+    "ADBE Exposure2": "Exposure",
+    "ADBE Exposure": "Exposure",
+    "ADBE Extract": "Extract",
+    "ADBE Eyedropper Fill": "Eyedropper Fill",
+    "ADBE Fast Blur": "Fast Blur (Legacy)",
+    "ADBE Reduce Interlace Flicker": "Reduce Interlace Flicker",
+    "ADBE Fill": "Fill",
+    "ADBE Find Edges": "Find Edges",
+    "APC Foam": "Foam",
+    "ADBE FOG_3D": "Fog 3D",
+    "ADBE Fractal": "Fractal",
+    "ADBE Fractal Noise": "Fractal Noise",
+    "ADBE Gaussian Blur": "Gaussian Blur (Legacy)",
+    "ADBE Gaussian Blur 2": "Gaussian Blur",
+    "ADBE Glo2": "Glow",
+    "ADBE Gamma/Pedestal/Gain2": "Gamma/Pedestal/Gain",
+    "ADBE Gradient Wipe": "Gradient Wipe",
+    "ADBE Grid": "Grid",
+    "ADBE GROW BOUNDS": "Grow Bounds",
+    "ADBE HUE SATURATION": "Hue/Saturation",
+    "ADBE ID MATTE": "ID Matte",
+    "ADBE ATG Extract": "Inner/Outer Key",
+    "ADBE Invert": "Invert",
+    "ADBE IRIS_WIPE": "Iris Wipe",
+    "ADBE KeyCleaner": "Key Cleaner",
+    "ADBE Leave Color": "Leave Color",
+    "ADBE Lens Flare": "Lens Flare",
+    "ADBE Easy Levels": "Levels",
+    "ADBE Easy Levels2": "Levels",
+    "ADBE Pro Levels2": "Levels (Individual Controls)",
+    "ADBE Pro Levels": "Levels (Individual Controls)",
+    "ADBE Lightning": "Lightning",
+    "ADBE Lightning 2": "Advanced Lightning",
+    "ADBE Linear Color Key2": "Linear Color Key",
+    "ADBE Linear Wipe": "Linear Wipe",
+    "ADBE LIQUIFY": "Liquify",
+    "ADBE Luma Key": "Luma Key",
+    "ADBE Lumetri": "Lumetri Color",
+    "ADBE Magnify": "Magnify",
+    "VISINF Grain Duplication": "Match Grain",
+    "ADBE Matte Choker": "Matte Choker",
+    "ADBE Median": "Median (Legacy)",
+    "ADBE Minimax": "Minimax",
+    "ADBE Mirror": "Mirror",
+    "ADBE Mosaic": "Mosaic",
+    "ADBE MESH WARP": "Mesh Warp",
+    "ADBE Noise2": "Noise",
+    "ADBE Noise": "Noise",
+    "ADBE Noise Alpha2": "Noise Alpha",
+    "ADBE Noise Alpha": "Noise Alpha",
+    "ADBE Noise HLS": "Noise HLS",
+    "ADBE Noise HLS2": "Noise HLS",
+    "ADBE Noise HLS Auto2": "Noise HLS Auto",
+    "ADBE Noise HLS Auto": "Noise HLS Auto",
+    "ADBE Numbers2": "Numbers",
+    "ADBE OCIO CDL Transform": "OCIO CDL Transform",
+    "ADBE OCIO Color Space Transform": "OCIO Color Space Transform",
+    "ADBE OCIO Display Transform": "OCIO Display Transform",
+    "ADBE OCIO FILE Transform": "OCIO File Transform",
+    "ADBE OCIO Look Transform": "OCIO Look Transform",
+    "ADBE Offset": "Offset",
+    "ADBE Optics Compensation": "Optics Compensation",
+    "ADBE PhotoFilterPS": "Photo Filter",
+    "ADBE SelectiveColor": "Selective Color",
+    "ADBE Vibrance": "Vibrance",
+    "ADBE Brightness & Contrast 2": "Brightness & Contrast",
+    "ADBE PS Median": "Median",
+    "ADBE Black&White": "Black & White",
+    "ADBE PSL Bevel Emboss": "Photoshop Bevel And Emboss",
+    "ADBE PSL Drop Shadow": "Photoshop Drop Shadow",
+    "ADBE PSL Inner Glow": "Photoshop Inner Glow",
+    "ADBE PSL Inner Shadow": "Photoshop Inner Shadow",
+    "ADBE PSL Outer Glow": "Photoshop Outer Glow",
+    "ADBE PSL Solid Fill": "Photoshop Solid Fill",
+    "ADBE PS Arbitrary Map": "PS Arbitrary Map",
+    "ADBE Paint Bucket": "Paint Bucket",
+    "ADBE Playgnd": "Particle Playground",
+    "ADBE Path Text": "Path Text",
+    "ADBE Photo Filter": "Photo Filter",
+    "ADBE Polar Coordinates": "Polar Coordinates",
+    "ADBE Posterize": "Posterize",
+    "ADBE Posterize Time": "Posterize Time",
+    "ADBE ProfileToProfile": "Color Profile Converter",
+    "ADBE HDR ToneMap": "HDR Highlight Compression",
+    "ADBE Radial Shadow": "Radial Shadow",
+    "ADBE Radial Blur": "Radial Blur",
+    "ADBE Radial Wipe": "Radial Wipe",
+    "APC Radio Waves": "Radio Waves",
+    "ADBE Ramp": "Gradient Ramp",
+    "VISINF Grain Removal": "Remove Grain",
+    "ADBE RESHAPE": "Reshape",
+    "ADBE Ripple": "Ripple",
+    "ADBE OFMotionBlur": "Pixel Motion Blur",
+    "ADBE Rolling Shutter": "Rolling Shutter Repair",
+    "ADBE Timewarp": "Timewarp",
+    "ADBE Roughen Edges": "Roughen Edges",
+    "ADBE Scatter": "Scatter",
+    "ADBE Scribble Fill": "Scribble",
+    "ADBE Set Channels": "Set Channels",
+    "ADBE Set Matte3": "Set Matte",
+    "ADBE Set Matte2": "Set Matte",
+    "ADBE ShadowHighlight": "Shadow/Highlight",
+    "ADBE Camera Lens Blur": "Camera Lens Blur",
+    "ADBE Sharpen": "Sharpen",
+    "APC Shatter": "Shatter",
+    "ADBE Shift Channels": "Shift Channels",
+    "ADBE Simple Choker": "Simple Choker",
+    "ADBE Smart Blur": "Smart Blur",
+    "ADBE SCHMEAR": "Smear",
+    "ADBE Solid Composite": "Solid Composite",
+    "ADBE Spherize": "Spherize",
+    "ADBE Spill Suppressor": "Spill Suppressor",
+    "ADBE Spill2": "Advanced Spill Suppressor",
+    "ADBE SubspaceStabilizer": "Warp Stabilizer",
+    "ADBE Strobe": "Strobe Light",
+    "ADBE Stroke": "Stroke",
+    "ADBE Texturize": "Texturize",
+    "ADBE Three-Way Color Corrector": "Three-Way Color Corrector",
+    "ADBE Threshold": "Threshold",
+    "ADBE Threshold2": "Threshold",
+    "ADBE Tile": "Motion Tile",
+    "ADBE Time Displacement": "Time Displacement",
+    "ADBE Timecode": "Timecode",
+    "ADBE Tint": "Tint",
+    "ADBE Geometry": "Transform",
+    "ADBE Geometry2": "Transform",
+    "ADBE Tritone": "Tritone",
+    "ADBE Turbulent Displace": "Turbulent Displace",
+    "ADBE AIF Perlin Noise 3D": "Turbulent Noise",
+    "ADBE Twirl": "Twirl",
+    "ADBE Unmult": "Unmult",
+    "ADBE Remove Color Matting": "Remove Color Matting",
+    "ADBE Unsharp Mask2": "Unsharp Mask",
+    "ADBE Unsharp Mask": "Unsharp Mask",
+    "ADBE Upscale": "Detail-preserving Upscale",
+    "Mettle SkyBox Chromatic Aberrat": "VR Chromatic Aberrations",
+    "Mettle SkyBox Color Gradients": "VR Color Gradients",
+    "Mettle SkyBox Converter": "VR Converter",
+    "Mettle SkyBox Denoise": "VR De-Noise",
+    "Mettle SkyBox Digital Glitch": "VR Digital Glitch",
+    "Mettle SkyBox Fractal Noise": "VR Fractal Noise",
+    "Mettle SkyBox Blur": "VR Blur",
+    "Mettle SkyBox Glow": "VR Glow",
+    "Mettle SkyBox Project 2D": "VR Plane to Sphere",
+    "Mettle SkyBox Rotate Sphere": "VR Rotate Sphere",
+    "Mettle SkyBox Sharpen": "VR Sharpen",
+    "Mettle SkyBox Viewer": "VR Sphere To Plane",
+    "APC Vegas": "Vegas",
+    "ADBE Venetian Blinds": "Venetian Blinds",
+    "ADBE DigitalVideoLimiter": "Video Limiter",
+    "APC Wave World": "Wave World",
+    "ADBE Wave Warp": "Wave Warp",
+    "ADBE Write-on": "Write-on",
+    "ADBE Paint": "Paint",
+    "ADBE FreePin3": "Puppet",
+    "ADBE RefineRBMatte": "Refine Hard Matte",
+    "ADBE RefineMatte": "Refine Matte",
+    "ADBE RefineMatte2": "Refine Soft Matte",
+    "ADBE Color Swirl": "Color Swirl",
+    "ADBE Getting Jiggy": "Getting Jiggy",
+    "ADBE Separate XYZ Position": "Separate XYZ Position",
+    "ADBE Separate XYZ Scale": "Separate XYZ Scale",
+    "ADBE CM InsetVideoFramed": "Inset Video - framed",
+    "ADBE CM InsetVideoTorn": "Inset Video - torn edges",
+    "ADBE CM MoodLightAmorph": "Mood Lighting - amorphous",
+    "ADBE CM MoodLightDigital": "Mood Lighting - digital",
+    "ADBE CM MoodLightStreaks": "Mood Lighting - streaks",
+    "ADBE CM CrackedTiles": "Cracked Tiles",
+    "ADBE CM LightLeaksMarkers": "Light Leaks - layer markers",
+    "ADBE CM LightLeaksRandom": "Light Leaks - random",
+    "ADBE CM OpacityFlashMarkers": "Opacity Flash - layer markers",
+    "ADBE CM OpacityFlashRandom": "Opacity Flash - random",
+    "ADBE CM CropEdges": "Crop Edges",
+    "ADBE CM AutoscrollHorizontal": "Autoscroll - horizontal",
+    "ADBE CM AutoscrollVertical": "Autoscroll - vertical",
+    "ADBE CM Throw": "Drift Over Time",
+    "ADBE CM FadeInOutFrames": "Fade In+Out - frames",
+    "ADBE CM FadeInOutmsec": "Fade In+Out - msec",
+    "ADBE CM Spin": "Rotate Over Time",
+    "ADBE CM ScaleBounceMarkers": "Scale Bounce - layer markers",
+    "ADBE CM ScaleBounceRandom": "Scale Bounce - random",
+    "ADBE CM WiggleGelatin": "Wiggle - gelatin",
+    "ADBE CM WigglePosition": "Wiggle - position",
+    "ADBE CM WiggleRotation": "Wiggle - rotation",
+    "ADBE CM WiggleScale": "Wiggle - scale",
+    "ADBE CM WiggleShear": "Wiggle - shear",
+    "ADBE CM Wigglerama": "Wigglerama",
+    "ADBE CM DissolveUnmelt": "Dissolve - unmelt",
+    "ADBE CM Zoom2DSpin": "Zoom - 2D spin",
+    "ADBE CM Zoom3DTumble": "Zoom - 3D tumble",
+    "ADBE CM ZoomWobble": "Zoom - wobble",
+    "ADBE CM ZoomBubble": "Zoom - bubble",
+    "ADBE CM ZoomSpiral": "Zoom - spiral",
+    "ADBE CM SlideVariable": "Slide - variable",
+    "ADBE CM FlyToInset": "Fly to Inset",
+    "ADBE CM CornerReveal": "Corner Reveal",
+    "ADBE CM GridWipe": "Grid Wipe",
+    "ADBE CM TransComplete": "Transition Master Control",
+    "ADBE CM TransStretch": "Stretch Master Control",
+    "ADBE CM TransDissolve": "Dissolve Master Control",
+    "ADBE CM TransFade": "Fade Master Control",
+    "ADBE CM TransFadeMask": "Mask Fade Controls",
+    "ADBE CM TransWipe": "Wipe Master Control",
+    "ADBE CM TransWipeFeath": "Wipe Master Controls",
+    "ADBE CM TransCard": "Card Wipe Master Control",
+    "ADBE CM TransSlide": "Slide Master Control",
+    "ADBE CM TransCorner": "Stretch Master Control(corner)",
+    "ADBE CM TransDirection": "Stretch Master Control (edge)",
+    "ADBE CM TransIris": "Iris Wipe Master Controls",
+    "ADBE CM TransRadial": "Radial Wipe Master Controls",
+    "ADBE DE Jiggle": "Jiggle",
+    "ADBE DE Jiggle At Marker": "Jiggle At Marker",
+    "ADBE DE Jiggle On Beat": "Jiggle On Beat",
+    "ADBE DE Jiggle Random": "Jiggle Random",
+    "ADBE DE Pulse": "Pulse",
+    "ADBE DE Pulse At Marker": "Pulse At Marker",
+    "ADBE DE Pulse On Beat": "Pulse On Beat",
+    "ADBE DE Pulse Random": "Pulse Random",
+    "ADBE DE Bounce": "Bounce",
+    "ADBE DE Bounce At Marker": "Bounce At Marker",
+    "ADBE DE Bounce On Beat": "Bounce On Beat",
+    "ADBE DE Bounce Random": "Bounce Random",
+    "ADBE DE Opacity Pulse": "Opacity Pulse",
+    "ADBE DE Opacity Pulse At Marker": "Opacity Pulse At Marker",
+    "ADBE DE Opacity Pulse On Beat": "Opacity Pulse On Beat",
+    "ADBE DE Opacity Pulse Random": "Opacity Pulse Random",
+    "ADBE DE Oscillate": "Oscillate",
+    "ADBE DE Oscillate At Marker": "Oscillate At Marker",
+    "ADBE DE Oscillate On Beat": "Oscillate On Beat",
+    "ADBE DE Oscillate Random": "Oscillate Random",
+    "ADBE DE Pendulum": "Pendulum",
+    "ADBE DE Pendulum At Marker": "Pendulum At Marker",
+    "ADBE DE Pendulum On Beat": "Pendulum On Beat",
+    "ADBE DE Pendulum Random": "Pendulum Random",
+    "ADBE DE Swarm": "Swarm",
+    "ADBE DE Follow": "Follow",
+    "ADBE DE Orbit": "Orbit",
+    "ADBE DE Orbit 3D": "Orbit 3D",
+    "ADBE DE Random Motion 1D": "Random Motion 1D",
+    "ADBE DE Random Motion": "Random Motion",
+    "ADBE DE Random Rotation": "Random Rotation",
+    "ADBE DE Random Rotation 3D": "Random Rotation 3D",
+    "ADBE DE Random Opacity": "Random Opacity",
+    "ADBE DE Random Scale": "Random Scale",
+    "ADBE DE Random Fill Color": "Random Fill Color",
+    "ADBE DE Z Spring": "Z Spring",
+    "ADBE DE Z Spring At Marker": "Z Spring At Marker",
+    "ADBE DE Wobble Bounce": "Wobble Bounce",
+    "ADBE DE Wobble Bounce At Marker": "Wobble Bounce At Marker",
+    "ADBE DE Wobble Bounce On Beat": "Wobble Bounce On Beat",
+    "ADBE DE Wobble Bounce Random": "Wobble Bounce Random",
+    "ADBE CM Animated Shape Control": "Animated Shape Control",
+    "ADBE CM Animated Shape 2": "Chaser Control",
+    "ADBE CM Animated Shape 3": "Animated Shape Control",
+    "ADBE Sample Image": "Sample Image",
+    "ADBE Stereo 3D Controls": "Stereo 3D Controls",
+}
+
+#: The first After Effects major that lists the effect, for the effects After
+#: Effects 2018 lacks. Measured on AE 2018 and AE 2022 to 2026.
+MIN_AE_VERSION: dict[str, int] = {
+    "ADBE Aud Compressor": 26,
+    "ADBE Aud Distortion": 26,
+    "ADBE Aud Gate": 26,
+    "ADBE Noise2": 22,
+    "ADBE OCIO CDL Transform": 24,
+    "ADBE OCIO Color Space Transform": 23,
+    "ADBE OCIO Display Transform": 23,
+    "ADBE OCIO FILE Transform": 23,
+    "ADBE OCIO Look Transform": 24,
+    "ADBE PS Median": 22,
+    "ADBE Separate XYZ Scale": 24,
+    "ADBE Unmult": 26,
 }

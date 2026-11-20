@@ -132,16 +132,19 @@ def _unflag_markers(
         parent_chunks[idx + 1].synthetic = False
 
 
-def rewrite_owner_tdpi(chunk: Chunk, layer_id: int) -> None:
+def rewrite_owner_tdpi(chunk: Chunk, layer_id: int) -> int | None:
     """Point effect internal-param (`-0000`) tdpi chunks at `layer_id`.
 
     Every effect's hidden `-0000` parameter carries the owning layer's
     id in its `tdpi`; AE rewrites these when a layer is duplicated.
     Layer-reference tdpi values (regular value params) keep pointing at
     the referenced layer and are left untouched.
+
+    Returns the first owner id replaced, or `None` without an owner param.
     """
     if not isinstance(chunk, ListChunk):
-        return
+        return None
+    replaced = None
     chunks = chunk.chunks
     for i, c in enumerate(chunks):
         if (
@@ -152,9 +155,15 @@ def rewrite_owner_tdpi(chunk: Chunk, layer_id: int) -> None:
         ):
             for inner in cast("ListChunk", chunks[i + 1]).chunks:
                 if inner.chunk_type == "tdpi":
-                    cast("S4Chunk", inner).value = layer_id
+                    tdpi = cast("S4Chunk", inner)
+                    if replaced is None:
+                        replaced = tdpi.value
+                    tdpi.value = layer_id
         elif isinstance(c, ListChunk):
-            rewrite_owner_tdpi(c, layer_id)
+            found = rewrite_owner_tdpi(c, layer_id)
+            if replaced is None:
+                replaced = found
+    return replaced
 
 
 def collect_layer_ref_tdpi_ids(chunk: Chunk, out: set[int] | None = None) -> set[int]:
@@ -343,13 +352,22 @@ def build_kf_data(item_type: LdatItemType, num_value: int) -> Any:
     )
 
 
-def build_ldat_item(kf_data: Any, *, spatial: bool) -> LdatItem:
-    """Wrap a keyframe-data payload in an `LdatItem` with LINEAR defaults."""
+def build_ldat_item(kf_data: Any, *, spatial: bool, color: bool) -> LdatItem:
+    """Wrap a keyframe-data payload in an `LdatItem` with LINEAR defaults.
+
+    The low key-flag bits are 7 on a spatial key and 1 on a colour key, as AE
+    writes them.
+    """
+    key_flags = 0
+    if spatial:
+        key_flags = 7
+    elif color:
+        key_flags = 1
     return LdatItem(
         time_units=0,
         in_interpolation_type=1,
         out_interpolation_type=1,
-        key_flags=7 if spatial else 0,
+        key_flags=key_flags,
         kf_data=kf_data,
     )
 

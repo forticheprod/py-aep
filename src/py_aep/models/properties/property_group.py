@@ -4,7 +4,7 @@ import re
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, cast
 
-from py_aep.data.builtin_effects import BUILTIN_EFFECTS
+from py_aep.data.builtin_effects import BUILTIN_EFFECTS, EFFECTS_DIR, MIN_AE_VERSION
 from py_aep.data.effect_controls import EXPRESSION_CONTROLS
 from py_aep.data.match_names import MATCH_NAME_TO_AUTO_NAME
 from py_aep.enums import PropertyType
@@ -22,6 +22,7 @@ from ...binary.mutations import (
     build_text_selector,
     build_vector_element,
     clone_chunk_tree,
+    remap_layer_ref_tdpi,
     rewrite_owner_tdpi,
     rewrite_time_base,
 )
@@ -105,35 +106,38 @@ _TEXT_SELECTOR_NAMES: dict[str, str] = {
 # and the Advanced-only parameters are hidden.
 _PUPPET_ENGINE_VERSION = (2).to_bytes(4, "big")
 
+# Effect parameters AE starts at the composition width, clamped to the
+# parameter's range, whatever the layer's own size. Measured on AE 2026.
+_COMP_WIDTH_PARAMS: dict[str, str] = {
+    "Mettle SkyBox Converter": "Mettle SkyBox Converter-0004",
+    "Mettle SkyBox Viewer": "Mettle SkyBox Viewer-0003",
+}
 
-def _baked_effect_def(name: str) -> tuple[str, str, ListChunk] | None:
-    """Resolve `name` against the baked built-in effect templates.
 
-    Matches the effect match name first, then the display name, the same
-    order `match_effect_definition` uses for the project's own EfdG. The
-    stored blob is deserialized fresh on every call, so the caller owns
-    the returned chunks and the table stays pristine.
+def _builtin_match_name(name: str) -> str | None:
+    """Resolve a match name or display name to a baked built-in effect.
+
+    A display name two effects share resolves to the one listed first,
+    the one After Effects picks.
     """
-    entry = BUILTIN_EFFECTS.get(name)
-    if entry is not None:
-        match_name = name
-    else:
-        found = next(
-            (
-                (candidate, value)
-                for candidate, value in BUILTIN_EFFECTS.items()
-                if value[0] == name
-            ),
-            None,
-        )
-        if found is None:
-            return None
-        match_name, entry = found
-    display, blob = entry
-    raw = bytes.fromhex(blob)
+    if name in BUILTIN_EFFECTS:
+        return name
+    return next(
+        (match for match, display in BUILTIN_EFFECTS.items() if display == name),
+        None,
+    )
+
+
+def _baked_effect_def(match_name: str) -> ListChunk:
+    """Load the baked template of a built-in effect.
+
+    The file is read on every call, so the caller owns the returned chunks.
+    """
+    path = EFFECTS_DIR / f"{match_name.replace('/', '_')}.sspc"
+    raw = path.read_bytes()
     sspc = read_chunks(BytesIO(raw), len(raw))[0]
     assert isinstance(sspc, ListChunk)
-    return match_name, display, sspc
+    return sspc
 
 
 def _insert_before_group_end(tdgp: ListChunk, chunk: Any) -> None:
@@ -798,9 +802,10 @@ class PropertyGroup(PropertyBase):
 
         Returns `True` if this group is an indexed group and `name` is
         a valid match name or display name for the group type. For the
-        Effect Parade, the expression controls py_aep can create plus
-        any effect already defined in the project (`LIST:EfdG`) are
-        accepted.
+        Effect Parade, the expression controls py_aep can create, any
+        effect already defined in the project (`LIST:EfdG`) and the
+        built-in After Effects effects are accepted. A built-in effect
+        newer than the project's After Effects version is rejected.
 
         Args:
             name: A match name or display name to check.
@@ -932,7 +937,11 @@ class PropertyGroup(PropertyBase):
         selectors (e.g. `ADBE Text Selector` / `Range Selector`), text
         animators (`ADBE Text Animator` / `Animator`), and animator
         properties from the fixed pool (e.g. `ADBE Text Position 3D` /
-        `Position`).
+        `Position`). The Effect Parade also takes the built-in After
+        Effects effects, such as `ADBE Gaussian Blur 2` or `Gaussian Blur`,
+        and any effect the project already uses. A display name two
+        effects share resolves to the one After Effects picks, so
+        `Transform` adds the obsolete `ADBE Geometry`.
 
         Note:
             Unlike ExtendScript, adding a property does not invalidate
@@ -944,12 +953,13 @@ class PropertyGroup(PropertyBase):
 
         Raises:
             ValueError: If a property with this name cannot be added
-                to this group.
+                to this group, or names a built-in effect newer than the
+                project's After Effects version.
         """
         result = resolve_addable(self.match_name, self.property_type, name)
         if result is None:
-            # Effect Parade: any effect already defined in the project's
-            # EfdG (re-applied by cloning its stored definition).
+            # Effect Parade, an effect from the project's EfdG or a baked
+            # built-in, cloned from its stored definition.
             installed = self._installed_effect_def(name)
             if installed is not None:
                 return self._add_installed_effect(*installed)
@@ -1067,33 +1077,36 @@ class PropertyGroup(PropertyBase):
         )
         return self._attach_effect(tdmn, sspc, tdmn.value)
 
-    def _installed_effect_def(self, name: str) -> tuple[str, str, ListChunk] | None:
+    def _installed_effect_def(
+        self, name: str
+    ) -> tuple[str, str, ListChunk | None] | None:
         """Resolve `name` to an effect template.
 
-        Only the Effect Parade can host installed effects. The project's
-        own `LIST:EfdG` wins: its definition was written by whichever AE
-        release saved the project, so cloning it keeps the instance
-        consistent with the rest of the file. A built-in absent from the
-        project falls back to the baked table, which is what lets an
-        effect be added to a project that has never used it.
+        Only the Effect Parade can host installed effects. A built-in
+        effect takes its baked template, AE's own fresh instance, even
+        when the project already uses it, unless the project's AE release
+        predates the effect. Any other effect takes the project's own
+        `LIST:EfdG` definition, which mirrors its first instance.
 
-        Returns `(match_name, display_name, def_sspc)`, else `None`.
+        Returns `(match_name, display_name, def_sspc)`, with `def_sspc`
+        `None` for a baked template, else `None`.
         """
         from ...parsers.effect import match_effect_definition  # noqa: PLC0415
 
         if self.match_name != "ADBE Effect Parade":
             return None
+        builtin = _builtin_match_name(name)
+        major = get_ae_version_major(self)
+        if builtin is not None and major >= MIN_AE_VERSION.get(builtin, 0):
+            return builtin, BUILTIN_EFFECTS[builtin], None
         project = self._containing_layer.containing_comp._project
-        found = match_effect_definition(project._effect_definitions(), name)
-        if found is not None:
-            return found
-        return _baked_effect_def(name)
+        return match_effect_definition(project._effect_definitions(), builtin or name)
 
     def _add_installed_effect(
-        self, match_name: str, display: str, def_sspc: ListChunk
+        self, match_name: str, display: str, def_sspc: ListChunk | None
     ) -> PropertyGroup:
-        """Add an effect already defined in the project by cloning its
-        `LIST:EfdG` definition.
+        """Add an effect by cloning its baked template, or its `LIST:EfdG`
+        definition when `def_sspc` is given.
 
         The stored definition is a complete sspc template, so cloning it
         and retargeting the hidden `-0000` internal param to this layer
@@ -1101,7 +1114,15 @@ class PropertyGroup(PropertyBase):
         applied instance (including edited values and keyframes), so the
         value parameters are de-animated and reset to their `pard`
         defaults to match `addProperty`'s static, default-valued
-        semantics.
+        semantics. A baked template is AE's own fresh instance and is
+        kept as is, since some effects such as Block Dissolve and Iris
+        Wipe start away from their `pard` default. VR Converter's and VR
+        Sphere To Plane's Output Frame Width starts at the composition width.
+
+        A layer parameter pointing at the template's own layer, which is
+        AE's default for Set Matte or Displacement Map, is retargeted to
+        this layer. Any other layer reference is cleared, since that
+        layer need not be in this composition.
 
         The definition also mirrors that instance's `tdb4` timebases, so
         the clone is restamped with this composition's: an effect first
@@ -1110,15 +1131,29 @@ class PropertyGroup(PropertyBase):
         wrong base.
         """
         self._ensure_materialized()
-        sspc = clone_chunk_tree(def_sspc)
-        assert isinstance(sspc, ListChunk)
-        rewrite_owner_tdpi(sspc, layer_id=self._containing_layer.id)
+        if def_sspc is None:
+            sspc = _baked_effect_def(match_name)
+        else:
+            cloned = clone_chunk_tree(def_sspc)
+            assert isinstance(cloned, ListChunk)
+            sspc = cloned
+        layer_id = self._containing_layer.id
+        owner = rewrite_owner_tdpi(sspc, layer_id=layer_id)
+        remap_layer_ref_tdpi(sspc, {} if owner is None else {owner: layer_id})
         comp = self._containing_layer.containing_comp
         rewrite_time_base(sspc, comp._cdta.internal_timebase)
 
         # Name the instance: the first uses the unnamed tdsn sentinel
         # (so it shows the effect's fnam name); later ones get "Name N".
-        same_type = sum(1 for p in self.properties if p.match_name == match_name)
+        # AE numbers built-ins sharing a display name together, so
+        # `ADBE Geometry` added after `ADBE Geometry2` is "Transform 2".
+        english = BUILTIN_EFFECTS.get(match_name)
+        same_type = sum(
+            1
+            for p in self.properties
+            if p.match_name == match_name
+            or (english is not None and BUILTIN_EFFECTS.get(p.match_name) == english)
+        )
         tdsn_name = self._effect_instance_name(display, same_type)
         _set_effect_instance_name(sspc, tdsn_name)
 
@@ -1130,7 +1165,16 @@ class PropertyGroup(PropertyBase):
         effect = self._attach_effect(
             TdmnChunk(value=match_name), sspc, match_name, engv
         )
-        _reset_to_default_values(effect)
+        if def_sspc is not None:
+            _reset_to_default_values(effect)
+        param_name = _COMP_WIDTH_PARAMS.get(match_name)
+        if param_name is not None:
+            param = effect[param_name]
+            assert isinstance(param, Property)
+            assert param.min_value is not None and param.max_value is not None
+            width = min(max(comp.width, param.min_value), param.max_value)
+            if param.value != width:
+                param.value = width
         return effect
 
     def _attach_effect(
