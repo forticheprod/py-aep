@@ -11,6 +11,8 @@ These lookup tables correct or supplement binary data:
 
 from __future__ import annotations
 
+from ...data.hold_only_streams import HOLD_ONLY_STREAMS
+
 # Bounds for properties without effect parameter definitions (effect
 # parameters derive their valid range from the pard chunk).
 _PROPERTY_MIN_MAX: dict[str, tuple[float, float]] = {
@@ -230,9 +232,9 @@ _NAME_OVERRIDES: dict[str, str] = {
 # prediction matches this table (and the ExtendScript JSON, when
 # available).
 _CANVARY_OVERRIDES: dict[str, bool] = {
-    # Hold-only (AE's interpolation mask for it is 4), which still varies;
-    # the tdb4 byte py reads marks only the interpolating masks.
-    "ADBE Light Falloff Type": True,
+    # Hold-only streams still vary. Their interpolation mask is 4, and the
+    # tdb4 bit py reads marks only the interpolating masks.
+    **dict.fromkeys(HOLD_ONLY_STREAMS, True),
     # Puppet pin internals are not regular effect parameters; the engine
     # dropdown's pard flags even disagree with ExtendScript.
     "ADBE FreePin3 Outlines": False,

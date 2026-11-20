@@ -34,6 +34,7 @@ from py_aep.data.builtin_effects import BUILTIN_EFFECTS
 from py_aep.enums import (
     KeyframeInterpolationType,
     Label,
+    LightType,
     MaskFeatherFalloff,
     MaskMode,
     MaskMotionBlur,
@@ -3663,6 +3664,75 @@ class TestIsInterpolationTypeValid:
             prop.is_interpolation_type_valid(9999)
         with pytest.raises(TypeError):
             prop.is_interpolation_type_valid("hold")  # type: ignore[arg-type]
+
+
+class TestHoldOnlyStreams:
+    """`hold_only_streams.aep` holds After Effects 2026 setting and keying a
+    light's Falloff, a camera's Iris Shape and its Depth of Field. These
+    streams vary over time but take HOLD keys only."""
+
+    AEP = SAMPLES_DIR / "hold_only_streams.aep"
+    STREAMS = (
+        ("light", "ADBE Light Options Group", "ADBE Light Falloff Type", 2, 3),
+        ("camera", "ADBE Camera Options Group", "ADBE Iris Shape", 3, 5),
+        ("camera", "ADBE Camera Options Group", "ADBE Camera Depth of Field", 1, 0),
+    )
+    ALL = TestIsInterpolationTypeValid.ALL
+
+    def test_vary_with_hold_keys_only(self) -> None:
+        """Stored by AE or synthesized, a Layer Styles menu included."""
+        comp = parse_aep(self.AEP).project.compositions[0]
+        props = []
+        for _, group, name, _, _ in self.STREAMS:
+            for mode in ("static", "keyed"):
+                props.append(comp.layer(f"{mode} {name}")[group][name])
+        layer = comp.add_solid([0.5, 0.5, 0.5], "s", 100, 100)
+        props.append(
+            next(
+                p
+                for p in layer._leaf_properties()
+                if p.match_name == "dropShadow/mode2"
+            )
+        )
+        for prop in props:
+            assert prop.can_vary_over_time, prop.match_name
+            valid = tuple(prop.is_interpolation_type_valid(t) for t in self.ALL)
+            assert valid == (False, False, True), prop.match_name
+            for key in prop.keyframes:
+                assert key.in_interpolation_type == KeyframeInterpolationType.HOLD
+
+    def test_written_like_after_effects(self, tmp_path: Path) -> None:
+        """Each stream py sets or keys is stored byte for byte as After
+        Effects stores it, HOLD keys included."""
+        app = py_aep_new()
+        comp = app.project.root_folder.add_comp("c", 1920, 1080, 1.0, 10.0, 24.0)
+        for kind, group, name, first, second in self.STREAMS:
+            for mode in ("static", "keyed"):
+                label = f"{mode} {name}"
+                if kind == "light":
+                    layer = comp.add_light(label, [960, 540])
+                    layer.light_type = LightType.POINT
+                else:
+                    layer = comp.add_camera(label, [960, 540])
+                prop = layer[group][name]
+                if mode == "static":
+                    prop.value = first
+                else:
+                    prop.set_value_at_time(0.0, first)
+                    prop.set_value_at_time(1.0, second)
+        out = tmp_path / "out.aep"
+        app.project.save(out)
+
+        theirs = parse_aep(self.AEP).project.compositions[0]
+        ours = parse_aep(out).project.compositions[0]
+        for _, group, name, _, _ in self.STREAMS:
+            for mode in ("static", "keyed"):
+                label = f"{mode} {name}"
+                expected = theirs.layer(label)[group][name]._tdbs
+                written = ours.layer(label)[group][name]._tdbs
+                assert [_chunk_bytes(c) for c in written.chunks] == [
+                    _chunk_bytes(c) for c in expected.chunks
+                ], label
 
 
 class TestKeyframeInterpolationTypeGuard:

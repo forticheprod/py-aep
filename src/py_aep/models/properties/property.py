@@ -73,6 +73,7 @@ from ...binary.utils import (
     index_by_identity,
 )
 from ...data.effect_param_tdb4 import EFFECT_PARAM_TDB4
+from ...data.hold_only_streams import HOLD_ONLY_STREAMS
 from ...data.match_names import VF_AXIS_PREFIX
 from ...data.units import UNITS_TEXT_MAP
 from ...resolvers.motion_graphics import can_add_property
@@ -1318,6 +1319,10 @@ class Property(PropertyBase):
             # Type, ...) which report can_vary_over_time=False. Match that.
             if self._can_vary_over_time is False:
                 return
+            # It omits them on the hold-only menus and checkboxes too, which
+            # carry the integer type flag.
+            if self.match_name in HOLD_ONLY_STREAMS and self._tdb4.integer:
+                return
             multi_dim_vector = (
                 not self._color
                 and not self.is_spatial
@@ -1468,6 +1473,10 @@ class Property(PropertyBase):
             self._tdb4._type_flags = 0x08
             self._tdb4._property_category = 0x09
             self._tdb4._spatial_marker = True
+        elif self.match_name in HOLD_ONLY_STREAMS:
+            # Hold-only streams take AE's fields for their control.
+            for field, flags in HOLD_ONLY_STREAMS[self.match_name].items():
+                setattr(self._tdb4, field, flags)
         elif (
             self._color
             and not self._is_in_effect()
@@ -3364,8 +3373,9 @@ class Property(PropertyBase):
 
         `KeyframeInterpolationType.HOLD` is valid for every property that
         can vary over time. `LINEAR` and `BEZIER` are additionally invalid
-        for hold-only properties: markers, text documents, and
-        checkbox/dropdown effect parameters. When the property cannot vary
+        for hold-only properties: markers, text documents,
+        checkbox/dropdown effect parameters, and layer streams such as a
+        light's Falloff or a camera's Iris Shape. When the property cannot vary
         over time (e.g. a Layer Control parameter), every type is invalid.
         (Truth table probed against AE 2026; integer effect sliders DO
         accept all three types.)
@@ -3388,6 +3398,8 @@ class Property(PropertyBase):
             PropertyValueType.MARKER,
             PropertyValueType.TEXT_DOCUMENT,
         ):
+            return False
+        if self.match_name in HOLD_ONLY_STREAMS:
             return False
         # Only the pard-derived control type is authoritative for the
         # checkbox/dropdown test: the tdb4 flag fallback in
@@ -3506,6 +3518,9 @@ class Property(PropertyBase):
         tdb4_clear_keyframe_record(t)
         if preserved is not None:
             t._value_hint_flag, t._cvot_flags, t._time_base = preserved
+        # A hold-only stream keeps its fields when keyed, as in AE 2026.
+        for field, flags in HOLD_ONLY_STREAMS.get(self.match_name, {}).items():
+            setattr(t, field, flags)
 
     def _ensure_animated(self) -> tuple[Lhd3Chunk, LdatChunk]:
         """Return the keyframe `(lhd3, ldat)`, creating them if static.
