@@ -16,6 +16,10 @@ def _flat(points: list[list[float]]) -> list[float]:
     return [c for point in points for c in point]
 
 
+def _zeros(count: int) -> list[list[float]]:
+    return [[0.0, 0.0] for _ in range(count)]
+
+
 class TestRotoBezierTangents:
     def test_closed_path_in_pixel_space(self) -> None:
         # A 1920x1080 layer's current aspect stamp (width / height) makes
@@ -23,7 +27,13 @@ class TestRotoBezierTangents:
         # distance to its neighbour, along next - prev.
         vertices = [[100, 100], [900, 120], [800, 700], [150, 600]]
         ins, outs = roto_bezier_tangents(
-            vertices, True, [DEFAULT_TENSION] * 4, (1920 / 1080) / 1920, 1 / 1080
+            vertices,
+            _zeros(4),
+            _zeros(4),
+            True,
+            [DEFAULT_TENSION] * 4,
+            (1920 / 1080) / 1920,
+            1 / 1080,
         )
         assert _flat(ins)[:2] == pytest.approx([-141.0787, 90.2904], abs=1e-3)
         assert _flat(outs)[:2] == pytest.approx([224.6758, -143.7926], abs=1e-3)
@@ -34,39 +44,90 @@ class TestRotoBezierTangents:
         # 1920x1080 layer (the mask_rotobezier_on sample).
         vertices = [[0, 0], [0, 1080], [1920, 1080], [1920, 0]]
         ins, outs = roto_bezier_tangents(
-            vertices, True, [DEFAULT_TENSION] * 4, 1 / 1920, 1 / 1080
+            vertices,
+            _zeros(4),
+            _zeros(4),
+            True,
+            [DEFAULT_TENSION] * 4,
+            1 / 1920,
+            1 / 1080,
         )
         assert ins[0] == pytest.approx([452.5483, -254.5584], abs=1e-3)
         assert outs[0] == pytest.approx([-452.5483, 254.5584], abs=1e-3)
 
     def test_open_path_ends_aim_at_the_neighbouring_handle(self) -> None:
         ins, outs = roto_bezier_tangents(
-            [[100, 100], [500, 500], [900, 100]], False, [0.0] * 3, 1.0, 1.0
+            [[100, 100], [500, 500], [900, 100]],
+            _zeros(3),
+            _zeros(3),
+            False,
+            [0.0] * 3,
+            1.0,
+            1.0,
         )
         assert _flat(ins) == pytest.approx(
             [0, 0, -282.8427, 0, -58.5786, 200], abs=1e-3
         )
         assert _flat(outs) == pytest.approx([58.5786, 200, 282.8427, 0, 0, 0], abs=1e-3)
 
-    def test_two_vertex_open_path(self) -> None:
-        # The last end is aimed first, while the first end's handle is 0.
+    def test_two_vertex_open_path_aims_at_the_stored_out_handle(self) -> None:
+        # The last end is aimed first, at the first vertex's stored out
+        # handle, then the first end at the new in handle. AE 2026 reads
+        # (-102.963, -52.222) and (99.012, 49.259) (mask_rotobezier_handles).
         ins, outs = roto_bezier_tangents(
-            [[100, 100], [500, 300]], False, [0.0, 0.0], 1.0, 1.0
+            [[100, 100], [500, 300]],
+            [[0, 0], [-126.6667, -70]],
+            [[91.1111, 43.3333], [0, 0]],
+            False,
+            [DEFAULT_TENSION] * 2,
+            1.0,
+            1.0,
         )
-        assert _flat(ins) == pytest.approx([0, 0, -200, -100])
-        assert _flat(outs) == pytest.approx([100, 50, 0, 0])
+        assert _flat(ins) == pytest.approx([0, 0, -102.963, -52.222], abs=1e-3)
+        assert _flat(outs) == pytest.approx([99.012, 49.259, 0, 0], abs=1e-3)
 
     @pytest.mark.parametrize(
-        "vertices",
-        [[[100, 100], [500, 300]], [[300, 300]]],
+        "vertices,stored_in,stored_out",
+        [
+            ([[100, 100], [500, 300]], [[-20, 10], [0, -30]], [[20, -10], [0, 30]]),
+            ([[300, 300]], [[-5400, 0]], [[5400, 0]]),
+        ],
     )
-    def test_degenerate_closed_paths_have_no_tangents(
-        self, vertices: list[list[float]]
+    def test_degenerate_closed_paths_keep_their_stored_handles(
+        self,
+        vertices: list[list[float]],
+        stored_in: list[list[float]],
+        stored_out: list[list[float]],
     ) -> None:
         ins, outs = roto_bezier_tangents(
-            vertices, True, [0.0] * len(vertices), 1.0, 1.0
+            vertices, stored_in, stored_out, True, [0.0] * len(vertices), 1.0, 1.0
         )
-        assert not any(_flat(ins) + _flat(outs))
+        assert ins == stored_in
+        assert outs == stored_out
+
+    @pytest.mark.parametrize(
+        "gap,in_tangent,out_tangent",
+        [
+            (0.0003, [0, -30], [0, 30]),
+            (0.0015, [-240.3701, 0], [240.3697, 0]),
+        ],
+    )
+    def test_near_coincident_neighbours_keep_the_stored_handles(
+        self, gap: float, in_tangent: list[float], out_tangent: list[float]
+    ) -> None:
+        # Neighbours closer than 1e-6 layer heights leave the middle vertex
+        # untouched (AE 2026, mask_rotobezier_handles).
+        ins, outs = roto_bezier_tangents(
+            [[100, 100], [700, 500], [100 + gap, 100]],
+            [[0, 0], [0, -30], [200, 133.3333]],
+            [[200, 133.3333], [0, 30], [0, 0]],
+            True,
+            [DEFAULT_TENSION] * 3,
+            (1920 / 1080) / 1920,
+            1 / 1080,
+        )
+        assert ins[1] == pytest.approx(in_tangent, abs=1e-3)
+        assert outs[1] == pytest.approx(out_tangent, abs=1e-3)
 
 
 class TestKeyframeTensions:

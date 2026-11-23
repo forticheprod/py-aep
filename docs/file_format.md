@@ -4543,8 +4543,9 @@ Per-vertex RotoBezier tensions of a path.
 
 The chunk is required but usually empty (5,134 of 5,172 sample paths): an
 empty `omtn` means a tension of 1/3 for every vertex. When the mask's
-RotoBezier switch is on, AE ignores the stored control points and recomputes
-the handles from the vertices and these tensions. Setting
+RotoBezier switch is on, AE recomputes the handles from the vertices and
+these tensions, in place over the stored control points, and writes the
+result back when it saves. Setting
 `MaskPropertyGroup.rotoBezier = true` from a script stores 1.0 on a path
 whose vertices have no handles and 1/3 on a path with handles (AE 2026).
 
@@ -4556,13 +4557,18 @@ Shape's [`tdb4`](#tdb4) (0x18). For vertex *v* with tension *t*, let
 *k* = (1 - *t*) / 2.
 
 - Every vertex of a closed path, and every interior vertex of an open path:
-  *u* = unit(next - previous) (zero when that distance is below 1e-12);
-  in-tangent = -*u* * |*v* - previous| * *k*, out-tangent = *u* * |next - *v*| * *k*.
+  *u* = unit(next - previous); in-tangent = -*u* * |*v* - previous| * *k*,
+  out-tangent = *u* * |next - *v*| * *k*.
 - Open path ends: first the last vertex, in-tangent = (*v*[n-2] + out[n-2] -
   *v*[n-1]) * *k*[n-1]; then the first vertex, out-tangent = (*v*[1] + in[1] -
-  *v*[0]) * *k*[0]. On a two-vertex open path the first formula therefore uses
-  an out-tangent of zero.
-- A closed path with one or two vertices has zero tangents.
+  *v*[0]) * *k*[0]. The outer tangents become zero. On a two-vertex open path
+  the first formula therefore uses the stored out-tangent of the first vertex.
+- A vertex whose next - previous distance (for an end, the distance from the
+  neighbouring handle to the vertex) is below 1e-6 keeps its stored handles,
+  so does a closed path with one or two vertices. Measured with neighbours
+  0.0003 px (kept) and 0.0015 px (recomputed) apart on a 1080 px tall layer,
+  which also places the threshold in the aspect space rather than in layer
+  width units.
 - Between keyframes the tensions are interpolated along with the path. A
   keyframe whose `omtn` is empty contributes, per vertex, 1.0 when both of its
   stored handles are zero and 1/3 otherwise; at a keyframe (or on a static
