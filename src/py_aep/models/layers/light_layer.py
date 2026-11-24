@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import LayerType, LightType
@@ -53,10 +52,6 @@ class LightLayer(Layer):
     """
 
     _auto_name: str = "Light"
-    _fov_rad: float = 39.5978 * math.pi / 180
-    # AE's default 50mm camera: zoom = width / 0.72 exactly
-    # (2 * tan(fov/2) rounds to 0.72; AE uses the exact ratio).
-    _zoom_dividend: float = 0.72
 
     _LIVE_DEFAULTS = (
         *Layer._LIVE_DEFAULTS,

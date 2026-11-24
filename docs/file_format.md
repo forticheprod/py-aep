@@ -2002,8 +2002,12 @@ times in composition time. One per composition. Same container shape as
 #### Composition view layers
 
 What AE 2026 writes for the eleven view layers of a new composition (W, H =
-composition size, PAR = pixel aspect, Z = W x PAR / 0.72, which is the
-50 mm camera distance; every layer's out point is the composition duration):
+composition size, PAR = pixel aspect, Z = the 50 mm camera distance; every
+layer's out point is the composition duration). Z is
+W x PAR / (2 x tan(39.59775271° / 2)) rounded to 8 decimals, 2666.6666666 for
+a 1920 wide composition with square pixels, and the Custom View coordinates
+are computed from that rounded value (matches every composition of the
+AE 2018 and AE 2026 samples that was not resized after creation):
 
 | List | Name | Position |
 |---|---|---|
@@ -4470,6 +4474,24 @@ but unused. An empty path (no vertices) has the `lhd3` only, with no `ldat`.
 
 Denormalizing a point: x = left + nx * (right - left), y = top + ny * (bottom -
 top), with the box from [`shph`](#shph).
+
+ExtendScript reports that arithmetic done in float32 and then rounded to
+16.16 fixed point (measured on AE 2026). With W the mask space width (1
+outside a mask), each product, difference and sum below is rounded to
+float32:
+
+1. L = left * W and S = right * W - L.
+2. x = nx * S + L.
+3. The reported x is trunc(x * 65536 + 0.5) / 65536, the sum again in
+   float32 (- 0.5 for a negative x).
+
+Every reported coordinate is therefore a multiple of 1/65536. From 128 px up
+the float32 sum of step 3 cannot hold the half and rounds to even, so an odd
+multiple comes back as the even one above it: a control point stored at
+255.22999573 reads 255.23001099. A tangent is the difference of two reported
+points. This reproduces all three arrays of every path in the sample exports
+(the 72 non-RotoBezier paths of files with a same-named JSON) to the 15
+digits the exports hold.
 
 #### Mask space
 

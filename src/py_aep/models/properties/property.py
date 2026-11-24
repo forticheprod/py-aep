@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import weakref
+from fractions import Fraction
 from typing import TYPE_CHECKING, ClassVar, Union, cast
 
 from py_aep.cos import cos_get
@@ -3284,13 +3285,18 @@ class Property(PropertyBase):
         (measured on AE 2026, every one of 1614 dense samples across 100,
         50, 150, 200, -100 and -150 % stretch, with and without a start
         offset). Off the grid, the exact time is up to half a tick away.
+
+        The layer time is worked out in exact ratios. It often lands on a
+        half tick, which AE rounds up and a float rounds by its noise.
+        Measured on AE 2026 with a 200 % layer starting at 0.5 s.
         """
         base = self._layer_timebase
         if not base or not math.isfinite(time):
             return self._layer_time_from_comp(time)
-        snapped = math.floor(time * base + 0.5) / base
-        layer = self._layer_time_from_comp(snapped)
-        return math.floor(layer * base + 0.5) / base
+        ticks = int(base)
+        snapped = Fraction(math.floor(time * base + 0.5), ticks)
+        layer = self._containing_layer._exact_layer_time(snapped)
+        return math.floor(layer * ticks + Fraction(1, 2)) / base
 
     def _clamp_to_range(self, value: Any) -> Any:
         """Clamp an evaluated numeric value to the property's range.

@@ -1173,52 +1173,6 @@ def _spatial_tangents(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Segment interpolation - lottie-web approach
-# ---------------------------------------------------------------------------
-
-
-def _interpolate_bezier_1d(
-    t: float,
-    t0: float,
-    t1: float,
-    v0: float,
-    v1: float,
-    out_ease: KeyframeEase,
-    in_ease: KeyframeEase,
-) -> float:
-    """Interpolate 1D using lottie-web's BezierEasing approach.
-
-    Converts speed/influence to normalized bezier control points,
-    then uses BezierEasing to get the eased progress, then lerps.
-    """
-    dt = t1 - t0
-    if dt == 0:
-        return v0
-
-    # Convert AEP ease to normalized bezier control points. Only the x
-    # (time) axis is used to find the curve parameter; the value axis is
-    # evaluated from absolute control points so a segment whose keys hold
-    # the same value still bows (see `_ease_value_handles`).
-    cx1, cy1, cx2, cy2 = _ease_to_bezier_1d(t0, t1, v0, v1, out_ease, in_ease)
-
-    # Get easing function (cached)
-    easing = _get_bezier_easing(cx1, cy1, cx2, cy2)
-
-    # Normalized time fraction
-    x = (t - t0) / dt
-    u = easing.parameter_at(x)
-
-    y1, y2 = _ease_value_handles(t0, t1, v0, v1, out_ease, in_ease)
-    mu = 1.0 - u
-    return (
-        mu * mu * mu * v0
-        + 3.0 * mu * mu * u * y1
-        + 3.0 * mu * u * u * y2
-        + u * u * u * v1
-    )
-
-
 def _segment_spline(
     keyframes: list[Keyframe],
     index: int,
@@ -1813,6 +1767,100 @@ def _interpolate_color(
     return [v0[d] + (v1[d] - v0[d]) * progress for d in range(len(v0))]
 
 
+# The fraction of the chord a LINEAR side's handle spans in AE, not exactly
+# 1 / 6.
+_LINEAR_HANDLE = 0.16666666667
+
+
+def _stored_ease(ease: KeyframeEase, speed_factor: float) -> tuple[float, float]:
+    """`(speed, influence)` of `ease` in the file's units, the speed per
+    stored value unit and the influence as a fraction."""
+    data = ease._kf_data
+    if data is None:
+        return ease.speed / speed_factor, ease.influence / 100.0
+    speed = getattr(data, f"{ease._direction}_speed")
+    influence = getattr(data, f"{ease._direction}_influence")
+    if isinstance(speed, list):
+        return speed[ease._dimension_index], influence[ease._dimension_index]
+    return speed, influence
+
+
+def _interpolate_numeric(
+    kf_left: Keyframe,
+    kf_right: Keyframe,
+    time: float,
+    inert_dimensions: frozenset[int],
+) -> list[float] | float:
+    """A plain numeric segment, evaluated the way AE evaluates it.
+
+    AE works at a whole tick of the layer's timebase and in the units the
+    file stores, then converts the result. A segment LINEAR on both sides
+    is `(v1 - v0) * (ticks / span) + v0`. Any other is one cubic per
+    dimension in seconds and value. A BEZIER side's handle reaches
+    `influence` of the span at its speed, a LINEAR side's sits
+    `_LINEAR_HANDLE` of the way along the chord. Measured on AE 2026, which
+    this reproduces bit for bit on LINEAR Opacity, Rotation, Scale and
+    Slider keys and on an eased Slider.
+    """
+    raw_left = kf_left._raw_value
+    scalar = not isinstance(raw_left, list)
+    start = cast("list[float]", [raw_left] if scalar else raw_left)
+    raw_right = kf_right._raw_value
+    end = cast("list[float]", [raw_right] if scalar else raw_right)
+
+    timebase = kf_left._timebase
+    span = kf_right.time_units - kf_left.time_units
+    ticks = math.floor(time * timebase + 0.5) - kf_left.time_units
+    out_bezier = kf_left.out_interpolation_type == KeyframeInterpolationType.BEZIER
+    in_bezier = kf_right.in_interpolation_type == KeyframeInterpolationType.BEZIER
+    out_eases = kf_left.out_temporal_ease if out_bezier else []
+    in_eases = kf_right.in_temporal_ease if in_bezier else []
+    prop = kf_left._property
+    speed_factor = prop._speed_factor if prop is not None else 1.0
+
+    ratio = float(ticks) / float(span)
+    dt = float(span) / timebase
+    x = float(ticks) / timebase
+    result: list[float] = []
+    for d, (v0, v1) in enumerate(zip(start, end)):
+        if d in inert_dimensions:
+            # AE leaves an inert dimension alone: a 2-D layer's Scale Z
+            # reads exactly 100 across a segment whose live X and Y bow.
+            # (AE also refuses to STORE any other Z there, so the two
+            # keyframes always agree.)
+            result.append(v0)
+            continue
+        if not out_eases and not in_eases:
+            result.append((v1 - v0) * ratio + v0)
+            continue
+        if out_eases:
+            speed, influence = _stored_ease(
+                out_eases[d] if d < len(out_eases) else out_eases[0], speed_factor
+            )
+            reach = dt * influence
+            p1 = (reach, reach * speed + v0)
+        else:
+            p1 = (dt * _LINEAR_HANDLE, (v1 - v0) * _LINEAR_HANDLE + v0)
+        if in_eases:
+            speed, influence = _stored_ease(
+                in_eases[d] if d < len(in_eases) else in_eases[0], speed_factor
+            )
+            reach = -influence * dt
+            p2 = (reach + dt, reach * speed + v1)
+        else:
+            p2 = (dt - dt * _LINEAR_HANDLE, v1 - (v1 - v0) * _LINEAR_HANDLE)
+        if v0 == p1[1] == p2[1] == v1:
+            result.append(v0)
+            continue
+        u = _t_on_axis([(0.0, v0), p1, p2, (dt, v1)], 0, x)
+        result.append(_cubic_1d(v0, p1[1], p2[1], v1, u))
+
+    value: list[float] | float = result[0] if scalar else result
+    if prop is None:
+        return value
+    return cast("list[float] | float", prop._resolve_value(value))
+
+
 def interpolate_keyframes(
     time: float,
     keyframes: list[Keyframe],
@@ -1928,12 +1976,10 @@ def interpolate_keyframes(
         ):
             return slerp_orientation(v0, v1, progress)
 
-    # AE stores a LINEAR side as a diagonal handle - speed equal to the
-    # chord slope, influence 100/6 - so the ordinary bezier path below
-    # reproduces it exactly, including the case AE cares about: a LINEAR out
-    # side facing an EASED in side still gets that ease (measured on AE
-    # 2026: Opacity 0->100 over 2 s with a LINEAR out and a 90 % influence in
-    # side reaches 87.5 at t=1, where a lerp gives 50).
+    # A LINEAR side is a handle on the chord, so a LINEAR out side facing an
+    # EASED in side still gets that ease (measured on AE 2026: Opacity
+    # 0->100 over 2 s with a LINEAR out and a 90 % influence in side reaches
+    # 87.5 at t=1, where a lerp gives 50).
     if out_type in (
         KeyframeInterpolationType.BEZIER,
         KeyframeInterpolationType.LINEAR,
@@ -1962,58 +2008,10 @@ def interpolate_keyframes(
                     1.0,
                 ).get((time - t0) / (t1 - t0))
                 return [v0[d] + (v1[d] - v0[d]) * progress for d in range(len(v0))]
-
-            result: list[float] = []
-            for d in range(len(v0)):
-                if d in inert_dimensions:
-                    # AE leaves an inert dimension alone: a 2-D layer's Scale
-                    # Z reads exactly 100 across a segment whose live X and Y
-                    # bow. (AE also refuses to STORE any other Z there, so the
-                    # two keyframes always agree.)
-                    result.append(v0[d])
-                    continue
-                out_e = (
-                    kf_left.out_temporal_ease[d]
-                    if d < len(kf_left.out_temporal_ease)
-                    else kf_left.out_temporal_ease[0]
-                )
-                in_e = (
-                    kf_right.in_temporal_ease[d]
-                    if d < len(kf_right.in_temporal_ease)
-                    else kf_right.in_temporal_ease[0]
-                )
-                result.append(
-                    _interpolate_bezier_1d(
-                        time,
-                        t0,
-                        t1,
-                        v0[d],
-                        v1[d],
-                        out_e,
-                        in_e,
-                    )
-                )
-            return result
+            return _interpolate_numeric(kf_left, kf_right, time, inert_dimensions)
 
         if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
-            out_e_1d = (
-                kf_left.out_temporal_ease[0] if kf_left.out_temporal_ease else None
-            )
-            in_e_1d = (
-                kf_right.in_temporal_ease[0] if kf_right.in_temporal_ease else None
-            )
-            if out_e_1d and in_e_1d:
-                return _interpolate_bezier_1d(
-                    time,
-                    t0,
-                    t1,
-                    float(v0),
-                    float(v1),
-                    out_e_1d,
-                    in_e_1d,
-                )
-            ratio = (time - t0) / (t1 - t0)
-            return float(v0) + (float(v1) - float(v0)) * ratio
+            return _interpolate_numeric(kf_left, kf_right, time, inert_dimensions)
 
     # Fallback
     return cast("list[float] | float | None", v0)

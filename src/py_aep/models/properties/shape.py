@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, cast
 
+from ...binary.bin_utils import FLOAT32_MAX, to_f4
 from ...binary.ldat_chunks import ShapePoint
 from ...binary.misc_chunks import ShphChunk, TensionItem
 from ...resolvers.roto_bezier import (
@@ -24,6 +26,28 @@ if TYPE_CHECKING:
     from ..layers.layer import Layer
     from .mask_property_group import MaskPropertyGroup
     from .property import Property
+
+
+def _f4(value: float) -> float:
+    """`value` rounded to float32, an overflow giving an infinity."""
+    if abs(value) > FLOAT32_MAX:
+        return math.copysign(math.inf, value)
+    return to_f4(value)
+
+
+def _fixed_point(coordinate: float) -> float:
+    """A float32 path coordinate as ExtendScript reports it.
+
+    After Effects converts it to 16.16 fixed point in float32, as
+    `coordinate * 65536` plus a half, truncated. From 128 px up the sum
+    cannot hold the half and rounds to even, so an odd count of 1 / 65536
+    comes back as the even one above. On AE 2026 255.22999573 reads
+    255.23001099. A coordinate too large for 16.16 is left as it is.
+    """
+    if not abs(coordinate) < 32768.0:
+        return coordinate
+    half = -0.5 if coordinate < 0.0 else 0.5
+    return int(to_f4(coordinate * 65536.0 + half)) / 65536.0
 
 
 def _interp_transform(raw: int) -> int:
@@ -355,13 +379,29 @@ class Shape:
             return None
         return cast("AVLayer", self._layer)._mask_scale
 
-    def _denormalize_point(self, pt: ShapePoint) -> list[float]:
-        """Convert a normalized [0,1] shape point to absolute coordinates."""
+    def _absolute_points(self) -> list[list[float]]:
+        """Every stored point in pixels, as ExtendScript reports it.
+
+        After Effects scales the box to the layer and places each point in
+        it in float32, `left + point * (right - left)` with each product and
+        sum rounded, then reports the coordinate as 16.16 fixed point.
+        Matches every path AE exported for the samples, digit for digit.
+        """
         shph = self._shph
-        assert shph is not None
-        x = shph.top_left_x * (1 - pt.x) + shph.bottom_right_x * pt.x
-        y = shph.top_left_y * (1 - pt.y) + shph.bottom_right_y * pt.y
-        return [x, y]
+        assert shph is not None and self._points is not None
+        mask_size = self._comp_size if self._is_mask else None
+        width, height = mask_size if mask_size is not None else (1.0, 1.0)
+        left = _f4(shph.top_left_x * width)
+        top = _f4(shph.top_left_y * height)
+        span_x = _f4(_f4(width * shph.bottom_right_x) - left)
+        span_y = _f4(_f4(height * shph.bottom_right_y) - top)
+        return [
+            [
+                _fixed_point(_f4(_f4(span_x * pt.x) + left)),
+                _fixed_point(_f4(_f4(span_y * pt.y) + top)),
+            ]
+            for pt in self._points
+        ]
 
     def _normalize_point(self, x: float, y: float) -> tuple[float, float]:
         """Convert absolute coordinates back to normalized [0,1]."""
@@ -384,17 +424,13 @@ class Shape:
         shape built with `Shape()` can take a different number of vertices
         (its tangents then reset to `[0, 0]`); one read from a project keeps
         its vertex count, so assign a new `Shape` to the property instead.
+
+        Coordinates read back as After Effects reports them, in steps of
+        1 / 65536 of a pixel.
         """
         if self._points is None or self._shph is None:
             return []
-        result: list[list[float]] = []
-        for i in range(0, len(self._points), 3):
-            result.append(self._denormalize_point(self._points[i]))
-        mask_size = self._comp_size if self._is_mask else None
-        if mask_size is not None:
-            w, h = mask_size
-            result = [[x * w, y * h] for x, y in result]
-        return result
+        return self._absolute_points()[::3]
 
     @vertices.setter
     def vertices(self, value: list[list[float]]) -> None:
@@ -443,15 +479,12 @@ class Shape:
         point sits beside its vertex in `_points`)."""
         if self._points is None or self._shph is None:
             return []
+        points = self._absolute_points()
         result: list[list[float]] = []
-        for i in range(0, len(self._points), 3):
-            v = self._denormalize_point(self._points[i])
-            t = self._denormalize_point(self._points[(i + offset) % len(self._points)])
+        for i in range(0, len(points), 3):
+            v = points[i]
+            t = points[(i + offset) % len(points)]
             result.append([t[0] - v[0], t[1] - v[1]])
-        mask_size = self._comp_size if self._is_mask else None
-        if mask_size is not None:
-            w, h = mask_size
-            result = [[x * w, y * h] for x, y in result]
         return result
 
     @property

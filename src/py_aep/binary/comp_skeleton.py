@@ -255,6 +255,7 @@ def build_new_comp_item(
     width: int,
     height: int,
     pixel_aspect: float,
+    camera_zoom: float,
     duration: float,
     frame_rate: float,
     allocate_layer_id: Callable[[], int],
@@ -264,10 +265,11 @@ def build_new_comp_item(
     """Build the complete `LIST:Item` chunk tree AE 2026 writes for
     `app.project.items.addComp()`.
 
-    `ae_major` is the project's After Effects major version: the parts that
-    release does not write are left out (see `ae_writes`). `label` is the
-    "Comp Label Index 2" label preference (AE factory value 15). Returns
-    `(item_list, idta, name_utf8, gide)`.
+    `camera_zoom` is the comp's default camera zoom, the distance its Custom
+    Views sit at. `ae_major` is the project's After Effects major version:
+    the parts that release does not write are left out (see `ae_writes`).
+    `label` is the "Comp Label Index 2" label preference (AE factory value
+    15). Returns `(item_list, idta, name_utf8, gide)`.
     """
     idta = IdtaChunk(item_type=4, item_id=item_id, label=label, flags_17=0x20)
     name_utf8 = Utf8Chunk(value=name)
@@ -277,7 +279,7 @@ def build_new_comp_item(
     env: dict[str, float] = {
         "W2": width / 2.0,
         "H2": height / 2.0,
-        "ZV": width * pixel_aspect / 0.72,
+        "ZV": camera_zoom,
         "TB": cdta.internal_timebase,
         "DUR_UNITS": cdta.duration_dividend,
         "PAR": pixel_aspect,

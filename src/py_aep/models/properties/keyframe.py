@@ -672,14 +672,17 @@ class Keyframe:
         Interpolation and ease measurement read this one: AE measures a
         2-D layer's motion path with the stored Z too.
         """
-        val = (
-            self._value
-            if self._value is not _VALUE_FROM_CHUNK
-            else self._extract_raw_value()
-        )
+        val = self._raw_value
         if self._property is not None and isinstance(val, (int, float, list)):
             return cast("_ValueType", self._property._resolve_value(val))
         return cast("_ValueType", val)
+
+    @property
+    def _raw_value(self) -> _ValueType:
+        """The value in the file's own units, before `_resolve_value`."""
+        if self._value is not _VALUE_FROM_CHUNK:
+            return cast("_ValueType", self._value)
+        return self._extract_raw_value()
 
     def _cache_value(self, value: _ValueType) -> None:
         """Cache a value decoded from chunks (parser-only).

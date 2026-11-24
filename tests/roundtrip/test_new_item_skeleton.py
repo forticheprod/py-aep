@@ -22,6 +22,7 @@ from py_aep.binary.utils import (
     find_by_type,
     recursive_find,
 )
+from py_aep.resolvers.transform import default_camera_zoom
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models"
 PRDA_CLASSIC_DEFAULT = bytes.fromhex(
@@ -172,7 +173,7 @@ class TestNewLayerSkeleton:
         cam = comp.add_camera("Cam")
         pos = next(p for p in cam.transform if p.match_name == "ADBE Position")
         anchor = next(p for p in cam.transform if p.match_name == "ADBE Anchor Point")
-        zoom = round(comp.width / 0.72, 8)
+        zoom = default_camera_zoom(comp.width, comp.pixel_aspect)
         assert pos.value == [0.0, 0.0, -zoom]
         assert anchor.value == [comp.width / 2, comp.height / 2, 0.0]
 
@@ -207,6 +208,27 @@ class TestNewCompSkeleton:
         # viewer pseudo-layers rebased onto the comp's timebase
         bases = {t._time_base for t in recursive_find(item.chunks, chunk_type="tdb4")}
         assert bases == {23976}
+
+    def test_custom_views_sit_at_the_default_zoom(self, tmp_path: Path) -> None:
+        # AE 2026 stores 2666.6666666 in the Custom Views of a 1920 wide comp
+        # with square pixels (samples/versions/ae2026/complete.aep).
+        app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")
+        app.project.root_folder.add_comp("Views", 1920, 1080, 1.0, 10.0, 30.0)
+        rifx = _saved_rifx(app, tmp_path)
+        item = _find_comp_item(rifx, "Views")
+        positions = []
+        for view in filter_by_list_type(chunks=item.chunks, list_type="CLay"):
+            for group in recursive_find(view.chunks, list_type="tdgp"):
+                for index, chunk in enumerate(group.chunks):
+                    if chunk.chunk_type == "tdmn" and chunk.value == "ADBE Position":
+                        stream = group.chunks[index + 1]
+                        cdat = recursive_find(stream.chunks, chunk_type="cdat")[0]
+                        positions.append(cdat.values[:3])
+        assert positions == [
+            [-1706.6666666, -2126.6666666, -2666.6666666],
+            [960.0, -2126.6666666, -2666.6666666],
+            [3626.6666666, -2126.6666666, -2666.6666666],
+        ]
 
     def test_reparse_roundtrip(self, tmp_path: Path) -> None:
         app = parse_aep(SAMPLES_DIR / "folder" / "folder.aep")

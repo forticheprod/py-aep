@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, cast
 
 from py_aep.enums import AutoOrientType, Label, LayerType
@@ -613,6 +614,21 @@ class Layer(PropertyGroup):
         if factor >= 0:
             return self.start_time
         return self.start_time + factor / 3000.0
+
+    def _exact_layer_time(self, time: Fraction) -> Fraction:
+        """Layer time of a composition `time`, from the stored ratios.
+
+        The same mapping as `(time - _time_origin) / _stretch_factor`,
+        without the rounding of floats.
+        """
+        ldta = self._ldta
+        factor = Fraction(1)
+        if ldta.stretch_dividend and ldta.stretch_divisor:
+            factor = Fraction(ldta.stretch_dividend, ldta.stretch_divisor)
+        origin = Fraction(ldta.start_time_dividend, ldta.start_time_divisor)
+        if factor < 0:
+            origin += factor / 3000
+        return (time - origin) / factor
 
     @property
     def in_point(self) -> float:
