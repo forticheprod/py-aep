@@ -4475,6 +4475,24 @@ but unused. An empty path (no vertices) has the `lhd3` only, with no `ldat`.
 Denormalizing a point: x = left + nx * (right - left), y = top + ny * (bottom -
 top), with the box from [`shph`](#shph).
 
+ExtendScript reports that arithmetic done in float32 and then rounded to
+16.16 fixed point (measured on AE 2026). With W the mask space width (1
+outside a mask), each product, difference and sum below is rounded to
+float32:
+
+1. L = left * W and S = right * W - L.
+2. x = nx * S + L.
+3. The reported x is trunc(x * 65536 + 0.5) / 65536, the sum again in
+   float32 (- 0.5 for a negative x).
+
+Every reported coordinate is therefore a multiple of 1/65536. From 128 px up
+the float32 sum of step 3 cannot hold the half and rounds to even, so an odd
+multiple comes back as the even one above it: a control point stored at
+255.22999573 reads 255.23001099. A tangent is the difference of two reported
+points. This reproduces all three arrays of every path in the sample exports
+(the 72 non-RotoBezier paths of files with a same-named JSON) to the 15
+digits the exports hold.
+
 #### Mask space
 
 The box and points of a path are expressed in the space of the property that
