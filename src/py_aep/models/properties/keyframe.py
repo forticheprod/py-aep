@@ -932,7 +932,10 @@ class Keyframe:
         # interpolation solver that reads the adjacent direction is
         # unaffected.
         if neighbour is None or facing_hold:
-            return [KeyframeEase(speed=0.0, influence=e.influence) for e in raw_ease]
+            return [
+                KeyframeEase._detached(speed=0.0, influence=e.influence)
+                for e in raw_ease
+            ]
         # An effect point stores speed normalized against the comp height.
         # Applied here because the factor needs a fully constructed property,
         # and because `_bind_property` resets ease back to the property-level

@@ -2163,6 +2163,12 @@ A new composition's template name is `Untitled` / `en_US`; one sample carries
 two pairs, `Unbenannt` / `de_DE` then `Unbenannt` / `en_US`. In a
 [`LIST:CCtl`](#listcctl) it holds the controller name.
 
+Absent from projects saved before file format 92.7 (AE 13.8-15.0), whose
+containers and controllers carry a [`LIST:CapS`](#listcaps) alone: AE reads the
+name from that caption and, on resave, writes a `LIST:CpS2` holding the same
+text (measured on AE 2026, which refuses a file of format 92.7 or later with
+no `LIST:CpS2`).
+
 ### `CsCt`
 
 **Parent:** [`LIST:CpS2`](#listcps2), [`LIST:CapS`](#listcaps) · **Size:** 4 bytes · **py_aep:** `CsctChunk`
@@ -3769,7 +3775,7 @@ a static value or keyframes.
 | Child | Occurs | Description |
 |---|---|---|
 | [`tdsb`](#tdsb) | 1, required | Stream flags. |
-| [`tdsn`](#tdsn) | 1, required | Display name (one [`Utf8`](#utf8)): `-_0_/-` for the default name; empty on an effect's hidden `-0000` parameter; some effect parameters store their parameter name. |
+| [`tdsn`](#tdsn) | 1, required | Display name (one [`Utf8`](#utf8)): `-_0_/-` for the default name; empty on an effect's hidden `-0000` parameter; a stored effect parameter stores its parameter name. |
 | [`tdb4`](#tdb4) | 1, required | Stream metadata. |
 | [`cdat`](#cdat) or [`LIST:list`](#listlist) | 1, required | The static value, or the keyframes (header [`lhd3`](#lhd3) + items [`ldat`](#ldat)). |
 | [`Utf8`](#utf8) | 0-1 | The expression, when the stream has one (an [`expr`](#expr) in files older than version 92.0). |
@@ -3884,7 +3890,7 @@ keyframe record and the expression flags.
 | 0x04 | 2 | u2 | Stream flags (bits below). |
 | 0x06 | 2 | u2 | Spatial interpolation setting (inferred). 3 on spatial streams (Position, Anchor Point, effect and shape points), 1 on mask and shape paths and layer-style colours, 0 elsewhere. |
 | 0x08 | 2 | u2 | Spatial interpolation mask (inferred). 0xFFFF on spatial streams and many others, 0x0001 on most non-spatial numbers, 0x0002 on colours, paths and some angles, 0x0006 on Orientation. |
-| 0x0A | 2 | u2 | Interpolation mask: which keyframe interpolation types the stream allows (inferred: bit 0 Linear, bit 1 Bezier, bit 2 Hold). 0xFFFF on most streams, 0x0007 on Orientation and paths, 0x0004 on hold-only streams (menus, checkboxes, text documents, markers), 0x0000 on streams that cannot be animated. For 132 of the 137 layer-property match names in the samples, bit 1 equals ExtendScript's `canVaryOverTime` (valueless streams always report true); the exceptions are hold-only menus and checkboxes such as `ADBE Camera Depth of Field`, `ADBE Iris Shape` and `ADBE Light Falloff Type`, which report true. Effect parameters follow their [`pard`](#pard) flags. |
+| 0x0A | 2 | u2 | Interpolation mask: which keyframe interpolation types the stream allows (inferred: bit 0 Linear, bit 1 Bezier, bit 2 Hold). 0xFFFF on most streams, 0x0007 on Orientation and paths, 0x0004 on hold-only streams (menus, checkboxes, text documents, markers, the text wiggly selector's Wiggles/Second and Correlation), static or keyed, 0x0000 on streams that cannot be animated. AE 2026 reports Hold as the only valid type of a 0x0004 stream and keys it with Hold. For 132 of the 137 layer-property match names in the samples, bit 1 equals ExtendScript's `canVaryOverTime` (valueless streams always report true); the exceptions are hold-only menus and checkboxes such as `ADBE Camera Depth of Field`, `ADBE Iris Shape` and `ADBE Light Falloff Type`, which report true. Effect parameters follow their [`pard`](#pard) flags. |
 | 0x0C | 4 | u4 | Time base: keyframe time units per second of the owning layer's time. The composition timebase up to 100 % stretch; past it, `floor(composition timebase x s)` with `s` the stretch / 100 rounded to 16.16 fixed point, capped at 115200 (500 % at 24 fps stores 115200, not 122880; 116 % at 99.123 fps stores 114983). Equals the composition timebase ([`cdta`](#cdta)) for an unstretched layer (24576 at 24 fps, 25600 at 25, 30720 at 30, 23976 at 23.976); a 300 % stretch at 24 fps stores 73728, so the full 32 bits are used. Present on static streams too. |
 | 0x10 | 8 | f8 | Arc accuracy: the tolerance (a squared distance) AE fits a spatial segment's length to. 0.0001 for values stored in pixels; 6.25e-12 for points stored as a fraction of the layer (effect points) and on some Anchor Point streams. |
 | 0x18 | 8 | f8 | X multiplier applied before measuring a motion path: the composition's pixel aspect ratio on a layer's Position and Anchor Point, the layer's width / height on a point stored as a fraction of the layer (and on mask paths, inferred); 1.0 elsewhere. |
@@ -3937,6 +3943,31 @@ Bit 0 of 0x3B marks a colour and bit 4 appears only on Orientation; the
 meaning of bits 2 and 3 and of the category values is not decoded beyond
 this table. Neither byte changes when a stream is animated.
 
+An effect parameter's stored stream writes one set of these fields per
+control type (the [`pard`](#pard) control type), across every effect
+parameter stored in the AE 2025 and 2026 samples and the AE 2026 built-in
+effect templates. AE 2026 writes the same set when a script sets or keys a
+parameter of each type. Values for a static stream:
+
+| Control type | 0x04 | 0x06 | 0x08 | 0x0A | 0x38 | 0x3B | 0x3C | 0x48 |
+|---|---|---|---|---|---|---|---|---|
+| 0 layer, 12 mask | 0x01 | 0 | 0x0001 | 0x0000 | 0 | 0x04 | 4 | 0x80000000 |
+| 1 integer slider | 0x01 | 0 | 0xFFFF | 0xFFFF | 0 | 0x04 | 4 | 0 |
+| 2 fixed slider, 3 angle | 0x01 | 0 | 0xFFFF | 0xFFFF | 0 | 0x04 | 6 | 0 |
+| 4 checkbox, 7 menu | 0x01 | 0 | 0x0001 | 0x0004 | 0 | 0x04 | 4 | 0 |
+| 5 colour | 0x07 | 1 | 0x0002 | 0xFFFF | 0 | 0x01 | 1 | 0 |
+| 6 point | 0x0F | 3 | 0xFFFF | 0xFFFF | 0 | 0x04 | 6 | 0 |
+| 10 float slider | 0x01 | 0 | 0xFFFF | 0xFFFF | 0 | 0x08 | 9 | 0 |
+| 11 arbitrary data | 0x07 | 1 | 0x0006 | 0x0007 | 1 | 0x08 | 0 | 0 |
+| 18 3D point | 0x0F | 3 | 0xFFFF | 0xFFFF | 0 | 0x08 | 9 | 0 |
+
+Keying the parameter clears 0x04 bit 0 and the keyframe record, 0x4E
+included, and changes nothing else. A point also holds its layer's width /
+height at 0x18 and 6.25e-12 at 0x10 as soon as it is stored, keyed or not.
+Two exceptions in the samples: a button (15) writes 0x0A as 0x0000 in
+Adobe's effects and 0x0004 in Sapphire's, and AE 2018 wrote Posterize Time's
+frame rate with 0x0A at 0x0004.
+
 The keyframe record at 0x48-0x73 has the same field order as the start of a
 keyframe item (time, in and out interpolation, key flags, spatial flags,
 then in speed, in influence, out speed and out influence, without the
@@ -3988,7 +4019,7 @@ reports:
 | Stream | Stored as |
 |---|---|
 | `ADBE Opacity`, `ADBE Scale` | A fraction: 1.0 = 100 %. |
-| Colours | Four doubles A, R, G, B in 0-255 (opaque red = 255, 255, 0, 0). |
+| Colours | Four doubles A, R, G, B in 0-255 (opaque red = 255, 255, 0, 0). Each is the component's float32 value times 255, so 0.2 is stored as 51.00000075995922, in every non-whole colour component of the AE 2025 and 2026 samples, static or keyed. |
 | Effect point parameters | A fraction of the layer's width and height (0.5 = centre). |
 | Position, Anchor Point, rotations, Light Intensity, most others | The value ExtendScript reports (pixels, degrees, percent, seconds). |
 
@@ -4512,8 +4543,9 @@ Per-vertex RotoBezier tensions of a path.
 
 The chunk is required but usually empty (5,134 of 5,172 sample paths): an
 empty `omtn` means a tension of 1/3 for every vertex. When the mask's
-RotoBezier switch is on, AE ignores the stored control points and recomputes
-the handles from the vertices and these tensions. Setting
+RotoBezier switch is on, AE recomputes the handles from the vertices and
+these tensions, in place over the stored control points, and writes the
+result back when it saves. Setting
 `MaskPropertyGroup.rotoBezier = true` from a script stores 1.0 on a path
 whose vertices have no handles and 1/3 on a path with handles (AE 2026).
 
@@ -4525,13 +4557,18 @@ Shape's [`tdb4`](#tdb4) (0x18). For vertex *v* with tension *t*, let
 *k* = (1 - *t*) / 2.
 
 - Every vertex of a closed path, and every interior vertex of an open path:
-  *u* = unit(next - previous) (zero when that distance is below 1e-12);
-  in-tangent = -*u* * |*v* - previous| * *k*, out-tangent = *u* * |next - *v*| * *k*.
+  *u* = unit(next - previous); in-tangent = -*u* * |*v* - previous| * *k*,
+  out-tangent = *u* * |next - *v*| * *k*.
 - Open path ends: first the last vertex, in-tangent = (*v*[n-2] + out[n-2] -
   *v*[n-1]) * *k*[n-1]; then the first vertex, out-tangent = (*v*[1] + in[1] -
-  *v*[0]) * *k*[0]. On a two-vertex open path the first formula therefore uses
-  an out-tangent of zero.
-- A closed path with one or two vertices has zero tangents.
+  *v*[0]) * *k*[0]. The outer tangents become zero. On a two-vertex open path
+  the first formula therefore uses the stored out-tangent of the first vertex.
+- A vertex whose next - previous distance (for an end, the distance from the
+  neighbouring handle to the vertex) is below 1e-6 keeps its stored handles,
+  so does a closed path with one or two vertices. Measured with neighbours
+  0.0003 px (kept) and 0.0015 px (recomputed) apart on a 1080 px tall layer,
+  which also places the threshold in the aspect space rather than in layer
+  width units.
 - Between keyframes the tensions are interpolated along with the path. A
   keyframe whose `omtn` is empty contributes, per vertex, 1.0 when both of its
   stored handles are zero and 1/3 otherwise; at a keyframe (or on a static

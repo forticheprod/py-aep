@@ -2246,8 +2246,9 @@ class TestCanAddProperty:
         assert effect_parade.can_add_property("") is False
 
     def test_effect_parade_accepts_expression_controls(self) -> None:
-        """Effect Parade accepts the controls py_aep can create, by
-        match name or display name; unknown effects are rejected."""
+        """Effect Parade accepts the controls py_aep can create and the
+        built-in effects, by match name or display name. Unknown effects
+        are rejected."""
         project = parse_project(PROPERTY_SAMPLES_DIR / "effects.aep")
         comp = project.compositions[0]
         layer = comp.layers[0]
@@ -2257,7 +2258,8 @@ class TestCanAddProperty:
         assert effect_parade.can_add_property("ADBE Slider Control") is True
         assert effect_parade.can_add_property("Slider Control") is True
         assert effect_parade.can_add_property("ADBE Dropdown Control") is True
-        assert effect_parade.can_add_property("ADBE Gaussian Blur 2") is False
+        assert effect_parade.can_add_property("ADBE Gaussian Blur 2") is True
+        assert effect_parade.can_add_property("CC Ball Action") is False
         assert effect_parade.can_add_property("Some Custom Effect") is False
 
     def test_mask_parade_accepts_mask_atom(self) -> None:
@@ -2546,7 +2548,11 @@ class TestMaskLayerSpace:
 def _rotobezier_cases() -> list[tuple[str, str, str | None]]:
     """(fixture stem, mask name, sampled time / key or None for static)."""
     cases: list[tuple[str, str, str | None]] = []
-    for stem in ("mask_rotobezier_shapes", "mask_rotobezier_tensions"):
+    for stem in (
+        "mask_rotobezier_shapes",
+        "mask_rotobezier_tensions",
+        "mask_rotobezier_handles",
+    ):
         probe = load_expected(SAMPLES_DIR, f"{stem}_probe")
         for mask, value in sorted(probe.items()):
             if "vertices" in value:
@@ -2564,7 +2570,10 @@ class TestRotoBezierTangents:
     AE-scripted masks (tension 1, zero tangents, except one converted from
     handles at 1/3); `mask_rotobezier_tensions` is the same file with the
     tensions and Mask Path aspects byte-patched per layer (mixed tensions,
-    aspect 1.0, missing tensions, a keyframe without tensions)."""
+    aspect 1.0, missing tensions, a keyframe without tensions).
+    `mask_rotobezier_handles` holds paths with handles (tension 1/3) where
+    vertices keep their stored handles. Middle vertices with neighbours
+    0.0003, 0.0015 and 0.004 px apart, and one and two vertex paths."""
 
     @pytest.mark.parametrize("stem,mask_name,sample", _rotobezier_cases())
     def test_tangents_match_ae(
@@ -2595,7 +2604,7 @@ class TestRotoBezierTangents:
         ):
             got = [c for point in getattr(shape, attr) for c in point]
             want = [c for point in expected[name] for c in point]
-            assert got == pytest.approx(want, abs=1e-3), attr
+            assert got == pytest.approx(want, abs=1e-3, rel=1e-6), attr
 
     def test_stale_aspect_sample_matches_extendscript(self) -> None:
         # Tensions missing (1/3) and a Mask Path aspect of 1.0: AE measures

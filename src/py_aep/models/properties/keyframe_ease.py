@@ -66,17 +66,30 @@ class KeyframeEase:
         obj._speed_factor = speed_factor
         return obj
 
+    @classmethod
+    def _detached(cls, speed: float, influence: float) -> KeyframeEase:
+        """A chunk-less ease holding values read or derived from a file,
+        which the public constructor's user range must not reject: a
+        project can store an influence above 100 percent, and AE reports
+        and keeps it as stored (measured on AE 2026 with 104.626).
+        """
+        obj = cls()
+        obj._speed = speed
+        obj._influence = influence
+        return obj
+
     def _write_from(self, other: KeyframeEase) -> None:
         """Copy `other`'s speed and influence into this chunk-backed ease.
 
-        Bypasses the public setters' user-facing influence range (0.1-100)
-        because 0.0 is the parser's "no ease" sentinel and a user may pass
-        a `KeyframeEase()` built with it.
+        0.0 is the parser's "no ease" sentinel, so a `KeyframeEase()` built
+        with it passes. An influence above 100 can only come from a file
+        (the public constructor and setter refuse one); it is clamped to
+        100, as AE's `setTemporalEaseAtKey` does when handed one of its
+        own over-100 ease objects (measured on AE 2026).
         """
         speed = other.speed
-        influence = other.influence
+        influence = min(other.influence, 100.0)
         validate_f8(speed)
-        _validate_number(min=0.0, max=100.0)(influence)
         if self._kf_data is None:
             self._speed = speed
             self._influence = influence
@@ -127,7 +140,10 @@ class KeyframeEase:
     def influence(self) -> float:
         """The influence value of the keyframe, as shown in the Keyframe
         Velocity dialog box. This is a percentage value between 0.1 and
-        100. Read / Write."""
+        100. Read / Write.
+
+        A project can store a larger value: it reads as stored, and is
+        clamped to 100 when written back to a keyframe."""
         if self._kf_data is None:
             return self._influence
         raw = getattr(self._kf_data, f"{self._direction}_influence")

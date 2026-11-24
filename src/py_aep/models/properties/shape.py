@@ -322,6 +322,8 @@ class Shape:
                 tensions = [DEFAULT_TENSION] * len(vertices)
         return roto_bezier_tangents(
             vertices,
+            self._stored_tangents(-1),
+            self._stored_tangents(1),
             self.closed,
             tensions,
             prop._tdb4.pixel_aspect / width,

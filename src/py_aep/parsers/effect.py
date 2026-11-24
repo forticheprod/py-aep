@@ -19,8 +19,7 @@ from ..binary.utils import (
     find_by_type,
     index_by_identity,
 )
-from ..data.match_names import MATCH_NAME_TO_AUTO_NAME
-from ..data.spatial_flags import EFFECT_PARAM_SPATIAL_FLAGS
+from ..data.effect_param_tdb4 import EFFECT_PARAM_TDB4
 from ..enums import (
     PropertyControlType,
     PropertyType,
@@ -88,7 +87,6 @@ def _param_def_to_spec(
         integer=control_type == PropertyControlType.INTEGER,
         default_value=default_value,
         can_vary_over_time=control_type != PropertyControlType.MASK,
-        spatial_flags=EFFECT_PARAM_SPATIAL_FLAGS.get(control_type),
     )
 
 
@@ -362,11 +360,7 @@ def _synthesize_effect_property(
 
     if pvt == PropertyValueType.NO_VALUE:
         raw_display = param_def.get("name")
-        display = (
-            raw_display
-            if isinstance(raw_display, str) and raw_display
-            else MATCH_NAME_TO_AUTO_NAME.get(match_name, "")
-        )
+        display = raw_display if isinstance(raw_display, str) else ""
         return PropertyGroup._new(
             match_name,
             display,
@@ -383,6 +377,12 @@ def _synthesize_effect_property(
         control_type=control_type,
         synthetic=True,
     )
+    # Once stored, AE names an effect param after its definition and writes
+    # its control type's tdb4 fields.
+    assert prop._name_utf8 is not None
+    prop._name_utf8.value = param_def["name"]
+    for field, value in EFFECT_PARAM_TDB4.get(control_type, {}).items():
+        setattr(prop._tdb4, field, value)
     _apply_param_def_metadata(prop, param_def)
     return prop
 
@@ -743,6 +743,10 @@ def _extract_integer(body: Any, result: dict[str, Any]) -> None:
         result["default"] = body.default
     result["min_value"] = body.valid_min
     result["max_value"] = body.valid_max
+    if body.slider_min is not None:
+        result["slider_min"] = body.slider_min
+    if body.slider_max is not None:
+        result["slider_max"] = body.slider_max
 
 
 @_pard_extractor(PropertyControlType.SCALAR)

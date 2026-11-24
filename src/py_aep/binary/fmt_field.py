@@ -9,6 +9,7 @@ use this to handle all fixed-layout chunks with zero per-class I/O code.
 from __future__ import annotations
 
 import struct
+import sys
 from functools import lru_cache
 from typing import TYPE_CHECKING, cast
 
@@ -351,7 +352,9 @@ def _init_name(name: str) -> str:
     attrs strips the leading underscore from private field names for
     the `__init__` signature: `_trailing` -> `trailing=`.
     """
-    return name.lstrip("_") if name.startswith("_") else name
+    # Every chunk read passes these names as keyword arguments. Interned
+    # strings let Python match them by identity instead of by content.
+    return sys.intern(name.lstrip("_") if name.startswith("_") else name)
 
 
 def _decode_fields(
