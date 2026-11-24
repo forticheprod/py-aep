@@ -221,6 +221,37 @@ class TestLinearEaseSpeedIsLayerTime:
         assert middle.in_temporal_ease[0].speed == pytest.approx(expected, abs=1e-3)
 
 
+class TestHalfTickLayerTime:
+    """A stretched layer's time often lands exactly between two of its
+    ticks, where float noise used to pick the side.
+
+    AE 2026, LINEAR Rotation keys 0 / 90 / 30 at comp 1.3 / 2.1 / 2.9 s on a
+    200 % layer starting at 0.5 s in a 25 fps comp. Each time below snaps to
+    an odd comp tick, half a layer tick, which AE rounds up.
+    """
+
+    AE = {
+        1.3333333333333333: 3.7529296875000004,
+        1.4583333333333333: 17.8154296875,
+        1.5833333333333333: 31.8779296875,
+        1.7083333333333333: 45.94042968750001,
+    }
+
+    def test_matches_after_effects(self) -> None:
+        _app, comp = _new_comp(1000, 500, 25.0)
+        layer = comp.add_solid([1, 0, 0], "L", 100, 100, 1.0)
+        layer.start_time = 0.5
+        layer.stretch = 200.0
+        rotation = layer.property("Transform").property("Rotation")
+        rotation.set_value_at_time(1.3, 0.0)
+        rotation.set_value_at_time(2.1, 90.0)
+        rotation.set_value_at_time(2.9, 30.0)
+        assert [kf.time_units for kf in rotation.keyframes] == [20480, 40960, 61440]
+
+        for time, value in self.AE.items():
+            assert rotation.value_at_time(time) == pytest.approx(value, abs=1e-9)
+
+
 class TestRovingRedistributionUnderStretch:
     """Roving times are derived in layer time but were written through a
     composition-time conversion, scaling the run by the stretch factor: on a
