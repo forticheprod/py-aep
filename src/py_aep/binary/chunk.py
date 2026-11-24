@@ -217,9 +217,10 @@ class Chunk:
             for i in range(last_idx):
                 f = data_fields[i]
                 value = getattr(self, f.name)
-                value = _encode_value(
-                    value, i, encodings, coerces, ">", f.metadata["fmt"]
-                )
+                if i in encodings or i in coerces:
+                    value = _encode_value(
+                        value, i, encodings, coerces, ">", f.metadata["fmt"]
+                    )
                 write_values.append(value)
             written = write_fmt(fp, w_fmt, *write_values) if write_parts else 0
 
@@ -725,7 +726,7 @@ def write_chunk(fp: IO[bytes], chunk: Chunk) -> int:
     # Backpatch len_body
     current = fp.tell()
     fp.seek(len_pos)
-    write_fmt(fp, "I", body_size)
+    fp.write(body_size.to_bytes(4, "big"))
     fp.seek(current)
 
     # Pad to even boundary

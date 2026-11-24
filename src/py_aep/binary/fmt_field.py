@@ -469,6 +469,9 @@ class FmtItem:
         values: list[Any] = []
         for i, f in enumerate(data_fields):
             value = getattr(self, f.name)
-            value = _encode_value(value, i, encodings, coerces, ">", f.metadata["fmt"])
+            if i in encodings or i in coerces:
+                value = _encode_value(
+                    value, i, encodings, coerces, ">", f.metadata["fmt"]
+                )
             values.append(value)
         return struct.pack(">" + fmt, *values)
