@@ -795,6 +795,8 @@ def read_aep(
     defer_list_types: frozenset[str] | None = None,
 ) -> tuple[ListChunk, str]:
     """Read an AEP file: RIFX root chunk + trailing XMP packet."""
+    # Chunk parsing does many tiny reads, so work on an in-memory copy.
+    fp = BytesIO(fp.read())
     raw_type = read_bytes(fp, 4)
     chunk_type = raw_type.decode("ASCII")
     if chunk_type != "RIFX":
