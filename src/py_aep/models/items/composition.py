@@ -80,6 +80,7 @@ from ...resolvers.motion_graphics import (
     media_controller_path,
     property_controller_plan,
 )
+from ...resolvers.transform import default_camera_zoom
 from ...synthesis.property import _CAMERA_LIGHT_TRANSFORM_SKIP, _OMITTED_EMPTY_GROUPS
 from ..descriptors import ChunkField
 from ..essential_graphics import EssentialGraphicsController, SourcePropertyRef
@@ -1008,6 +1009,7 @@ class CompItem(AVItem):
             width=width,
             height=height,
             pixel_aspect=pixel_aspect,
+            camera_zoom=default_camera_zoom(width, pixel_aspect),
             duration=duration,
             frame_rate=frame_rate,
             allocate_layer_id=project._allocate_id,
@@ -2115,8 +2117,7 @@ class CompItem(AVItem):
         )
         self._insert_layer(layer)
 
-        # AE rounds the zoom to 8 decimals before storing it.
-        zoom = round(self.width * self.pixel_aspect / CameraLayer._zoom_dividend, 8)
+        zoom = default_camera_zoom(self.width, self.pixel_aspect)
 
         transform = layer.transform
         anchor_point = cast("Property", transform["ADBE Anchor Point"])
@@ -2176,8 +2177,7 @@ class CompItem(AVItem):
         )
         self._insert_layer(layer)
 
-        # AE rounds the zoom to 8 decimals before storing it.
-        zoom = round(self.width * self.pixel_aspect / LightLayer._zoom_dividend, 8)
+        zoom = default_camera_zoom(self.width, self.pixel_aspect)
 
         transform = layer.transform
         anchor_point = cast("Property", transform["ADBE Anchor Point"])

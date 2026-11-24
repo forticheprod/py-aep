@@ -30,6 +30,7 @@ from conftest import get_comp, get_comp_from_json_by_name, load_expected, parse_
 
 from py_aep.models.layers import Layer
 from py_aep.models.properties.property import Property
+from py_aep.resolvers.transform import default_camera_zoom
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "layer"
 VIEW_DIR = Path(__file__).parent.parent.parent / "samples" / "models" / "view"
@@ -142,7 +143,7 @@ class TestLightDefaultPosition:
     def test_default_value(self, comp_name: str) -> None:
         light = _layer("light_default_position", comp_name, "Point")
         comp = light.containing_comp
-        zoom = comp.width * comp.pixel_aspect / 0.72
+        zoom = default_camera_zoom(comp.width, comp.pixel_aspect)
         expected = [
             comp.width / 2 + 0.03 * zoom,
             comp.height / 2 - 0.03 * zoom,

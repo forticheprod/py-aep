@@ -16,6 +16,7 @@ from py_aep.models.layers.light_layer import LightLayer
 from py_aep.models.layers.shape_layer import ShapeLayer
 from py_aep.models.layers.text_layer import TextLayer
 from py_aep.models.properties.property import Property
+from py_aep.resolvers.transform import default_camera_zoom
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "samples" / "models"
 
@@ -227,14 +228,13 @@ class TestAddCamera:
         assert anchor.value[1] == pytest.approx(comp.height / 2)
 
     def test_zoom_uses_pixel_aspect(self) -> None:
-        # AE's default-50mm zoom is width * pixel_aspect / 0.72 (see the
-        # "ZV" formula in binary/comp_skeleton.py).
+        # AE's default-50mm zoom scales with the pixel aspect.
         app = parse_aep(EMPTY_COMP_AEP)
         comp = app.project.compositions[0]
         comp.pixel_aspect = 2.0
         cam = comp.add_camera("Cam")
         pos = cast("Property", cam.transform["ADBE Position"])
-        assert pos.value[2] == pytest.approx(-comp.width * 2.0 / 0.72)
+        assert pos.value[2] == -default_camera_zoom(comp.width, 2.0)
 
     def test_roundtrip(self, tmp_path: Path) -> None:
         app = parse_aep(EMPTY_COMP_AEP)
@@ -301,14 +301,14 @@ class TestAddLight:
         assert pos.value[2] == pytest.approx(-69.4444, rel=1e-3)
 
     def test_zoom_uses_pixel_aspect(self) -> None:
-        # Lights share the camera's width * pixel_aspect / 0.72 zoom and
-        # report position z as -zoom/2.
+        # Lights share the camera's default zoom and report position z as
+        # -zoom/2.
         app = parse_aep(EMPTY_COMP_AEP)
         comp = app.project.compositions[0]
         comp.pixel_aspect = 2.0
         light = comp.add_light("L")
         pos = cast("Property", light.transform["ADBE Position"])
-        assert pos.value[2] == pytest.approx(-comp.width * 2.0 / 0.72 / 2)
+        assert pos.value[2] == -default_camera_zoom(comp.width, 2.0) / 2
 
     def test_roundtrip(self, tmp_path: Path) -> None:
         app = parse_aep(EMPTY_COMP_AEP)

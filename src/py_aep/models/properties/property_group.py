@@ -618,9 +618,8 @@ class PropertyGroup(PropertyBase):
         """Comp-dependent default values for synthesized children.
 
         Camera Zoom and Focus Distance default to AE's 50mm-lens zoom
-        (`comp width * pixel aspect / 0.72`), a value the static spec table
-        cannot express. Returns `None` for groups with no comp-dependent
-        defaults.
+        (`default_camera_zoom`), a value the static spec table cannot
+        express. Returns `None` for groups with no comp-dependent defaults.
         """
         if self.match_name != "ADBE Camera Options Group":
             return None

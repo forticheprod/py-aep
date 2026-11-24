@@ -1,7 +1,7 @@
 """Tests for synthesized Camera Options defaults (AE 2026 ground truth).
 
 An untouched camera stores no Camera Options chunks; py synthesizes them.
-Zoom and Focus Distance default to `comp width / 0.72` (AE's 50mm lens),
+Zoom and Focus Distance default to the comp's 50mm-lens zoom,
 Aperture to a width-independent constant, and AE 2026 exposes two options
 (Focus Area Width, Near/Far Blur Level) that AE 25 did not. All values were
 probed against AE 2026 (2026-07-14) at comp widths 1920/1280/640.
@@ -35,10 +35,10 @@ class TestCameraOptionDefaults:
         assert isinstance(prop, Property)
         return prop
 
-    def test_zoom_and_focus_are_width_over_072(self) -> None:
+    def test_zoom_and_focus_are_the_default_zoom(self) -> None:
         # CAM_ONE is a 1920-wide comp with an untouched camera.
         cam = _camera("CAM_ONE")
-        expected = 1920 / 0.72
+        expected = 2666.6666666
         zoom = self._opt(cam, "ADBE Camera Zoom")
         focus = self._opt(cam, "ADBE Camera Focus Distance")
         assert zoom.value == pytest.approx(expected)

@@ -7,7 +7,7 @@ expressions evaluated at build time with the comp's parameters (see
 `py_aep.binary.comp_skeleton`):
 
 - `TB`: `cdta.internal_timebase` - `DUR_UNITS`: `round(duration * TB)`
-- `W2` / `H2`: comp center - `ZV`: `width * pixel_aspect / 0.72`
+- `W2` / `H2`: comp center - `ZV`: the comp's default camera zoom
 - `PAR`: pixel aspect ratio - `FPS`: frame rate
 - `SHADOW_ALPHA`: the Markers layer's Shadow Color alpha (0 in AE 24)
 

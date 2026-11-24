@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Any, cast
 
 from ...binary.layer_chunks import LdtaChunk
@@ -37,10 +36,6 @@ class CameraLayer(Layer):
     """
 
     _auto_name: str = "Camera"
-    _fov_rad: float = 39.5978 * math.pi / 180
-    # AE's default 50mm camera: zoom = width / 0.72 exactly
-    # (2 * tan(fov/2) rounds to 0.72; AE uses the exact ratio).
-    _zoom_dividend: float = 0.72
 
     @property
     def is_3d(self) -> bool:
@@ -74,8 +69,7 @@ class CameraLayer(Layer):
     def _default_zoom(self) -> float:
         """AE's default Zoom and Focus Distance: the comp's 50mm-lens zoom."""
         comp = self.containing_comp
-        # AE rounds the zoom to 8 decimals before storing it.
-        return round(default_camera_zoom(comp.width, comp.pixel_aspect), 8)
+        return default_camera_zoom(comp.width, comp.pixel_aspect)
 
     @classmethod
     def _new(  # type: ignore[override]

@@ -918,15 +918,24 @@ def transform_from_points(
 # ------------------------------------------------------------------
 
 
+# 2 * tan(39.59775271 degrees / 2). The angle is the view of a 50 mm lens on
+# 36 mm film, held to 8 decimals.
+_DEFAULT_LENS = 0.7200000000187322
+
+
 def default_camera_zoom(comp_width: float, pixel_aspect: float) -> float:
-    """AE's default comp camera zoom in pixels: `width * pixel_aspect / 0.72`
-    (the 50mm preset; 2 * tan(fov/2) held at the exact 0.72 ratio).
+    """AE's default comp camera zoom in pixels, the 50mm preset.
+
+    `width * pixel_aspect / (2 * tan(39.59775271 degrees / 2))`, rounded to
+    8 decimals. After Effects stores this distance as the Zoom of a new
+    camera and in the Custom View layers of every composition, 2666.6666666
+    for a 1920 wide one. Measured on files saved by AE 2018 and AE 2026.
 
     The zoom is in SQUARE pixels, so a non-square-pixel comp scales the
     width by its pixel aspect ratio first (verified against AE 2026 at
     pixel aspects 0.5 / 1.0 / 1.21212).
     """
-    return comp_width * pixel_aspect / 0.72
+    return round(comp_width * pixel_aspect / _DEFAULT_LENS, 8)
 
 
 def project_to_comp(

@@ -2002,8 +2002,12 @@ times in composition time. One per composition. Same container shape as
 #### Composition view layers
 
 What AE 2026 writes for the eleven view layers of a new composition (W, H =
-composition size, PAR = pixel aspect, Z = W x PAR / 0.72, which is the
-50 mm camera distance; every layer's out point is the composition duration):
+composition size, PAR = pixel aspect, Z = the 50 mm camera distance; every
+layer's out point is the composition duration). Z is
+W x PAR / (2 x tan(39.59775271° / 2)) rounded to 8 decimals, 2666.6666666 for
+a 1920 wide composition with square pixels, and the Custom View coordinates
+are computed from that rounded value (matches every composition of the
+AE 2018 and AE 2026 samples that was not resized after creation):
 
 | List | Name | Position |
 |---|---|---|
